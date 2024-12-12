@@ -33,10 +33,10 @@ class PlaneWaveCliSolverResult(ExtendedBaseModel):
     errors: Optional[List[str]] = []
 
 
-def planewave_cli_solve(unit: 'Unit', settings: CameraSettings) -> SolvingResult:
+def planewave_cli_solve(unit: 'Unit', settings: CameraSettings, target: Coord) -> SolvingResult:
     op = function_name()
     ps3_solver_status: PlaneWaveCliSolverResult
-    ret = SolvingResult()
+    ret = SolvingResult(succeeded=True)
 
     unit.camera.wait_for_image_saved()
 
@@ -105,7 +105,7 @@ def planewave_cli_solve(unit: 'Unit', settings: CameraSettings) -> SolvingResult
 
     ret = SolvingResult()
     ret.succeeded = True
-    ret.result = solver_output
+    ret.native_result = solver_output
     solution = SolvingSolution()
     solution.ra_hours = solver_output['ra_j2000_hours']
     solution.ra_rads = Angle(solution.ra_hours, unit='hour').radian

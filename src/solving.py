@@ -1,7 +1,7 @@
 import math
 import os.path
 
-from common.utils import function_name, Coord, PLATE_SOLVING_SHM_NAME
+from common.utils import function_name, Coord
 from common.mast_logging import init_log
 from common.filer import Filer, FilerTop
 from acquisition import Acquisition
@@ -44,13 +44,26 @@ class SolvingSolution:
     matched_stars: int = 0
     catalog_stars: int = 0
     rotation_angle_degs: float
+    pixel_scale: float
 
 
 class SolvingResult:
     succeeded: bool
     errors: Optional[List[str]] = None
     solution: SolvingSolution
-    result: Optional[Union[PlaneWaveShmSolvingResult | PlaneWaveCliSolverResult | AstrometryDotNetSolverResult]] = None
+    native_result: Optional[Union[PlaneWaveShmSolvingResult |
+                                  PlaneWaveCliSolverResult | AstrometryDotNetSolverResult]] = None
+
+    def __init__(self,
+                 succeeded: bool,
+                 errors: Optional[List[str]] = None,
+                 solution: Optional[SolvingSolution] = None,
+                 native_result: Optional[Union[PlaneWaveShmSolvingResult |
+                                               PlaneWaveCliSolverResult | AstrometryDotNetSolverResult]] = None):
+        self.succeeded = succeeded
+        self.errors = errors
+        self.solution = solution
+        self.native_result = native_result
 
 
 class SolvingTolerance:
@@ -94,14 +107,16 @@ class Solver:
                 raise Exception(f"cannot deal with non-equal horizontal and vertical binning " +
                                 f"({settings.binning.x=}, {settings.binning.y=}")
 
-            if solver == Solver.PlaneWaveShm:
-                return planewave_shm_solve(self.unit, settings, target)
+            solvers_dispatch = {
+                Solver.PlaneWaveCli: planewave_cli_solve,
+                Solver.PlaneWaveShm: planewave_shm_solve,
+                Solver.AstrometryDotNet: astrometry_dot_net_solve,
+            }
 
-            elif solver == Solvers.PlaneWaveCli:
-                return planewave_cli_solve(self.unit, settings)
-
-            elif solver == Solvers.AstrometryDotNet:
-                return astrometry_dot_net_solve(self.unit, settings, target)
+            if solver not in solvers_dispatch:
+                logger.error(f"No dispatcher for {solver=}")
+            else:
+                return solvers_dispatch[solver](self.unit, settings, target)
 
     def solve_and_correct(self,
                           target: Coord,

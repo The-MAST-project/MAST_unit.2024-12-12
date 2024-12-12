@@ -90,8 +90,8 @@ def planewave_shm_solve(unit: 'Unit', settings: CameraSettings, target: Coord) -
     time.sleep(2)
     Filer().move_ram_to_shared(settings.image_path)
 
-    ret: SolvingResult = SolvingResult()
-    ret.result = ps3_solver_status
+    ret: SolvingResult = SolvingResult(succeeded=True)
+    ret.native_result = ps3_solver_status
     if ps3_solver_status.state == 'found_match':
         ret.succeeded = True
         ret.solution = SolvingSolution()
