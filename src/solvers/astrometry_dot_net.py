@@ -1,5 +1,6 @@
 from camera import CameraSettings
 from common.utils import Coord, generate_random_string
+from common.filer import Filer
 from common.mast_logging import init_log
 import logging
 from solving import SolvingSolution, SolvingResult
@@ -137,6 +138,8 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
         file.writelines(stdout_lines)
         file.write('--- stderr ---')
         file.writelines(stderr_lines)
+
+    Filer().move_ram_to_shared([result_file, new_fits])
 
     if completed_process.returncode == 0:
         ret = _parse_solver_output(stdout_lines)
