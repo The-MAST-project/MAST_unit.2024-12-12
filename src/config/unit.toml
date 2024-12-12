@@ -1,0 +1,52 @@
+[global]
+  TopFolder = "C:\\MAST"
+  log_level = 'debug'   # one of 'debug', 'info', 'warning', 'error', 'critical'
+
+[server]
+  port = 8000
+
+[mount]
+
+[stage]
+  SpectraPosition =  100000
+  ImagePosition = 10000
+  power = {delay-after-on=5}
+
+[camera]
+  ascom_driver = "ASCOM.ASICamera2.Camera"
+  power = {delay-after-on=2}
+  temp_check_interval = 10
+
+[focuser]
+  ascom_driver = "ASCOM.PWI4.Focuser"
+  known_as_good_position = 15000
+
+[covers]
+  ascom_driver = "ASCOM.PlaneWave.CoverCalibrator"
+
+# Generic entry for a unit 'power-switch'
+[power-switch]
+    network = {port=80}
+    userid = 'admin'
+    password = '1234'
+    timeout = 2
+    cycle_time = 3
+    delay_after_on = 3
+
+# Generic entry for a unit 'power-switch'
+[power-switch.unit]
+    outlets = {1="Mount", 2="Stage", 3="Camera", 4="Focuser", 5="Covers", 6="Computer", 7="Outlet 7", 8="Outlet 8"}
+
+#
+# Specific unit power-switches may override the generic unit entry
+# Example:
+#  The 'mastpsw' has the 'Computer' plugged into outlet #7 (instead of #6)
+#
+[power-switch.example]
+    outlets = {6="Outlet 6", 7="Computer"}
+
+[network]
+  interface = "Ethernet 2"
+  address = "192.168.0.1"
+  mask = "255.255.0.0"
+  cidr = 16
