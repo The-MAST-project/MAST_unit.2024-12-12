@@ -8,6 +8,7 @@ from astropy.coordinates import Angle
 import tempfile
 import subprocess
 import re
+import shutil
 
 logger = logging.Logger('astrometry_dot_net')
 init_log(logger)
@@ -141,5 +142,7 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
         ret = _parse_solver_output(stdout_lines)
     else:
         ret = SolvingResult(succeeded=False, errors=[f"Exit status: {completed_process.returncode}", stderr_lines])
+
+    shutil.rmtree(tmp)
 
     return ret
