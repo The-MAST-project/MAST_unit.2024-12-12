@@ -1,3 +1,6 @@
 [submodule "src/common"]
 	path = src/common
 	url = https://github.com/The-MAST-project/MAST_common.git
+[submodule "src/dlipower"]
+	path = src/dlipower
+	url = https://github.com/The-MAST-project/python-dlipower.git
