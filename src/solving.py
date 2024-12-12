@@ -98,8 +98,7 @@ class Solver:
             if response.failed:
                 self.log_and_store_error(f"{op}: could not start acquisition exposure: {response=}")
 
-                ret = SolvingResult()
-                ret.succeeded = False
+                ret = SolvingResult(succeeded=False)
                 ret.errors = [f'could not start exposure ({[response.errors]})']
                 return ret
 

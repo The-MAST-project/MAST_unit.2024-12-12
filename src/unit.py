@@ -313,9 +313,9 @@ class Unit(Component):
             while self.is_active(UnitActivities.Guiding):
                 time.sleep(.2)
 
-        if self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.AutofocusingWIS):
+        if self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing):
             self.autofocuser.stop_autofocus()
-            while self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.AutofocusingWIS):
+            while self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing):
                 time.sleep(.2)
 
         [component.abort() for component in self.components]

@@ -16,7 +16,6 @@ import platform
 from fastapi.routing import APIRouter
 from common.activities import StageActivities
 from common.stopping import StoppingMonitor
-from common.dlipowerswitch import SwitchedOutlet
 
 cur_dir = os.path.abspath(os.path.dirname(__file__))                            # Specifies the current directory.
 ximc_dir = os.path.join(cur_dir, "Standa", "ximc-2.13.6", "ximc")               # dependencies for examples.

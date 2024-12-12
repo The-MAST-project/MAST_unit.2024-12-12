@@ -1,6 +1,6 @@
 from typing import List
 import logging
-from enum import IntFlag, IntEnum, auto
+from enum import IntEnum, auto
 import win32com.client
 
 from common.utils import RepeatTimer, Component, time_stamp, CanonicalResponse, CanonicalResponse_Ok, BASE_UNIT_PATH

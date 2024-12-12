@@ -1,7 +1,6 @@
 import logging
 from common.utils import Coord, function_name, CanonicalResponse, CanonicalResponse_Ok
 from common.paths import PathMaker
-from common.filer import Filer
 from common.mast_logging import init_log
 from common.activities import UnitActivities
 from common.utils import UnitRoi
@@ -9,15 +8,8 @@ from camera import CameraSettings, CameraBinning
 import astropy.units as u
 from astropy.coordinates import Angle
 import time
-import os
-import json
 import datetime
-import subprocess
-from solving import SolvingTolerance, PlaneWaveCliSolverExitCode
-import concurrent.futures
-from threading import Thread
-
-from skimage.registration import phase_cross_correlation
+from solving import SolvingTolerance
 
 logger = logging.Logger('mast.unit.' + __name__)
 init_log(logger)
@@ -70,6 +62,7 @@ class Guider:
         If target was supplied, send telescope to 'target', else guide at current mount's coordinates
         Perform guiding (at cadence, while UnitActivities.Guiding was not ended) calling self.solver.solve_and_correct()
 
+        :param approach_mode:
         :param target: If supplied send telescope to 'target' before guiding, else guide 'in place'
         :param folder: Where to save the images.  If not supplied, make a new one in 'Guidings'
         """
