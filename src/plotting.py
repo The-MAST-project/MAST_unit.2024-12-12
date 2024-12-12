@@ -11,7 +11,7 @@ import os
 from common.mast_logging import init_log
 from common.utils import function_name, Filer
 from common.corrections import correction_phases, Corrections
-from typing import List, NamedTuple, Optional
+from typing import List, NamedTuple, Optional, Dict
 from astropy.coordinates import Angle
 import astropy.units as u
 import datetime
@@ -128,7 +128,8 @@ def plot_autofocus_analysis(result: 'PS3FocusAnalysisResult', folder: str | None
 def plot_phase_corrections(phase: str,  # one of ['sky', 'spec', 'guiding', 'acquisition']
                            corrections: Corrections,
                            file: str,   # .../<date>/Acquisitions/seq=<seq-number>,time=<start-time>,target=<target>
-                           ends_of_phases: Optional[List[datetime.datetime]] = None):
+                           ends_of_phases: Optional[List[datetime.datetime]] = None,
+                           tolerances: Optional[Dict] = None):
     ra_guiding_rms: float = 0
     dec_guiding_rms: float = 0
 
@@ -188,6 +189,12 @@ def plot_phase_corrections(phase: str,  # one of ['sky', 'spec', 'guiding', 'acq
     if phase in ['guiding', 'acquisition']:
         ra_rms_label = Patch(color='none', label=f"RA  RMS: {ra_guiding_rms:.2f}")
         dec_rms_label = Patch(color='none', label=f"Dec RMS: {dec_guiding_rms:.2f}")
+
+    if phase == 'acquisition' and tolerances:
+        plt.axhline(y=tolerances['sky']['ra'], color='maroon', linestyle=':',
+                    label=f"'sky' tolerance ({tolerances['sky']['ra']} arcsec)")
+        plt.axhline(y=tolerances['spec']['ra'], color='maroon', linestyle='-.',
+                    label=f"'spec' tolerance ({tolerances['spec']['ra']} arcsec)")
 
     if start.day == end.day:
         start_time = f"{start.time().strftime('%H:%M:%S.%f')[:11]}"
@@ -255,6 +262,7 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):
 
     combined_corrections: Corrections | None = None
     end_of_phase: List[datetime.datetime] = []
+    tolerances = {}
 
     for phase in ['sky', 'spec', 'guiding']:
         file = os.path.join(acquisition_top, phase, 'corrections.json')
@@ -283,11 +291,15 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):
                 tolerance_ra=corrections.tolerance_ra,
                 tolerance_dec=corrections.tolerance_dec,
             )
+        tolerances[phase] = {'ra': corrections.tolerance_ra, 'dec': corrections.tolerance_dec}
         combined_corrections.sequence += sequence
         end_of_phase.append(sequence[0].time)
 
-    plot_phase_corrections(phase='acquisition', corrections=combined_corrections,
-                           file=os.path.join(acquisition_top, 'corrections.json'), ends_of_phases=end_of_phase)
+    plot_phase_corrections(phase='acquisition',
+                           corrections=combined_corrections,
+                           file=os.path.join(acquisition_top, 'corrections.json'),
+                           ends_of_phases=end_of_phase,
+                           tolerances=tolerances)
 
 
 #
@@ -359,7 +371,8 @@ def test_corrections_plot():
 
 
 if __name__ == '__main__':
-    acq_folder = Filer().find_latest(Filer().shared.root, pattern='*,target=*', qualifier=os.path.isdir)
+    # acq_folder = Filer().find_latest(Filer().shared.root, pattern='*,target=*', qualifier=os.path.isdir)
+    acq_folder = r'D:\tmp\2024-12-05\Acquisitions\seq=0025,time=18-13-03_987,target=1.42677311977099,23.5115091209584'
     plot_acquisition_corrections(acq_folder)
     # plot_autofocus_analysis(DummyResult(), 'C:\\Temp')
     # test_corrections_plot()
