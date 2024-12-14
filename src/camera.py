@@ -156,11 +156,12 @@ class Camera(Component, SwitchedPowerDevice, AscomDispatcher):
     def ascom(self) -> win32com.client.Dispatch:
         return self._ascom
 
-    def __init__(self, operating_mode: OperatingMode = OperatingMode.Night):
+    def __init__(self, unit: 'Unit'):
         if self._initialized:
             return
 
-        self.operating_mode = operating_mode
+        self.unit = unit
+        self.operating_mode = self.unit.operating_mode
         self.defaults = {
             'temp_check_interval': 15,
         }
@@ -863,6 +864,11 @@ class Camera(Component, SwitchedPowerDevice, AscomDispatcher):
         if self.ccd_temp_at_mid_exposure:
             header['CCDTEMP'] = (self.ccd_temp_at_mid_exposure, 'ccd temp. at mid exposure')
             self.ccd_temp_at_mid_exposure = None
+
+        header['FOCUSPOS'] = self.unit.focuser.position
+        header.comments['FOCUSPOS'] = 'focuser position'
+        header['STAGEPOS'] = self.unit.stage.position
+        header.comments['STAGEPOS'] = 'FIFA stage position'
 
         if self.latest_settings.fits_cards:
             for k, v in self.latest_settings.fits_cards.items():
