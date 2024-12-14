@@ -68,7 +68,7 @@ class Autofocuser:
         if not self.unit.connected:
             return False
 
-        return (self.unit.is_active(UnitActivities.AutofocusingWIS) or
+        return (self.unit.is_active(UnitActivities.Autofocusing) or
                 (self.unit.is_active(UnitActivities.AutofocusingPWI4) and self.unit.pw.status().autofocus.is_running))
 
     def start_wis_autofocus(self,
@@ -135,7 +135,7 @@ class Autofocuser:
         op = function_name()
         self.unit.errors = []
 
-        self.unit.start_activity(UnitActivities.AutofocusingWIS)
+        self.unit.start_activity(UnitActivities.Autofocusing)
 
         self.unit.stage.move_to_preset(StagePresetPosition.Sky)
 
@@ -157,12 +157,12 @@ class Autofocuser:
 
         logger.debug(f"{op}: Waiting for components (stage, mount, focuser) to stop moving ...")
         while (self.unit.stage.is_moving or
-               self.unit.mount.is_slewing or
+               self.unit.mount.is_moving or
                self.unit.focuser.is_active(FocuserActivities.Moving)):
             time.sleep(.5)
         logger.debug(f"{op}: Components (stage, mount, focuser) stopped moving ...")
-        if not self.unit.is_active(UnitActivities.AutofocusingWIS):
-            logger.info("activity 'AutofocusingWIS' was stopped")
+        if not self.unit.is_active(UnitActivities.Autofocusing):
+            logger.info("activity 'Autofocusing' was stopped")
             return
 
         acquisition_conf: dict = self.unit.unit_conf['acquisition']
@@ -201,8 +201,8 @@ class Autofocuser:
                 logger.info(f"{op}: waiting for exposure #{image_no} of {number_of_images} ...")
                 self.unit.camera.wait_for_image_saved()
                 files.append(self.unit.camera.latest_settings.image_path)
-                if not self.unit.is_active(UnitActivities.AutofocusingWIS):  # have we been stopped?
-                    logger.info(f"{op}: activity 'AutofocusingWIS' was stopped")
+                if not self.unit.is_active(UnitActivities.Autofocusing):  # have we been stopped?
+                    logger.info(f"{op}: activity 'Autofocusing' was stopped")
                     return
 
                 focuser_position += ticks_per_step
@@ -212,8 +212,8 @@ class Autofocuser:
                     time.sleep(.5)
                 logger.info(f"{op}: focuser stopped moving")
 
-                if not self.unit.is_active(UnitActivities.AutofocusingWIS):  # have we been stopped?
-                    logger.info(f"{op}: activity 'AutofocusingWIS' was stopped")
+                if not self.unit.is_active(UnitActivities.Autofocusing):  # have we been stopped?
+                    logger.info(f"{op}: activity 'Autofocusing' was stopped")
                     return
 
             # The files are now on the RAM disk
@@ -242,7 +242,7 @@ class Autofocuser:
                 self.log_and_store_error(f"{op}: autofocus analyser did not start within {timeout} seconds")
                 Filer().move_ram_to_shared(autofocus_folder)
                 self.unit.end_activity(UnitActivities.AutofocusAnalysis)
-                self.unit.end_activity(UnitActivities.AutofocusingWIS)
+                self.unit.end_activity(UnitActivities.Autofocusing)
                 return
 
             while datetime.datetime.now() < end:
@@ -317,7 +317,7 @@ class Autofocuser:
             self.log_and_store_error(f"{op}: could not achieve {max_tolerance=} within {max_tries=}")
 
         self.unit.mount.stop_tracking()
-        self.unit.end_activity(UnitActivities.AutofocusingWIS)
+        self.unit.end_activity(UnitActivities.Autofocusing)
 
     def start_pwi4_autofocus(self):
         """
@@ -364,8 +364,8 @@ class Autofocuser:
             self.unit.end_activity(UnitActivities.AutofocusingPWI4)
             return CanonicalResponse_Ok
 
-        elif self.unit.is_active(UnitActivities.AutofocusingWIS):
-            self.unit.end_activity(UnitActivities.AutofocusingWIS)
+        elif self.unit.is_active(UnitActivities.Autofocusing):
+            self.unit.end_activity(UnitActivities.Autofocusing)
             return CanonicalResponse_Ok
 
     def log_and_store_error(self, message: str):

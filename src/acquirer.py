@@ -1,6 +1,6 @@
 import time
 import logging
-from common.utils import function_name, Coord
+from common.utils import function_name, Coord, boxed_lines
 from common.paths import PathMaker
 from common.mast_logging import init_log
 from common.activities import UnitActivities
@@ -16,6 +16,7 @@ from threading import Thread
 from acquisition import Acquisition
 import os
 from typing import Optional
+import datetime
 
 logger = logging.getLogger('mast.unit.' + __name__)
 init_log(logger)
@@ -52,7 +53,7 @@ class Acquirer:
 
         self.unit.mount.goto_ra_dec_j2000(target_ra_j2000_hours, target_dec_j2000_degs)
 
-        while self.unit.stage.is_moving or self.unit.mount.is_slewing:
+        while self.unit.stage.is_moving or self.unit.mount.is_moving:
             time.sleep(1)
         logger.info(f"{op}: sleeping 10 seconds to let the mount stop ...")
         time.sleep(10)
@@ -136,9 +137,8 @@ class Acquirer:
         self.unit.start_activity(UnitActivities.Acquiring)
 
         phase = 'sky'
-        logger.info(f"{op}: >>>>>>>>>>>>>>>>>>>>>>>>>>")
-        logger.info(f"{op}: >>> starting {phase=} <<<")
-        logger.info(f"{op}: >>>>>>>>>>>>>>>>>>>>>>>>>>")
+        boxed_info(f"starting {phase=}")
+
         #
         # move the stage and mount (if needed) into position
         #
@@ -149,10 +149,8 @@ class Acquirer:
         if self.latest_acquisition.slew_to_target:
             self.unit.mount.goto_ra_dec_j2000(target_ra_j2000_hours, target_dec_j2000_degs)
 
-        while self.unit.stage.is_moving or self.unit.mount.is_slewing:
-            time.sleep(1)
-        logger.info(f"{op}: sleeping 10 seconds to let the mount and stage stop moving ...")
-        time.sleep(10)
+        while self.unit.stage.is_moving or self.unit.mount.is_moving:
+            time.sleep(.2)
         self.unit.end_activity(UnitActivities.Positioning)
 
         sky_settings = CameraSettings(
@@ -185,6 +183,7 @@ class Acquirer:
         achieved_tolerances = self.unit.solver.solve_and_correct(target=target,
                                                                  approach_mode=acquisition.approach_mode,
                                                                  solver=acquisition.solver,
+                                                                 correct=acquisition.correct,
                                                                  camera_settings=sky_settings,
                                                                  solving_tolerance=
                                                                     SolvingTolerance(ra_tolerance, dec_tolerance),
@@ -200,9 +199,7 @@ class Acquirer:
             return
 
         phase = 'spec'
-        logger.info(f"{op}: >>>>>>>>>>>>>>>>>>>>>>>>>>")
-        logger.info(f"{op}: >>> starting {phase=} <<<")
-        logger.info(f"{op}: >>>>>>>>>>>>>>>>>>>>>>>>>>")
+        boxed_info(f"starting {phase=}")
 
         self.unit.stage.move_to_preset(StagePresetPosition.Spec)
         while self.unit.stage.is_moving:
@@ -223,6 +220,7 @@ class Acquirer:
         achieved_tolerances = self.unit.solver.solve_and_correct(target=target,
                                                                  approach_mode=acquisition.approach_mode,
                                                                  camera_settings=spec_settings,
+                                                                 correct=acquisition.correct,
                                                                  solving_tolerance=
                                                                     SolvingTolerance(ra_tolerance, dec_tolerance),
                                                                  phase=phase,
@@ -238,45 +236,70 @@ class Acquirer:
         self.unit.reference_image = self.unit.camera.image
 
         phase = 'guiding'
-        logger.info(f"{op}: >>>>>>>>>>>>>>>>>>>>>>>>>>")
-        logger.info(f"{op}: >>> starting {phase=} <<<")
-        logger.info(f"{op}: >>>>>>>>>>>>>>>>>>>>>>>>>>")
+        boxed_info(f"starting {phase=}")
 
         # the guider runs until UnitActivities.Guiding is stopped
-        self.unit.guider.do_guide_by_solving_with_shm(
-            target=target,
-            approach_mode=acquisition.approach_mode,
-            folder=os.path.join(self.latest_acquisition.folder, phase)
-        )
+        # self.unit.guider.do_guide_by_solving_with_shm(
+        #     target=target,
+        #     approach_mode=acquisition.approach_mode,
+        #     folder=os.path.join(self.latest_acquisition.folder, phase)
+        # )
+
+        cadence = self.unit.unit_conf['guiding']['cadence_seconds']
+        end: datetime.datetime | None = None
+        folder = os.path.join(self.latest_acquisition.folder, phase)
+        guiding_settings = self.unit.guider.make_guiding_settings(folder)
+
+        self.unit.start_activity(UnitActivities.Guiding)
+        while self.unit.is_active(UnitActivities.Guiding):
+            start = datetime.datetime.now()
+            if cadence:
+                end = start + datetime.timedelta(seconds=cadence)
+            self.unit.solver.solve_and_correct(target=target,
+                                               approach_mode=acquisition.approach_mode,
+                                               camera_settings=guiding_settings,
+                                               correct=acquisition.correct,
+                                               solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
+                                               phase='guiding',
+                                               parent_activity=UnitActivities.Acquiring)
+
+        self.unit.acquirer.latest_acquisition.save_corrections('guiding')
+
+        if cadence:
+            now = datetime.datetime.now()
+            if now < end:
+                sec = (end - now).seconds
+                boxed_info(f"sleeping {sec} seconds till end-of-cadence ...")
+                time.sleep(sec)
 
         self.unit.end_activity(UnitActivities.Acquiring)
         self.unit.mount.stop_tracking()
         self.unit.acquirer.latest_acquisition.post_process()
 
-    def start_acquisition_and_guiding(self, approach_mode: int = 2, solver: Solvers = Solvers.AstrometryDotNet,
-                                      ra_j2000_hours: Optional[float] = None, dec_j2000_degs: Optional[float] = None):
+    def start_acquisition_and_guiding(self,
+                                      approach_mode: int = 2,
+                                      solver: Solvers = Solvers.AstrometryDotNet,
+                                      correct: bool = True,
+                                      ra_j2000_hours: Optional[float] = None,
+                                      dec_j2000_degs: Optional[float] = None):
         """
         Starts an acquisition
 
         :param approach_mode: approach mode
         :param solver:
+        :param correct:
         :param ra_j2000_hours: The target's RA
         :param dec_j2000_degs: The target's Dec
         :return: The folder path on the MAST-SHARE with the acquisition's products
         """
-        acquisition = Acquisition(unit=self.unit, approach_mode=approach_mode, solver=solver, target_ra=ra_j2000_hours,
-                                  target_dec=dec_j2000_degs, conf=self.unit.unit_conf['acquisition'])
+        acquisition = Acquisition(unit=self.unit, approach_mode=approach_mode, solver=solver, correct=correct,
+                                  target_ra=ra_j2000_hours, target_dec=dec_j2000_degs,
+                                  conf=self.unit.unit_conf['acquisition'])
         Thread(name='acquisition', target=self.do_acquire, args=[acquisition]).start()
 
         return CanonicalResponse(value=Filer().change_top_to(FilerTop.Shared, acquisition.folder))
 
-    # def start_one_solve_and_correct(self, ra_j2000_hours: float, dec_j2000_degs: float):
-    #     """
-    #     This is for debugging via FastAPI, not for production
-    #     """
-    #     self.latest_acquisition = Acquisition(unit=self.unit, approach_mode=1, target_ra=ra_j2000_hours,
-    #                                           target_dec=dec_j2000_degs, conf=self.unit.unit_conf['acquisition'])
-    #     Thread(
-    #         name='solve-and-correct',
-    #         target=self.do_solve_and_correct,
-    #         args=[ra_j2000_hours, dec_j2000_degs, 'testing']).start()
+
+def boxed_info(lines):
+    for line in lines:
+        logger.info(line)

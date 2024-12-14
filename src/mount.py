@@ -76,6 +76,8 @@ class Mount(Component, SwitchedPowerDevice, AscomDispatcher, StoppingMonitor):
         self.errors = []
         self.target: str | tuple | None = None
 
+        self.is_moving: bool = False
+
         self._initialized = True
         logger.info('initialized')
 
@@ -238,15 +240,23 @@ class Mount(Component, SwitchedPowerDevice, AscomDispatcher, StoppingMonitor):
             return
 
         status = self.pw.status()
+
+        was_moving = self.is_moving
+        self.is_moving = status.mount.axis0.rms_error_arcsec > 1.0 or status.mount.axis1.rms_error_arcsec > 1.0
+        if was_moving and not self.is_moving:
+            self.end_activity(MountActivities.Moving)
+        elif not was_moving and self.is_moving:
+            self.start_activity(MountActivities.Moving)
+
         if self.is_active(MountActivities.FindingHome):
-            if not status.mount.is_slewing:
+            if not self.is_moving:
                 self.end_activity(MountActivities.FindingHome)
                 self.target = None
                 if self.is_active(MountActivities.StartingUp):
                     self.end_activity(MountActivities.StartingUp)
 
         if self.is_active(MountActivities.Parking):
-            if not status.mount.is_slewing:
+            if not self.is_moving:
                 self.end_activity(MountActivities.Parking)
                 self.target = None
                 if self.is_active(MountActivities.ShuttingDown):
@@ -254,7 +264,7 @@ class Mount(Component, SwitchedPowerDevice, AscomDispatcher, StoppingMonitor):
                     self._was_shut_down = True
                     self.power_off()
 
-        if self.is_active(MountActivities.Slewing) and not status.mount.is_slewing:
+        if self.is_active(MountActivities.Slewing) and not self.is_moving:
             self.end_activity(MountActivities.Slewing)
             self.target = None
 
@@ -287,6 +297,10 @@ class Mount(Component, SwitchedPowerDevice, AscomDispatcher, StoppingMonitor):
                 ret['activities'] |= MountActivities.Slewing
             else:
                 ret['activities'] &= ~MountActivities.Slewing
+            if self.is_moving:
+                ret['activities'] |= MountActivities.Moving
+            else:
+                ret['activities'] &= ~MountActivities.Moving
             ret['activities_verbal'] = ret['activities'].__repr__()
 
             ret['slewing'] = st.mount.is_slewing
