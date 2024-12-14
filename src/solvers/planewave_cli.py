@@ -10,6 +10,7 @@ from typing import Optional, List
 from common.extended_basemodel import ExtendedBaseModel
 from solving import SolvingResult, SolvingSolution
 from astropy.coordinates import Angle
+from astropy.io import fits
 
 logger = logging.Logger('planewave_cli')
 init_log(logger)
@@ -103,7 +104,7 @@ def planewave_cli_solve(unit: 'Unit', settings: CameraSettings, target: Coord) -
             logger.error(f"{op}: either 'ra_j2000_hours' or 'dec_j2000_degrees' missing in {solver_output=}")
             continue
 
-    ret = SolvingResult()
+    ret = SolvingResult(succeeded=True)
     ret.succeeded = True
     ret.native_result = solver_output
     solution = SolvingSolution()
@@ -114,4 +115,32 @@ def planewave_cli_solve(unit: 'Unit', settings: CameraSettings, target: Coord) -
     solution.rotation_angle_degs = solver_output['rot_angle_degs']
     solution.matched_stars = solver_output
     ret.solution = solution
+
+    # Update FITS headers
+    with fits.open(unit.camera.latest_settings.image_path, mode='update') as hdul:
+        header = hdul[0].header
+
+        roi = unit.camera.latest_settings.roi
+        header['CRPIX1'] = roi.startX + (roi.numX / 2)
+        header.comments['CRPIX1'] = 'RA reference pixel'
+        header['CRPIX2'] = roi.startY + (roi.numY / 2)
+        header.comments['CRPIX2'] = 'DEC reference pixel'
+
+        header['CRVAL1'] = Angle(solution.ra_hours, unit='hour').degs
+        header.comments['CRVAL1'] = 'solved ra of reference pixel'
+        header['CRVAL2'] = solution.dec_degs
+        header.comments['CRVAL2'] = 'solved dec of reference pixel'
+
+        binning = unit.camera.latest_settings.binning
+        pixel_scale_at_binning1 = unit.unit_conf['camera']['pixel_scale_at_bin1']
+        header['CDELT1'] = pixel_scale_at_binning1 * binning.x
+        header.comments['CDELT1'] = 'ra pixel scale'
+        header['CDELT2'] = pixel_scale_at_binning1 * binning.y
+        header.comments['CDELT2'] = 'dec pixel scale'
+
+        header['CUNIT1'] = 'deg'
+        header['CUNIT2'] = 'deg'
+
+        hdul.flush()
+
     return ret

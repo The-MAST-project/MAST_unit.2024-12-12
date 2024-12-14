@@ -258,48 +258,7 @@ class Solver:
                 logger.info(f"{op}: target: {target}, solved: {coord_solved}, delta: {coord_delta}, " +
                             f"tolerance: {coord_tolerance}")
 
-                fits_file = None
-                path = self.unit.camera.latest_settings.image_path
-                if os.path.exists(path):
-                    fits_file = path
-                else:
-                    path = Filer().change_top_to(FilerTop.Shared, self.unit.camera.latest_settings.image_path)
-                    if os.path.exists(path):
-                        fits_file = path
-
-                if fits_file:
-                    with fits.open(fits_file, mode='update') as hdul:
-                        header = hdul[0].header
-
-                        roi = self.unit.camera.latest_settings.roi
-                        header['CRPIX1'] = roi.startX + (roi.numX / 2)
-                        header.comments['CRPIX1'] = 'RA reference pixel'
-                        header['CRPIX2'] = roi.startY + (roi.numY / 2)
-                        header.comments['CRPIX2'] = 'DEC reference pixel'
-
-                        header['CRVAL1'] = coord_solved.ra.deg
-                        header.comments['CRVAL1'] = 'solved ra of reference pixel'
-                        header['CRVAL2'] = coord_solved.dec.deg
-                        header.comments['CRVAL2'] = 'solved dec of reference pixel'
-
-                        binning = self.unit.camera.latest_settings.binning
-                        pixel_scale_at_binning1 = self.unit.unit_conf['camera']['pixel_scale_at_bin1']
-                        header['CDELT1'] = pixel_scale_at_binning1 * binning.x
-                        header.comments['CDELT1'] = 'ra pixel scale'
-                        header['CDELT2'] = pixel_scale_at_binning1 * binning.y
-                        header.comments['CDELT2'] = 'dec pixel scale'
-
-                        header['CUNIT1'] = 'deg'
-                        header['CUNIT2'] = 'deg'
-
-                        header['FOCUSPOS'] = self.unit.focuser.position
-                        header.comments['FOCUSPOS'] = 'focuser position'
-                        header['STAGEPOS'] = self.unit.stage.position
-                        header.comments['STAGEPOS'] = 'FIFA stage position'
-
-                        hdul.flush()
-                else:
-                    logger.error(f"Could not open {fits_file=} to update headers")
+                # The various solvers will update the FITS file with their findings
 
                 if (abs_delta_ra_arcsec <= solving_tolerance.ra.arcsecond and
                         abs_delta_dec_arcsec <= solving_tolerance.dec.arcsecond):

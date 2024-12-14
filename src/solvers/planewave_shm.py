@@ -13,6 +13,7 @@ import time
 import logging
 from solving import SolvingResult, SolvingSolution
 from astropy.coordinates import Angle
+from astropy.io import fits
 
 logger = logging.Logger('planewave_shm')
 init_log(logger)
@@ -88,7 +89,33 @@ def planewave_shm_solve(unit: 'Unit', settings: CameraSettings, target: Coord) -
 
     unit.camera.wait_for_image_saved()
     time.sleep(2)
-    Filer().move_ram_to_shared(settings.image_path)
+
+    # Update FITS headers
+    with fits.open(unit.camera.latest_settings.image_path, mode='update') as hdul:
+        header = hdul[0].header
+
+        roi = unit.camera.latest_settings.roi
+        header['CRPIX1'] = roi.startX + (roi.numX / 2)
+        header.comments['CRPIX1'] = 'RA reference pixel'
+        header['CRPIX2'] = roi.startY + (roi.numY / 2)
+        header.comments['CRPIX2'] = 'DEC reference pixel'
+
+        header['CRVAL1'] = ps3_solver_status.solution.ra.deg
+        header.comments['CRVAL1'] = 'solved ra of reference pixel'
+        header['CRVAL2'] = ps3_solver_status.solution.dec.deg
+        header.comments['CRVAL2'] = 'solved dec of reference pixel'
+
+        binning = unit.camera.latest_settings.binning
+        pixel_scale_at_binning1 = unit.unit_conf['camera']['pixel_scale_at_bin1']
+        header['CDELT1'] = pixel_scale_at_binning1 * binning.x
+        header.comments['CDELT1'] = 'ra pixel scale'
+        header['CDELT2'] = pixel_scale_at_binning1 * binning.y
+        header.comments['CDELT2'] = 'dec pixel scale'
+
+        header['CUNIT1'] = 'deg'
+        header['CUNIT2'] = 'deg'
+
+        hdul.flush()
 
     ret: SolvingResult = SolvingResult(succeeded=True)
     ret.native_result = ps3_solver_status
