@@ -39,11 +39,12 @@ class Mount(Component, SwitchedPowerDevice, AscomDispatcher, StoppingMonitor):
     def ascom(self) -> win32com.client.Dispatch:
         return self._ascom
 
-    def __init__(self, operating_mode: OperatingMode = OperatingMode.Night):
+    def __init__(self, unit: 'Unit'):
         if self._initialized:
             return
 
-        self.operating_mode = operating_mode
+        self.unit = unit
+        self.operating_mode = self.unit.operating_mode
         self.unit_conf: dict = Config().get_unit()
         self.conf = self.unit_conf['mount']
         SwitchedPowerDevice.__init__(self, power_switch_conf=self.unit_conf['power_switch'], outlet_name='Mount')

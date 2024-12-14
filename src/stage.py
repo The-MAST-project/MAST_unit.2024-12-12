@@ -72,10 +72,11 @@ class Stage(Component, SwitchedPowerDevice, StoppingMonitor):
 
     _positioning_precision: int = 100
 
-    def __init__(self):
+    def __init__(self, unit: 'Unit'):
         if self._initialized:
             return
 
+        self.unit = unit
         self.unit_conf: dict = Config().get_unit()
         self.conf = self.unit_conf['stage']
 

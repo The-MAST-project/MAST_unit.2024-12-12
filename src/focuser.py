@@ -36,10 +36,11 @@ class Focuser(Component, SwitchedPowerDevice, AscomDispatcher, StoppingMonitor):
             cls._instance = super(Focuser, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self):
+    def __init__(self, unit: 'Unit'):
         if self._initialized:
             return
 
+        self.unit = unit
         self.unit_conf = Config().get_unit()
         self.conf = self.unit_conf['focuser']
         try:

@@ -105,11 +105,11 @@ class Unit(Component):
             self.power_switch = PowerSwitchFactory.get_instance(
                 conf=self.unit_conf['power_switch'],
                 upload_outlet_names=True)
-            self.mount: Mount = Mount(self.operating_mode)
-            self.camera: Camera = Camera(self.operating_mode)
-            self.covers: Covers = Covers()
-            self.stage: Stage = Stage()
-            self.focuser: Focuser = Focuser()
+            self.mount: Mount = Mount(self)
+            self.camera: Camera = Camera(self)
+            self.covers: Covers = Covers(self)
+            self.stage: Stage = Stage(self)
+            self.focuser: Focuser = Focuser(self)
             self.pw: pwi4_client.PWI4 = pwi4_client.PWI4()
 
             self.autofocuser: Autofocuser = Autofocuser(self)

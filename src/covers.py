@@ -49,10 +49,11 @@ class Covers(Component, SwitchedPowerDevice, AscomDispatcher):
         # return logger
         return logger
 
-    def __init__(self):
+    def __init__(self, unit: 'Unit'):
         if self._initialized:
             return
 
+        self.unit = unit
         self.unit_conf: dict = Config().get_unit()
         self.conf = self.unit_conf['covers']
         try:
