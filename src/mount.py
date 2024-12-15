@@ -44,7 +44,8 @@ class Mount(Component, SwitchedPowerDevice, AscomDispatcher, StoppingMonitor):
             return
 
         self.unit = unit
-        self.operating_mode = self.unit.operating_mode
+        if self.unit:
+            self.operating_mode = self.unit.operating_mode
         self.unit_conf: dict = Config().get_unit()
         self.conf = self.unit_conf['mount']
         SwitchedPowerDevice.__init__(self, power_switch_conf=self.unit_conf['power_switch'], outlet_name='Mount')
@@ -464,7 +465,7 @@ def cone_coordinates_generator(steps=20, base_radius=30, rotation_axis_ra=0, rot
 base_path = BASE_UNIT_PATH + "/mount"
 tag = 'Mount'
 
-mount = Mount()
+mount = Mount(unit=None)
 
 router = APIRouter()
 router.add_api_route(base_path + '/startup', tags=[tag], endpoint=mount.startup)

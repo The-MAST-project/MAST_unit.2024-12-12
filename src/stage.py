@@ -503,7 +503,7 @@ class Stage(Component, SwitchedPowerDevice, StoppingMonitor):
 base_path = BASE_UNIT_PATH + "/stage"
 tag = 'Stage'
 
-stage = Stage()
+stage = Stage(unit=None)
 
 
 def get_position() -> int:

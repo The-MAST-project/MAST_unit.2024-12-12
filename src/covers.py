@@ -283,7 +283,7 @@ class Covers(Component, SwitchedPowerDevice, AscomDispatcher):
 base_path = BASE_UNIT_PATH + "/covers"
 tag = 'Covers'
 
-covers = Covers()
+covers = Covers(unit=None)
 
 router = APIRouter()
 router.add_api_route(base_path + '/startup', tags=[tag], endpoint=covers.startup)

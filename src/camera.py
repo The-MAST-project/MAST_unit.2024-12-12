@@ -12,7 +12,7 @@ from enum import IntFlag
 from threading import Thread, Lock
 
 from common.utils import RepeatTimer, time_stamp, BASE_UNIT_PATH, OperatingMode
-from common.utils import Component, CanonicalResponse, CanonicalResponse_Ok, function_name
+from common.utils import Component, CanonicalResponse, CanonicalResponse_Ok, function_name, caller_name
 from common.paths import PathMaker
 from common.config import Config
 from common.camera import CameraRoi, CameraBinning
@@ -157,11 +157,23 @@ class Camera(Component, SwitchedPowerDevice, AscomDispatcher):
         return self._ascom
 
     def __init__(self, unit: 'Unit'):
+        #
+        # The Camera() is a Singleton but the initiator is called twice (for the same object ID):
+        # - once from this file, with unit as None
+        # - one from the unit, with unit as the main Unit object
+        #
+        unit_id = None
+        if unit:
+            unit_id = f"0x{id(unit):X}"
+        logger.info(f"camera.id: 0x{id(self):X}, unit: {unit_id}")
+
+        self.unit: 'Unit' = unit
+        if self.unit:
+            self.operating_mode = self.unit.operating_mode
+
         if self._initialized:
             return
 
-        self.unit = unit
-        self.operating_mode = self.unit.operating_mode
         self.defaults = {
             'temp_check_interval': 15,
         }
@@ -172,7 +184,7 @@ class Camera(Component, SwitchedPowerDevice, AscomDispatcher):
         SwitchedPowerDevice.__init__(self, power_switch_conf=self.unit_conf['power_switch'], outlet_name='Camera')
 
         try:
-            if self.operating_mode == OperatingMode.Night:
+            if self.unit and self.unit.operating_mode == OperatingMode.Night:
                 # if not self.is_on():
                 #     self.power_on()
                 self._ascom = win32com.client.Dispatch(self.conf['ascom_driver'])
@@ -858,17 +870,17 @@ class Camera(Component, SwitchedPowerDevice, AscomDispatcher):
         header['DATE-OBS'] = (datetime.datetime.now(datetime.timezone.utc).isoformat(), 'Observation datetime')
         header['XBINNING'] = (self.binning.x, 'horizontal binning')
         header['YBINNING'] = (self.binning.y, 'vertical binning')
-        # header['OBSERVER'] =
         header['EXPTIME'] = (self.latest_settings.seconds, 'exposure time in seconds')
         header['INSTRUME'] = (socket.gethostname(), 'the instrument')
         if self.ccd_temp_at_mid_exposure:
             header['CCDTEMP'] = (self.ccd_temp_at_mid_exposure, 'ccd temp. at mid exposure')
             self.ccd_temp_at_mid_exposure = None
 
-        header['FOCUSPOS'] = self.unit.focuser.position
-        header.comments['FOCUSPOS'] = 'focuser position'
-        header['STAGEPOS'] = self.unit.stage.position
-        header.comments['STAGEPOS'] = 'FIFA stage position'
+        if self.unit:
+            header['FOCUSPOS'] = self.unit.focuser.position
+            header.comments['FOCUSPOS'] = 'focuser position'
+            header['STAGEPOS'] = self.unit.stage.position
+            header.comments['STAGEPOS'] = 'FIFA stage position'
 
         if self.latest_settings.fits_cards:
             for k, v in self.latest_settings.fits_cards.items():
@@ -910,7 +922,7 @@ class Camera(Component, SwitchedPowerDevice, AscomDispatcher):
 base_path = BASE_UNIT_PATH + "/camera"
 tag = 'Camera'
 
-camera = Camera()
+camera = Camera(unit=None)
 
 router = APIRouter()
 router.add_api_route(base_path + '/startup', tags=[tag], endpoint=camera.startup)

@@ -330,7 +330,7 @@ def get_position():
 base_path = BASE_UNIT_PATH + "/focuser"
 tag = 'Focuser'
 
-focuser = Focuser()
+focuser = Focuser(unit=None)
 
 router = APIRouter()
 router.add_api_route(base_path + '/startup', tags=[tag], endpoint=focuser.startup)
