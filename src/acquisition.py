@@ -10,14 +10,13 @@ import os
 import json
 from common.filer import Filer
 from typing import Dict, Optional
-from solving import Solvers
 
 logger = logging.getLogger('mast.unit.' + __name__)
 init_log(logger)
 
 
 class Acquisition:
-    def __init__(self, unit: 'Unit', approach_mode: int, solver: Solvers, correct: bool = True,
+    def __init__(self, unit: 'Unit', approach_mode: int, solver, make_corrections: bool = True,
                  target_ra: Optional[float] = None, target_dec: Optional[float] = None,
                  conf: Optional[Dict] = None):
         if not conf:
@@ -25,7 +24,7 @@ class Acquisition:
 
         self.approach_mode = approach_mode
         self.solver = solver
-        self.correct = correct
+        self.make_corrections = make_corrections
         self.unit = unit
         self.slew_to_target = False
         if target_ra and target_dec:

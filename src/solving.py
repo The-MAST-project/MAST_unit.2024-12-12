@@ -3,34 +3,29 @@ import os.path
 
 from common.utils import function_name, Coord, boxed_lines
 from common.mast_logging import init_log
-from common.filer import Filer, FilerTop
+from common.filer import Filer
 from acquisition import Acquisition
 import logging
 import time
-from typing import List, Literal, Optional, Union
+from typing import List, Literal, Optional
 from camera import CameraSettings
 from common.activities import UnitActivities
 from common.corrections import Corrections, Correction
 from enum import IntFlag, auto
 from astropy.coordinates import Angle
 import astropy.units as u
-from astropy.io import fits
 import datetime
 import json
 
-from solvers.planewave_shm import planewave_shm_solve, PlaneWaveShmSolvingResult
-from solvers.planewave_cli import planewave_cli_solve, PlaneWaveCliSolverResult
-from solvers.astrometry_dot_net import astrometry_dot_net_solve, AstrometryDotNetSolverResult
 
-
-class Solver(IntFlag):
+class SolverId(IntFlag):
     PlaneWaveCli = auto()
     PlaneWaveShm = auto()
-    AstrometryDotNet = auto
+    AstrometryDotNet = auto()
     Astap = auto()
 
 
-Solvers: Literal[Solver.PlaneWaveCli, Solver.PlaneWaveShm, Solver.AstrometryDotNet, Solver.Astap]
+Solvers: Literal[SolverId.PlaneWaveCli, SolverId.PlaneWaveShm, SolverId.AstrometryDotNet, SolverId.Astap]
 
 logger = logging.Logger('mast.unit.' + __name__)
 init_log(logger)
@@ -48,18 +43,24 @@ class SolvingSolution:
 
 
 class SolvingResult:
+    # from solvers.planewave_shm import planewave_shm_solve, PlaneWaveShmSolvingResult
+    # from solvers.planewave_cli import planewave_cli_solve, PlaneWaveCliSolverResult
+    # from solvers.astrometry_dot_net import astrometry_dot_net_solve, AstrometryDotNetSolverResult
+
     succeeded: bool
     errors: Optional[List[str]] = None
     solution: SolvingSolution
-    native_result: Optional[Union[PlaneWaveShmSolvingResult |
-                                  PlaneWaveCliSolverResult | AstrometryDotNetSolverResult]] = None
+    native_result = None
+    # native_result: Optional[Union[PlaneWaveShmSolvingResult |
+    #                               PlaneWaveCliSolverResult | AstrometryDotNetSolverResult]] = None
 
     def __init__(self,
                  succeeded: bool,
                  errors: Optional[List[str]] = None,
                  solution: Optional[SolvingSolution] = None,
-                 native_result: Optional[Union[PlaneWaveShmSolvingResult |
-                                               PlaneWaveCliSolverResult | AstrometryDotNetSolverResult]] = None):
+                 native_result = None):
+                 # native_result: Optional[Union[PlaneWaveShmSolvingResult |
+                 #                               PlaneWaveCliSolverResult | AstrometryDotNetSolverResult]] = None):
         self.succeeded = succeeded
         self.errors = errors
         self.solution = solution
@@ -81,7 +82,7 @@ class Solver:
         self.unit: 'Unit' = unit
         self.latest_result: SolvingResult | None = None
 
-    def plate_solve(self, settings: CameraSettings, target: Coord, solver: Solvers) -> SolvingResult:
+    def plate_solve(self, settings: CameraSettings, target: Coord, solver) -> SolvingResult:
         op = function_name()
 
         while self.unit.is_active(UnitActivities.Solving):
@@ -106,10 +107,14 @@ class Solver:
                 raise Exception(f"cannot deal with non-equal horizontal and vertical binning " +
                                 f"({settings.binning.x=}, {settings.binning.y=}")
 
+            from solvers.planewave_shm import planewave_shm_solve
+            from solvers.planewave_cli import planewave_cli_solve
+            from solvers.astrometry_dot_net import astrometry_dot_net_solve
+
             solvers_dispatch = {
-                Solver.PlaneWaveCli: planewave_cli_solve,
-                Solver.PlaneWaveShm: planewave_shm_solve,
-                Solver.AstrometryDotNet: astrometry_dot_net_solve,
+                SolverId.PlaneWaveCli: planewave_cli_solve,
+                SolverId.PlaneWaveShm: planewave_shm_solve,
+                SolverId.AstrometryDotNet: astrometry_dot_net_solve,
             }
 
             if solver not in solvers_dispatch:
@@ -120,8 +125,8 @@ class Solver:
     def solve_and_correct(self,
                           target: Coord,
                           approach_mode: int,
-                          solver: Solvers,
-                          correct: bool,
+                          solver,
+                          make_corrections: bool,
                           camera_settings: CameraSettings,
                           solving_tolerance: SolvingTolerance,
                           parent_activity: Optional[UnitActivities] = None,
@@ -136,7 +141,7 @@ class Solver:
 
         :param target: (ra, dec) tuple
         :param approach_mode:
-        :param correct:
+        :param make_corrections:
         :param solver:
         :param camera_settings: Camera settings for the exposure
         :param solving_tolerance: How close do we need to be to stop trying
@@ -160,18 +165,15 @@ class Solver:
 
         if not self.unit.acquirer.latest_acquisition:
             # when not part of an acquisition sequence
-            self.unit.acquirer.latest_acquisition = Acquisition(self.unit,
-                                                                approach_mode=approach_mode,
-                                                                solver=solver,
-                                                                correct=correct,
+            self.unit.acquirer.latest_acquisition = Acquisition(self.unit, approach_mode=approach_mode, solver=solver,
+                                                                make_corrections=make_corrections,
                                                                 target_ra=target.ra.arcsecond,
-                                                                target_dec=target.dec.arcsecond,
-                                                                conf={
-                                                                    'tolerance': {
-                                                                        'ra_arcsec': solving_tolerance.ra.arcsecond,
-                                                                        'dec_arcsec': solving_tolerance.dec.arcsecond,
-                                                                    }
-                                                                })
+                                                                target_dec=target.dec.arcsecond, conf={
+                    'tolerance': {
+                        'ra_arcsec': solving_tolerance.ra.arcsecond,
+                        'dec_arcsec': solving_tolerance.dec.arcsecond,
+                    }
+                })
 
             self.unit.acquirer.latest_acquisition.corrections = {}
 
@@ -295,9 +297,9 @@ class Solver:
                         dec_arcsec=delta_dec_arcsec,
                     ))
 
-                    if phase == 'guiding' and not correct:
+                    if phase == 'guiding' and not make_corrections:
                         for line in boxed_lines([
-                            f"{phase=} and {correct=} -> NOT OFFSETTING BY",
+                            f"{phase=} and {make_corrections=} -> NOT OFFSETTING BY",
                             f" ({delta_ra_arcsec:.9f}, {delta_dec_arcsec:.9f}) arcsec"
                         ], center=True):
                             logger.info(line)
