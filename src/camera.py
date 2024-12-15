@@ -241,7 +241,7 @@ class Camera(Component, SwitchedPowerDevice, AscomDispatcher):
         self.guiding_roi_height: int | None = None
 
         self._initialized = True
-        logger.info('initialized')
+        # logger.info('initialized')
 
     @property
     def binning(self):
