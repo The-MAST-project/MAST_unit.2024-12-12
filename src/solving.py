@@ -1,7 +1,7 @@
 import math
 import os.path
 
-from common.utils import function_name, Coord, boxed_lines
+from common.utils import function_name, Coord, boxed_info
 from common.mast_logging import init_log
 from common.filer import Filer
 from acquisition import Acquisition
@@ -242,8 +242,7 @@ class Solver:
                 continue  # next try
 
             else:
-                for line in boxed_lines("plate solver found a match, YEY, YEPEEE, HURRAY !!!"):
-                    logger.info(line)
+                boxed_info(logger, "plate solver found a match, YEY, YEPEEE, HURRAY !!!")
                 solved_ra_arcsec: float = Angle(result.solution.ra_rads * u.radian).arcsecond
                 solved_dec_arcsec: float = Angle(result.solution.dec_rads * u.radian).arcsecond
 
@@ -268,9 +267,11 @@ class Solver:
                     #
                     # Within tolerance, no correction is needed
                     #
-                    logger.info(f"{op}: within tolerances, deltas: ({delta_ra_arcsec:.9f}, {delta_dec_arcsec:.9f}) " +
-                                f"tolerance: ({solving_tolerance.ra.arcsecond:.9f}, " +
-                                f"{solving_tolerance.dec.arcsecond:.9f})")
+                    boxed_info(logger, [
+                        f"{op}: WITHIN TOLERANCES",
+                        f"deltas: ({delta_ra_arcsec:.9f}, {delta_dec_arcsec:.9f}) ",
+                        f"tolerance: ({solving_tolerance.ra.arcsecond:.9f}, {solving_tolerance.dec.arcsecond:.9f})"
+                    ], center=True)
 
                     latest_corrections.last_delta = Correction(
                         time=datetime.datetime.now(datetime.UTC),
@@ -299,14 +300,12 @@ class Solver:
                     ))
 
                     if phase == 'guiding' and not make_corrections:
-                        for line in boxed_lines([
+                        boxed_info(logger, [
                             f"{phase=} and {make_corrections=} -> NOT OFFSETTING BY",
                             f" ({delta_ra_arcsec:.9f}, {delta_dec_arcsec:.9f}) arcsec"
-                        ], center=True):
-                            logger.info(line)
+                        ], center=True)
                     else:
-                        for line in boxed_lines(f"OFFSETTING BY ({delta_ra_arcsec:.9f}, {delta_dec_arcsec:.9f}) arcsec"):
-                            logger.info(line)
+                        boxed_info(logger, f"OFFSETTING BY ({delta_ra_arcsec:.9f}, {delta_dec_arcsec:.9f}) arcsec")
 
                         self.unit.start_activity(UnitActivities.Correcting)
 

@@ -3,7 +3,8 @@ import logging
 from common.utils import function_name, Coord
 from common.mast_logging import init_log
 from common.activities import UnitActivities
-from common.utils import UnitRoi, CanonicalResponse
+from common.utils import UnitRoi, CanonicalResponse, boxed_info
+from common.solving import SolverIdNames
 from common.filer import Filer, FilerTop
 from stage import StagePresetPosition
 from camera import CameraSettings, CameraBinning
@@ -51,7 +52,7 @@ class Acquirer:
         self.unit.start_activity(UnitActivities.Acquiring)
 
         phase = 'sky'
-        boxed_info(f"starting {phase=}")
+        boxed_info(logger, [f"starting {phase=}"])
 
         #
         # move the stage and mount (if needed) into position
@@ -112,7 +113,7 @@ class Acquirer:
             return
 
         phase = 'spec'
-        boxed_info(f"starting {phase=}")
+        boxed_info(logger, [f"starting {phase=}"])
 
         self.unit.stage.move_to_preset(StagePresetPosition.Spec)
         while self.unit.stage.is_moving:
@@ -149,7 +150,7 @@ class Acquirer:
         self.unit.reference_image = self.unit.camera.image
 
         phase = 'guiding'
-        boxed_info(f"starting {phase=}")
+        boxed_info(logger, [f"starting {phase=}"])
 
         # the guider runs until UnitActivities.Guiding is stopped
         # self.unit.guider.do_guide_by_solving_with_shm(
@@ -182,7 +183,7 @@ class Acquirer:
             now = datetime.datetime.now()
             if now < end:
                 sec = (end - now).seconds
-                boxed_info(f"sleeping {sec} seconds till end-of-cadence ...")
+                boxed_info(logger, f"sleeping {sec:.2f} seconds till end-of-cadence ...")
                 time.sleep(sec)
 
         self.unit.end_activity(UnitActivities.Acquiring)
