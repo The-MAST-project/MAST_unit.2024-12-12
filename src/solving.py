@@ -29,6 +29,7 @@ Solvers: Literal[SolverId.PlaneWaveCli, SolverId.PlaneWaveShm, SolverId.Astromet
 
 logger = logging.Logger('mast.unit.' + __name__)
 init_log(logger)
+filer = Filer(logger)
 
 
 class SolvingSolution:
@@ -214,7 +215,7 @@ class Solver:
             with open(result_file_name, 'w') as fp:
                 fp.write(json.dumps(result.__dict__, indent=2))
             time.sleep(2)
-            Filer().move_ram_to_shared(result_file_name)
+            filer.move_ram_to_shared(result_file_name)
 
             #
             # From "PlateSolve3 server documentation"
@@ -281,7 +282,7 @@ class Solver:
                     with open(file_name, 'w') as f:
                         json.dump(latest_corrections.to_dict(), f, indent=2)
                     time.sleep(2)
-                    Filer().move_ram_to_shared(file_name)
+                    filer.move_ram_to_shared(file_name)
 
                     self.unit.end_activity(UnitActivities.Solving)
                     return True

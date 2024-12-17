@@ -39,6 +39,7 @@ from guiding import Guider
 
 logger = logging.getLogger('mast.unit')
 init_log(logger)
+filer = Filer(logger)
 
 
 class GuideDirections(Enum):
@@ -518,7 +519,7 @@ class Unit(Component):
             logger.info(f"{op}: starting exposure #{repeat} (of {repeats})")
             self.camera.do_start_exposure(camera_settings)
             self.camera.wait_for_image_saved()
-            Filer().move_ram_to_shared(self.camera.latest_settings.image_path)
+            filer.move_ram_to_shared(self.camera.latest_settings.image_path)
 
             if seconds_between_exposures != 0.0:
                 now = datetime.datetime.now()
@@ -586,7 +587,7 @@ class Unit(Component):
             self.camera.do_start_exposure(exposure_settings)
             self.camera.wait_for_image_saved()
             logger.info(f"{op}: reference image was saved")
-            Filer().move_ram_to_shared(exposure_settings.image_path)
+            filer.move_ram_to_shared(exposure_settings.image_path)
 
             # expose at shifted position
             logger.info(f"{op}: moving stage to shifted {position=}")
@@ -608,7 +609,7 @@ class Unit(Component):
             self.camera.do_start_exposure(exposure_settings)
             self.camera.wait_for_image_saved()
             logger.info(f"{op}: image at {position=} was saved")
-            Filer().move_ram_to_shared(exposure_settings.image_path)
+            filer.move_ram_to_shared(exposure_settings.image_path)
 
         logger.info(f"{op}: done.")
         return CanonicalResponse_Ok

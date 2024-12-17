@@ -12,6 +12,7 @@ from common.filer import Filer
 from typing import Dict, Optional
 
 logger = logging.getLogger('mast.unit.' + __name__)
+filer = Filer(logger)
 init_log(logger)
 
 
@@ -59,8 +60,8 @@ class Acquisition:
             plot_phase_corrections(phase=phase, corrections=self.corrections[phase], file=path,
                                    ends_of_phases=[datetime.datetime.now(datetime.UTC)])
             time.sleep(2)
-            Filer().move_ram_to_shared(path)
-            Filer().move_ram_to_shared(path.replace('json', 'png'))
+            filer.move_ram_to_shared(path)
+            filer.move_ram_to_shared(path.replace('json', 'png'))
 
     def post_process(self):
-        plot_acquisition_corrections(self.folder.replace(Filer().ram.root, Filer().shared.root))
+        plot_acquisition_corrections(self.folder.replace(filer.ram.root, filer.shared.root))

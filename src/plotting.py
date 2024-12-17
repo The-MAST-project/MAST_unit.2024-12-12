@@ -19,6 +19,7 @@ import math
 import re
 
 logger = logging.Logger('mast.unit.' + __name__)
+filer = Filer(logger)
 init_log(logger)
 
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
@@ -120,7 +121,7 @@ def plot_autofocus_analysis(result: 'PS3FocusAnalysisResult', folder: str | None
         logger.info(f"{op}: saved plot in {file}")
         plt.savefig(file, format='png')
         time.sleep(2)
-        Filer().move_ram_to_shared(folder)
+        filer.move_ram_to_shared(folder)
 
     plt.show()
 
@@ -247,9 +248,9 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):
 
     if acquisition_top is None:
         while acquisition_top is None:
-            latest_acquisition_folders = Filer().find_latest(Filer().shared.root, pattern='*,target=*')
+            latest_acquisition_folders = filer.find_latest(filer.shared.root, pattern='*,target=*')
             if not latest_acquisition_folders:
-                logger.error(f"{op}: Could not find acquisition folders under '{Filer().shared.root}'")
+                logger.error(f"{op}: Could not find acquisition folders under '{filer.shared.root}'")
                 return
             for folder in latest_acquisition_folders:
                 if has_corrections(folder):
@@ -257,7 +258,7 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):
                     break
 
     if acquisition_top is None:
-        logger.error(f"{op}: Could not find an acquisition folder with corrections under '{Filer().shared.root}'")
+        logger.error(f"{op}: Could not find an acquisition folder with corrections under '{filer.shared.root}'")
         return
 
     combined_corrections: Corrections | None = None
@@ -371,7 +372,7 @@ def test_corrections_plot():
 
 
 if __name__ == '__main__':
-    # acq_folder = Filer().find_latest(Filer().shared.root, pattern='*,target=*', qualifier=os.path.isdir)
+    # acq_folder = filer.find_latest(filer.shared.root, pattern='*,target=*', qualifier=os.path.isdir)
     acq_folder = r'D:\tmp\2024-12-05\Acquisitions\seq=0025,time=18-13-03_987,target=1.42677311977099,23.5115091209584'
     plot_acquisition_corrections(acq_folder)
     # plot_autofocus_analysis(DummyResult(), 'C:\\Temp')

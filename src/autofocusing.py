@@ -20,6 +20,7 @@ import math
 
 logger = logging.getLogger('mast.unit.' + __name__)
 init_log(logger)
+filer = Filer(logger)
 
 
 class AutofocusResult:
@@ -240,7 +241,7 @@ class Autofocuser:
                     break
             if datetime.datetime.now() >= end:
                 self.log_and_store_error(f"{op}: autofocus analyser did not start within {timeout} seconds")
-                Filer().move_ram_to_shared(autofocus_folder)
+                filer.move_ram_to_shared(autofocus_folder)
                 self.unit.end_activity(UnitActivities.AutofocusAnalysis)
                 self.unit.end_activity(UnitActivities.Autofocusing)
                 return
@@ -258,7 +259,7 @@ class Autofocuser:
             if datetime.datetime.now() >= end:
                 self.log_and_store_error(f"{op}: autofocus analyser did not finish within {timeout} seconds")
                 ps3_client.close()
-                Filer().move_ram_to_shared(autofocus_folder)
+                filer.move_ram_to_shared(autofocus_folder)
                 self.unit.end_activity(UnitActivities.AutofocusAnalysis)
                 continue  # next try_number
 
@@ -267,12 +268,12 @@ class Autofocuser:
 
             if not status.analysis_result:
                 self.log_and_store_error(f"{op}: focus analyser stopped working but empty analysis_result")
-                Filer().move_ram_to_shared(autofocus_folder)
+                filer.move_ram_to_shared(autofocus_folder)
                 continue  # next try_number
 
             if not status.analysis_result.has_solution:
                 self.log_and_store_error(f"{op}: focus analyser did not find a solution")
-                Filer().move_ram_to_shared(autofocus_folder)
+                filer.move_ram_to_shared(autofocus_folder)
                 continue  # next try_number
 
             #
@@ -306,7 +307,7 @@ class Autofocuser:
                 self.log_and_store_error(f"could not save unit '{self.unit.hostname}' " +
                                          f"configuration for focuser known-as-good-position (exception: {e})")
 
-            # Filer().move_ram_to_shared(autofocus_folder)
+            # filer.move_ram_to_shared(autofocus_folder)
             pixel_scale: float = self.unit.unit_conf['camera']['pixel_scale_at_bin1']
             Thread(name='autofocus-analysis-plotter', target=plot_autofocus_analysis,
                    args=[result, autofocus_folder, pixel_scale]).start()

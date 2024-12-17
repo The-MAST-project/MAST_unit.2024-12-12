@@ -14,6 +14,7 @@ from astropy.io import fits
 
 logger = logging.Logger('planewave_cli')
 init_log(logger)
+filer = Filer(logger)
 
 
 class PlaneWaveCliSolverExitCode(IntFlag):
@@ -53,12 +54,12 @@ def planewave_cli_solve(unit: 'Unit', settings: CameraSettings, target: Coord) -
     completed_process: subprocess.CompletedProcess | None = None
     try:
         completed_process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, shell=True)
-        Filer().move_ram_to_shared(image_path)
+        filer.move_ram_to_shared(image_path)
     except subprocess.CalledProcessError as e:
         logger.error(f'{op}: solver return code: {PlaneWaveCliSolverExitCode(e.returncode).__repr__()}')
         with open(result_path, 'w') as file:
             file.write(e.stdout.decode())
-            Filer().move_ram_to_shared(result_path)
+            filer.move_ram_to_shared(result_path)
 
         # if it's a HARD error (not just NoStarMatch), cannot continue
         if e.returncode == PlaneWaveCliSolverExitCode.InvalidArguments or \
@@ -85,7 +86,7 @@ def planewave_cli_solve(unit: 'Unit', settings: CameraSettings, target: Coord) -
         ret.errors=[f"solver did not find a match {completed_process.returncode=}"]
         return ret
 
-    Filer().move_ram_to_shared(result_path)
+    filer.move_ram_to_shared(result_path)
 
     solver_output = {}
     # parse the solver output

@@ -97,6 +97,7 @@ def _parse_solver_output(lines: List[str]) -> SolvingResult:
 
 
 def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coord) -> SolvingResult:
+    filer = Filer(logger)
     unix_emulator = 'cygwin'
     tmp_dir = generate_random_string(prefix='tmp_')
     win_tmp_dir = 'D:\\MAST\\tmp\\' + tmp_dir
@@ -181,7 +182,7 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
         for line in stderr_lines:
             file.writelines(line + '\n')
 
-    Filer().move_ram_to_shared([result_file, cygwin_to_win(new_fits)])
+    filer.move_ram_to_shared([result_file, cygwin_to_win(new_fits)])
 
     if completed_process.returncode == 0:
         ret = _parse_solver_output(stdout_lines)
