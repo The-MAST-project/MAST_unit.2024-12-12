@@ -191,26 +191,23 @@ class Acquirer:
 
     def start_acquisition_and_guiding(self,
                                       approach_mode: int = 2,
-                                      solver: Literal[
-                                          SolverId.PlaneWaveCli,
-                                          SolverId.PlaneWaveShm,
-                                          SolverId.AstrometryDotNet] = SolverId.AstrometryDotNet,
+                                      solver_name: SolverIdNames = 'AstrometryDotNet',
                                       make_corrections: bool = True,
                                       ra_j2000_hours: Optional[float] = None,
                                       dec_j2000_degs: Optional[float] = None):
         """
         Starts an acquisition
 
-        :param approach_mode: approach mode
-        :param solver:
+        :param approach_mode:
+        :param solver_name:
         :param make_corrections:
         :param ra_j2000_hours: The target's RA
         :param dec_j2000_degs: The target's Dec
         :return: The folder path on the MAST-SHARE with the acquisition's products
         """
-        acquisition = Acquisition(unit=self.unit, approach_mode=approach_mode, solver=solver, make_corrections=make_corrections,
-                                  target_ra=ra_j2000_hours, target_dec=dec_j2000_degs,
-                                  conf=self.unit.unit_conf['acquisition'])
+        acquisition = Acquisition(unit=self.unit, approach_mode=approach_mode, solver_id=SolverId[solver_name],
+                                  make_corrections=make_corrections, target_ra=ra_j2000_hours,
+                                  target_dec=dec_j2000_degs, conf=self.unit.unit_conf['acquisition'])
         Thread(name='acquisition', target=self.do_acquire, args=[acquisition]).start()
 
         return CanonicalResponse(value=Filer().change_top_to(FilerTop.Shared, acquisition.folder))
