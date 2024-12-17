@@ -48,8 +48,14 @@ class Acquisition:
     def save_corrections(self, phase: str):
         if phase in self.corrections:
             path = os.path.join(self.folder, phase, 'corrections.json')
-            with open(path, 'w') as fp:
-                json.dump((self.corrections[phase]).to_dict(), fp, indent=2)
+            for i in range(3):
+                try:
+                    with open(path, 'w') as fp:
+                        json.dump((self.corrections[phase]).to_dict(), fp, indent=2)
+                        break
+                except Exception as e:
+                    logger.error(f"failed to write {path} (error: {e})")
+                    continue
             plot_phase_corrections(phase=phase, corrections=self.corrections[phase], file=path,
                                    ends_of_phases=[datetime.datetime.now(datetime.UTC)])
             time.sleep(2)
