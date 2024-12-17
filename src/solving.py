@@ -7,25 +7,15 @@ from common.filer import Filer
 from acquisition import Acquisition
 import logging
 import time
-from typing import List, Literal, Optional
+from typing import List, Optional
 from camera import CameraSettings
 from common.activities import UnitActivities
 from common.corrections import Corrections, Correction
-from enum import IntFlag, auto
+from common.solving import SolverId
 from astropy.coordinates import Angle
 import astropy.units as u
 import datetime
 import json
-
-
-class SolverId(IntFlag):
-    PlaneWaveCli = auto()
-    PlaneWaveShm = auto()
-    AstrometryDotNet = auto()
-    Astap = auto()
-
-
-Solvers: Literal[SolverId.PlaneWaveCli, SolverId.PlaneWaveShm, SolverId.AstrometryDotNet, SolverId.Astap]
 
 logger = logging.Logger('mast.unit.' + __name__)
 init_log(logger)
@@ -33,39 +23,52 @@ filer = Filer(logger)
 
 
 class SolvingSolution:
-    ra_rads: float
-    dec_rads: float
-    ra_hours: float
-    dec_degs: float
+    ra_rads: Optional[float] = None
+    dec_rads: Optional[float] = None
+    ra_hours: float = 0.0
+    dec_degs: float = 0.0
     matched_stars: int = 0
     catalog_stars: int = 0
-    rotation_angle_degs: float
-    pixel_scale: float
+    rotation_angle_degs: Optional[float] = None
+    pixel_scale: Optional[float] = None
+    
+    def to_dict(self):
+        return {
+            'ra_rads': self.ra_rads,
+            'dec_rads': self.dec_rads,
+            'ra_hours': self.ra_hours,
+            'dec_degs': self.dec_degs,
+            'matched_stars': self.matched_stars,
+            'catalog_stars': self.catalog_stars,
+            'rotation_angle_degs': self.rotation_angle_degs,
+            'pixel_scale': self.pixel_scale,
+        }
 
 
 class SolvingResult:
-    # from solvers.planewave_shm import planewave_shm_solve, PlaneWaveShmSolvingResult
-    # from solvers.planewave_cli import planewave_cli_solve, PlaneWaveCliSolverResult
-    # from solvers.astrometry_dot_net import astrometry_dot_net_solve, AstrometryDotNetSolverResult
 
     succeeded: bool
     errors: Optional[List[str]] = None
     solution: SolvingSolution
     native_result = None
-    # native_result: Optional[Union[PlaneWaveShmSolvingResult |
-    #                               PlaneWaveCliSolverResult | AstrometryDotNetSolverResult]] = None
 
     def __init__(self,
                  succeeded: bool,
                  errors: Optional[List[str]] = None,
                  solution: Optional[SolvingSolution] = None,
-                 native_result = None):
-                 # native_result: Optional[Union[PlaneWaveShmSolvingResult |
-                 #                               PlaneWaveCliSolverResult | AstrometryDotNetSolverResult]] = None):
+                 native_result=None):
         self.succeeded = succeeded
         self.errors = errors
         self.solution = solution
         self.native_result = native_result
+        
+    def to_dict(self):
+        return {
+            'succeeded': self.succeeded,
+            'errors': self.errors,
+            'solution': self.solution.to_dict(),
+            'native_result': self.native_result.to_dict()
+        }
 
 
 class SolvingTolerance:
@@ -83,7 +86,7 @@ class Solver:
         self.unit: 'Unit' = unit
         self.latest_result: SolvingResult | None = None
 
-    def plate_solve(self, settings: CameraSettings, target: Coord, solver) -> SolvingResult:
+    def plate_solve(self, settings: CameraSettings, target: Coord, solver_id: SolverId) -> SolvingResult:
         op = function_name()
 
         while self.unit.is_active(UnitActivities.Solving):
@@ -118,15 +121,15 @@ class Solver:
                 SolverId.AstrometryDotNet: astrometry_dot_net_solve,
             }
 
-            if solver not in solvers_dispatch:
-                logger.error(f"No dispatcher for {solver=}")
+            if solver_id not in solvers_dispatch:
+                logger.error(f"No dispatcher for {solver_id=}")
             else:
-                return solvers_dispatch[solver](self.unit, settings, target)
+                return solvers_dispatch[solver_id](self.unit, settings, target)
 
     def solve_and_correct(self,
                           target: Coord,
                           approach_mode: int,
-                          solver,
+                          solver_id: SolverId,
                           make_corrections: bool,
                           camera_settings: CameraSettings,
                           solving_tolerance: SolvingTolerance,
@@ -143,10 +146,11 @@ class Solver:
         :param target: (ra, dec) tuple
         :param approach_mode:
         :param make_corrections:
-        :param solver:
+        :param solver_id:
         :param camera_settings: Camera settings for the exposure
         :param solving_tolerance: How close do we need to be to stop trying
-        :param parent_activity: If the parent_activity (e.g. UnitActivities.Acquiring, UnitActivities.Guiding) is stopped, this function stops as well
+        :param parent_activity: If the parent_activity (e.g. UnitActivities.Acquiring, UnitActivities.Guiding)
+               is stopped, this function stops as well
         :param max_tries: How many times to try to get withing the solving_tolerance
         :param phase: One of ['sky', 'spec', 'guiding']
 
@@ -166,15 +170,14 @@ class Solver:
 
         if not self.unit.acquirer.latest_acquisition:
             # when not part of an acquisition sequence
-            self.unit.acquirer.latest_acquisition = Acquisition(self.unit, approach_mode=approach_mode, solver=solver,
-                                                                make_corrections=make_corrections,
+            self.unit.acquirer.latest_acquisition = Acquisition(self.unit, approach_mode=approach_mode,
+                                                                solver_id=solver_id, make_corrections=make_corrections,
                                                                 target_ra=target.ra.arcsecond,
-                                                                target_dec=target.dec.arcsecond, conf={
-                    'tolerance': {
-                        'ra_arcsec': solving_tolerance.ra.arcsecond,
-                        'dec_arcsec': solving_tolerance.dec.arcsecond,
-                    }
-                })
+                                                                target_dec=target.dec.arcsecond,
+                                                                conf={'tolerance': {
+                                                                    'ra_arcsec': solving_tolerance.ra.arcsecond,
+                                                                    'dec_arcsec': solving_tolerance.dec.arcsecond,
+                                                                }})
 
             self.unit.acquirer.latest_acquisition.corrections = {}
 
@@ -199,7 +202,7 @@ class Solver:
 
             # run the plate solver
             try:
-                result = self.plate_solve(target=target, settings=camera_settings, solver=solver)
+                result = self.plate_solve(settings=camera_settings, target=target, solver_id=solver_id)
             except TimeoutError:
                 self.log_and_store_error(f"plate solving timed out, continuing ...")
                 continue
@@ -213,7 +216,7 @@ class Solver:
             result_file_name = camera_settings.image_path.replace('.fits', '-solver_result.json')
             os.makedirs(os.path.dirname(result_file_name), exist_ok=True)
             with open(result_file_name, 'w') as fp:
-                fp.write(json.dumps(result.__dict__, indent=2))
+                fp.write(json.dumps(result.to_dict(), indent=2))
             time.sleep(2)
             filer.move_ram_to_shared(result_file_name)
 
@@ -406,14 +409,14 @@ class Solver:
                             st = self.unit.pw.status()
                             ra_progress = st.mount.offsets.axis0_arcsec.gradual_offset_progress
                             dec_progress = st.mount.offsets.axis1_arcsec.gradual_offset_progress
-                            logger.info(f"{op}: {ra_progress=}, {dec_progress=}")
+                            # logger.info(f"{op}: {ra_progress=}, {dec_progress=}")
                             time.sleep(1)
 
                         logger.info(f"sleeping 2 more seconds after progress reached 1")
                         time.sleep(2)
 
                         self.unit.end_activity(UnitActivities.Correcting)
-                        logger.info(f"{op}: corrected by {delta_ra_arcsec=:.6f}, {delta_dec_arcsec=:.6f}")
+                        # logger.info(f"{op}: corrected by {delta_ra_arcsec=:.6f}, {delta_dec_arcsec=:.6f}")
 
         #
         # By now the tries have been exhausted, and we're still not within tolerance
