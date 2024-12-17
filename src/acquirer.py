@@ -14,7 +14,7 @@ from solving import SolvingTolerance, SolverId
 from threading import Thread
 from acquisition import Acquisition
 import os
-from typing import Optional, Literal
+from typing import Optional
 import datetime
 
 logger = logging.getLogger('mast.unit.' + __name__)
@@ -210,9 +210,5 @@ class Acquirer:
                                   target_dec=dec_j2000_degs, conf=self.unit.unit_conf['acquisition'])
         Thread(name='acquisition', target=self.do_acquire, args=[acquisition]).start()
 
-        return CanonicalResponse(value=Filer().change_top_to(FilerTop.Shared, acquisition.folder))
+        return CanonicalResponse(value=Filer(logger).change_top_to(FilerTop.Shared, acquisition.folder))
 
-
-def boxed_info(lines):
-    for line in lines:
-        logger.info(line)
