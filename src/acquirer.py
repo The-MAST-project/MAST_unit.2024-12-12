@@ -96,14 +96,14 @@ class Acquirer:
         target = Coord(ra=Angle(target_ra_j2000_hours * u.hour), dec=Angle(target_dec_j2000_degs * u.deg))
 
         achieved_tolerances = self.unit.solver.solve_and_correct(target=target,
-                                                                 approach_mode=acquisition.approach_mode,
-                                                                 solver=acquisition.solver,
-                                                                 make_corrections=acquisition.make_corrections,
-                                                                 camera_settings=sky_settings,
-                                                                 solving_tolerance=SolvingTolerance(ra_tolerance,
-                                                                                                    dec_tolerance),
-                                                                 parent_activity=UnitActivities.Acquiring, phase='sky',
-                                                                 max_tries=tries)
+                                                                    approach_mode=acquisition.approach_mode,
+                                                                    solver_id=acquisition.solver_id,
+                                                                    make_corrections=acquisition.make_corrections,
+                                                                    camera_settings=sky_settings,
+                                                                    solving_tolerance=SolvingTolerance(ra_tolerance,
+                                                                                                       dec_tolerance),
+                                                                    parent_activity=UnitActivities.Acquiring,
+                                                                    phase='sky', max_tries=tries)
         logger.info(f"{op}: {phase=} {achieved_tolerances=}")
         self.latest_acquisition.save_corrections(phase)
 
@@ -132,14 +132,14 @@ class Acquirer:
         spec_settings = self.unit.guider.make_guiding_settings(
             base_folder=os.path.join(self.latest_acquisition.folder, phase))
         achieved_tolerances = self.unit.solver.solve_and_correct(target=target,
-                                                                 approach_mode=acquisition.approach_mode,
-                                                                 solver=acquisition.solver,
-                                                                 make_corrections=acquisition.make_corrections,
-                                                                 camera_settings=spec_settings,
-                                                                 solving_tolerance=
-                                                                    SolvingTolerance(ra_tolerance, dec_tolerance),
-                                                                 parent_activity=UnitActivities.Acquiring, phase=phase,
-                                                                 max_tries=tries)
+                                                                    approach_mode=acquisition.approach_mode,
+                                                                    solver_id=acquisition.solver_id,
+                                                                    make_corrections=acquisition.make_corrections,
+                                                                    camera_settings=spec_settings,
+                                                                    solving_tolerance=SolvingTolerance(ra_tolerance,
+                                                                                                       dec_tolerance),
+                                                                    parent_activity=UnitActivities.Acquiring,
+                                                                    phase=phase, max_tries=tries)
         self.latest_acquisition.save_corrections(phase)
         logger.info(f"{op}: {phase=} {achieved_tolerances=}")
         if not achieved_tolerances:
@@ -169,13 +169,12 @@ class Acquirer:
             start = datetime.datetime.now()
             if cadence:
                 end = start + datetime.timedelta(seconds=cadence)
-            self.unit.solver.solve_and_correct(target=target,
-                                               approach_mode=acquisition.approach_mode,
-                                               solver=acquisition.solver,
-                                               make_corrections=acquisition.make_corrections,
-                                               camera_settings=guiding_settings,
-                                               solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
-                                               parent_activity=UnitActivities.Acquiring, phase='guiding')
+            self.unit.solver.solve_and_correct(target=target, approach_mode=acquisition.approach_mode,
+                                                  solver_id=acquisition.solver_id,
+                                                  make_corrections=acquisition.make_corrections,
+                                                  camera_settings=guiding_settings,
+                                                  solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
+                                                  parent_activity=UnitActivities.Acquiring, phase='guiding')
 
         self.unit.acquirer.latest_acquisition.save_corrections('guiding')
 

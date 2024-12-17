@@ -5,6 +5,7 @@ import time
 from common.paths import PathMaker
 from common.mast_logging import init_log
 from common.corrections import Corrections
+from common.solving import SolverId
 from plotting import plot_acquisition_corrections, plot_phase_corrections
 import os
 import json
@@ -17,14 +18,18 @@ init_log(logger)
 
 
 class Acquisition:
-    def __init__(self, unit: 'Unit', approach_mode: int, solver, make_corrections: bool = True,
-                 target_ra: Optional[float] = None, target_dec: Optional[float] = None,
+    def __init__(self, unit: 'Unit',
+                 approach_mode: int,
+                 solver_id: SolverId,
+                 make_corrections: bool = True,
+                 target_ra: Optional[float] = None,
+                 target_dec: Optional[float] = None,
                  conf: Optional[Dict] = None):
         if not conf:
             raise Exception(f"Acquisition: conf == None")
 
         self.approach_mode = approach_mode
-        self.solver = solver
+        self.solver_id = solver_id
         self.make_corrections = make_corrections
         self.unit = unit
         self.slew_to_target = False
