@@ -189,7 +189,7 @@ class Camera(Component, SwitchedPowerDevice, AscomDispatcher):
                 #     self.power_on()
                 self._ascom = win32com.client.Dispatch(self.conf['ascom_driver'])
             else:
-                self._ascom = win32com.client.Dispatch('ASCOM.PlaneWaveVirtual.Camera')
+                self._ascom = win32com.client.Dispatch('ASCOM.ASICamera2.Camera')
         except Exception as ex:
             logger.exception(ex)
             raise ex
