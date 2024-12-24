@@ -1,7 +1,7 @@
 import logging
 from common.utils import CanonicalResponse, CanonicalResponse_Ok
 from common.mast_logging import init_log
-from common.activities import UnitActivities
+from common.activities import UnitActivities, CameraActivities
 from common.utils import UnitRoi
 from camera import CameraSettings, CameraBinning
 
@@ -68,6 +68,10 @@ class Guider:
 
         self.unit.end_activity(UnitActivities.Acquiring)
         self.unit.end_activity(UnitActivities.Guiding)
+
+        if self.unit.camera.is_active(CameraActivities.Exposing):
+            self.unit.camera.stop_exposure()
+            logger.info('stopped exposure')
 
         if not self.unit.was_tracking_before_guiding:
             self.unit.mount.stop_tracking()
