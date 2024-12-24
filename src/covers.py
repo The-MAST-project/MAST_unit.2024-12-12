@@ -2,10 +2,10 @@ from logging import Logger
 
 import win32com.client
 import logging
-from enum import IntFlag, Enum, auto
+from enum import Enum
 from typing import List
 
-from common.utils import RepeatTimer, Component, time_stamp, CanonicalResponse, CanonicalResponse_Ok, BASE_UNIT_PATH
+from common.utils import RepeatTimer, Component, time_stamp, CanonicalResponse_Ok, BASE_UNIT_PATH
 from common.config import Config
 from common.mast_logging import init_log
 from dlipower.dlipower.dlipower import SwitchedPowerDevice
