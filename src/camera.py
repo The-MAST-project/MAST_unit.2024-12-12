@@ -12,7 +12,7 @@ from enum import IntFlag
 from threading import Thread, Lock
 
 from common.utils import RepeatTimer, time_stamp, BASE_UNIT_PATH, OperatingMode
-from common.utils import Component, CanonicalResponse, CanonicalResponse_Ok, function_name, caller_name
+from common.utils import Component, CanonicalResponse, CanonicalResponse_Ok, function_name
 from common.paths import PathMaker
 from common.config import Config
 from common.camera import CameraRoi, CameraBinning
@@ -556,6 +556,8 @@ class Camera(Component, SwitchedPowerDevice, AscomDispatcher):
         response = ascom_run(self, 'StopExposure()')  # the timer will read the image
         if response.failed:
             self.errors.append(f"could not StopExposure(), (failure='{response.failure}')")
+        self.end_activity(CameraActivities.Exposing)
+
         return CanonicalResponse(errors=self.errors) if self.errors else CanonicalResponse_Ok
 
     def status(self):
