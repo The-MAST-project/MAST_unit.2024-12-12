@@ -1,11 +1,15 @@
 import time
 import logging
+
+from astropy.coordinates.jparser import DEC_REGEX, RA_REGEX
+
 from common.utils import function_name, Coord
 from common.mast_logging import init_log
 from common.activities import UnitActivities
 from common.utils import UnitRoi, CanonicalResponse, boxed_info
 from common.solving import SolverIdNames
 from common.filer import Filer, FilerTop
+from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from stage import StagePresetPosition
 from camera import CameraSettings, CameraBinning
 from astropy.coordinates import Angle
@@ -16,6 +20,8 @@ from acquisition import Acquisition
 import os
 from typing import Optional
 import datetime
+from fastapi import Query
+from typing import Annotated
 
 logger = logging.getLogger('mast.unit.' + __name__)
 init_log(logger)
@@ -101,7 +107,7 @@ class Acquirer:
                                                                  make_corrections=acquisition.make_corrections,
                                                                  camera_settings=sky_settings,
                                                                  solving_tolerance=SolvingTolerance(ra_tolerance,
-                                                                                                   dec_tolerance),
+                                                                                                    dec_tolerance),
                                                                  parent_activity=UnitActivities.Acquiring,
                                                                  phase='sky', max_tries=tries)
         logger.info(f"{op}: {phase=} {achieved_tolerances=}")
@@ -190,11 +196,34 @@ class Acquirer:
         self.unit.acquirer.latest_acquisition.post_process()
 
     def start_acquisition_and_guiding(self,
+                                      ra_j2000_hours: Annotated[
+                                          Optional[str],
+                                          Query(
+                                              regex=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
+                                              description=(
+                                                      "### Right Ascension (J2000) in either:\n"
+                                                      "- decimal hours (e.g., `12.5`) or\n"
+                                                      "- sexagesimal format (e.g., `12:30:45.123`). \n"
+                                                      "- Decimal range: `0 <= RA < 24`."
+                                              ),
+                                          ),
+                                      ] = None,
+                                      dec_j2000_degs: Annotated[
+                                          Optional[str],
+                                          Query(
+                                              regex=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
+                                              description=(
+                                                      "### Declination (J2000) in either:\n"
+                                                      "- decimal degrees (e.g., `-45.5`) or\n"
+                                                      "- sexagesimal format (e.g., `-45:30:00.123`). \n"
+                                                      "- Decimal range: `-90 <= DEC <= 90`."
+                                              ),
+                                          ),
+                                      ] = None,
                                       approach_mode: int = 2,
                                       solver_name: SolverIdNames = 'AstrometryDotNet',
                                       make_corrections: bool = True,
-                                      ra_j2000_hours: Optional[float] = None,
-                                      dec_j2000_degs: Optional[float] = None):
+                                      ):
         """
         Starts an acquisition
 
@@ -205,6 +234,17 @@ class Acquirer:
         :param dec_j2000_degs: The target's Dec
         :return: The folder path on the MAST-SHARE with the acquisition's products
         """
+
+        if ':' in ra_j2000_hours:
+            ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
+        else:
+            dec_j2000_degs = float(dec_j2000_degs)
+
+        if ':' in dec_j2000_degs:
+            dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
+        else:
+            dec_j2000_degs = float(dec_j2000_degs)
+
         acquisition = Acquisition(unit=self.unit, approach_mode=approach_mode, solver_id=SolverId[solver_name],
                                   make_corrections=make_corrections, target_ra=ra_j2000_hours,
                                   target_dec=dec_j2000_degs, conf=self.unit.unit_conf['acquisition'])
