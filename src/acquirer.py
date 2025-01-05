@@ -1,7 +1,7 @@
 import time
 import logging
 
-from astropy.coordinates.jparser import DEC_REGEX, RA_REGEX
+# from astropy.coordinates.jparser import DEC_REGEX, RA_REGEX
 
 from common.utils import function_name, Coord
 from common.mast_logging import init_log
@@ -195,6 +195,9 @@ class Acquirer:
         self.unit.mount.stop_tracking()
         self.unit.acquirer.latest_acquisition.post_process()
 
+    RA_REGEX = r"^(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
+    DEC_REGEX = r"^([+-]?)(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
+
     def start_acquisition_and_guiding(self,
                                       ra_j2000_hours: Annotated[
                                           Optional[str],
@@ -238,7 +241,7 @@ class Acquirer:
         if ':' in ra_j2000_hours:
             ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
         else:
-            dec_j2000_degs = float(dec_j2000_degs)
+            ra_j2000_hours = float(ra_j2000_hours)
 
         if ':' in dec_j2000_degs:
             dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
