@@ -468,7 +468,8 @@ class Unit(Component):
             fiber_x = int(width / 2)
             fiber_y = int(height / 2)
         Thread(name='expose-roi-thread', target=self.do_expose_roi,
-               args=[subfolder, exposure_seconds, repeats, seconds_between_exposures, fiber_x, fiber_y, width, height, binning, gain]).start()
+               args=[subfolder, exposure_seconds, repeats, seconds_between_exposures,
+                     fiber_x, fiber_y, width, height, binning, gain]).start()
         return CanonicalResponse_Ok
 
     def do_expose_roi(self,
