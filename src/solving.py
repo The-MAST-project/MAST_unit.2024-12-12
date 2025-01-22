@@ -320,18 +320,24 @@ class Solver:
                         elif approach_mode == 2:
 
                             if abs_delta_ra_arcsec > 10:
-                                ra_rate_arcsec_per_sec = abs_delta_ra_arcsec * 0.1
+                                # ra_rate_arcsec_per_sec = abs_delta_ra_arcsec * 0.1
+                                ra_rate_arcsec_per_sec = abs_delta_ra_arcsec * 0.2
                             elif abs_delta_ra_arcsec > 1:
-                                ra_rate_arcsec_per_sec = 1
+                                # ra_rate_arcsec_per_sec = 1
+                                ra_rate_arcsec_per_sec = 2
                             else:
-                                ra_rate_arcsec_per_sec = 0.1
+                                # ra_rate_arcsec_per_sec = 0.1
+                                ra_rate_arcsec_per_sec = 0.2
 
                             if abs_delta_dec_arcsec > 10:
-                                dec_rate_arcsec_per_sec = abs_delta_dec_arcsec * 0.1
+                                # dec_rate_arcsec_per_sec = abs_delta_dec_arcsec * 0.1
+                                dec_rate_arcsec_per_sec = abs_delta_dec_arcsec * 0.2
                             elif abs_delta_dec_arcsec > 1:
-                                dec_rate_arcsec_per_sec = 1
+                                # dec_rate_arcsec_per_sec = 1
+                                dec_rate_arcsec_per_sec = 2
                             else:
-                                dec_rate_arcsec_per_sec = 0.1
+                                # dec_rate_arcsec_per_sec = 0.1
+                                dec_rate_arcsec_per_sec = 0.2
 
                             logger.info(f"{op}: offsetting mount with mount_offset(" +
                                         f"ra_add_gradual_offset_arcsec={delta_ra_arcsec}, " +
