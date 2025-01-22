@@ -412,8 +412,9 @@ class Solver:
                             # logger.info(f"{op}: {ra_progress=}, {dec_progress=}")
                             time.sleep(1)
 
-                        logger.info(f"sleeping 2 more seconds after progress reached 1")
-                        time.sleep(2)
+                        while self.unit.mount.is_moving:
+                            logger.info(f"mount still moving, sleeping 1 second ...")
+                            time.sleep(1)
 
                         self.unit.end_activity(UnitActivities.Correcting)
                         # logger.info(f"{op}: corrected by {delta_ra_arcsec=:.6f}, {delta_dec_arcsec=:.6f}")
