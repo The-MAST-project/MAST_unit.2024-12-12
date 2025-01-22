@@ -241,7 +241,7 @@ class Unit(Component):
             if isinstance(c, SwitchedPowerDevice):
                 c.power_off()
 
-    def status(self) -> dict:
+    def status(self) -> CanonicalResponse:
         """
         Returns
         -------
@@ -284,8 +284,8 @@ class Unit(Component):
 
         ret['powered'] = True
         ret['type'] = 'full'
-        # return ret
-        return serialize_ip_addresses(ret)
+
+        return CanonicalResponse(value=serialize_ip_addresses(ret))
 
     @staticmethod
     def quit():
