@@ -66,8 +66,8 @@ class SolvingResult:
         return {
             'succeeded': self.succeeded,
             'errors': self.errors,
-            'solution': self.solution.to_dict(),
-            'native_result': self.native_result.to_dict()
+            'solution': self.solution.to_dict() if self.solution else None,
+            'native_result': self.native_result.to_dict() if self.native_result else None
         }
 
 
@@ -241,7 +241,9 @@ class Solver:
                 msg = None
                 if result.errors:
                     msg = f"errors: '{result.errors}'"
-                self.log_and_store_error(f"{op}: plate solver failed, {msg=}")
+                boxed_info(logger, f"{op}: plate solver failed, {msg=}")
+                self.unit.errors.append(f"{op}: plate solver failed, {msg=}")
+                filer.move_ram_to_shared(camera_settings.image_path)
                 continue  # next try
 
             else:
@@ -415,7 +417,7 @@ class Solver:
                             st = self.unit.pw.status()
                             ra_progress = st.mount.offsets.axis0_arcsec.gradual_offset_progress
                             dec_progress = st.mount.offsets.axis1_arcsec.gradual_offset_progress
-                            # logger.info(f"{op}: {ra_progress=}, {dec_progress=}")
+                            logger.info(f"{op}: {ra_progress=}, {dec_progress=}")
                             time.sleep(1)
 
                         while self.unit.mount.is_moving:
