@@ -127,7 +127,7 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
     filer = Filer(logger)
     unix_emulator = 'cygwin'
     tmp_dir = generate_random_string(prefix='tmp_')
-    win_tmp_dir = 'D:\\MAST\\tmp\\' + tmp_dir
+    win_tmp_dir = 'D:/MAST/tmp/' + tmp_dir
     os.mkdir(win_tmp_dir)
     index_dir = r'd:\Astrometry.net\indexes'
     solver_name = 'astrometry'
@@ -175,8 +175,8 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
 
     if unix_emulator == 'cygwin':
         cmd = r'C:\cygwin64\usr\local\astrometry\bin\solve-field'
-        args += ['--dir', '/cygdrive/d/' + tmp_dir]
-        args += ['--temp-dir', '/cygdrive/d/' + tmp_dir]
+        args += ['--dir', '/cygdrive/d/MAST/tmp/' + tmp_dir]
+        args += ['--temp-dir', '/cygdrive/d/MAST/tmp/' + tmp_dir]
         # args += ['--index-dir', '/cygdrive/d/Astrometry.net/indexes']
         args += ['--new-fits', win_to_cygwin(new_fits)]
         args += [win_to_cygwin(fits)]
@@ -217,7 +217,7 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
     else:
         ret = SolvingResult(succeeded=False, errors=[f"Exit status: {completed_process.returncode}", stderr_lines])
 
-    shutil.rmtree(win_tmp_dir)
+    shutil.rmtree(win_tmp_dir, ignore_errors=True)
 
     return ret
 
