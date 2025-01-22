@@ -150,6 +150,10 @@ def plot_phase_corrections(phase: str,  # one of ['sky', 'spec', 'guiding', 'acq
     else:
         raise ValueError(f"could not extract seq_number, start_time and target from path '{file}'")
 
+    if not sequence:
+        logger.info(f"Empty sequence ({phase=}, not plotting")
+        return
+
     start: datetime.datetime = sequence[0].time
     end: datetime.datetime = sequence[-1].time
     t = [(corr.time - start).seconds for corr in sequence]
