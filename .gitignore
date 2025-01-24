@@ -7,3 +7,4 @@ __pycache__/
 /src/common.sav
 /src/dlipower.sav
 /src/powered_device-sav.py
+*.fits
