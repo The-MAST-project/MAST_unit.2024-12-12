@@ -7,7 +7,7 @@ from common.utils import RepeatTimer, Component, time_stamp, CanonicalResponse, 
 from common.config import Config
 from common.mast_logging import init_log
 from PlaneWave import pwi4_client
-from dlipower.dlipower.dlipower import SwitchedPowerDevice
+from common.dlipowerswitch import SwitchedOutlet, OutletDomain
 from fastapi.routing import APIRouter
 from common.ascom import ascom_run, AscomDispatcher
 from common.activities import FocuserActivities
@@ -22,7 +22,7 @@ class FocusDirection(IntEnum):
     Out = auto()
 
 
-class Focuser(Component, SwitchedPowerDevice, AscomDispatcher, StoppingMonitor):
+class Focuser(Component, SwitchedOutlet, AscomDispatcher, StoppingMonitor):
 
     _instance = None
     _initialized = False
@@ -49,7 +49,7 @@ class Focuser(Component, SwitchedPowerDevice, AscomDispatcher, StoppingMonitor):
             logger.exception(ex)
             raise ex
 
-        SwitchedPowerDevice.__init__(self, power_switch_conf=self.unit_conf['power_switch'], outlet_name='Focuser')
+        SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name='Focuser')
         Component.__init__(self)
         # StoppingMonitor.__init__(self, 'focuser', max_len=5, sampler=self.position_sampler, interval=1, epsilon=0)
 

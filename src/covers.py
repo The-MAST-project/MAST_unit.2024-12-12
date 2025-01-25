@@ -8,7 +8,7 @@ from typing import List
 from common.utils import RepeatTimer, Component, time_stamp, CanonicalResponse_Ok, BASE_UNIT_PATH
 from common.config import Config
 from common.mast_logging import init_log
-from dlipower.dlipower.dlipower import SwitchedPowerDevice
+from common.dlipowerswitch import SwitchedOutlet, OutletDomain
 from fastapi.routing import APIRouter
 
 from common.ascom import ascom_run, AscomDispatcher
@@ -28,7 +28,7 @@ class CoversState(Enum):
     Error = 5
 
 
-class Covers(Component, SwitchedPowerDevice, AscomDispatcher):
+class Covers(Component, SwitchedOutlet, AscomDispatcher):
     _instance = None
     _initialized = False
 
@@ -63,7 +63,7 @@ class Covers(Component, SwitchedPowerDevice, AscomDispatcher):
             logger.exception(ex)
             raise ex
 
-        SwitchedPowerDevice.__init__(self, power_switch_conf=self.unit_conf['power_switch'], outlet_name='Covers')
+        SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name='Covers')
         Component.__init__(self)
 
         # if not self.is_on():

@@ -6,10 +6,10 @@ import logging
 
 from PlaneWave import pwi4_client
 from typing import List
-from common.utils import Component, time_stamp, BASE_UNIT_PATH, OperatingMode
+from common.utils import Component, time_stamp, BASE_UNIT_PATH
 from common.utils import RepeatTimer, CanonicalResponse, CanonicalResponse_Ok, function_name, caller_name
 from common.mast_logging import init_log
-from dlipower.dlipower.dlipower import SwitchedPowerDevice
+from common.dlipowerswitch import SwitchedOutlet, OutletDomain
 from common.config import Config
 from fastapi.routing import APIRouter
 import math
@@ -22,7 +22,7 @@ logger = logging.getLogger('mast.unit.' + __name__)
 init_log(logger)
 
 
-class Mount(Component, SwitchedPowerDevice, AscomDispatcher, StoppingMonitor):
+class Mount(Component, SwitchedOutlet, AscomDispatcher, StoppingMonitor):
     _instance = None
     _initialized = False
 
@@ -48,7 +48,7 @@ class Mount(Component, SwitchedPowerDevice, AscomDispatcher, StoppingMonitor):
             self.operating_mode = self.unit.operating_mode
         self.unit_conf: dict = Config().get_unit()
         self.conf = self.unit_conf['mount']
-        SwitchedPowerDevice.__init__(self, power_switch_conf=self.unit_conf['power_switch'], outlet_name='Mount')
+        SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name='Mount')
         Component.__init__(self)
         # StoppingMonitor.__init__(self, 'mount', max_len=5, sampler=self.position_monitor, interval=1, epsilon=0.3)
 

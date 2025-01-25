@@ -14,7 +14,7 @@ from covers import Covers
 from stage import Stage
 from mount import Mount
 from focuser import Focuser
-from dlipower.dlipower.dlipower import SwitchedPowerDevice, PowerSwitchFactory
+from common.dlipowerswitch import PowerSwitchFactory, SwitchedOutlet
 from common.utils import RepeatTimer
 from threading import Thread
 from common.utils import Component, BASE_UNIT_PATH, UnitRoi
@@ -60,7 +60,7 @@ class Unit(Component):
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super(Unit, cls).__new__(cls)
-            logger.info(f"Unit.__new__: allocated instance 0x{id(cls._instance):x}")
+            # logger.info(f"Unit.__new__: allocated instance 0x{id(cls._instance):x}")
         return cls._instance
 
     def __init__(self, id_: Union[int, str]):
@@ -103,9 +103,10 @@ class Unit(Component):
 
         self.hostname = socket.gethostname()
         try:
-            self.power_switch = PowerSwitchFactory.get_instance(
-                conf=self.unit_conf['power_switch'],
-                upload_outlet_names=True)
+            # self.power_switch = PowerSwitchFactory.get_instance(
+            #     conf=self.unit_conf['power_switch'],
+            #     upload_outlet_names=True)
+            self.power_switch = PowerSwitchFactory.get_instance()
             self.mount: Mount = Mount(self)
             self.camera: Camera = Camera(self)
             self.covers: Covers = Covers(self)
@@ -228,7 +229,7 @@ class Unit(Component):
         :mastapi:
         """
         for c in self.components:
-            if isinstance(c, SwitchedPowerDevice):
+            if isinstance(c, SwitchedOutlet):
                 c.power_on()
 
     def power_all_off(self):
@@ -238,7 +239,7 @@ class Unit(Component):
         :mastapi:
         """
         for c in self.components:
-            if isinstance(c, SwitchedPowerDevice):
+            if isinstance(c, SwitchedOutlet):
                 c.power_off()
 
     def status(self) -> CanonicalResponse:
@@ -501,6 +502,7 @@ class Unit(Component):
 
         self.mount.start_tracking()
         for repeat in range(repeats):
+            end = None
             if seconds_between_exposures != 0.0:
                 start = datetime.datetime.now()
                 end = start + datetime.timedelta(seconds=seconds_between_exposures)

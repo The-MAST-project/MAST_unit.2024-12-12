@@ -17,8 +17,7 @@ from common.paths import PathMaker
 from common.config import Config
 from common.camera import CameraRoi, CameraBinning
 from common.mast_logging import init_log
-from dlipower.dlipower.dlipower import SwitchedPowerDevice
-
+from common.dlipowerswitch import SwitchedOutlet, OutletDomain
 from fastapi.routing import APIRouter
 from astropy.io import fits
 import numpy as np
@@ -135,7 +134,7 @@ class CameraSettings:
         self.image_path = os.path.join(self.folder, ','.join(self.file_name_parts) + '.fits')
 
 
-class Camera(Component, SwitchedPowerDevice, AscomDispatcher):
+class Camera(Component, SwitchedOutlet, AscomDispatcher):
     _instance = None
     _initialized = False
 
@@ -181,7 +180,7 @@ class Camera(Component, SwitchedPowerDevice, AscomDispatcher):
         self.unit_conf = Config().get_unit()
         self.conf = self.unit_conf['camera']
         Component.__init__(self)
-        SwitchedPowerDevice.__init__(self, power_switch_conf=self.unit_conf['power_switch'], outlet_name='Camera')
+        SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name='Camera')
 
         try:
             if self.unit and self.unit.operating_mode == OperatingMode.Night:
@@ -787,7 +786,7 @@ class Camera(Component, SwitchedPowerDevice, AscomDispatcher):
     def operational(self) -> bool:
         response = ascom_run(self, 'CoolerOn')
 
-        return all([self.switch.detected, self.is_on(), self.detected, self._ascom,
+        return all([self.power_switch.detected, self.is_on(), self.detected, self._ascom,
                     self._ascom.connected, response.succeeded, response.value])
 
     @property
@@ -796,9 +795,9 @@ class Camera(Component, SwitchedPowerDevice, AscomDispatcher):
         response = ascom_run(self, 'CoolerOn')
 
         ret = []
-        if not self.switch.detected:
-            ret.append(f"{label}: power switch '{self.switch.hostname}' " +
-                       f"(at '{self.switch.destination.ipaddr}') not detected")
+        if not self.power_switch.detected:
+            ret.append(f"{label}: power switch '{self.power_switch.hostname}' " +
+                       f"(at '{self.power_switch.destination.ipaddr}') not detected")
         elif not self.is_on():
             ret.append(f"{label}: not powered")
         elif not self.detected:

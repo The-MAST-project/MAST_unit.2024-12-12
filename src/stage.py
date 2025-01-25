@@ -9,7 +9,7 @@ from common.utils import RepeatTimer, Component, time_stamp, CanonicalResponse, 
 from common.utils import BASE_UNIT_PATH, function_name
 from common.config import Config
 from common.mast_logging import init_log
-from dlipower.dlipower.dlipower import SwitchedPowerDevice
+from common.dlipowerswitch import SwitchedOutlet, OutletDomain
 import os
 import sys
 import platform
@@ -60,7 +60,7 @@ stage_direction_str2int_dict: dict = {
 }
 
 
-class Stage(Component, SwitchedPowerDevice, StoppingMonitor):
+class Stage(Component, SwitchedOutlet, StoppingMonitor):
     # class Stage(Component, SwitchedOutlet, StoppingMonitor):
     _instance = None
     _initialized = False
@@ -80,7 +80,7 @@ class Stage(Component, SwitchedPowerDevice, StoppingMonitor):
         self.unit_conf: dict = Config().get_unit()
         self.conf = self.unit_conf['stage']
 
-        SwitchedPowerDevice.__init__(self, power_switch_conf=self.unit_conf['power_switch'], outlet_name='Stage')
+        SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name='Stage')
         # SwitchedOutlet.__init__(self, identifier='Stage')
         Component.__init__(self)
         # StoppingMonitor.__init__(self, 'stage', max_len=5, sampler=self.position_sampler, interval=.5, epsilon=0)
