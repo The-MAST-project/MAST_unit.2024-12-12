@@ -31,6 +31,7 @@ from fastapi.routing import APIRouter
 from PIL import Image
 import ipaddress
 from starlette.websockets import WebSocket, WebSocketDisconnect
+from common.tasks.models import UnitsAssignment
 
 from autofocusing import Autofocuser, AutofocusResult
 from solving import Solver
@@ -617,6 +618,9 @@ class Unit(Component):
         logger.info(f"{op}: done.")
         return CanonicalResponse_Ok
 
+    async def execute_assignment(self, assignment):
+        pass
+
 
 def serialize_ip_addresses(data: Any) -> Any:
     if isinstance(data, dict):
@@ -664,3 +668,4 @@ router.add_api_route(base_path + '/start_acquisition_and_guiding', tags=[tag],
                      endpoint=unit.acquirer.start_acquisition_and_guiding)
 router.add_api_route(base_path + '/expose', tags=[tag], endpoint=unit.expose_with_roi)
 router.add_api_route(base_path + '/test_stage_repeatability', tags=[tag], endpoint=unit.test_stage_repeatability)
+router.add_api_route(base_path + '/execute_assignment', methods=['PUT'], tags=[tag], endpoint=unit.execute_assignment)
