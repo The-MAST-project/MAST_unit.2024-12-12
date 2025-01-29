@@ -178,6 +178,7 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
         args += ['--dir', '/cygdrive/d/MAST/tmp/' + tmp_dir]
         args += ['--temp-dir', '/cygdrive/d/MAST/tmp/' + tmp_dir]
         # args += ['--index-dir', '/cygdrive/d/Astrometry.net/indexes']
+        args += ['--index-dir', '/usr/local/astrometry/indexes-full']
         args += ['--new-fits', win_to_cygwin(new_fits)]
         args += [win_to_cygwin(fits)]
 
