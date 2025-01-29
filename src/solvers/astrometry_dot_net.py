@@ -128,7 +128,7 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
     unix_emulator = 'cygwin'
     tmp_dir = generate_random_string(prefix='tmp_')
     win_tmp_dir = 'D:/MAST/tmp/' + tmp_dir
-    os.mkdir(win_tmp_dir)
+    os.makedirs(win_tmp_dir, exist_ok=True)
     index_dir = r'd:\Astrometry.net\indexes'
     solver_name = 'astrometry'
 
@@ -174,9 +174,12 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
     new_fits = fits.replace('.fits', f",solver={solver_name}.fits")
 
     if unix_emulator == 'cygwin':
+        tmp_path = '/cygdrive/d/MAST/tmp/' + tmp_dir
+        os.makedirs(tmp_path, exist_ok=True)
+        
         cmd = r'C:\cygwin64\usr\local\astrometry\bin\solve-field'
-        args += ['--dir', '/cygdrive/d/MAST/tmp/' + tmp_dir]
-        args += ['--temp-dir', '/cygdrive/d/MAST/tmp/' + tmp_dir]
+        args += ['--dir', tmp_path]
+        args += ['--temp-dir', tmp_path]
         # args += ['--index-dir', '/cygdrive/d/Astrometry.net/indexes']
         args += ['--index-dir', '/usr/local/astrometry/indexes-full']
         args += ['--new-fits', win_to_cygwin(new_fits)]
