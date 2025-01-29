@@ -402,17 +402,20 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         return CanonicalResponse_Ok
 
     def endpoint_start_exposure(self,
-                                seconds: float | str,
-                                gain: float | str | None = None,
-                                binning: int | str | None = None,
-                                center_x: int | None = None,
-                                center_y: int | None = None,
-                                width: int | None = None,
-                                height: int | None = None):
+                                seconds: Optional[float] = 5,
+                                gain: Optional[float] = 170,
+                                binning: Optional[int] = 1,
+                                center_x: Optional[int] = None,
+                                center_y: Optional[int] = None,
+                                width: Optional[int] = None,
+                                height: Optional[int] = None):
 
-        if isinstance(binning, str):
-            binning = int(binning)
-        roi = CameraRoi(center_x, center_y, width, height) if all([center_x, center_y, width, height]) else None
+        # if isinstance(binning, str):
+        #     binning = int(binning)
+        if all([center_x, center_y, width, height]):
+            roi = CameraRoi(center_x, center_y, width, height)
+        else:
+            roi = CameraRoi(0, 0, self.cameraXSize, self.cameraYSize)
         context = CameraSettings(
             seconds=float(seconds) if isinstance(seconds, str) else seconds,
             base_folder=PathMaker().make_exposures_folder(),
@@ -713,6 +716,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
                 self.ccd_temp_at_mid_exposure = response.value
                 self.expected_mid_exposure = None
 
+        # logger.info(f"is_active(CameraActivities.Exposing)={self.is_active(CameraActivities.Exposing)}, {current_state=}")
         if self.is_active(CameraActivities.Exposing) and current_state == AscomCameraState.Idle:
             if not self.image_lock.locked():    # it could be already locked by a previous occurrence of onTimer()
                 with self.image_lock:
