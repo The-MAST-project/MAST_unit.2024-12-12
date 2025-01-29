@@ -31,12 +31,14 @@ from fastapi.routing import APIRouter
 from PIL import Image
 import ipaddress
 from starlette.websockets import WebSocket, WebSocketDisconnect
-from common.tasks.models import UnitsAssignment
+from common.models.assignments import UnitAssignmentModel
 
 from autofocusing import Autofocuser, AutofocusResult
 from solving import Solver
 from acquirer import Acquirer
 from guiding import Guider
+
+import pydantic
 
 logger = logging.getLogger('mast.unit')
 init_log(logger)
@@ -618,8 +620,63 @@ class Unit(Component):
         logger.info(f"{op}: done.")
         return CanonicalResponse_Ok
 
-    async def execute_assignment(self, assignment):
-        pass
+    def do_execute_assignment(self, assignment: UnitAssignmentModel):
+        """
+        Execute an assignment in a separate Thread
+        :param assignment:
+        :return:
+        """
+        if assignment.task.autofocus:
+            self.autofocuser.start_autofocus(
+                target_ra=assignment.target.ra,
+                target_dec=assignment.target.dec)
+
+            while self.is_active(UnitActivities.Autofocusing):
+                time.sleep(10)
+
+            #
+            # If UnitActivities.Autofocusing ends in success, an autofocuser result should
+            #  be available
+            #
+            if not self.autofocuser.latest_result:
+                return  # should propagate errors as well
+
+            #
+            # At this point we have autofocused and can start acquisition
+            #
+            self.acquirer.start_acquisition_and_guiding(
+                ra_j2000_hours=assignment.target.ra,
+                dec_j2000_degs=assignment.target.dec
+            )
+
+    async def execute_assignment(self, assignment: UnitAssignmentModel):
+        if not self.operational:
+            return CanonicalResponse(errors=self.why_not_operational)
+
+        if not self.is_idle():
+            return CanonicalResponse(errors=[f"busy ({self.activities=})"])
+
+        Thread(target=self.do_execute_assignment, args=[assignment]).start()
+
+        return CanonicalResponse_Ok
+
+    @staticmethod
+    async def calculate_sky_pixel(fiber_x: float,
+                                  fiber_y: float,
+                                  slope_x: float,
+                                  slope_y: float):
+
+        cfg = Config().get_unit()
+        stage_shift = cfg['stage']['presets']['sky'] - cfg['stage']['presets']['spec']
+
+        cfg['acquisition']['roi']['fiber_x'] = int(slope_x * stage_shift + fiber_x)
+        cfg['acquisition']['roi']['fiber_y'] = int(slope_y * stage_shift + fiber_y)
+        cfg['guiding']['roi']['fiber_x'] = int(fiber_x)
+        cfg['guiding']['roi']['fiber_y'] = int(fiber_y)
+
+        Config().set_unit(unit_name=cfg['name'], unit_conf=cfg)
+
+        return CanonicalResponse_Ok
 
 
 def serialize_ip_addresses(data: Any) -> Any:
@@ -660,7 +717,7 @@ router.add_api_route(base_path + '/startup', tags=[tag], endpoint=unit.startup)
 router.add_api_route(base_path + '/shutdown', tags=[tag], endpoint=unit.shutdown)
 router.add_api_route(base_path + '/abort', tags=[tag], endpoint=unit.abort)
 router.add_api_route(base_path + '/status', tags=[tag], endpoint=unit.status)
-router.add_api_route(base_path + '/start_autofocus', tags=[tag], endpoint=unit.autofocuser.start_wis_autofocus)
+router.add_api_route(base_path + '/start_autofocus', tags=[tag], endpoint=unit.autofocuser.start_autofocus)
 router.add_api_route(base_path + '/stop_autofocus', tags=[tag], endpoint=unit.autofocuser.stop_autofocus)
 router.add_api_route(base_path + '/stop_acquisition_and_guiding', tags=[tag],
                      endpoint=unit.guider.stop_acquisition_and_guiding)
@@ -669,3 +726,4 @@ router.add_api_route(base_path + '/start_acquisition_and_guiding', tags=[tag],
 router.add_api_route(base_path + '/expose', tags=[tag], endpoint=unit.expose_with_roi)
 router.add_api_route(base_path + '/test_stage_repeatability', tags=[tag], endpoint=unit.test_stage_repeatability)
 router.add_api_route(base_path + '/execute_assignment', methods=['PUT'], tags=[tag], endpoint=unit.execute_assignment)
+router.add_api_route(base_path + '/calculate_sky_pixel', tags=[tag], endpoint=unit.calculate_sky_pixel)
