@@ -60,6 +60,7 @@ class Autofocuser:
     
     def __init__(self, unit: 'Unit'):
         self.unit: 'Unit' = unit
+        self.latest_result: Optional[PS3FocusAnalysisResult] = None
 
     @property
     def is_autofocusing(self) -> bool:
@@ -72,14 +73,14 @@ class Autofocuser:
         return (self.unit.is_active(UnitActivities.Autofocusing) or
                 (self.unit.is_active(UnitActivities.AutofocusingPWI4) and self.unit.pw.status().autofocus.is_running))
 
-    def start_wis_autofocus(self,
-                            target_ra: float | None = None,  # center of ROI
-                            target_dec: float | None = None,  # center of ROI
-                            exposure: float = 5,  # seconds
-                            start_position: int | None = None,  # when None, start from current position
-                            ticks_per_step: int = 50,  # focuser ticks per step
-                            number_of_images: int = 5,
-                            ):
+    def start_autofocus(self,
+                        target_ra: float | None = None,  # center of ROI
+                        target_dec: float | None = None,  # center of ROI
+                        exposure: float = 5,  # seconds
+                        start_position: int | None = None,  # when None, start from current position
+                        ticks_per_step: int = 50,  # focuser ticks per step
+                        number_of_images: int = 5,
+                        ):
         """
 
         Parameters
@@ -100,13 +101,13 @@ class Autofocuser:
             raise Exception(f"number_of_images MUST be odd!")
 
         Thread(name='wis-autofocus',
-               target=self.do_start_wis_autofocus,
+               target=self.do_start_autofocus,
                args=[
                    target_ra, target_dec, exposure, start_position,
                    ticks_per_step, number_of_images
                ]).start()
 
-    def do_start_wis_autofocus(self,
+    def do_start_autofocus(self,
                                target_ra: float | None = None,  # center of ROI
                                target_dec: float | None = None,  # center of ROI
                                exposure: float = 5,  # seconds
@@ -135,6 +136,7 @@ class Autofocuser:
         """
         op = function_name()
         self.unit.errors = []
+        self.latest_result = None
 
         self.unit.start_activity(UnitActivities.Autofocusing)
 
@@ -279,16 +281,16 @@ class Autofocuser:
             #
             # We have an analysis solution
             #
-            result: PS3FocusAnalysisResult = status.analysis_result
+            self.latest_result = status.analysis_result
             logger.info(f"{op}: analysis result: " +
-                        f"{result.best_focus_position=}, {result.best_focus_star_diameter=}, {result.tolerance=}")
+                        f"{self.latest_result.best_focus_position=}, {self.latest_result.best_focus_star_diameter=}, {self.latest_result.tolerance=}")
 
-            if math.isnan(result.tolerance) or result.tolerance > max_tolerance:
-                self.log_and_store_error(f"{op}: {result.tolerance=} is either NaN or higher than {max_tolerance=}, " +
+            if math.isnan(self.latest_result.tolerance) or self.latest_result.tolerance > max_tolerance:
+                self.log_and_store_error(f"{op}: {self.latest_result.tolerance=} is either NaN or higher than {max_tolerance=}, " +
                                          f"ignoring it!")
                 continue  # next try_number
 
-            position: int = int(result.best_focus_position)
+            position: int = int(self.latest_result.best_focus_position)
             logger.info(f"{op}: moving focuser to best focus position {position} ...")
             self.unit.focuser.known_as_good_position = position
             self.unit.focuser.position = self.unit.focuser.known_as_good_position
@@ -310,7 +312,7 @@ class Autofocuser:
             # filer.move_ram_to_shared(autofocus_folder)
             pixel_scale: float = self.unit.unit_conf['camera']['pixel_scale_at_bin1']
             Thread(name='autofocus-analysis-plotter', target=plot_autofocus_analysis,
-                   args=[result, autofocus_folder, pixel_scale]).start()
+                   args=[self.latest_result, autofocus_folder, pixel_scale]).start()
 
             break  # the tries loop
 
