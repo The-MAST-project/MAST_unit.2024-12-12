@@ -200,26 +200,28 @@ class Acquirer:
 
     def start_acquisition_and_guiding(self,
                                       ra_j2000_hours: Annotated[
-                                          Optional[str],
+                                          Optional[str | float],
                                           Query(
                                               regex=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
                                               description=(
                                                       "### Right Ascension (J2000) in either:\n"
                                                       "- decimal hours (e.g., `12.5`) or\n"
                                                       "- sexagesimal format (e.g., `12:30:45.123`). \n"
-                                                      "- Decimal range: `0 <= RA < 24`."
+                                                      "- Decimal range: `0 <= RA < 24`.\n"
+                                                      "If not supplied, taken from telescope"
                                               ),
                                           ),
                                       ] = None,
                                       dec_j2000_degs: Annotated[
-                                          Optional[str],
+                                          Optional[str | float],
                                           Query(
                                               regex=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
                                               description=(
                                                       "### Declination (J2000) in either:\n"
                                                       "- decimal degrees (e.g., `-45.5`) or\n"
                                                       "- sexagesimal format (e.g., `-45:30:00.123`). \n"
-                                                      "- Decimal range: `-90 <= DEC <= 90`."
+                                                      "- Decimal range: `-90 <= DEC <= 90`.\n"
+                                                      "If not supplied, taken from telescope"
                                               ),
                                           ),
                                       ] = None,
@@ -238,15 +240,24 @@ class Acquirer:
         :return: The folder path on the MAST-SHARE with the acquisition's products
         """
 
-        if ':' in ra_j2000_hours:
-            ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
+        pw_status = self.unit.mount.pw.status()
+        if ra_j2000_hours:
+            if isinstance(ra_j2000_hours, str):
+                if ':' in ra_j2000_hours:
+                    ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
+                else:
+                    ra_j2000_hours = float(ra_j2000_hours)
         else:
-            ra_j2000_hours = float(ra_j2000_hours)
+            ra_j2000_hours = pw_status.mount.ra_j2000_hours
 
-        if ':' in dec_j2000_degs:
-            dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
+        if dec_j2000_degs:
+            if isinstance(dec_j2000_degs, str):
+                if ':' in dec_j2000_degs:
+                    dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
+                else:
+                    dec_j2000_degs = float(dec_j2000_degs)
         else:
-            dec_j2000_degs = float(dec_j2000_degs)
+            dec_j2000_degs = pw_status.mount.dec_j2000_degs
 
         acquisition = Acquisition(unit=self.unit, approach_mode=approach_mode, solver_id=SolverId[solver_name],
                                   make_corrections=make_corrections, target_ra=ra_j2000_hours,
