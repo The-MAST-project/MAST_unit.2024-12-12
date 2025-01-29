@@ -490,7 +490,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         #     logger.info('{op}: image will not be saved to a file')
 
         response = ascom_run(self, f'StartExposure({settings.seconds}, True)')
-        if response.succeeded:
+        if response.value is None:
             self.start_activity(CameraActivities.Exposing)
             self.expected_mid_exposure = datetime.datetime.now() + datetime.timedelta(seconds=settings.seconds / 2)
             self.image = None
