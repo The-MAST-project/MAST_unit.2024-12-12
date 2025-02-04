@@ -669,14 +669,37 @@ class Unit(Component):
         cfg = Config().get_unit()
         stage_shift = cfg['stage']['presets']['sky'] - cfg['stage']['presets']['spec']
 
-        cfg['acquisition']['roi']['fiber_x'] = int(slope_x * stage_shift + fiber_x)
-        cfg['acquisition']['roi']['fiber_y'] = int(slope_y * stage_shift + fiber_y)
+        cfg['acquisition']['roi']['sky_x'] = int(slope_x * stage_shift + fiber_x)
+        cfg['acquisition']['roi']['sky_y'] = int(slope_y * stage_shift + fiber_y)
         cfg['guiding']['roi']['fiber_x'] = int(fiber_x)
         cfg['guiding']['roi']['fiber_y'] = int(fiber_y)
 
         Config().set_unit(unit_name=cfg['name'], unit_conf=cfg)
 
         return CanonicalResponse_Ok
+
+    async def spiral_new_path(self, x_step_arcsec: float, y_step_arcsec: float):
+        """
+        Defines a new spiral path
+        :param x_step_arcsec:
+        :param y_step_arcsec:
+        :return:
+        """
+        self.mount.pw.mount_spiral_offset_new(x_step_arcsec=x_step_arcsec, y_step_arcsec=y_step_arcsec)
+
+    async def spiral_next_step(self):
+        """
+        Takes the next step in the currently defined spiral path
+        :return:
+        """
+        await self.mount.pw.mount_spiral_offset_next()
+
+    async def spiral_previous_step(self):
+        """
+        Goes back one step in the currently defined spiral path
+        :return:
+        """
+        await self.mount.pw.mount_spiral_offset_previous()
 
 
 def serialize_ip_addresses(data: Any) -> Any:
@@ -708,10 +731,6 @@ if not unit:
     unit = Unit(id_=unit_id)
 
 
-def unit_route(sub_path: str):
-    return base_path + sub_path
-
-
 router = APIRouter()
 router.add_api_route(base_path + '/startup', tags=[tag], endpoint=unit.startup)
 router.add_api_route(base_path + '/shutdown', tags=[tag], endpoint=unit.shutdown)
@@ -727,3 +746,8 @@ router.add_api_route(base_path + '/expose', tags=[tag], endpoint=unit.expose_wit
 router.add_api_route(base_path + '/test_stage_repeatability', tags=[tag], endpoint=unit.test_stage_repeatability)
 router.add_api_route(base_path + '/execute_assignment', methods=['PUT'], tags=[tag], endpoint=unit.execute_assignment)
 router.add_api_route(base_path + '/calculate_sky_pixel', tags=[tag], endpoint=unit.calculate_sky_pixel)
+
+tag = 'PlaneWave spiral path'
+router.add_api_route(base_path + '/spiral_new_path', tags=[tag], endpoint=unit.spiral_new_path)
+router.add_api_route(base_path + '/spiral_next_step', tags=[tag], endpoint=unit.spiral_next_step)
+router.add_api_route(base_path + '/spiral_previous_step', tags=[tag], endpoint=unit.spiral_previous_step)
