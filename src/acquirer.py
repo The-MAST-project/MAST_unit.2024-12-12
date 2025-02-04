@@ -58,7 +58,7 @@ class Acquirer:
         self.unit.start_activity(UnitActivities.Acquiring)
 
         phase = 'sky'
-        boxed_info(logger, [f"starting {phase=}"])
+        boxed_info(logger, [f"starting phase '{phase.upper()}'"])
 
         #
         # move the stage and mount (if needed) into position
@@ -110,7 +110,7 @@ class Acquirer:
                                                                                                     dec_tolerance),
                                                                  parent_activity=UnitActivities.Acquiring,
                                                                  phase='sky', max_tries=tries)
-        logger.info(f"{op}: {phase=} {achieved_tolerances=}")
+        logger.info(f"{op}: phase '{phase.upper()}' {achieved_tolerances=}")
         self.latest_acquisition.save_corrections(phase)
 
         if not achieved_tolerances:
@@ -119,7 +119,7 @@ class Acquirer:
             return
 
         phase = 'spec'
-        boxed_info(logger, [f"starting {phase=}"])
+        boxed_info(logger, [f"starting phase '{phase.upper()}'"])
 
         self.unit.stage.move_to_preset(StagePresetPosition.Spec)
         while self.unit.stage.is_moving:
@@ -147,7 +147,7 @@ class Acquirer:
                                                                  parent_activity=UnitActivities.Acquiring,
                                                                  phase=phase, max_tries=tries)
         self.latest_acquisition.save_corrections(phase)
-        logger.info(f"{op}: {phase=} {achieved_tolerances=}")
+        logger.info(f"{op}: phase '{phase.upper()}' {achieved_tolerances=}")
         if not achieved_tolerances:
             self.unit.end_activity(UnitActivities.Acquiring)
             self.unit.mount.stop_tracking()
@@ -156,7 +156,7 @@ class Acquirer:
         self.unit.reference_image = self.unit.camera.image
 
         phase = 'guiding'
-        boxed_info(logger, [f"starting {phase=}"])
+        boxed_info(logger, [f"starting phase '{phase.upper()}'"])
 
         # the guider runs until UnitActivities.Guiding is stopped
         # self.unit.guider.do_guide_by_solving_with_shm(
@@ -188,7 +188,7 @@ class Acquirer:
             now = datetime.datetime.now()
             if now < end:
                 sec = (end - now).seconds
-                boxed_info(logger, f"sleeping {sec:.2f} seconds till end-of-cadence ...")
+                boxed_info(logger, f"phase '{phase.upper()}], sleeping {sec:.2f} seconds till end-of-cadence ...")
                 time.sleep(sec)
 
         self.unit.end_activity(UnitActivities.Acquiring)
