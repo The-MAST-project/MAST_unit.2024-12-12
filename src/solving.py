@@ -196,8 +196,8 @@ class Solver:
             if was_cancelled():
                 return False
 
-            op = f"{function_name()}:{phase}:[{try_number}_of_{max_tries}]" if phase != 'guiding' \
-                else f"{function_name()}:{phase}"
+            op = f"{function_name()}:{phase.upper()}:[{try_number}_of_{max_tries}]" if phase != 'guiding' \
+                else f"{function_name()}:{phase.upper()}"
             logger.info(f"{op}: calling plate_solve ...")
 
             # run the plate solver
@@ -247,7 +247,7 @@ class Solver:
                 continue  # next try
 
             else:
-                boxed_info(logger, "plate solver found a match, YEY, YEPEEE, HURRAY !!!")
+                boxed_info(logger, f"phase: {phase.upper()}, plate solver found a match, YEY, YEPEEE, HURRAY !!!")
                 solved_ra_arcsec: float = Angle(result.solution.ra_rads * u.radian).arcsecond
                 solved_dec_arcsec: float = Angle(result.solution.dec_rads * u.radian).arcsecond
 
@@ -310,7 +310,7 @@ class Solver:
                             f" ({delta_ra_arcsec:.9f}, {delta_dec_arcsec:.9f}) arcsec"
                         ], center=True)
                     else:
-                        boxed_info(logger, f"OFFSETTING BY ({delta_ra_arcsec:.9f}, {delta_dec_arcsec:.9f}) arcsec")
+                        boxed_info(logger, f"phase: {phase.upper()}: OFFSETTING BY ({delta_ra_arcsec:.9f}, {delta_dec_arcsec:.9f}) arcsec")
 
                         self.unit.start_activity(UnitActivities.Correcting)
 
