@@ -132,30 +132,7 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
     index_dir = r'd:\Astrometry.net\indexes'
     solver_name = 'astrometry'
 
-    # pixel_scale = 0.262
     index_file = None
-    # Series 5 index file ranges (in arcseconds per pixel)
-    # index_files = {
-    #     "index-5004": (0.5, 0.7),
-    #     "index-5005": (0.7, 1.0),
-    #     "index-5006": (1.0, 1.4),
-    #     "index-5007": (1.4, 2.0),
-    #     "index-5008": (2.0, 2.8),
-    #     "index-5009": (2.8, 4.0),
-    #     "index-5010": (4.0, 5.7),
-    #     "index-5011": (5.7, 8.0),
-    #     "index-5012": (8.0, 11.3),
-    #     "index-5013": (11.3, 16.0),
-    #     "index-5014": (16.0, 22.6),
-    #     "index-5015": (22.6, 32.0),
-    # }
-    # # Find the appropriate index file
-    # for index, (min_arcsec, max_arcsec) in index_files.items():
-    #     if min_arcsec <= pixel_scale < max_arcsec:
-    #         index_file = f"{index}.fits"
-    #         break
-    # # index_file = '/cygdrive/d/Astrometry.net/indexes/index-5202-01.fits'
-
     os.environ['PATH'] = 'C:\\cygwin64\\bin;/usr/lib/lapack;C:\\Users\\mast\\PycharmProjects\\MAST_unit\\venv\\Scripts;C:\\Windows\\system32;C:\\Windows;C:\\Windows\\System32\\Wbem;C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\;C:\\Windows\\System32\\OpenSSH\\;C:\\Users\\mast\\Documents\\PlaneWave\\ps3cli;C:\\Program Files\\Git\\cmd;C:\\Users\\mast\\Downloads\\nssm\\nssm-2.24\\win64;C:\\Program Files\\MongoDB\\Server\\7.0\\bin;C:\\Users\\mast\\AppData\\Local\\Programs\\Python\\Launcher\\;C:\\Users\\mast\\AppData\\Local\\Microsoft\\WindowsApps;C:\\Program Files\\JetBrains\\PyCharm Community Edition 2024.1\\bin;;C:\\Users\\mast\\PycharmProjects\\MAST_unit\\src\\Standa\\ximc-2.13.6\\ximc\\win64;'
 
     cmd = ''
@@ -170,8 +147,8 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
     args += ['--match', 'none', '--rdls', 'none', '--corr', 'none']
     if index_file:
         args += ['--index-file', index_file]
-    fits = settings.image_path
-    new_fits = fits.replace('.fits', f",solver={solver_name}.fits")
+    fits_path = settings.image_path
+    new_fits_path = fits_path.replace('.fits', f",solver={solver_name}.fits")
 
     if unix_emulator == 'cygwin':
         tmp_path = '/cygdrive/d/MAST/tmp/' + tmp_dir
@@ -182,16 +159,16 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
         args += ['--temp-dir', tmp_path]
         # args += ['--index-dir', '/cygdrive/d/Astrometry.net/indexes']
         args += ['--index-dir', '/usr/local/astrometry/indexes-full']
-        args += ['--new-fits', win_to_cygwin(new_fits)]
-        args += [win_to_cygwin(fits)]
+        args += ['--new-fits', win_to_cygwin(new_fits_path)]
+        args += [win_to_cygwin(fits_path)]
 
     elif unix_emulator == 'wsl':
         cmd = r'\\wsl$\usr\local\astrometry\bin\solve-field'
         args += ['--dir', win_to_wsl(tmp_dir)]
         args += ['--temp-dir', win_to_wsl(tmp_dir)]
         args += ['--index-dir', win_to_wsl(index_dir)]
-        args += ['--new-fits', win_to_wsl(new_fits)]
-        args += [win_to_wsl(fits)]
+        args += ['--new-fits', win_to_wsl(new_fits_path)]
+        args += [win_to_wsl(fits_path)]
 
     # logger.info(f"cmd: {cmd}, args: {args}")
 
@@ -203,7 +180,7 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
     logger.info(f"{'succeeded' if completed_process.returncode == 0 else 'failed'}" +
                 f" in {elapsed.total_seconds():.2f} seconds")
 
-    result_file = cygwin_to_win(new_fits).replace('.fits', '-result.txt')
+    result_file = cygwin_to_win(new_fits_path).replace('.fits', '-result.txt')
     with open(result_file, 'w') as file:
         file.write('--- command ---\n')
         file.write(' '.join([cmd] + args) + '\n')
@@ -214,7 +191,8 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
         for line in stderr_lines:
             file.writelines(line + '\n')
 
-    filer.move_ram_to_shared([result_file, cygwin_to_win(new_fits)])
+    filer.move_ram_to_shared([result_file, fits_path, cygwin_to_win(new_fits_path)])
+    shutil.rmtree(os.path.dirname(fits_path), ignore_errors=True)
 
     if completed_process.returncode == 0:
         ret = _parse_solver_output(stdout_lines)
