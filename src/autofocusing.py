@@ -169,12 +169,8 @@ class Autofocuser:
             return
 
         acquisition_conf: dict = self.unit.unit_conf['acquisition']
-        unit_roi = UnitRoi(
-            acquisition_conf['roi']['fiber_x'],
-            acquisition_conf['roi']['fiber_y'],
-            acquisition_conf['roi']['width'],
-            acquisition_conf['roi']['height'],
-        )
+        unit_roi = UnitRoi(acquisition_conf['roi']['sky_x'], acquisition_conf['roi']['sky_y'],
+                           acquisition_conf['roi']['width'], acquisition_conf['roi']['height'])
         _binning = CameraBinning(1, 1)
 
         max_tries: int = self.unit.unit_conf['autofocus']['max_tries']

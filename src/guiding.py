@@ -35,9 +35,12 @@ class Guider:
         h_margin = 300  # right and left
         v_margin = 200  # top and bottom
 
+        d = guiding_conf['roi']
+        d['sky_x'] = d['fiber_x']
+        d['sky_y'] = d['fiber_y']
         unit_roi = UnitRoi.from_dict(guiding_conf['roi'])  # we use only the center and compute the sizes
-        unit_roi.width = (min(unit_roi.fiber_x, self.unit.camera.cameraXSize - unit_roi.fiber_x) - h_margin) * 2
-        unit_roi.height = (min(unit_roi.fiber_y, self.unit.camera.cameraYSize - unit_roi.fiber_y) - v_margin) * 2
+        unit_roi.width = (min(unit_roi.x, self.unit.camera.cameraXSize - unit_roi.x) - h_margin) * 2
+        unit_roi.height = (min(unit_roi.y, self.unit.camera.cameraYSize - unit_roi.y) - v_margin) * 2
 
         x_binning = guiding_conf['binning']
         binning: CameraBinning = CameraBinning(x_binning, x_binning)
