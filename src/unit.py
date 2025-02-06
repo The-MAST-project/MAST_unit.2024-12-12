@@ -747,7 +747,7 @@ router.add_api_route(base_path + '/test_stage_repeatability', tags=[tag], endpoi
 router.add_api_route(base_path + '/execute_assignment', methods=['PUT'], tags=[tag], endpoint=unit.execute_assignment)
 router.add_api_route(base_path + '/calculate_sky_pixel', tags=[tag], endpoint=unit.calculate_sky_pixel)
 
-tag = 'PlaneWave spiral path'
+tag = 'PlaneWave mount - spiral path'
 router.add_api_route(base_path + '/spiral_new_path', tags=[tag], endpoint=unit.spiral_new_path)
 router.add_api_route(base_path + '/spiral_next_step', tags=[tag], endpoint=unit.spiral_next_step)
 router.add_api_route(base_path + '/spiral_previous_step', tags=[tag], endpoint=unit.spiral_previous_step)
