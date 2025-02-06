@@ -315,6 +315,13 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher, StoppingMonitor):
             ret['target_verbal'] = target_verbal
             ret['fans'] = True,  # TBD
 
+            ret['spiral'] = {
+                'x': st.mount.spiral_offset.x,
+                'y': st.mount.spiral_offset.y,
+                'x_step_arcsec': st.mount.spiral_offset.x_step_arcsec,
+                'y_step_arcsec': st.mount.spiral_offset.x_step_arcsec,
+            }
+
         time_stamp(ret)
         return ret
 
