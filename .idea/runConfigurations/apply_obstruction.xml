@@ -1,5 +1,5 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="MAST-unit" type="PythonConfigurationType" factoryName="Python" focusToolWindowBeforeRun="true">
+  <configuration default="false" name="apply_obstruction" type="PythonConfigurationType" factoryName="Python" focusToolWindowBeforeRun="true">
     <module name="mast" />
     <option name="ENV_FILES" value="" />
     <option name="INTERPRETER_OPTIONS" value="" />
@@ -10,12 +10,12 @@
     </envs>
     <option name="SDK_HOME" value="" />
     <option name="SDK_NAME" value="Python 3.12 (MAST_unit)" />
-    <option name="WORKING_DIRECTORY" value="C:\Users\mast\PycharmProjects\MAST_unit" />
+    <option name="WORKING_DIRECTORY" value="D:\MAST\tmp" />
     <option name="IS_MODULE_SDK" value="false" />
     <option name="ADD_CONTENT_ROOTS" value="true" />
     <option name="ADD_SOURCE_ROOTS" value="true" />
-    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/src/app.py" />
-    <option name="PARAMETERS" value="" />
+    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/src/tools/apply_obstruction.py" />
+    <option name="PARAMETERS" value="orig.fits 3000 5040 3500" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />
