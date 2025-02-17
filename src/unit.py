@@ -32,7 +32,7 @@ from PIL import Image
 import ipaddress
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from common.models.assignments import UnitAssignmentModel
-from common.api import ControlerApi
+from common.api import ControllerApi
 from common.tasks.models import TaskProduct
 
 from autofocusing import Autofocuser, AutofocusResult
@@ -148,7 +148,7 @@ class Unit(Component):
 
         self.errors: List[str] = []
 
-        self.controller_api = ControlerApi()
+        self.controller_api = ControllerApi()
 
         self._initialized = True
         logger.info("unit: initialized")
