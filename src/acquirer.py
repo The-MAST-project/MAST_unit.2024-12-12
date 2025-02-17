@@ -6,7 +6,7 @@ import logging
 from common.utils import function_name, Coord
 from common.mast_logging import init_log
 from common.activities import UnitActivities
-from common.utils import UnitRoi, CanonicalResponse, boxed_info
+from common.utils import UnitRoi, CanonicalResponse, CanonicalResponse_Ok, boxed_info
 from common.solving import SolverIdNames
 from common.filer import Filer, FilerTop
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
@@ -22,6 +22,7 @@ from typing import Optional
 import datetime
 from fastapi import Query
 from typing import Annotated
+from common.tasks.models import TaskProduct, AssignedTaskModel
 
 logger = logging.getLogger('mast.unit.' + __name__)
 init_log(logger)
@@ -199,6 +200,7 @@ class Acquirer:
     DEC_REGEX = r"^([+-]?)(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
 
     def start_acquisition_and_guiding(self,
+                                      seconds: Optional[float] = 5.0,
                                       ra_j2000_hours: Annotated[
                                           Optional[str | float],
                                           Query(
@@ -228,15 +230,18 @@ class Acquirer:
                                       approach_mode: int = 2,
                                       solver_name: SolverIdNames = 'AstrometryDotNet',
                                       make_corrections: bool = True,
+                                      assignment: Optional[AssignedTaskModel] = None,
                                       ):
         """
         Starts an acquisition
 
+        :param seconds:
         :param approach_mode:
         :param solver_name:
         :param make_corrections:
         :param ra_j2000_hours: The target's RA
         :param dec_j2000_degs: The target's Dec
+        :param assignment:
         :return: The folder path on the MAST-SHARE with the acquisition's products
         """
 
@@ -259,9 +264,23 @@ class Acquirer:
         else:
             dec_j2000_degs = pw_status.mount.dec_j2000_degs
 
+        if seconds is not None:
+            self.unit.unit_conf['acquisition']['exposure'] = seconds
+
         acquisition = Acquisition(unit=self.unit, approach_mode=approach_mode, solver_id=SolverId[solver_name],
                                   make_corrections=make_corrections, target_ra=ra_j2000_hours,
                                   target_dec=dec_j2000_degs, conf=self.unit.unit_conf['acquisition'])
         Thread(name='acquisition', target=self.do_acquire, args=[acquisition]).start()
 
-        return CanonicalResponse(value=Filer(logger).change_top_to(FilerTop.Shared, acquisition.folder))
+        if assignment:
+            """
+            This acquisition is part of an assignment, tell the controller where the products are
+            """
+            self.unit.controller_api.client.put(method='task_product_notification', data=TaskProduct(
+                unit=self.unit.name,
+                ulid=assignment.task.ulid,
+                type='acquisition',
+                path=acquisition.folder,
+            ))
+
+        return CanonicalResponse_Ok
