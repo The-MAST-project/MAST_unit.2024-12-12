@@ -32,7 +32,7 @@ class Guider:
 
         guiding_conf = self.unit.unit_conf['guiding']
 
-        h_margin = 300  # right and left
+        h_margin = 1000 # 300  # right and left
         v_margin = 200  # top and bottom
 
         d = guiding_conf['roi']
