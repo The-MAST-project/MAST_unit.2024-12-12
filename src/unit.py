@@ -32,13 +32,13 @@ from PIL import Image
 import ipaddress
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from common.models.assignments import UnitAssignmentModel
+from common.api import ControlerApi
+from common.tasks.models import TaskProduct
 
 from autofocusing import Autofocuser, AutofocusResult
 from solving import Solver
 from acquirer import Acquirer
 from guiding import Guider
-
-import pydantic
 
 logger = logging.getLogger('mast.unit')
 init_log(logger)
@@ -147,6 +147,8 @@ class Unit(Component):
         # self.camera.register_visualizer('image-to-dashboard', self.push_image_to_dashboards)
 
         self.errors: List[str] = []
+
+        self.controller_api = ControlerApi()
 
         self._initialized = True
         logger.info("unit: initialized")
@@ -629,7 +631,8 @@ class Unit(Component):
         if assignment.task.autofocus:
             self.autofocuser.start_autofocus(
                 target_ra=assignment.target.ra,
-                target_dec=assignment.target.dec)
+                target_dec=assignment.target.dec,
+            )
 
             while self.is_active(UnitActivities.Autofocusing):
                 time.sleep(10)
@@ -640,6 +643,13 @@ class Unit(Component):
             #
             if not self.autofocuser.latest_result:
                 return  # should propagate errors as well
+
+            self.controller_api.client.put(method='task_product_notification', data=TaskProduct(
+                unit=self.name,
+                ulid=assignment.task.ulid,
+                type='autofocus',
+                path=os.path.dirname(self.camera.latest_settings.image_path),
+            ))
 
             #
             # At this point we have autofocused and can start acquisition
