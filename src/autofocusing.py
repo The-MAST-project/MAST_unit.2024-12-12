@@ -17,6 +17,7 @@ from common.utils import UnitRoi
 from common.extended_basemodel import ExtendedBaseModel
 from plotting import plot_autofocus_analysis
 import math
+from common.tasks.models import AssignedTaskModel
 
 logger = logging.getLogger('mast.unit.' + __name__)
 init_log(logger)
@@ -80,6 +81,7 @@ class Autofocuser:
                         start_position: int | None = None,  # when None, start from current position
                         ticks_per_step: int = 50,  # focuser ticks per step
                         number_of_images: int = 5,
+                        assignment: Optional[AssignedTaskModel] = None
                         ):
         """
 
@@ -104,7 +106,7 @@ class Autofocuser:
                target=self.do_start_autofocus,
                args=[
                    target_ra, target_dec, exposure, start_position,
-                   ticks_per_step, number_of_images
+                   ticks_per_step, number_of_images, assignment
                ]).start()
 
     def do_start_autofocus(self,
@@ -114,6 +116,7 @@ class Autofocuser:
                                start_position: int | None = None,  # when None, start from the known-as-good position
                                ticks_per_step: int = 50,  # focuser ticks per step
                                number_of_images: int = 5,
+                               assignment: Optional[AssignedTaskModel] = None
                                ):
         """
         Use PlaneWave's new method for autofocus:
