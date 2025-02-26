@@ -11,7 +11,7 @@ import logging
 from enum import IntFlag
 from threading import Thread, Lock
 
-from common.utils import RepeatTimer, time_stamp, BASE_UNIT_PATH, OperatingMode
+from common.utils import RepeatTimer, time_stamp, BASE_UNIT_PATH
 from common.utils import Component, CanonicalResponse, CanonicalResponse_Ok, function_name
 from common.paths import PathMaker
 from common.config import Config
@@ -167,8 +167,6 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"camera.id: 0x{id(self):X}, unit: {unit_id}")
 
         self.unit: 'Unit' = unit
-        if self.unit:
-            self.operating_mode = self.unit.operating_mode
 
         if self._initialized:
             return
@@ -183,12 +181,9 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name='Camera')
 
         try:
-            if self.unit and self.unit.operating_mode == OperatingMode.Night:
-                # if not self.is_on():
-                #     self.power_on()
-                self._ascom = win32com.client.Dispatch(self.conf['ascom_driver'])
-            else:
-                self._ascom = win32com.client.Dispatch('ASCOM.ASICamera2.Camera')
+            # if not self.is_on():
+            #     self.power_on()
+            self._ascom = win32com.client.Dispatch(self.conf['ascom_driver'])
         except Exception as ex:
             logger.exception(ex)
             raise ex

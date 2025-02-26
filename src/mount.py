@@ -44,8 +44,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher, StoppingMonitor):
             return
 
         self.unit = unit
-        if self.unit:
-            self.operating_mode = self.unit.operating_mode
         self.unit_conf: dict = Config().get_unit()
         self.conf = self.unit_conf['mount']
         SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name='Mount')
