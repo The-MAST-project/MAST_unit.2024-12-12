@@ -644,12 +644,11 @@ class Unit(Component):
             if not self.autofocuser.latest_result:
                 return  # should propagate errors as well
 
-            self.controller_api.client.put(method='task_product_notification', data=TaskProduct(
-                unit=self.name,
-                ulid=assignment.task.ulid,
-                type='autofocus',
-                path=os.path.dirname(self.camera.latest_settings.image_path),
-            ))
+            notify_controller_about_task_acquisition_path(
+                task_id=assignment.task.ulid,
+                link='autofocus',
+                src=os.path.dirname(self.camera.latest_settings.image_path),
+            )
 
             #
             # At this point we have autofocused and can start acquisition
