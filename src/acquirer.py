@@ -22,7 +22,9 @@ from typing import Optional
 import datetime
 from fastapi import Query
 from typing import Annotated
-from common.tasks.models import TaskProduct, AssignedTaskModel
+from common.tasks.models import TaskAcquisitionPathNotification, AssignedTaskModel
+from common.models.assignments import Initiator
+from common.tasks.notifications import notify_controller_about_task_acquisition_path
 
 logger = logging.getLogger('mast.unit.' + __name__)
 init_log(logger)
@@ -276,11 +278,10 @@ class Acquirer:
             """
             This acquisition is part of an assignment, tell the controller where the products are
             """
-            self.unit.controller_api.client.put(method='task_product_notification', data=TaskProduct(
-                unit=self.unit.name,
-                ulid=assignment.task.ulid,
-                type='acquisition',
-                path=acquisition.folder,
-            ))
+            notify_controller_about_task_acquisition_path(
+                task_id=assignment.task.ulid,
+                link='acquisition',
+                src=acquisition.folder,
+            )
 
         return CanonicalResponse_Ok
