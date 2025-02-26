@@ -78,11 +78,9 @@ class Autofocuser:
                         target_ra: float | None = None,  # center of ROI
                         target_dec: float | None = None,  # center of ROI
                         exposure: float = 5,  # seconds
-                        start_position: int | None = None,  # when None, start from current position
+                        start_position: int | None = None,  # when None, start from know-as-good position
                         ticks_per_step: int = 50,  # focuser ticks per step
-                        number_of_images: int = 5,
-                        assignment: Optional[AssignedTaskModel] = None
-                        ):
+                        number_of_images: int = 5):
         """
 
         Parameters
@@ -106,18 +104,17 @@ class Autofocuser:
                target=self.do_start_autofocus,
                args=[
                    target_ra, target_dec, exposure, start_position,
-                   ticks_per_step, number_of_images, assignment
+                   ticks_per_step, number_of_images
                ]).start()
 
     def do_start_autofocus(self,
-                               target_ra: float | None = None,  # center of ROI
-                               target_dec: float | None = None,  # center of ROI
-                               exposure: float = 5,  # seconds
-                               start_position: int | None = None,  # when None, start from the known-as-good position
-                               ticks_per_step: int = 50,  # focuser ticks per step
-                               number_of_images: int = 5,
-                               assignment: Optional[AssignedTaskModel] = None
-                               ):
+                           target_ra: float | None = None,  # center of ROI
+                           target_dec: float | None = None,  # center of ROI
+                           exposure: float = 5,  # seconds
+                           start_position: int | None = None,  # when None, start from the known-as-good position
+                           ticks_per_step: int = 50,  # focuser ticks per step
+                           number_of_images: int = 5
+                           ):
         """
         Use PlaneWave's new method for autofocus:
         - Move the stage to 'Sky'
