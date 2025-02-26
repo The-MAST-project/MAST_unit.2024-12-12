@@ -31,9 +31,9 @@ from fastapi.routing import APIRouter
 from PIL import Image
 import ipaddress
 from starlette.websockets import WebSocket, WebSocketDisconnect
-from common.models.assignments import UnitAssignmentModel
+from common.models.assignments import UnitAssignmentModel, Initiator
 from common.api import ControllerApi
-from common.tasks.models import TaskProduct
+from common.tasks.notifications import notify_controller_about_task_acquisition_path
 
 from autofocusing import Autofocuser, AutofocusResult
 from solving import Solver
@@ -73,11 +73,6 @@ class Unit(Component):
 
         Component.__init__(self)
 
-        self.operating_mode = OperatingMode.Night
-        if 'UNIT_OPERATING_MODE' in os.environ:
-            self.operating_mode = OperatingMode.Day if os.environ['UNIT_OPERATING_MODE'].lower() == 'day' \
-                else OperatingMode.Night
-
         self._connected: bool = False
 
         self.was_tracking_before_guiding: bool = False
@@ -101,8 +96,6 @@ class Unit(Component):
 
         self.autofocus_max_tolerance = self.unit_conf['autofocus']['max_tolerance']
         self.autofocus_try: int = 0
-
-        self.operating_mode: OperatingMode = OperatingMode.Night
 
         self.hostname = socket.gethostname()
         try:
@@ -490,7 +483,6 @@ class Unit(Component):
                       binning: Union[int, str] = 1,
                       gain: Union[int, str] = 170) -> CanonicalResponse:
         op = function_name()
-
         seconds = float(exposure_seconds) if isinstance(exposure_seconds, str) else exposure_seconds
         repeats = int(repeats) if isinstance(repeats, str) else repeats
         seconds_between_exposures = float(seconds_between_exposures) \
