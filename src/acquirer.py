@@ -1,14 +1,11 @@
 import time
 import logging
 
-# from astropy.coordinates.jparser import DEC_REGEX, RA_REGEX
-
 from common.utils import function_name, Coord
 from common.mast_logging import init_log
 from common.activities import UnitActivities
-from common.utils import UnitRoi, CanonicalResponse, CanonicalResponse_Ok, boxed_info
+from common.utils import UnitRoi, CanonicalResponse_Ok, boxed_info
 from common.solving import SolverIdNames
-from common.filer import Filer, FilerTop
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from stage import StagePresetPosition
 from camera import CameraSettings, CameraBinning
@@ -22,8 +19,7 @@ from typing import Optional
 import datetime
 from fastapi import Query
 from typing import Annotated
-from common.tasks.models import TaskAcquisitionPathNotification, AssignedTaskModel
-from common.models.assignments import Initiator
+from common.tasks.models import TaskModel
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
 
 logger = logging.getLogger('mast.unit.' + __name__)
@@ -232,7 +228,7 @@ class Acquirer:
                                       approach_mode: int = 2,
                                       solver_name: SolverIdNames = 'AstrometryDotNet',
                                       make_corrections: bool = True,
-                                      assignment: Optional[AssignedTaskModel] = None,
+                                      assignment: Optional[TaskModel] = None,
                                       ):
         """
         Starts an acquisition

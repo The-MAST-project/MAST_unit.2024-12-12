@@ -17,7 +17,6 @@ from common.utils import UnitRoi
 from common.extended_basemodel import ExtendedBaseModel
 from plotting import plot_autofocus_analysis
 import math
-from common.tasks.models import AssignedTaskModel
 
 logger = logging.getLogger('mast.unit.' + __name__)
 init_log(logger)
@@ -279,11 +278,12 @@ class Autofocuser:
             #
             self.latest_result = status.analysis_result
             logger.info(f"{op}: analysis result: " +
-                        f"{self.latest_result.best_focus_position=}, {self.latest_result.best_focus_star_diameter=}, {self.latest_result.tolerance=}")
+                        f"{self.latest_result.best_focus_position=}, {self.latest_result.best_focus_star_diameter=}, " +
+                        f"{self.latest_result.tolerance=}")
 
             if math.isnan(self.latest_result.tolerance) or self.latest_result.tolerance > max_tolerance:
-                self.log_and_store_error(f"{op}: {self.latest_result.tolerance=} is either NaN or higher than {max_tolerance=}, " +
-                                         f"ignoring it!")
+                self.log_and_store_error(f"{op}: {self.latest_result.tolerance=} is either NaN or higher than " +
+                                         f"{max_tolerance=}, ignoring it!")
                 continue  # next try_number
 
             position: int = int(self.latest_result.best_focus_position)
