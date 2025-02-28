@@ -103,10 +103,10 @@ class Autofocuser:
                                 ),
                             ),
                         ] = None,
-                        exposure: float = 5,  # seconds
-                        start_position: int | None = None,  # when None, start from know-as-good position
-                        ticks_per_step: int = 50,  # focuser ticks per step
-                        number_of_images: int = 5):
+                        exposure: Optional[float] = 5,  # seconds
+                        start_position: Optional[int] = None,  # when None, start from know-as-good position
+                        ticks_per_step: Optional[int] = 50,  # focuser ticks per step
+                        number_of_images: Optional[int] = 5):
         """
 
         Parameters
@@ -151,8 +151,16 @@ class Autofocuser:
                 return CanonicalResponse(errors=[f"cannot get coordinates from mount (mount not connected)"])
             dec_j2000_degs = pw_status.mount.dec_j2000_degs
 
+        if number_of_images is None:
+            number_of_images = self.unit.unit_conf['autofocus']['images']
         if number_of_images % 2 != 1:
             return CanonicalResponse(errors=[f"bad {number_of_images=}, MUST be odd!"])
+
+        if ticks_per_step is None:
+            ticks_per_step = self.unit.unit_conf['autofocus']['spacing']
+
+        if exposure is None:
+            exposure = self.unit.unit_conf['autofocus']['exposure']
 
         Thread(name='wis-autofocus',
                target=self.do_start_autofocus,
@@ -207,7 +215,7 @@ class Autofocuser:
             logger.info(f"{op}: moving mount to {target_ra=}, {target_dec=} ...")
             self.unit.mount.goto_ra_dec_j2000(target_ra, target_dec)
 
-        if not start_position:
+        if start_position is None:
             start_position = self.unit.unit_conf['focuser']['known_as_good_position']
         focuser_position: int = int(start_position - ((number_of_images / 2) * ticks_per_step))
         self.unit.focuser.position = focuser_position
