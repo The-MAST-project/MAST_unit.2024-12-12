@@ -33,14 +33,14 @@ class Acquisition:
         self.make_corrections = make_corrections
         self.unit = unit
         self.slew_to_target = False
-        if target_ra and target_dec:
+        if target_ra is not None and target_dec is not None:
             self.target_ra: float = target_ra
             self.target_dec: float = target_dec
             self.slew_to_target = True
         else:
             st = self.unit.mount.status()
-            target_ra = st['ra_j2000_hours ']
-            target_dec = st['dec_j2000_degs ']
+            self.target_ra = st['ra_j2000_hours ']
+            self.target_dec = st['dec_j2000_degs ']
 
         self.conf = conf
         self.ra_tolerance = conf['tolerance']['ra_arcsec']
