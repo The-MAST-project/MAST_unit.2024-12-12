@@ -1,6 +1,6 @@
 import datetime
 from threading import Thread
-from common.utils import function_name, CanonicalResponse_Ok
+from common.utils import function_name, CanonicalResponse_Ok, CanonicalResponse
 from common.paths import PathMaker
 from common.mast_logging import init_log
 from common.filer import Filer
@@ -8,15 +8,18 @@ from common.config import Config
 import logging
 import time
 import os
-from typing import List, Optional
+from typing import List, Optional, Annotated
 from PlaneWave.ps3cli_client import PS3CLIClient
 from camera import CameraSettings, CameraBinning
 from stage import StagePresetPosition
 from common.activities import UnitActivities, FocuserActivities
 from common.utils import UnitRoi
 from common.extended_basemodel import ExtendedBaseModel
+from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from plotting import plot_autofocus_analysis
 import math
+from fastapi import Query
+from acquirer import RA_REGEX, DEC_REGEX
 
 logger = logging.getLogger('mast.unit.' + __name__)
 init_log(logger)
@@ -74,8 +77,32 @@ class Autofocuser:
                 (self.unit.is_active(UnitActivities.AutofocusingPWI4) and self.unit.pw.status().autofocus.is_running))
 
     def start_autofocus(self,
-                        target_ra: float | None = None,  # center of ROI
-                        target_dec: float | None = None,  # center of ROI
+                        ra_j2000_hours: Annotated[
+                            Optional[str | float],
+                            Query(
+                                regex=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
+                                description=(
+                                        "### Right Ascension (J2000) in either:\n"
+                                        "- decimal hours (e.g., `12.5`) or\n"
+                                        "- sexagesimal format (e.g., `12:30:45.123`). \n"
+                                        "- Decimal range: `0 <= RA < 24`.\n"
+                                        "If not supplied, taken from telescope"
+                                ),
+                            ),
+                        ] = None,
+                        dec_j2000_degs: Annotated[
+                            Optional[str | float],
+                            Query(
+                                regex=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
+                                description=(
+                                        "### Declination (J2000) in either:\n"
+                                        "- decimal degrees (e.g., `-45.5`) or\n"
+                                        "- sexagesimal format (e.g., `-45:30:00.123`). \n"
+                                        "- Decimal range: `-90 <= DEC <= 90`.\n"
+                                        "If not supplied, taken from telescope"
+                                ),
+                            ),
+                        ] = None,
                         exposure: float = 5,  # seconds
                         start_position: int | None = None,  # when None, start from know-as-good position
                         ticks_per_step: int = 50,  # focuser ticks per step
@@ -84,8 +111,8 @@ class Autofocuser:
 
         Parameters
         ----------
-        target_ra - if supplied start by sending the mount to these coordinates
-        target_dec - if supplied start by sending the mount to these coordinates
+        ra_j2000_hours - if supplied start by sending the mount to these coordinates
+        dec_j2000_degs - if supplied start by sending the mount to these coordinates
         exposure - exposure duration in seconds
         start_position - if supplied start by sending the focuser to this position, else to the known-as-good position
         ticks_per_step - by how many ticks to increase the focuser position between exposures
@@ -96,13 +123,41 @@ class Autofocuser:
         -------
 
         """
+        pw_status = self.unit.mount.pw.status()
+
+        if ra_j2000_hours:
+            if isinstance(ra_j2000_hours, str):
+                if ':' in ra_j2000_hours:
+                    ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
+                else:
+                    ra_j2000_hours = float(ra_j2000_hours)
+            elif isinstance(ra_j2000_hours, float):
+                pass
+        else:
+            if not pw_status.mount.is_connected:
+                return CanonicalResponse(errors=[f"cannot get coordinates from mount (mount not connected)"])
+            dec_j2000_degs = pw_status.mount.ra_j2000_hours
+
+        if dec_j2000_degs:
+            if isinstance(dec_j2000_degs, str):
+                if ':' in dec_j2000_degs:
+                    dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
+                else:
+                    dec_j2000_degs = float(dec_j2000_degs)
+            elif isinstance(dec_j2000_degs, float):
+                pass
+        else:
+            if not pw_status.mount.is_connected:
+                return CanonicalResponse(errors=[f"cannot get coordinates from mount (mount not connected)"])
+            dec_j2000_degs = pw_status.mount.dec_j2000_degs
+
         if number_of_images % 2 != 1:
-            raise Exception(f"number_of_images MUST be odd!")
+            return CanonicalResponse(errors=[f"bad {number_of_images=}, MUST be odd!"])
 
         Thread(name='wis-autofocus',
                target=self.do_start_autofocus,
                args=[
-                   target_ra, target_dec, exposure, start_position,
+                   ra_j2000_hours, dec_j2000_degs, exposure, start_position,
                    ticks_per_step, number_of_images
                ]).start()
 

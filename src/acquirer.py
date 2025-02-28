@@ -4,7 +4,7 @@ import logging
 from common.utils import function_name, Coord
 from common.mast_logging import init_log
 from common.activities import UnitActivities
-from common.utils import UnitRoi, CanonicalResponse_Ok, boxed_info
+from common.utils import UnitRoi, CanonicalResponse_Ok, CanonicalResponse, boxed_info
 from common.solving import SolverIdNames
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from stage import StagePresetPosition
@@ -19,11 +19,15 @@ from typing import Optional
 import datetime
 from fastapi import Query
 from typing import Annotated
-from common.tasks.models import TaskModel
+from common.tasks.models import UnitAssignmentModel
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
+from astropy.coordinates import Longitude, Latitude
 
 logger = logging.getLogger('mast.unit.' + __name__)
 init_log(logger)
+
+RA_REGEX = r"^(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
+DEC_REGEX = r"^([+-]?)(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
 
 
 class Acquirer:
@@ -49,10 +53,14 @@ class Acquirer:
         acquisition_conf = acquisition.conf
         if not hasattr(acquisition, 'target_ra') or not hasattr(acquisition, 'target_dec'):
             st = self.unit.mount.status()
-            acquisition.target_ra = st['ra_j2000_hours ']
-            acquisition.target_dec = st['dec_j2000_degs ']
-        target_ra_j2000_hours: float = acquisition.target_ra
-        target_dec_j2000_degs: float = acquisition.target_dec
+            acquisition.target_ra = st['ra_j2000_hours ']   # NOTE: the space after _hours is NEEDED
+            acquisition.target_dec = st['dec_j2000_degs ']  # NOTE: the space after _degs is NEEDED
+
+        target_ra_j2000_hours: float = acquisition.target_ra.value \
+            if isinstance(acquisition.target_ra, Longitude) else acquisition.target_ra
+
+        target_dec_j2000_degs: float = acquisition.target_dec.value \
+            if isinstance(acquisition.target_dec, Latitude) else acquisition.target_dec
 
         self.unit.start_activity(UnitActivities.Acquiring)
 
@@ -194,8 +202,26 @@ class Acquirer:
         self.unit.mount.stop_tracking()
         self.unit.acquirer.latest_acquisition.post_process()
 
-    RA_REGEX = r"^(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
-    DEC_REGEX = r"^([+-]?)(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
+    def start_acquisition_and_guiding_for_assignment(self, assignment: UnitAssignmentModel):
+        approach_mode: int = 2
+        make_corrections = True
+        ra_j2000_hours = assignment.target.ra
+        dec_j2000_degs = assignment.target.dec
+        solver_name: SolverIdNames = 'AstrometryDotNet'
+
+        acquisition = Acquisition(unit=self.unit, approach_mode=approach_mode, solver_id=SolverId[solver_name],
+                                  make_corrections=make_corrections, target_ra=ra_j2000_hours,
+                                  target_dec=dec_j2000_degs, conf=self.unit.unit_conf['acquisition'])
+        Thread(name='acquisition', target=self.do_acquire, args=[acquisition]).start()
+
+        """
+        This acquisition is part of an assignment, tell the controller where the products are
+        """
+        notify_controller_about_task_acquisition_path(
+            task_id=assignment.task.ulid,
+            link='acquisition',
+            src=acquisition.folder,
+        )
 
     def start_acquisition_and_guiding(self,
                                       seconds: Optional[float] = 5.0,
@@ -228,7 +254,6 @@ class Acquirer:
                                       approach_mode: int = 2,
                                       solver_name: SolverIdNames = 'AstrometryDotNet',
                                       make_corrections: bool = True,
-                                      assignment: Optional[TaskModel] = None,
                                       ):
         """
         Starts an acquisition
@@ -239,18 +264,22 @@ class Acquirer:
         :param make_corrections:
         :param ra_j2000_hours: The target's RA
         :param dec_j2000_degs: The target's Dec
-        :param assignment:
         :return: The folder path on the MAST-SHARE with the acquisition's products
         """
 
         pw_status = self.unit.mount.pw.status()
+
         if ra_j2000_hours:
             if isinstance(ra_j2000_hours, str):
                 if ':' in ra_j2000_hours:
                     ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
                 else:
                     ra_j2000_hours = float(ra_j2000_hours)
+            elif isinstance(ra_j2000_hours, float):
+                pass
         else:
+            if not pw_status.mount.is_connected:
+                return CanonicalResponse(errors=[f"cannot get coordinates from mount (mount not connected)"])
             ra_j2000_hours = pw_status.mount.ra_j2000_hours
 
         if dec_j2000_degs:
@@ -259,25 +288,19 @@ class Acquirer:
                     dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
                 else:
                     dec_j2000_degs = float(dec_j2000_degs)
+            elif isinstance(dec_j2000_degs, float):
+                pass
         else:
+            if not pw_status.mount.is_connected:
+                return CanonicalResponse(errors=[f"cannot get coordinates from mount (mount not connected)"])
             dec_j2000_degs = pw_status.mount.dec_j2000_degs
 
-        if seconds is not None:
+        if seconds is None:
             self.unit.unit_conf['acquisition']['exposure'] = seconds
 
         acquisition = Acquisition(unit=self.unit, approach_mode=approach_mode, solver_id=SolverId[solver_name],
                                   make_corrections=make_corrections, target_ra=ra_j2000_hours,
                                   target_dec=dec_j2000_degs, conf=self.unit.unit_conf['acquisition'])
         Thread(name='acquisition', target=self.do_acquire, args=[acquisition]).start()
-
-        if assignment:
-            """
-            This acquisition is part of an assignment, tell the controller where the products are
-            """
-            notify_controller_about_task_acquisition_path(
-                task_id=assignment.task.ulid,
-                link='acquisition',
-                src=acquisition.folder,
-            )
 
         return CanonicalResponse_Ok

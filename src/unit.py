@@ -621,10 +621,7 @@ class Unit(Component):
         :return:
         """
         if assignment.task.autofocus:
-            self.autofocuser.start_autofocus(
-                target_ra=assignment.target.ra,
-                target_dec=assignment.target.dec,
-            )
+            self.autofocuser.start_autofocus(ra_j2000_hours=assignment.target.ra, dec_j2000_degs=assignment.target.dec)
 
             while self.is_active(UnitActivities.Autofocusing):
                 time.sleep(10)
@@ -648,6 +645,12 @@ class Unit(Component):
             self.acquirer.start_acquisition_and_guiding(
                 ra_j2000_hours=assignment.target.ra,
                 dec_j2000_degs=assignment.target.dec
+            )
+
+            notify_controller_about_task_acquisition_path(
+                task_id=assignment.task.ulid,
+                link='acquisition',
+                src=self.acquirer.latest_acquisition.folder,
             )
 
     async def execute_assignment(self, assignment: UnitAssignmentModel):
