@@ -136,7 +136,7 @@ class Autofocuser:
         else:
             if not pw_status.mount.is_connected:
                 return CanonicalResponse(errors=[f"cannot get coordinates from mount (mount not connected)"])
-            dec_j2000_degs = pw_status.mount.ra_j2000_hours
+            ra_j2000_hours = pw_status.mount.ra_j2000_hours
 
         if dec_j2000_degs:
             if isinstance(dec_j2000_degs, str):
@@ -209,7 +209,7 @@ class Autofocuser:
             logger.info(f"{op}: starting mount tracking")
             self.unit.pw.mount_tracking_on()
 
-        if not target_ra or not target_dec:
+        if target_ra is None or target_dec is None:
             logger.info(f"{op}: no target position was supplied, not moving the mount")
         else:
             logger.info(f"{op}: moving mount to {target_ra=}, {target_dec=} ...")
