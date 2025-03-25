@@ -32,16 +32,15 @@ logger.info('+--------------+')
 logger.info('| Starting ... |')
 logger.info('+--------------+')
 
+# Get rid of HTTP proxy environment variables.  We're talking to PWI4 which lives on this same machine
 if 'http_proxy' in os.environ:
     del os.environ['http_proxy']
 if 'https_proxy' in os.environ:
     del os.environ['https_proxy']
 
-pw = None
 
-
-def app_quit():
-    logger.info('Quiting!')
+def app_quit(reason: str):
+    logger.info(f'Quiting ({reason=}) !')
     parent_pid = os.getpid()
     parent = psutil.Process(parent_pid)
     for child in parent.children(recursive=True):  # or parent.children() for recursive=False
@@ -53,6 +52,21 @@ def app_quit():
 ensure_process_is_running(name='PWI4.exe',
                           cmd='C:\\Program Files (x86)\\PlaneWave Instruments\\PlaneWave Interface 4\\PWI4.exe',
                           logger=logger, shell=True)
+
+# try, as soon as possible, to talk to PWI4 and quit if not possible
+while True:
+    try:
+        pw = pwi4_client.PWI4()
+        pw.status()
+        logger.info(f"OK, established connection to PWI4")
+        break
+    except pwi4_client.PWException as ex:
+        logger.error(f"no PWI4 yet, waiting ...", exc_info=ex)
+        continue
+    except Exception as ex:
+        logger.error("cannot connect to PWI4, giving up", exc_info=ex)
+        app_quit(reason='cannot talk to PWI4')
+
 ensure_process_is_running(name='PWShutter.exe',
                           cmd="C:\\Program Files (x86)\\PlaneWave Instruments\\" +
                               "PlaneWave Shutter Control\\PWShutter.exe",
@@ -74,19 +88,6 @@ from focuser import router as focuser_router
 from stage import router as stage_router
 from unit import router as unit_router
 from unit import unit
-
-while True:
-    try:
-        pw = pwi4_client.PWI4()
-        pw.status()
-        logger.info(f"Connected to PWI4")
-        break
-    except pwi4_client.PWException as ex:
-        logger.info(f"no PWI4 yet ...")
-        continue
-    except Exception as ex:
-        logger.error("cannot connect to PWI4", exc_info=ex)
-        app_quit()
 
 
 @asynccontextmanager
