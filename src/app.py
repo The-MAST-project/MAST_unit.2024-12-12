@@ -64,7 +64,7 @@ while True:
         logger.error(f"no PWI4 yet, waiting ...", exc_info=ex)
         continue
     except Exception as ex:
-        logger.error("cannot connect to PWI4, giving up", exc_info=ex)
+        logger.error("cannot connect to PWI4, giving up!", exc_info=ex)
         app_quit(reason='cannot talk to PWI4')
 
 ensure_process_is_running(name='PWShutter.exe',
