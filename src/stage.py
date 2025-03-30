@@ -340,9 +340,32 @@ class Stage(Component, SwitchedOutlet, StoppingMonitor):
         hw_status = status_t()
         with self.stage_lock:
             result = ximclib.get_status(self.device, byref(hw_status))
-        if result == Result.Ok:
-            self._position = hw_status.CurPosition
-            self.is_moving = hw_status.MvCmdSts & MvcmdStatus.MVCMD_RUNNING
+        if result != Result.Ok:
+            logger.error(f"could not get_status(), {result=}")
+            return
+
+        self._position = hw_status.CurPosition
+
+        if hw_status & MvcmdStatus.MVCMD_ERROR:
+            logger.error(f">>> MOVEMENT ERROR <<<")
+
+        if hw_status.Flags & ximclib.StateFlags.STATE_ERRV:
+            logger.error(f">>> Data integrity Error <<<")
+        if hw_status.Flags & ximclib.StateFlags.STATE_ERRC:
+            logger.error(f">>> Command Error <<<")
+        if hw_status.Flags & ximclib.StateFlags.STATE_ERRD:
+            logger.error(f">>> Data integrity Error <<<")
+        if hw_status.Flags & ximclib.StateFlags.STATE_SECUR:
+            logger.error(f">>> Security Error 0x{hw_status.Flags & ximclib.StateFlags.STATE_SECUR:08X} <<<")
+            if hw_status.Flags & ximclib.StateFlags.STATE_ALARM:
+                logger.info(f"Detected StateFlags.STATE_ALARM, issuing a STOP command")
+                with self.stage_lock:
+                    result = ximclib.command_stop(self.device)
+                if result != Result.Ok:
+                    logger.error(f"could not command_stop({self.device}), {result=}")
+                # TBD:  What else needs to be done?
+
+        self.is_moving = hw_status.MvCmdSts & MvcmdStatus.MVCMD_RUNNING
 
         if not self.is_moving:
             if self.is_active(StageActivities.Moving) and self.close_enough(self.target):
