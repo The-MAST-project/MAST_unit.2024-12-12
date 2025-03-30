@@ -103,7 +103,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher, StoppingMonitor):
     @property
     def connected(self) -> bool:
         st = self.pw.status()
-        response = ascom_run(self, 'Connected', True)
+        response = ascom_run(self, 'Connected', no_entry_log=True)
         return (self.ascom and
                 (response.succeeded and response.value) and
                 st.mount.is_connected and
