@@ -145,6 +145,9 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
     args += ['--radius', f"{1}"]
     args += ['--no-plots', '--overwrite', '--solved', 'none']
     args += ['--match', 'none', '--rdls', 'none', '--corr', 'none']
+    args += ['--crpix-x', str(int(settings.roi.numX / 2))]
+    args += ['--crpix-y', str(int(settings.roi.numY / 2))]
+
     if index_file:
         args += ['--index-file', index_file]
     fits_path = settings.image_path
