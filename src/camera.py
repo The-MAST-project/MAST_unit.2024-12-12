@@ -296,7 +296,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
     def connected(self) -> bool:
         if not self.is_on() or not self._ascom:
             return False
-        response = ascom_run(self, 'Connected')
+        response = ascom_run(self, 'Connected', no_entry_log=True)
         return response.value if response.succeeded else False
 
     @connected.setter
