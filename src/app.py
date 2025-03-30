@@ -10,9 +10,9 @@ from contextlib import asynccontextmanager
 import psutil
 import os
 from fastapi.responses import RedirectResponse, ORJSONResponse
-from fastapi.staticfiles import StaticFiles
 from common.process import ensure_process_is_running
 from common.config import Config
+from common.utils import function_name
 from fastapi import WebSocket, WebSocketDisconnect
 
 #
@@ -129,7 +129,7 @@ app.add_middleware(
 
 @app.exception_handler(Exception)
 async def generic_exception_handler(request, exc: Exception):
-    return ORJSONResponse(status_code=500, content={'message': f"Exception occurred: {exc}"})
+    return ORJSONResponse(status_code=500, content={'message': f"{function_name()}: Exception occurred: {exc}"})
 
 # @app.websocket_route(BASE_UNIT_PATH + '/unit_visual_ws')
 # async def unit_visual_websocket(websocket: WebSocket):
