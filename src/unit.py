@@ -665,10 +665,7 @@ class Unit(Component):
         return CanonicalResponse_Ok
 
     @staticmethod
-    async def calculate_sky_pixel(fiber_x: float,
-                                  fiber_y: float,
-                                  slope_x: float,
-                                  slope_y: float):
+    async def set_sky_and_spec_pixel_values(sky_x: int, sky_y: int, spec_x: int, spec_y: int):
 
         cfg = Config().get_unit()
 
