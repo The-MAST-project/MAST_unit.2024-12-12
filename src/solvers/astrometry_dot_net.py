@@ -184,10 +184,10 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
     with open(result_file, 'w') as file:
         file.write('--- command ---\n')
         file.write(' '.join([cmd] + args) + '\n')
-        file.write('--- stdout ---\n')
+        file.write('\n--- stdout ---\n')
         for line in stdout_lines:
             file.writelines(line + '\n')
-        file.write('--- stderr ---\n')
+        file.write('\n--- stderr ---\n')
         for line in stderr_lines:
             file.writelines(line + '\n')
 
