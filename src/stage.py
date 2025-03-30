@@ -176,6 +176,11 @@ class Stage(Component, SwitchedOutlet, StoppingMonitor):
         self.timer.name = 'stage-timer-thread'
         self.timer.start()
 
+        with self.stage_lock:
+            result = ximclib.command_homezero(self.device)
+            if result == Result.Ok:
+                self.start_activity(StageActivities.Homing)
+
         self._initialized = True
         logger.info(f'initialized ({self.device_info})')
 
@@ -347,6 +352,9 @@ class Stage(Component, SwitchedOutlet, StoppingMonitor):
             if (self.is_active(StageActivities.StartingUp) and
                     self.close_enough(self.presets[StagePresetPosition.StartUp])):
                 self.end_activity(StageActivities.StartingUp)
+
+            if self.is_active(StageActivities.Homing):
+                self.end_activity(StageActivities.Homing)
 
     #
     def move_to_preset(self, preset: Union[Literal['Sky', 'Spec', 'Min', 'Mid', 'Max'] | StagePresetPosition]):
