@@ -297,7 +297,7 @@ class Unit(Component):
 
         """
         from app import app_quit
-        app_quit()
+        app_quit(reason='quit()')
 
     def abort(self):
         """
