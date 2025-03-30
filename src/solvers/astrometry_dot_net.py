@@ -127,13 +127,13 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
     filer = Filer(logger)
     unix_emulator = 'cygwin'
     tmp_dir = generate_random_string(prefix='tmp_')
-    win_tmp_dir = 'D:/MAST/tmp/' + tmp_dir
+    win_tmp_dir = r'D:/MAST/tmp/' + tmp_dir
     os.makedirs(win_tmp_dir, exist_ok=True)
-    index_dir = r'd:\Astrometry.net\indexes'
+    index_dir = r'D:/Astrometry.net/indexes'
     solver_name = 'astrometry'
 
     index_file = None
-    os.environ['PATH'] = 'C:\\cygwin64\\bin;/usr/lib/lapack;C:\\Users\\mast\\PycharmProjects\\MAST_unit\\venv\\Scripts;C:\\Windows\\system32;C:\\Windows;C:\\Windows\\System32\\Wbem;C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\;C:\\Windows\\System32\\OpenSSH\\;C:\\Users\\mast\\Documents\\PlaneWave\\ps3cli;C:\\Program Files\\Git\\cmd;C:\\Users\\mast\\Downloads\\nssm\\nssm-2.24\\win64;C:\\Program Files\\MongoDB\\Server\\7.0\\bin;C:\\Users\\mast\\AppData\\Local\\Programs\\Python\\Launcher\\;C:\\Users\\mast\\AppData\\Local\\Microsoft\\WindowsApps;C:\\Program Files\\JetBrains\\PyCharm Community Edition 2024.1\\bin;;C:\\Users\\mast\\PycharmProjects\\MAST_unit\\src\\Standa\\ximc-2.13.6\\ximc\\win64;'
+    os.environ['PATH'] = 'C:/cygwin64/bin;/usr/lib/lapack;C:/Users/mast/PycharmProjects/MAST_unit/venv/Scripts;C:/Windows/system32;C:/Windows;C:/Windows/System32/Wbem;C:/Windows/System32/WindowsPowerShell/v1.0/;C:/Windows/System32/OpenSSH/;C:/Users/mast/Documents/PlaneWave/ps3cli;C:/Program Files/Git/cmd;C:/Users/mast/Downloads/nssm/nssm-2.24/win64;C:/Program Files/MongoDB/Server/7.0/bin;C:/Users/mast/AppData/Local/Programs/Python/Launcher/;C:/Users/mast/AppData/Local/Microsoft/WindowsApps;C:/Program Files/JetBrains/PyCharm Community Edition 2024.1/bin;;C:/Users/mast/PycharmProjects/MAST_unit/src/Standa/ximc-2.13.6/ximc/win64;'
 
     cmd = ''
     args = []
@@ -151,10 +151,10 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
     new_fits_path = fits_path.replace('.fits', f",solver={solver_name}.fits")
 
     if unix_emulator == 'cygwin':
-        tmp_path = '/cygdrive/d/MAST/tmp/' + tmp_dir
+        tmp_path = r'/cygdrive/d/MAST/tmp/' + tmp_dir
         os.makedirs(tmp_path, exist_ok=True)
         
-        cmd = r'C:\cygwin64\usr\local\astrometry\bin\solve-field'
+        cmd = r'C:/cygwin64/usr/local/astrometry/bin/solve-field'
         args += ['--dir', tmp_path]
         args += ['--temp-dir', tmp_path]
         # args += ['--index-dir', '/cygdrive/d/Astrometry.net/indexes']
@@ -163,7 +163,7 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
         args += [win_to_cygwin(fits_path)]
 
     elif unix_emulator == 'wsl':
-        cmd = r'\\wsl$\usr\local\astrometry\bin\solve-field'
+        cmd = r'//wsl$/usr/local/astrometry/bin/solve-field'
         args += ['--dir', win_to_wsl(tmp_dir)]
         args += ['--temp-dir', win_to_wsl(tmp_dir)]
         args += ['--index-dir', win_to_wsl(index_dir)]
