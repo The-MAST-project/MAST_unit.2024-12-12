@@ -671,12 +671,11 @@ class Unit(Component):
                                   slope_y: float):
 
         cfg = Config().get_unit()
-        stage_shift = cfg['stage']['presets']['sky'] - cfg['stage']['presets']['spec']
 
-        cfg['acquisition']['roi']['sky_x'] = int(slope_x * stage_shift + fiber_x)
-        cfg['acquisition']['roi']['sky_y'] = int(slope_y * stage_shift + fiber_y)
-        cfg['guiding']['roi']['fiber_x'] = int(fiber_x)
-        cfg['guiding']['roi']['fiber_y'] = int(fiber_y)
+        cfg['acquisition']['roi']['sky_x'] = sky_x
+        cfg['acquisition']['roi']['sky_y'] = sky_y
+        cfg['guiding']['roi']['fiber_x'] = spec_x
+        cfg['guiding']['roi']['fiber_y'] = spec_y
 
         Config().set_unit(unit_name=cfg['name'], unit_conf=cfg)
 
