@@ -198,7 +198,7 @@ class Solver:
 
             op = f"{function_name()}:{phase.upper()}:[{try_number}_of_{max_tries}]" if phase != 'guiding' \
                 else f"{function_name()}:{phase.upper()}"
-            logger.info(f"{op}: calling plate_solve ...")
+            # logger.info(f"{op}: calling plate_solve ...")
 
             # run the plate solver
             try:
