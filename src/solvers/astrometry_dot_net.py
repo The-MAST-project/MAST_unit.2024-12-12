@@ -37,7 +37,8 @@ def win_to_cygwin(path: str) -> str:
 
 
 def cygwin_to_win(path: str) -> str:
-    return path.replace('/cygdrive/d', 'D:').replace('/', '\\')
+    # return path.replace('/cygdrive/d', 'D:').replace('/', '\\')
+    return path.replace('/cygdrive/d', 'D:')
 
 
 def win_to_wsl(path: str) -> str:
@@ -195,7 +196,6 @@ def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coo
             file.writelines(line + '\n')
 
     filer.move_ram_to_shared([result_file, fits_path, cygwin_to_win(new_fits_path)])
-    shutil.rmtree(os.path.dirname(fits_path), ignore_errors=True)
 
     if completed_process.returncode == 0:
         ret = _parse_solver_output(stdout_lines)
