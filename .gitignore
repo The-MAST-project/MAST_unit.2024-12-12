@@ -8,3 +8,4 @@ __pycache__/
 /src/dlipower.sav
 /src/powered_device-sav.py
 *.fits
+/src/Standa/
