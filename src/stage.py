@@ -30,7 +30,7 @@ if platform.system() == "Windows":
     else:
         os.environ["Path"] = lib_dir + ";" + os.environ["Path"]  # add dll path into an environment variable
 
-    from pyximc import (Result,  EnumerateFlags, device_information_t, string_at, byref, MvcmdStatus, cast, POINTER,
+    from pyximc import (Result,  EnumerateFlags, device_information_t, string_at, byref, MvcmdStatus, StateFlags, cast, POINTER,
                         c_int, status_t, edges_settings_t)
     from pyximc import lib as ximclib
 
@@ -64,6 +64,8 @@ class Stage(Component, SwitchedOutlet, StoppingMonitor):
     # class Stage(Component, SwitchedOutlet, StoppingMonitor):
     _instance = None
     _initialized = False
+
+    CLOSE_ENOUGH = 2
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -150,14 +152,16 @@ class Stage(Component, SwitchedOutlet, StoppingMonitor):
                 'max': self.max_travel,
             }
 
-            self.device_info = "Port: {}, Manufacturer={}, Product={}, Version={}, Range={}..{}".format(
-                comport,
-                self.info['controller'],
-                self.info['product'],
-                self.info['version'],
-                self.min_travel,
-                self.max_travel,
-            )
+            self.device_info = (
+                "Port: {}, Manufacturer={}, Product={}, Version={}, Range={}..{}, CLOSE_ENOUGH={}".format(
+                    comport,
+                    self.info['controller'],
+                    self.info['product'],
+                    self.info['version'],
+                    self.min_travel,
+                    self.max_travel,
+                    self.CLOSE_ENOUGH,
+                ))
         self.stage_lock = threading.Lock()
 
         self.presets[StagePresetPosition.Min] = self.min_travel
@@ -331,7 +335,8 @@ class Stage(Component, SwitchedOutlet, StoppingMonitor):
         return ret
 
     def close_enough(self, target):
-        return abs(self._position - target) <= 1
+        # logger.info(f"{self._position=}, {target=}")
+        return abs(self._position - target) <= self.CLOSE_ENOUGH
 
     def ontimer(self):
         if not self.detected or not self.stage_lock:
@@ -346,31 +351,35 @@ class Stage(Component, SwitchedOutlet, StoppingMonitor):
 
         self._position = hw_status.CurPosition
 
-        if hw_status & MvcmdStatus.MVCMD_ERROR:
-            logger.error(f">>> MOVEMENT ERROR <<<")
+        controller_error = hw_status.Flags & StateFlags.STATE_CONTR
+        if controller_error:
+            logger.error(f"CONTR ERROR 0x{controller_error:08X}")
 
-        if hw_status.Flags & ximclib.StateFlags.STATE_ERRV:
-            logger.error(f">>> Data integrity Error <<<")
-        if hw_status.Flags & ximclib.StateFlags.STATE_ERRC:
-            logger.error(f">>> Command Error <<<")
-        if hw_status.Flags & ximclib.StateFlags.STATE_ERRD:
-            logger.error(f">>> Data integrity Error <<<")
-        if hw_status.Flags & ximclib.StateFlags.STATE_SECUR:
-            logger.error(f">>> Security Error 0x{hw_status.Flags & ximclib.StateFlags.STATE_SECUR:08X} <<<")
-            if hw_status.Flags & ximclib.StateFlags.STATE_ALARM:
-                logger.info(f"Detected StateFlags.STATE_ALARM, issuing a STOP command")
-                with self.stage_lock:
-                    result = ximclib.command_stop(self.device)
-                if result != Result.Ok:
-                    logger.error(f"could not command_stop({self.device}), {result=}")
-                # TBD:  What else needs to be done?
+        security_error = hw_status.Flags & StateFlags.STATE_SECUR
+        if security_error:
+            logger.error(f"SECUR ERROR 0x{security_error:08X}")
+
+        if hw_status.Flags & StateFlags.STATE_ALARM:
+            # should wait for the ALARM cause to go away and then issue a command_stop()
+            # for now, just log
+            logger.info(f"Detected StateFlags.STATE_ALARM, issuing a STOP command")
+            with self.stage_lock:
+                result = ximclib.command_stop(self.device)
+            if result != Result.Ok:
+                logger.error(f"could not command_stop({self.device}), {result=}")
+            # TBD:  What else needs to be done?
 
         self.is_moving = hw_status.MvCmdSts & MvcmdStatus.MVCMD_RUNNING
 
         if not self.is_moving:
-            if self.is_active(StageActivities.Moving) and self.close_enough(self.target):
-                self.target = None
-                self.end_activity(StageActivities.Moving)
+            if self.is_active(StageActivities.Moving):
+                if self.close_enough(self.target):
+                    self.target = None
+                    self.end_activity(StageActivities.Moving)
+                elif hw_status.MvCmdSts & MvcmdStatus.MVCMD_ERROR:
+                    self.end_activity(StageActivities.Moving)
+                    logger.error(f"move command 0x{hw_status.MvCmdSts & MvcmdStatus.MVCMD_NANE_BITS:08X} " +
+                                 "ended with MVCMD_ERROR")
 
             if (self.is_active(StageActivities.StartingUp) and
                     self.close_enough(self.presets[StagePresetPosition.StartUp])):
