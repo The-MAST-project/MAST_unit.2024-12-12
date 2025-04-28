@@ -449,17 +449,54 @@ class Unit(Component):
             except Exception as e:
                 logger.error(f"websocket.send error: {e}")
 
-    def expose_with_roi(self,
-                        subfolder: Optional[str] = None,
-                        exposure_seconds: Union[float, str] = 3,
-                        repeats: Union[int, str] = 1,
-                        seconds_between_exposures: Union[float, str] = 0,
-                        fiber_x: Optional[Union[int, str]] = None,
-                        fiber_y: Optional[Union[int, str]] = None,
-                        width: Optional[Union[int, str]] = None,
-                        height: Optional[Union[int, str]] = None,
-                        binning: Union[int, str] = 1,
-                        gain: Union[int, str] = 170) -> CanonicalResponse:
+    def expose(self,
+               subfolder: Optional[str] = None,
+               exposure_seconds: float = 3,
+               repeats: int = 1,
+               seconds_between_exposures: float = 0,
+               fiber_x: Optional[int] = None,
+               fiber_y: Optional[int] = None,
+               width: Optional[int] = None,
+               height: Optional[int] = None,
+               binning: int = 1,
+               gain: int = 170,
+               ra_offsets: Annotated[
+                  Optional[str],
+                  Query(
+                      description=(
+                              "#### Optional list of RA offsets (arcsec) between exposures:\n"
+                              "- empty - no RA offsetting\n"
+                              "- list of floats - MUST be same length as `repeats`"
+                      ),
+                  ),
+               ] = None,
+               dec_offsets: Annotated[
+                  Optional[str],
+                  Query(
+                      description=(
+                              "#### Optional list of DEC offsets (arcsec) between exposures:\n"
+                              "- empty - no DEC offsetting\n"
+                              "- list of floats - MUST be same length as `repeats`"
+                      ),
+                  ),
+               ] = None,
+               ) -> CanonicalResponse:
+
+        if ra_offsets is not None:
+            ra_offsets = ra_offsets.split()
+            if len(ra_offsets) != 1 and len(ra_offsets) != repeats:
+                return CanonicalResponse(errors=[f"ra_offsets must have {repeats} elements"])
+            if len(ra_offsets) == 1:
+                ra_offsets = [ra_offsets[0]] * repeats
+            ra_offsets = [float(val) for val in ra_offsets]
+
+        if dec_offsets is not None:
+            dec_offsets = dec_offsets.split()
+            if len(dec_offsets) != 1 and len(dec_offsets) != repeats:
+                return CanonicalResponse(errors=[f"dec_offsets must have {repeats} elements"])
+            if len(dec_offsets) == 1:
+                dec_offsets = [dec_offsets[0]] * repeats
+            dec_offsets = [float(val) for val in dec_offsets]
 
         if fiber_x is None and fiber_y is None and width is None and height is None:
             width = self.camera.cameraXSize
