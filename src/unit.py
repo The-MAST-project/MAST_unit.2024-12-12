@@ -8,18 +8,19 @@ import numpy as np
 import camera
 from PlaneWave import pwi4_client
 import time
-from typing import List, Any, Optional, Union
-from camera import Camera, CameraBinning
-from covers import Covers
-from stage import Stage
-from mount import Mount
-from focuser import Focuser
+from typing import List, Any, Optional, Union, Dict, Literal
+from camera import Camera, CameraBinning, CameraStatus
+from covers import Covers, CoverStatus
+from stage import Stage, StageStatus
+from mount import Mount, MountStatus
+from focuser import Focuser, FocuserStatus
 from common.dlipowerswitch import PowerSwitchFactory, SwitchedOutlet
 from common.utils import RepeatTimer
 from threading import Thread
-from common.utils import Component, BASE_UNIT_PATH, UnitRoi
+from common.utils import BASE_UNIT_PATH, UnitRoi
+from common.components import Component, ComponentStatus
 from common.mast_logging import DailyFileHandler, init_log
-from common.utils import time_stamp, CanonicalResponse, CanonicalResponse_Ok, function_name, OperatingMode
+from common.utils import time_stamp, CanonicalResponse, CanonicalResponse_Ok, function_name
 from common.filer import Filer
 from common.config import Config
 from common.activities import UnitActivities, FocuserActivities, CameraActivities
@@ -28,10 +29,12 @@ from common.corrections import correction_phases
 from common.paths import PathMaker
 from enum import Enum
 from fastapi.routing import APIRouter
+from fastapi import Query
+from typing import Annotated
 from PIL import Image
 import ipaddress
 from starlette.websockets import WebSocket, WebSocketDisconnect
-from common.models.assignments import UnitAssignmentModel, Initiator
+from common.models.assignments import UnitAssignmentModel
 from common.api import ControllerApi
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
 
@@ -50,6 +53,22 @@ class GuideDirections(Enum):
     guideSouth = 1
     guideEast = 2
     guideWest = 3
+
+
+class UnitStatus(ComponentStatus):
+    id: int
+    guiding: bool = False
+    autofocusing: bool = False
+    mount: Optional[MountStatus] = None
+    camera: Optional[CameraStatus] = None
+    covers: Optional[CoverStatus] = None
+    focuser: Optional[FocuserStatus] = None
+    stage: Optional[StageStatus] = None
+    errors: Optional[List[str]] = None
+    autofocus: Optional[Dict] = None
+    corrections: Optional[List] = None
+    type: Literal['short', 'full'] = 'full'
+    date: Optional[str] = None
 
 
 class Unit(Component):
@@ -238,48 +257,34 @@ class Unit(Component):
                 c.power_off()
 
     def status(self) -> CanonicalResponse:
-        """
-        Returns
-        -------
-        UnitStatus
-        :mastapi:
-        """
-        ret = self.component_status()
-        ret |= {
-            'id': id(self),
-            'guiding': self.guider.is_guiding,
-            'autofocusing': self.autofocuser.is_autofocusing,
-        }
-        for comp in self.components:
-            ret[comp.name] = comp.status()
-        time_stamp(ret)
-
-        if self.autofocus_result:
-            ret['autofocus'] = {
+        autofocus = {
                 'success': self.autofocus_result.success,
                 'best_position': self.autofocus_result.best_position,
                 'tolerance': self.autofocus_result.tolerance,
                 'time_stamp': self.autofocus_result.time_stamp
-            }
+            } if self.autofocus_result else None
 
-        # if (self.corrections and 'target' in self.corrections and 'ra' in self.corrections['target']
-        #         and 'sequence' in self.corrections):
-        #     ret['corrections'] = {
-        #         'target': {
-        #             'ra': self.corrections['target']['ra'],
-        #             'dec': self.corrections['target']['dec'],
-        #         },
-        #         'sequence': self.corrections['sequence'],
-        #     }
-        if self.acquirer.latest_acquisition and self.acquirer.latest_acquisition.corrections:
-            corrections = self.acquirer.latest_acquisition.corrections
-            ret['corrections'] = [corrections[phase].to_dict() for phase in correction_phases if phase in corrections]
+        corrections_list = self.acquirer.latest_acquisition.corrections \
+            if self.acquirer.latest_acquisition and self.acquirer.latest_acquisition.corrections else []
+        corrections = [corrections_list[phase].to_dict() for phase in correction_phases if phase in corrections_list]
 
-        if self.errors:
-            ret['errors'] = self.errors
-
-        ret['powered'] = True
-        ret['type'] = 'full'
+        ret = UnitStatus(
+            **self.component_status().dict(),
+            id=id(self),
+            guiding=self.guider.is_guiding,
+            autofocusing=self.autofocuser.is_autofocusing,
+            power_switch=self.power_switch.status(),
+            mount=self.mount.status(),
+            camera=self.camera.status(),
+            covers=self.covers.status(),
+            focuser=self.focuser.status(),
+            stage=self.stage.status(),
+            errors=self.errors,
+            autofocus=autofocus,
+            corrections=corrections,
+            type='full',
+            date=time_stamp(),
+        ).model_dump()
 
         return CanonicalResponse(value=serialize_ip_addresses(ret))
 
@@ -784,7 +789,7 @@ router.add_api_route(base_path + '/stop_acquisition_and_guiding', tags=[tag],
                      endpoint=unit.guider.stop_acquisition_and_guiding)
 router.add_api_route(base_path + '/start_acquisition_and_guiding', tags=[tag],
                      endpoint=unit.acquirer.start_acquisition_and_guiding)
-router.add_api_route(base_path + '/expose', tags=[tag], endpoint=unit.expose_with_roi)
+router.add_api_route(base_path + '/expose', tags=[tag], endpoint=unit.expose)
 router.add_api_route(base_path + '/test_stage_repeatability', tags=[tag], endpoint=unit.test_stage_repeatability)
 router.add_api_route(base_path + '/execute_assignment', methods=['PUT'], tags=[tag], endpoint=unit.execute_assignment)
 router.add_api_route(base_path + '/calculate_sky_pixel', tags=[tag], endpoint=unit.set_sky_and_spec_pixel_values)
