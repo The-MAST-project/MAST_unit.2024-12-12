@@ -23,7 +23,7 @@ unit_conf = Config().get_unit(socket.gethostname())
 # if 'log_level' in unit_conf['global']:
 #     log_level = getattr(logging, unit_conf['global']['log_level'].upper())
 # else:
-log_level = logging.DEBUG
+log_level = logging.WARNING
 logging.basicConfig(level=log_level)
 logger = logging.getLogger('mast.unit.' + __name__)
 init_log(logger)
