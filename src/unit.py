@@ -99,9 +99,6 @@ class Unit(Component):
 
         self.hostname = socket.gethostname()
         try:
-            # self.power_switch = PowerSwitchFactory.get_instance(
-            #     conf=self.unit_conf['power_switch'],
-            #     upload_outlet_names=True)
             self.power_switch = PowerSwitchFactory.get_instance()
             self.mount: Mount = Mount(self)
             self.camera: Camera = Camera(self)
