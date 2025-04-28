@@ -1,17 +1,17 @@
-from typing import List
+from typing import List, Optional
 import logging
 from enum import IntEnum, auto
 import win32com.client
 
-from common.utils import RepeatTimer, Component, time_stamp, CanonicalResponse, CanonicalResponse_Ok, BASE_UNIT_PATH
+from common.utils import RepeatTimer, time_stamp, CanonicalResponse, CanonicalResponse_Ok, BASE_UNIT_PATH
+from common.components import ComponentStatus, Component
 from common.config import Config
 from common.mast_logging import init_log
 from PlaneWave import pwi4_client
-from common.dlipowerswitch import SwitchedOutlet, OutletDomain
+from common.dlipowerswitch import SwitchedOutlet, OutletDomain, PowerStatus
 from fastapi.routing import APIRouter
-from common.ascom import ascom_run, AscomDispatcher
+from common.ascom import ascom_run, AscomDispatcher, AscomStatus
 from common.activities import FocuserActivities
-from common.stopping import StoppingMonitor
 
 logger = logging.getLogger('mast.unit.' + __name__)
 init_log(logger)
@@ -22,7 +22,18 @@ class FocusDirection(IntEnum):
     Out = auto()
 
 
-class Focuser(Component, SwitchedOutlet, AscomDispatcher, StoppingMonitor):
+class FocuserStatus(PowerStatus, AscomStatus, ComponentStatus):
+    lower_limit: Optional[int] = None
+    upper_limit: Optional[int] = None
+    known_as_good_position: Optional[int] = None
+    position: Optional[int] = None
+    target: Optional[int] = None
+    target_verbal: Optional[str] = None
+    moving: bool = False
+    date: Optional[str] = None
+
+
+class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
     _instance = None
     _initialized = False
@@ -51,7 +62,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher, StoppingMonitor):
 
         SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name='Focuser')
         Component.__init__(self)
-        # StoppingMonitor.__init__(self, 'focuser', max_len=5, sampler=self.position_sampler, interval=1, epsilon=0)
 
         if not self.is_on():
             self.power_on()
@@ -261,7 +271,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher, StoppingMonitor):
             self.end_activity(FocuserActivities.Moving)
             self.target = None
 
-    def status(self) -> dict:
+    def status(self) -> FocuserStatus:
         """
 
         :mastapi:
@@ -270,21 +280,23 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher, StoppingMonitor):
             FocuserStatus
 
         """
-        stat = self.pw.status()
-        ret = self.power_status() | self.ascom_status() | self.component_status()
-        response = ascom_run(self, 'IsMoving')
-        is_moving = response.value if response.succeeded else stat.focuser.is_moving
-        ret |= {
-            'lower_limit': self.lower_limit,
-            'upper_limit': self.upper_limit,
-            'known_as_good_position': self.known_as_good_position,
-            'position': self.position,
-            'target': self.target,
-            'target_verbal': f"{self.target}",
-            'moving': is_moving,
-        }
-        time_stamp(ret)
-        return ret
+        pw_stat = self.pw.status()
+        ascom_response = ascom_run(self, 'IsMoving')
+        is_moving = ascom_response.value if ascom_response.succeeded else pw_stat.focuser.is_moving
+
+        return FocuserStatus(
+            **self.power_status().dict(),
+            **self.ascom_status().dict(),
+            **self.component_status().dict(),
+            lower_limit=self.lower_limit,
+            upper_limit=self.upper_limit,
+            known_as_good_position=self.known_as_good_position,
+            position=self.position,
+            target=self.target,
+            target_verbal=f"{self.target}",
+            moving=is_moving,
+            date=time_stamp(),
+        )
 
     @property
     def name(self) -> str:
