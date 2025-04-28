@@ -3,19 +3,19 @@ import threading
 import time
 from enum import IntEnum, auto, Enum
 import datetime
-from typing import List, Union, Literal
+from typing import List, Union, Literal, Dict, Optional
 
-from common.utils import RepeatTimer, Component, time_stamp, CanonicalResponse, CanonicalResponse_Ok
+from common.utils import RepeatTimer, time_stamp, CanonicalResponse, CanonicalResponse_Ok
+from common.components import Component, ComponentStatus
 from common.utils import BASE_UNIT_PATH, function_name
 from common.config import Config
 from common.mast_logging import init_log
-from common.dlipowerswitch import SwitchedOutlet, OutletDomain
+from common.dlipowerswitch import SwitchedOutlet, OutletDomain, PowerStatus
 import os
 import sys
 import platform
 from fastapi.routing import APIRouter
 from common.activities import StageActivities
-from common.stopping import StoppingMonitor
 
 cur_dir = os.path.abspath(os.path.dirname(__file__))                            # Specifies the current directory.
 ximc_dir = os.path.join(cur_dir, "Standa", "ximc-2.13.6", "ximc")               # dependencies for examples.
@@ -37,6 +37,13 @@ if platform.system() == "Windows":
 logger = logging.getLogger('mast.unit.' + __name__)
 init_log(logger)
 
+RESULT_MAP = {
+    Result.Ok: "Ok",
+    Result.Error: "Error",
+    Result.NotImplemented: "NotImplemented",
+    Result.ValueError: "ValueError",
+    Result.NoDevice: "NoDevice",
+}
 
 class StageDirection(IntEnum):
     Up = auto()   
@@ -60,8 +67,17 @@ stage_direction_str2int_dict: dict = {
 }
 
 
-class Stage(Component, SwitchedOutlet, StoppingMonitor):
-    # class Stage(Component, SwitchedOutlet, StoppingMonitor):
+class StageStatus(PowerStatus, ComponentStatus):
+    info: Optional[Dict] = None
+    presets: Optional[Dict] = None
+    position: Optional[int] = None
+    at_preset: Optional[str] = None
+    target: Optional[int] = None
+    target_verbal: Optional[str] = None
+    date: Optional[str] = None
+
+
+class Stage(Component, SwitchedOutlet):
     _instance = None
     _initialized = False
 
@@ -83,23 +99,21 @@ class Stage(Component, SwitchedOutlet, StoppingMonitor):
         self.conf = self.unit_conf['stage']
 
         SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name='Stage')
-        # SwitchedOutlet.__init__(self, identifier='Stage')
         Component.__init__(self)
-        # StoppingMonitor.__init__(self, 'stage', max_len=5, sampler=self.position_sampler, interval=.5, epsilon=0)
 
         self.errors: List[str] = []
         self.device = None
-        self.ticks_at_start: int | None = None
-        self.ticks_at_target: int | None = None
-        self.motion_start_time: datetime.datetime | None = None
-        self.timer: RepeatTimer | None = None
-        self.device_uri: str | None = None
-        self._position: int | None = None
+        self.ticks_at_start: Optional[int] = None
+        self.ticks_at_target: Optional[int] = None
+        self.motion_start_time: Optional[datetime.datetime] = None
+        self.timer: Optional[RepeatTimer] = None
+        self.device_uri: Optional[str] = None
+        self._position: Optional[int] = None
         self.is_moving: bool = False
-        self.target: int | None = None
-        self.stage_lock: threading.Lock | None = None
-        self.min_travel: int | None = None
-        self.max_travel: int | None = None
+        self.target: Optional[int] = None
+        self.stage_lock: Optional[threading.Lock] = None
+        self.min_travel: Optional[int] = None
+        self.max_travel: Optional[int] = None
 
         self.info = {}
         self._was_shut_down = False
@@ -299,21 +313,12 @@ class Stage(Component, SwitchedOutlet, StoppingMonitor):
         else:
             raise Exception(f'Could not start move to {value} ({result=})')
 
-    def status(self) -> dict:
-        """
-        Returns the status of the MAST stage
-        :mastapi:
-        """
-        ret = self.power_status() | self.component_status()
+    def status(self) -> StageStatus:
         at_preset = None
-        presets = {}
-        for k, v in self.presets.items():
-            presets[k.name] = v
-
         if self.detected:
             for k in self.presets.keys():
                 if self.close_enough(self.presets[k]):
-                    at_preset = k.name
+                    at_preset = k.name.lower()
                     break
 
         target_verbal = f"{self.target}"
@@ -323,16 +328,17 @@ class Stage(Component, SwitchedOutlet, StoppingMonitor):
                     target_verbal = preset.name
                     break
 
-        ret |= {
-            'info': self.info,
-            'presets': presets,
-            'position': self.position if self.connected else None,
-            'at_preset': at_preset,
-            'target': self.target,
-            'target_verbal': target_verbal
-        }
-        time_stamp(ret)
-        return ret
+        return StageStatus(
+            **self.power_status().dict(),
+            **self.component_status().dict(),
+            info=self.info,
+            presets=self.presets,
+            position=self.position,
+            at_preset=at_preset,
+            target=self.target,
+            target_verbal=target_verbal,
+            date=time_stamp(),
+        )
 
     def close_enough(self, target):
         # logger.info(f"{self._position=}, {target=}")
@@ -346,7 +352,8 @@ class Stage(Component, SwitchedOutlet, StoppingMonitor):
         with self.stage_lock:
             result = ximclib.get_status(self.device, byref(hw_status))
         if result != Result.Ok:
-            logger.error(f"could not get_status(), {result=}")
+            result_name = Result(result).name
+            logger.error(f"could not get_status(), {result=} ({RESULT_MAP[result]}")
             return
 
         self._position = hw_status.CurPosition
