@@ -351,7 +351,8 @@ class Stage(Component, SwitchedOutlet, StoppingMonitor):
 
         self._position = hw_status.CurPosition
 
-        controller_error = hw_status.Flags & StateFlags.STATE_CONTR
+        error_bits = StateFlags.STATE_ERRC|StateFlags.STATE_ERRV|StateFlags.STATE_ERRD
+        controller_error = hw_status.Flags & error_bits
         if controller_error:
             logger.error(f"CONTR ERROR 0x{controller_error:08X}")
 
