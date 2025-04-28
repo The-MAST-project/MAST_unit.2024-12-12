@@ -508,17 +508,20 @@ class Unit(Component):
                      fiber_x, fiber_y, width, height, binning, gain]).start()
         return CanonicalResponse_Ok
 
-    def do_expose_roi(self,
-                      subfolder: Optional[str] = None,
-                      exposure_seconds: Union[float, str] = 3,
-                      repeats: Union[int, str] = 1,
-                      seconds_between_exposures: Union[float, str] = 0,
-                      fiber_x: Union[int, str] = 6000,
-                      fiber_y: Union[int, str] = 2500,
-                      width: Union[int, str] = 1500,
-                      height: Union[int, str] = 1300,
-                      binning: Union[int, str] = 1,
-                      gain: Union[int, str] = 170) -> CanonicalResponse:
+    def do_expose(self,
+                  subfolder: Optional[str] = None,
+                  exposure_seconds: float = 3,
+                  repeats: int = 1,
+                  ra_offsets: Optional[List[float]] = None,
+                  dec_offsets: Optional[List[float]] = None,
+                  seconds_between_exposures: float = 0,
+                  fiber_x: int = 6000,
+                  fiber_y: int = 2500,
+                  width: int = 1500,
+                  height: int = 1300,
+                  binning: int = 1,
+                  gain: int = 170) -> CanonicalResponse:
+
         op = function_name()
         seconds = float(exposure_seconds) if isinstance(exposure_seconds, str) else exposure_seconds
         repeats = int(repeats) if isinstance(repeats, str) else repeats
@@ -564,6 +567,20 @@ class Unit(Component):
                     period = (end - now).seconds
                     logger.info(f"{op}: sleeping {period} seconds till next exposure ...")
                     time.sleep(period)
+
+            if ra_offsets is not None or dec_offsets is not None:
+                if ra_offsets is not None and dec_offsets is not None:
+                    logger.info(f"offsetting mount ra={ra_offsets[repeat]}, dec={dec_offsets[repeat]}")
+                    self.mount.pw.mount_offset(ra_add_arcsec=ra_offsets[repeat], dec_add_arcsec=dec_offsets[repeat])
+                elif ra_offsets is not None:
+                    logger.info(f"offsetting mount ra={ra_offsets[repeat]}")
+                    self.mount.pw.mount_offset(ra_add_arcsec=ra_offsets[repeat])
+                elif dec_offsets is not None:
+                    logger.info(f"offsetting mount dec={dec_offsets[repeat]}")
+                    self.mount.pw.mount_offset(dec_add_arcsec=dec_offsets[repeat])
+                while self.mount.is_moving:
+                    logger.info(f"waiting for mount to stop moving ...")
+                    time.sleep(1)
 
         self.mount.stop_tracking()
         return CanonicalResponse_Ok
