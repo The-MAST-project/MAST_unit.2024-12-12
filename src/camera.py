@@ -12,17 +12,19 @@ from enum import IntFlag
 from threading import Thread, Lock
 
 from common.utils import RepeatTimer, time_stamp, BASE_UNIT_PATH
-from common.utils import Component, CanonicalResponse, CanonicalResponse_Ok, function_name
+from common.utils import CanonicalResponse, CanonicalResponse_Ok, function_name
+from common.components import Component, ComponentStatus
 from common.paths import PathMaker
 from common.config import Config
 from common.camera import CameraRoi, CameraBinning
 from common.mast_logging import init_log
-from common.dlipowerswitch import SwitchedOutlet, OutletDomain
+from common.dlipowerswitch import SwitchedOutlet, OutletDomain, PowerStatus
 from fastapi.routing import APIRouter
 from astropy.io import fits
 import numpy as np
-from common.ascom import ascom_run, AscomDispatcher
+from common.ascom import ascom_run, AscomDispatcher, AscomStatus
 from common.activities import CameraActivities
+from pydantic import BaseModel
 
 logger = logging.getLogger('mast.unit.' + __name__)
 init_log(logger)
@@ -132,6 +134,22 @@ class CameraSettings:
         self.file_name_parts.append(f"roi={self.roi}")
 
         self.image_path = os.path.join(self.folder, ','.join(self.file_name_parts) + '.fits')
+
+
+class ExposureModel(BaseModel):
+    file: str
+    seconds: float
+    date: datetime.datetime
+
+
+class CameraStatus(PowerStatus, AscomStatus, ComponentStatus):
+    errors: Optional[List[str]] = None
+    set_point: Optional[float] = None
+    temperature: Optional[float] = None
+    cooler: bool = False
+    cooler_power: Optional[float] = None
+    latest_exposure: Optional[ExposureModel] = None
+    date: Optional[str] = None
 
 
 class Camera(Component, SwitchedOutlet, AscomDispatcher):
@@ -341,7 +359,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
                     self.GainMax = response.value
 
                 a = self.ascom_status()
-                logger.info(f"Camera: {a['ascom']['name']}, {a['ascom']['description']}, " +
+                logger.info(f"Camera: {a.ascom.name}, {a.ascom.description}, " +
                             f"{self.cameraXSize}x{self.cameraYSize}" + f" driver: '{self.conf['ascom_driver']}'")
 
                 self.guiding_roi_width = int((self.cameraXSize / 100) * 90)
@@ -557,7 +575,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
 
         return CanonicalResponse(errors=self.errors) if self.errors else CanonicalResponse_Ok
 
-    def status(self):
+    def status(self) -> CameraStatus:
         """
         Gets the **MAST** camera status
 
@@ -566,23 +584,22 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         -------
 
         """
-        ret = self.power_status() | self.ascom_status() | self.component_status()
-        ret |= {
-            'errors': self.errors,
-        }
-        if self.connected:
-            ret['set_point'] = self.operational_set_point
-            ret['temperature'] = self._ascom.CCDTemperature
-            ret['cooler'] = self._ascom.CoolerOn
-            ret['cooler_power'] = self._ascom.CoolerPower
-            if self.latest_settings:
-                ret['latest_exposure'] = {}
-                ret['latest_exposure']['file'] = self.latest_settings.base_folder
-                ret['latest_exposure']['seconds'] = self.latest_settings.seconds
-                ret['latest_exposure']['date'] = self.latest_settings.start
-        time_stamp(ret)
 
-        return ret
+        return CameraStatus(
+            **self.power_status().dict(),
+            **self.ascom_status().dict(),
+            **self.component_status().dict(),
+            set_point=self.operational_set_point,
+            temperature=self._ascom.CCDTemperature,
+            cooler=self._ascom.CoolerOn,
+            cooler_power=self._ascom.CoolerPower,
+            latest_exposure=ExposureModel(
+                    file=self.latest_settings.base_folder,
+                    seconds=self.latest_settings.seconds,
+                    date=self.latest_settings.start
+                ) if self.latest_settings else None,
+            date=time_stamp(),
+        )
 
     def startup(self):
         """
@@ -796,7 +813,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         ret = []
         if not self.power_switch.detected:
             ret.append(f"{label}: power switch '{self.power_switch.hostname}' " +
-                       f"(at '{self.power_switch.destination.ipaddr}') not detected")
+                       f"(at '{self.power_switch.ipaddr}') not detected")
         elif not self.is_on():
             ret.append(f"{label}: not powered")
         elif not self.detected:
