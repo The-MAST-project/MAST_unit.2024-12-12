@@ -520,19 +520,10 @@ class Unit(Component):
                   gain: int = 170) -> CanonicalResponse:
 
         op = function_name()
-        seconds = float(exposure_seconds) if isinstance(exposure_seconds, str) else exposure_seconds
-        repeats = int(repeats) if isinstance(repeats, str) else repeats
-        seconds_between_exposures = float(seconds_between_exposures) \
-            if isinstance(seconds_between_exposures, str) else seconds_between_exposures
-        fiber_x = int(fiber_x) if isinstance(fiber_x, str) else fiber_x
-        fiber_y = int(fiber_y) if isinstance(fiber_y, str) else fiber_y
-        width = int(width) if isinstance(width, str) else width
-        height = int(height) if isinstance(height, str) else height
-        _binning = int(binning) if isinstance(binning, str) else binning
-        gain = int(gain) if isinstance(gain, str) else gain
+        seconds = exposure_seconds
 
-        if _binning not in [1, 2, 4]:
-            return CanonicalResponse(errors=[f"bad {_binning=}, should be 1, 2 or 4"])
+        if binning not in [1, 2, 4]:
+            return CanonicalResponse(errors=[f"bad {binning=}, should be 1, 2 or 4"])
 
         self.mount.start_tracking()
         for repeat in range(repeats):
@@ -542,7 +533,7 @@ class Unit(Component):
                 end = start + datetime.timedelta(seconds=seconds_between_exposures)
 
             unit_roi = UnitRoi(fiber_x, fiber_y, width, height)
-            binning: CameraBinning = CameraBinning(_binning, _binning)
+            binning: CameraBinning = CameraBinning(binning, binning)
             default_folder = PathMaker().make_exposures_folder()
             base_folder = os.path.join(default_folder, subfolder) if subfolder else default_folder
             camera_settings = camera.CameraSettings(
@@ -551,7 +542,7 @@ class Unit(Component):
                 gain=gain,
                 binning=binning,
                 roi=unit_roi.to_camera_roi(binning=binning),
-                tags={'expose-roi': None},
+                tags={'roi': None},
                 save=True)
             logger.info(f"{op}: starting exposure #{repeat} (of {repeats})")
             self.camera.do_start_exposure(camera_settings)
