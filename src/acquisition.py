@@ -24,7 +24,9 @@ class Acquisition:
                  make_corrections: bool = True,
                  target_ra: Optional[float] = None,
                  target_dec: Optional[float] = None,
-                 conf: Optional[Dict] = None):
+                 conf: Optional[Dict] = None,
+                 skip_sky: bool = False,
+                 skip_guiding: bool = False):
         if not conf:
             raise Exception(f"Acquisition: conf == None")
 
@@ -50,6 +52,8 @@ class Acquisition:
             tags={
                 'target': f"{target_ra},{target_dec}",
             })
+        self.skip_sky = skip_sky
+        self.skip_guiding = skip_guiding
 
     def save_corrections(self, phase: str):
         if phase in self.corrections:

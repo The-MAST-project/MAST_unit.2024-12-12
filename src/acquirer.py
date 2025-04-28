@@ -64,66 +64,67 @@ class Acquirer:
 
         self.unit.start_activity(UnitActivities.Acquiring)
 
-        phase = 'sky'
-        boxed_info(logger, [f"starting phase '{phase.upper()}'"])
+        if not acquisition.skip_sky:
+            phase = 'sky'
+            boxed_info(logger, [f"starting phase '{phase.upper()}'"])
 
-        #
-        # move the stage and mount (if needed) into position
-        #
-        self.unit.start_activity(UnitActivities.Positioning)
-        self.unit.stage.move_to_preset(StagePresetPosition.Sky)
+            #
+            # move the stage and mount (if needed) into position
+            #
+            self.unit.start_activity(UnitActivities.Positioning)
+            self.unit.stage.move_to_preset(StagePresetPosition.Sky)
 
-        self.unit.mount.start_tracking()
-        if self.latest_acquisition.slew_to_target:
-            self.unit.mount.goto_ra_dec_j2000(target_ra_j2000_hours, target_dec_j2000_degs)
+            self.unit.mount.start_tracking()
+            if self.latest_acquisition.slew_to_target:
+                self.unit.mount.goto_ra_dec_j2000(target_ra_j2000_hours, target_dec_j2000_degs)
 
-        while self.unit.stage.is_moving or self.unit.mount.is_moving:
-            time.sleep(.2)
-        self.unit.end_activity(UnitActivities.Positioning)
+            while self.unit.stage.is_moving or self.unit.mount.is_moving:
+                time.sleep(.2)
+            self.unit.end_activity(UnitActivities.Positioning)
 
-        sky_settings = CameraSettings(
-            seconds=acquisition_conf['exposure'],
-            base_folder=os.path.join(self.latest_acquisition.folder, phase),
-            gain=acquisition_conf['gain'],
-            binning=CameraBinning(acquisition_conf['binning']['x'], acquisition_conf['binning']['y']),
-            roi=UnitRoi.from_dict(acquisition_conf['roi']).to_camera_roi(),
-            save=True
-        )
+            sky_settings = CameraSettings(
+                seconds=acquisition_conf['exposure'],
+                base_folder=os.path.join(self.latest_acquisition.folder, phase),
+                gain=acquisition_conf['gain'],
+                binning=CameraBinning(acquisition_conf['binning']['x'], acquisition_conf['binning']['y']),
+                roi=UnitRoi.from_dict(acquisition_conf['roi']).to_camera_roi(),
+                save=True
+            )
 
-        #
-        # loop trying to solve and correct the mount till within tolerances
-        #
-        tries: int = acquisition_conf['tries'] if 'tries' in acquisition_conf else 3
+            #
+            # loop trying to solve and correct the mount till within tolerances
+            #
+            tries: int = acquisition_conf['tries'] if 'tries' in acquisition_conf else 3
 
-        # set up the tolerances
-        default_tolerance: Angle = Angle(1 * u.arcsecond)
-        ra_tolerance: Angle = default_tolerance
-        dec_tolerance: Angle = default_tolerance
-        phase_conf = self.unit.unit_conf['acquisition']
-        if 'tolerance' in phase_conf:
-            if 'ra_arcsec' in phase_conf['tolerance']:
-                ra_tolerance = Angle(phase_conf['tolerance']['ra_arcsec'] * u.arcsecond)
-            if 'dec_arcsec' in phase_conf['tolerance']:
-                dec_tolerance = Angle(phase_conf['tolerance']['dec_arcsec'] * u.arcsecond)
+            # set up the tolerances
+            default_tolerance: Angle = Angle(1 * u.arcsecond)
+            ra_tolerance: Angle = default_tolerance
+            dec_tolerance: Angle = default_tolerance
+            phase_conf = self.unit.unit_conf['acquisition']
+            if 'tolerance' in phase_conf:
+                if 'ra_arcsec' in phase_conf['tolerance']:
+                    ra_tolerance = Angle(phase_conf['tolerance']['ra_arcsec'] * u.arcsecond)
+                if 'dec_arcsec' in phase_conf['tolerance']:
+                    dec_tolerance = Angle(phase_conf['tolerance']['dec_arcsec'] * u.arcsecond)
 
-        target = Coord(ra=Angle(target_ra_j2000_hours * u.hour), dec=Angle(target_dec_j2000_degs * u.deg))
+            target = Coord(ra=Angle(target_ra_j2000_hours * u.hour), dec=Angle(target_dec_j2000_degs * u.deg))
 
-        achieved_tolerances = self.unit.solver.solve_and_correct(target=target,
-                                                                 approach_mode=acquisition.approach_mode,
-                                                                 solver_id=acquisition.solver_id,
-                                                                 make_corrections=acquisition.make_corrections,
-                                                                 camera_settings=sky_settings,
-                                                                 solving_tolerance=SolvingTolerance(ra_tolerance,
-                                                                                                    dec_tolerance),
-                                                                 parent_activity=UnitActivities.Acquiring,
-                                                                 phase='sky', max_tries=tries)
-        logger.info(f"{op}: phase '{phase.upper()}' {achieved_tolerances=}")
-        self.latest_acquisition.save_corrections(phase)
+            achieved_tolerances = self.unit.solver.solve_and_correct(target=target,
+                                                                     approach_mode=acquisition.approach_mode,
+                                                                     solver_id=acquisition.solver_id,
+                                                                     make_corrections=acquisition.make_corrections,
+                                                                     camera_settings=sky_settings,
+                                                                     solving_tolerance=SolvingTolerance(ra_tolerance,
+                                                                                                        dec_tolerance),
+                                                                     parent_activity=UnitActivities.Acquiring,
+                                                                     phase='sky', max_tries=tries)
+            logger.info(f"{op}: phase '{phase.upper()}' {achieved_tolerances=}")
+            self.latest_acquisition.save_corrections(phase)
 
-        if not achieved_tolerances:
-            self.unit.end_activity(UnitActivities.Acquiring)
-            self.unit.mount.stop_tracking()
-            return
+            if not achieved_tolerances:
+                self.unit.end_activity(UnitActivities.Acquiring)
+                self.unit.mount.stop_tracking()
+                return
 
         phase = 'spec'
         boxed_info(logger, [f"starting phase '{phase.upper()}'"])
@@ -162,42 +163,42 @@ class Acquirer:
 
         self.unit.reference_image = self.unit.camera.image
 
-        phase = 'guiding'
-        boxed_info(logger, [f"starting phase '{phase.upper()}'"])
+        if not acquisition.skip_guiding:
+            phase = 'guiding'
+            boxed_info(logger, [f"starting phase '{phase.upper()}'"])
 
-        # the guider runs until UnitActivities.Guiding is stopped
-        # self.unit.guider.do_guide_by_solving_with_shm(
-        #     target=target,
-        #     approach_mode=acquisition.approach_mode,
-        #     folder=os.path.join(self.latest_acquisition.folder, phase)
-        # )
+            cadence = self.unit.unit_conf['guiding']['cadence_seconds']
+            end: datetime.datetime | None = None
+            folder = os.path.join(self.latest_acquisition.folder, phase)
+            guiding_settings = self.unit.guider.make_guiding_settings(folder)
 
-        cadence = self.unit.unit_conf['guiding']['cadence_seconds']
-        end: datetime.datetime | None = None
-        folder = os.path.join(self.latest_acquisition.folder, phase)
-        guiding_settings = self.unit.guider.make_guiding_settings(folder)
+            self.unit.start_activity(UnitActivities.Guiding)
+            while self.unit.is_active(UnitActivities.Guiding):
+                start = datetime.datetime.now()
+                if cadence:
+                    end = start + datetime.timedelta(seconds=cadence)
+                self.unit.solver.solve_and_correct(target=target, approach_mode=acquisition.approach_mode,
+                                                   solver_id=acquisition.solver_id,
+                                                   make_corrections=acquisition.make_corrections,
+                                                   camera_settings=guiding_settings,
+                                                   solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
+                                                   parent_activity=UnitActivities.Acquiring, phase='guiding')
 
-        self.unit.start_activity(UnitActivities.Guiding)
-        while self.unit.is_active(UnitActivities.Guiding):
-            start = datetime.datetime.now()
+            self.unit.acquirer.latest_acquisition.save_corrections('guiding')
+
             if cadence:
-                end = start + datetime.timedelta(seconds=cadence)
-            self.unit.solver.solve_and_correct(target=target, approach_mode=acquisition.approach_mode,
-                                               solver_id=acquisition.solver_id,
-                                               make_corrections=acquisition.make_corrections,
-                                               camera_settings=guiding_settings,
-                                               solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
-                                               parent_activity=UnitActivities.Acquiring, phase='guiding')
+                now = datetime.datetime.now()
+                if now < end:
+                    sec = (end - now).seconds
+                    boxed_info(logger, f"phase '{phase.upper()}], sleeping {sec:.2f} seconds till end-of-cadence ...")
+                    time.sleep(sec)
+                else:
+                    boxed_info(logger, f"phase '{phase.upper()}], cycle was longer than {cadence=} sec, not sleeping")
+        else:
+            while self.unit.is_active(UnitActivities.Guiding):
+                time.sleep(1)
 
-        self.unit.acquirer.latest_acquisition.save_corrections('guiding')
-
-        if cadence:
-            now = datetime.datetime.now()
-            if now < end:
-                sec = (end - now).seconds
-                boxed_info(logger, f"phase '{phase.upper()}], sleeping {sec:.2f} seconds till end-of-cadence ...")
-                time.sleep(sec)
-
+        # Acquisition was stopped
         self.unit.end_activity(UnitActivities.Acquiring)
         self.unit.mount.stop_tracking()
         self.unit.acquirer.latest_acquisition.post_process()
@@ -254,6 +255,8 @@ class Acquirer:
                                       approach_mode: int = 2,
                                       solver_name: SolverIdNames = 'AstrometryDotNet',
                                       make_corrections: bool = True,
+                                      skip_sky: bool = False,
+                                      skip_guiding: bool = False,
                                       ):
         """
         Starts an acquisition
@@ -264,6 +267,8 @@ class Acquirer:
         :param make_corrections:
         :param ra_j2000_hours: The target's RA
         :param dec_j2000_degs: The target's Dec
+        :param skip_sky: Skip the 'sky' phase
+        :param skip_guiding: Perform only the 'sky' and 'spec' phases (don't do 'guiding') but remain tracking.
         :return: The folder path on the MAST-SHARE with the acquisition's products
         """
 
@@ -300,7 +305,9 @@ class Acquirer:
 
         acquisition = Acquisition(unit=self.unit, approach_mode=approach_mode, solver_id=SolverId[solver_name],
                                   make_corrections=make_corrections, target_ra=ra_j2000_hours,
-                                  target_dec=dec_j2000_degs, conf=self.unit.unit_conf['acquisition'])
+                                  target_dec=dec_j2000_degs, conf=self.unit.unit_conf['acquisition'],
+                                  skip_sky=skip_sky,
+                                  skip_guiding=skip_guiding)
         Thread(name='acquisition', target=self.do_acquire, args=[acquisition]).start()
 
         return CanonicalResponse_Ok
