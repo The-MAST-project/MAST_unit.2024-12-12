@@ -3,15 +3,16 @@ from logging import Logger
 import win32com.client
 import logging
 from enum import Enum
-from typing import List
+from typing import List, Optional
 
-from common.utils import RepeatTimer, Component, time_stamp, CanonicalResponse_Ok, BASE_UNIT_PATH
+from common.utils import RepeatTimer, time_stamp, CanonicalResponse_Ok, BASE_UNIT_PATH
+from common.components import Component, ComponentStatus
 from common.config import Config
 from common.mast_logging import init_log
-from common.dlipowerswitch import SwitchedOutlet, OutletDomain
+from common.dlipowerswitch import SwitchedOutlet, OutletDomain, PowerStatus
 from fastapi.routing import APIRouter
 
-from common.ascom import ascom_run, AscomDispatcher
+from common.ascom import ascom_run, AscomDispatcher, AscomStatus
 from common.activities import CoverActivities
 
 logger: logging.Logger = logging.getLogger('mast.unit.' + __name__)
@@ -26,6 +27,13 @@ class CoversState(Enum):
     Open = 3
     Unknown = 4
     Error = 5
+
+
+class CoverStatus(PowerStatus, AscomStatus, ComponentStatus):
+    target_verbal: Optional[str] = None
+    state: Optional[CoversState] = None
+    state_verbal: Optional[str] = None
+    date: Optional[str] = None
 
 
 class Covers(Component, SwitchedOutlet, AscomDispatcher):
@@ -130,24 +138,22 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         else:
             return CoversState.Error
 
-    def status(self) -> dict:
+    # def status(self) -> dict:
+    def status(self) -> CoverStatus:
         """
         :mastapi:
         """
-        target_verbal = None
-        if self.is_active(CoverActivities.Opening):
-            target_verbal = "Open"
-        elif self.is_active(CoverActivities.Closing):
-            target_verbal = "Closed"
 
-        ret = self.power_status() | self.ascom_status() | self.component_status()
-        ret |= {
-            'state': self.state,
-            'state_verbal': self.state.__repr__(),
-            'target_verbal': target_verbal,
-        }
-        time_stamp(ret)
-        return ret
+        return CoverStatus(
+            **self.power_status().dict(),
+            **self.ascom_status().dict(),
+            **self.component_status().dict(),
+            state=self.state,
+            state_verbal=self.state.__repr__(),
+            target_verbal='Open' if self.is_active(CoverActivities.Opening) else
+            'Close' if self.is_active(CoverActivities.Closing) else None,
+            date=time_stamp(),
+        )
 
     def open(self):
         """
