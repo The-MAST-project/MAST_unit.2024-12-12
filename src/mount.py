@@ -5,24 +5,48 @@ import win32com.client
 import logging
 
 from PlaneWave import pwi4_client
-from typing import List
-from common.utils import Component, time_stamp, BASE_UNIT_PATH
+from typing import List, Optional
+from common.utils import time_stamp, BASE_UNIT_PATH
+from common.components import Component, ComponentStatus
 from common.utils import RepeatTimer, CanonicalResponse, CanonicalResponse_Ok, function_name, caller_name
 from common.mast_logging import init_log
-from common.dlipowerswitch import SwitchedOutlet, OutletDomain
+from common.dlipowerswitch import SwitchedOutlet, OutletDomain, PowerStatus
 from common.config import Config
 from fastapi.routing import APIRouter
 import math
 from astropy.coordinates import SkyCoord, frame_transform_graph, Angle
-from common.ascom import ascom_run, AscomDispatcher
+from common.ascom import ascom_run, AscomDispatcher, AscomStatus
 from common.activities import MountActivities
-from common.stopping import StoppingMonitor, MonitoredPosition
+from pydantic import BaseModel
 
 logger = logging.getLogger('mast.unit.' + __name__)
 init_log(logger)
 
 
-class Mount(Component, SwitchedOutlet, AscomDispatcher, StoppingMonitor):
+class SpiralSettings(BaseModel):
+    x: float
+    y: float
+    x_step_arcsec: float
+    y_step_arcsec: float
+
+
+class MountStatus(PowerStatus, AscomStatus, ComponentStatus):
+    errors: Optional[List[str]] = None
+    target_verbal: Optional[str] = None
+    tracking: bool = False
+    slewing: bool = False
+    axis0_enabled: bool = False
+    axis1_enabled: bool = False
+    ra_j2000_hours: Optional[float] = None
+    dec_j2000_degs: Optional[float] = None
+    ha_hours: Optional[float] = None
+    lmst_hours: Optional[float] = None
+    fans: bool = False
+    spiral: Optional[SpiralSettings] = None
+    date: str = None
+
+
+class Mount(Component, SwitchedOutlet, AscomDispatcher):
     _instance = None
     _initialized = False
 
@@ -48,7 +72,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher, StoppingMonitor):
         self.conf = self.unit_conf['mount']
         SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name='Mount')
         Component.__init__(self)
-        # StoppingMonitor.__init__(self, 'mount', max_len=5, sampler=self.position_monitor, interval=1, epsilon=0.3)
 
         if not self.is_on():
             self.power_on()
@@ -228,13 +251,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher, StoppingMonitor):
 
         return CanonicalResponse_Ok
 
-    def position_monitor(self):
-        """
-        Returns sum of distances to target (arcsec) on both axes, for stopping monitoring
-        """
-        status = self.pw.status()
-        return MonitoredPosition(status.mount.axis0.position_degs, status.mount.axis1.position_degs)
-
     def ontimer(self):
         if not self.connected:
             return
@@ -267,61 +283,57 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher, StoppingMonitor):
         if self.is_active(MountActivities.Slewing) and not self.is_moving:
             self.end_activity(MountActivities.Slewing)
             self.target = None
-
-    def status(self) -> dict:
-        """
-        Returns the ``mount`` subsystem status
-        :mastapi:
-        """
-        ret = self.power_status() | self.ascom_status() | self.component_status()
-        ret |= {
-            'errors': self.errors,
-        }
-
+    
+    def status(self) -> MountStatus:
         target_verbal = None
         if isinstance(self.target, str):
             target_verbal = self.target
         elif isinstance(self.target, tuple):
             target_verbal = (f"[{Angle(self.target[0], unit='hour').to_string(unit='hour', sep=':', precision=3)}, " +
                              f"{Angle(self.target[1], unit='arcsec').to_string(unit='deg', sep=':', precision=3)}]")
-
+        
+        activities = self.activities            # integrate activities we may have not started
+        st = None
         if self.connected:
             st = self.pw.status()
-            ret['tracking'] = st.mount.is_tracking
-            # integrate activities we may have not started
             if st.mount.is_tracking:
-                ret['activities'] |= MountActivities.Tracking
+                activities |= MountActivities.Tracking
             else:
-                ret['activities'] &= ~MountActivities.Tracking
+                activities &= ~MountActivities.Tracking
             if st.mount.is_slewing:
-                ret['activities'] |= MountActivities.Slewing
+                activities |= MountActivities.Slewing
             else:
-                ret['activities'] &= ~MountActivities.Slewing
+                activities &= ~MountActivities.Slewing
             if self.is_moving:
-                ret['activities'] |= MountActivities.Moving
+                activities |= MountActivities.Moving
             else:
-                ret['activities'] &= ~MountActivities.Moving
-            ret['activities_verbal'] = ret['activities'].__repr__()
+                activities &= ~MountActivities.Moving
 
-            ret['slewing'] = st.mount.is_slewing
-            ret['axis0_enabled'] = st.mount.axis0.is_enabled,
-            ret['axis1_enabled'] = st.mount.axis1.is_enabled,
-            ret['ra_j2000_hours '] = st.mount.ra_j2000_hours
-            ret['dec_j2000_degs '] = st.mount.dec_j2000_degs
-            ret['ha_hours '] = st.site.lmst_hours - st.mount.ra_j2000_hours
-            ret['lmst_hours '] = st.site.lmst_hours
-            ret['target_verbal'] = target_verbal
-            ret['fans'] = True,  # TBD
+        component_status = self.component_status()
+        component_status.activities = activities
 
-            ret['spiral'] = {
-                'x': st.mount.spiral_offset.x,
-                'y': st.mount.spiral_offset.y,
-                'x_step_arcsec': st.mount.spiral_offset.x_step_arcsec,
-                'y_step_arcsec': st.mount.spiral_offset.x_step_arcsec,
-            }
+        spiral = SpiralSettings(
+            x=st.mount.spiral_offset.x,
+            y=st.mount.spiral_offset.y,
+            x_step_arcsec=st.mount.spiral_offset.x_step_arcsec,
+            y_step_arcsec=st.mount.spiral_offset.x_step_arcsec,
+        ) if st else None
 
-        time_stamp(ret)
-        return ret
+        return MountStatus(
+            **self.power_status().dict(),
+            **self.ascom_status().dict(),
+            **component_status.dict(),
+            errors=self.errors,
+            target_verbal=target_verbal,
+            axis0_enabled=st.mount.axis0.is_enabled if st else False,
+            axis1_enabled=st.mount.axis1.is_enabled if st else False,
+            ra_j2000_hours=st.mount.ra_j2000_hours if st else None,
+            ha_hours=(st.site.lmst_hours - st.mount.ra_j2000_hours) if st else None,
+            lmst_hours=st.site.lmst_hours if st else None,
+            fans=True,
+            spiral=spiral,
+            date=time_stamp(),
+        )
 
     def start_tracking(self):
         """
