@@ -503,8 +503,8 @@ class Unit(Component):
             height = self.camera.cameraYSize
             fiber_x = int(width / 2)
             fiber_y = int(height / 2)
-        Thread(name='expose-roi-thread', target=self.do_expose_roi,
-               args=[subfolder, exposure_seconds, repeats, seconds_between_exposures,
+        Thread(name='expose-thread', target=self.do_expose,
+               args=[subfolder, exposure_seconds, repeats, ra_offsets, dec_offsets, seconds_between_exposures,
                      fiber_x, fiber_y, width, height, binning, gain]).start()
         return CanonicalResponse_Ok
 
