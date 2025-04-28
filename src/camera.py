@@ -919,20 +919,20 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         #     logger.info(f"{op}: image was read, not waiting for image_ready_event.")
 
 
-base_path = BASE_UNIT_PATH + "/camera"
+base_camera_path = BASE_UNIT_PATH + "/camera"
 tag = 'Camera'
 
 camera = Camera(unit=None)
 
 router = APIRouter()
-router.add_api_route(base_path + '/startup', tags=[tag], endpoint=camera.startup)
-router.add_api_route(base_path + '/shutdown', tags=[tag], endpoint=camera.shutdown)
-router.add_api_route(base_path + '/abort', tags=[tag], endpoint=camera.abort)
-router.add_api_route(base_path + '/status', tags=[tag], endpoint=camera.status)
-router.add_api_route(base_path + '/connect', tags=[tag], endpoint=camera.connect)
-router.add_api_route(base_path + '/disconnect', tags=[tag], endpoint=camera.disconnect)
-router.add_api_route(base_path + '/start_exposure', tags=[tag], endpoint=camera.endpoint_start_exposure)
-router.add_api_route(base_path + '/stop_exposure', tags=[tag], endpoint=camera.stop_exposure)
-router.add_api_route(base_path + '/abort_exposure', tags=[tag], endpoint=camera.abort_exposure)
-router.add_api_route(base_path + '/cooler_on', tags=[tag], endpoint=camera.cooler_on)
-router.add_api_route(base_path + '/cooler_off', tags=[tag], endpoint=camera.cooler_off)
+router.add_api_route(base_camera_path + '/startup', tags=[tag], endpoint=camera.startup)
+router.add_api_route(base_camera_path + '/shutdown', tags=[tag], endpoint=camera.shutdown)
+router.add_api_route(base_camera_path + '/abort', tags=[tag], endpoint=camera.abort)
+router.add_api_route(base_camera_path + '/status', tags=[tag], endpoint=camera.status)
+router.add_api_route(base_camera_path + '/connect', tags=[tag], endpoint=camera.connect)
+router.add_api_route(base_camera_path + '/disconnect', tags=[tag], endpoint=camera.disconnect)
+router.add_api_route(base_camera_path + '/start_exposure', tags=[tag], endpoint=camera.endpoint_start_exposure)
+router.add_api_route(base_camera_path + '/stop_exposure', tags=[tag], endpoint=camera.stop_exposure)
+router.add_api_route(base_camera_path + '/abort_exposure', tags=[tag], endpoint=camera.abort_exposure)
+router.add_api_route(base_camera_path + '/cooler_on', tags=[tag], endpoint=camera.cooler_on)
+router.add_api_route(base_camera_path + '/cooler_off', tags=[tag], endpoint=camera.cooler_off)
