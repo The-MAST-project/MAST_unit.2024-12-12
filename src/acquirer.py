@@ -22,6 +22,7 @@ from typing import Annotated
 from common.tasks.models import UnitAssignmentModel
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
 from astropy.coordinates import Longitude, Latitude
+from guiding import GuidingMode, GuidingModes
 
 logger = logging.getLogger('mast.unit.' + __name__)
 init_log(logger)
@@ -76,6 +77,11 @@ class Acquirer:
 
         self.unit.start_activity(UnitActivities.Acquiring)
 
+        if not self.unit.camera.connected:
+            self.unit.camera.connected = True
+
+        tries: int = acquisition_conf['tries'] if 'tries' in acquisition_conf else 3
+
         if not acquisition.skip_sky:
             phase = 'sky'
             boxed_info(logger, [f"starting phase '{phase.upper()}'"])
@@ -106,7 +112,6 @@ class Acquirer:
             #
             # loop trying to solve and correct the mount till within tolerances
             #
-            tries: int = acquisition_conf['tries'] if 'tries' in acquisition_conf else 3
 
             # set up the tolerances
             default_tolerance: Angle = Angle(1 * u.arcsecond)
@@ -177,7 +182,7 @@ class Acquirer:
 
         self.unit.reference_image = self.unit.camera.image
 
-        if not acquisition.skip_guiding:
+        if acquisition.guiding_mode == GuidingMode.PlateSolving:
             phase = 'guiding'
             boxed_info(logger, [f"starting phase '{phase.upper()}'"])
 
@@ -209,6 +214,9 @@ class Acquirer:
                 else:
                     boxed_info(logger, f"phase '{phase.upper()}], cycle was longer than {cadence=} sec, not sleeping")
         else:
+            if acquisition.guiding_mode == GuidingMode.PHD2:
+                self.unit.camera.connected = False
+
             while self.unit.is_active(UnitActivities.Guiding):
                 time.sleep(1)
 
@@ -270,7 +278,7 @@ class Acquirer:
                                       solver_name: SolverIdNames = 'AstrometryDotNet',
                                       make_corrections: bool = True,
                                       skip_sky: bool = False,
-                                      skip_guiding: bool = False,
+                                      guiding_mode: GuidingModes = 'PlateSolving'
                                       ):
         """
         Starts an acquisition
@@ -282,7 +290,7 @@ class Acquirer:
         :param ra_j2000_hours: The target's RA
         :param dec_j2000_degs: The target's Dec
         :param skip_sky: Skip the 'sky' phase
-        :param skip_guiding: Perform only the 'sky' and 'spec' phases (don't do 'guiding') but remain tracking.
+        :param guiding_mode:
         :return: The folder path on the MAST-SHARE with the acquisition's products
         """
 
@@ -321,7 +329,7 @@ class Acquirer:
                                   make_corrections=make_corrections, target_ra=ra_j2000_hours,
                                   target_dec=dec_j2000_degs, conf=self.unit.unit_conf['acquisition'],
                                   skip_sky=skip_sky,
-                                  skip_guiding=skip_guiding)
+                                  guiding_mode=GuidingMode[guiding_mode])
         Thread(name='acquisition', target=self.do_acquire, args=[acquisition]).start()
 
         return CanonicalResponse_Ok
