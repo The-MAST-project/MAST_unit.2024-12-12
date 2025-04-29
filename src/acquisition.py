@@ -11,6 +11,7 @@ import os
 import json
 from common.filer import Filer
 from typing import Dict, Optional
+from guiding import GuidingMode
 
 logger = logging.getLogger('mast.unit.' + __name__)
 filer = Filer(logger)
@@ -26,7 +27,8 @@ class Acquisition:
                  target_dec: Optional[float] = None,
                  conf: Optional[Dict] = None,
                  skip_sky: bool = False,
-                 skip_guiding: bool = False):
+                 guiding_mode: GuidingMode = GuidingMode.PlateSolving
+                 ):
         if not conf:
             raise Exception(f"Acquisition: conf == None")
 
@@ -53,7 +55,7 @@ class Acquisition:
                 'target': f"{target_ra},{target_dec}",
             })
         self.skip_sky = skip_sky
-        self.skip_guiding = skip_guiding
+        self.guiding_mode = guiding_mode
 
     def save_corrections(self, phase: str):
         if phase in self.corrections:
