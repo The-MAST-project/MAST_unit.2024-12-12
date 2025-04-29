@@ -149,6 +149,8 @@ class Acquirer:
         logger.info(f"stage now at {self.unit.stage.position}")
 
         phase_conf = self.unit.unit_conf['guiding']
+        ra_tolerance = Angle(0, unit='hours')
+        dec_tolerance = Angle(0, unit='degs')
         if 'tolerance' in phase_conf:
             if 'ra_arcsec' in phase_conf['tolerance']:
                 ra_tolerance = Angle(phase_conf['tolerance']['ra_arcsec'] * u.arcsecond)
