@@ -14,7 +14,7 @@ from covers import Covers, CoverStatus
 from stage import Stage, StageStatus
 from mount import Mount, MountStatus
 from focuser import Focuser, FocuserStatus
-from common.dlipowerswitch import PowerSwitchFactory, SwitchedOutlet
+from common.dlipowerswitch import PowerSwitchFactory, SwitchedOutlet, PowerStatus
 from common.utils import RepeatTimer
 from threading import Thread
 from common.utils import BASE_UNIT_PATH, UnitRoi
@@ -69,6 +69,7 @@ class UnitStatus(ComponentStatus):
     corrections: Optional[List] = None
     type: Literal['short', 'full'] = 'full'
     date: Optional[str] = None
+    powered: bool = True
 
 
 class Unit(Component):
