@@ -740,14 +740,14 @@ class Unit(Component):
         Takes the next step in the currently defined spiral path
         :return:
         """
-        await self.mount.pw.mount_spiral_offset_next()
+        self.mount.pw.mount_spiral_offset_next()
 
     async def spiral_previous_step(self):
         """
         Goes back one step in the currently defined spiral path
         :return:
         """
-        await self.mount.pw.mount_spiral_offset_previous()
+        self.mount.pw.mount_spiral_offset_previous()
 
 
 def serialize_ip_addresses(data: Any) -> Any:
