@@ -55,7 +55,7 @@ class GuideDirections(Enum):
     guideWest = 3
 
 
-class UnitStatus(ComponentStatus):
+class UnitStatus(ComponentStatus, PowerStatus):
     id: int
     guiding: bool = False
     autofocusing: bool = False
