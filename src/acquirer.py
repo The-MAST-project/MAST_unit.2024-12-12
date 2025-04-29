@@ -51,6 +51,14 @@ class Acquirer:
 
         self.latest_acquisition = acquisition
         acquisition_conf = acquisition.conf
+
+        #
+        # Figure out the target, it can come from:
+        # - the acquisition (target_ra: float, target_dec: float)
+        # - if the acquisition doesn't have them, get them from the mount's status
+        # - if they were supplied as Longitude and Latitude, transform to float
+        # - pass them on to solve_and_correct() as a Coord
+        #
         if not hasattr(acquisition, 'target_ra') or not hasattr(acquisition, 'target_dec'):
             st = self.unit.mount.status()
             acquisition.target_ra = st['ra_j2000_hours ']   # NOTE: the space after _hours is NEEDED
@@ -61,6 +69,10 @@ class Acquirer:
 
         target_dec_j2000_degs: float = acquisition.target_dec.value \
             if isinstance(acquisition.target_dec, Latitude) else acquisition.target_dec
+
+        target = Coord(
+            ra=Angle(target_ra_j2000_hours, unit='hour'),
+            dec=Angle(target_dec_j2000_degs, unit='deg'))
 
         self.unit.start_activity(UnitActivities.Acquiring)
 
