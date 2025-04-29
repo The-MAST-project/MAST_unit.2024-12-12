@@ -73,6 +73,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
 
         SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name='Covers')
         Component.__init__(self)
+        self._connected: bool = False
 
         # if not self.is_on():
         #     self.power_on()
