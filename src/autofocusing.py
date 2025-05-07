@@ -21,7 +21,7 @@ import math
 from fastapi import Query
 from acquirer import RA_REGEX, DEC_REGEX
 
-logger = logging.getLogger('mast.unit.' + __name__)
+logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
 filer = Filer(logger)
 
@@ -60,9 +60,9 @@ class PS3AutofocusStatus(ExtendedBaseModel):
 
 
 class Autofocuser:
-    
-    def __init__(self, unit: 'Unit'):
-        self.unit: 'Unit' = unit
+
+    def __init__(self, unit: "Unit"):
+        self.unit: "Unit" = unit
         self.latest_result: Optional[PS3FocusAnalysisResult] = None
 
     @property
@@ -73,40 +73,46 @@ class Autofocuser:
         if not self.unit.connected:
             return False
 
-        return (self.unit.is_active(UnitActivities.Autofocusing) or
-                (self.unit.is_active(UnitActivities.AutofocusingPWI4) and self.unit.pw.status().autofocus.is_running))
+        return self.unit.is_active(UnitActivities.Autofocusing) or (
+            self.unit.is_active(UnitActivities.AutofocusingPWI4)
+            and self.unit.pw.status().autofocus.is_running
+        )
 
-    def start_autofocus(self,
-                        ra_j2000_hours: Annotated[
-                            Optional[str | float],
-                            Query(
-                                regex=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
-                                description=(
-                                        "### Right Ascension (J2000) in either:\n"
-                                        "- decimal hours (e.g., `12.5`) or\n"
-                                        "- sexagesimal format (e.g., `12:30:45.123`). \n"
-                                        "- Decimal range: `0 <= RA < 24`.\n"
-                                        "If not supplied, taken from telescope"
-                                ),
-                            ),
-                        ] = None,
-                        dec_j2000_degs: Annotated[
-                            Optional[str | float],
-                            Query(
-                                regex=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
-                                description=(
-                                        "### Declination (J2000) in either:\n"
-                                        "- decimal degrees (e.g., `-45.5`) or\n"
-                                        "- sexagesimal format (e.g., `-45:30:00.123`). \n"
-                                        "- Decimal range: `-90 <= DEC <= 90`.\n"
-                                        "If not supplied, taken from telescope"
-                                ),
-                            ),
-                        ] = None,
-                        exposure: Optional[float] = 5,  # seconds
-                        start_position: Optional[int] = None,  # when None, start from know-as-good position
-                        ticks_per_step: Optional[int] = 50,  # focuser ticks per step
-                        number_of_images: Optional[int] = 5):
+    def start_autofocus(
+        self,
+        ra_j2000_hours: Annotated[
+            Optional[str | float],
+            Query(
+                regex=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
+                description=(
+                    "### Right Ascension (J2000) in either:\n"
+                    "- decimal hours (e.g., `12.5`) or\n"
+                    "- sexagesimal format (e.g., `12:30:45.123`). \n"
+                    "- Decimal range: `0 <= RA < 24`.\n"
+                    "If not supplied, taken from telescope"
+                ),
+            ),
+        ] = None,
+        dec_j2000_degs: Annotated[
+            Optional[str | float],
+            Query(
+                regex=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
+                description=(
+                    "### Declination (J2000) in either:\n"
+                    "- decimal degrees (e.g., `-45.5`) or\n"
+                    "- sexagesimal format (e.g., `-45:30:00.123`). \n"
+                    "- Decimal range: `-90 <= DEC <= 90`.\n"
+                    "If not supplied, taken from telescope"
+                ),
+            ),
+        ] = None,
+        exposure: Optional[float] = 5,  # seconds
+        start_position: Optional[
+            int
+        ] = None,  # when None, start from know-as-good position
+        ticks_per_step: Optional[int] = 50,  # focuser ticks per step
+        number_of_images: Optional[int] = 5,
+    ):
         """
 
         Parameters
@@ -127,7 +133,7 @@ class Autofocuser:
 
         if ra_j2000_hours:
             if isinstance(ra_j2000_hours, str):
-                if ':' in ra_j2000_hours:
+                if ":" in ra_j2000_hours:
                     ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
                 else:
                     ra_j2000_hours = float(ra_j2000_hours)
@@ -135,12 +141,14 @@ class Autofocuser:
                 pass
         else:
             if not pw_status.mount.is_connected:
-                return CanonicalResponse(errors=[f"cannot get coordinates from mount (mount not connected)"])
+                return CanonicalResponse(
+                    errors=[f"cannot get coordinates from mount (mount not connected)"]
+                )
             ra_j2000_hours = pw_status.mount.ra_j2000_hours
 
         if dec_j2000_degs:
             if isinstance(dec_j2000_degs, str):
-                if ':' in dec_j2000_degs:
+                if ":" in dec_j2000_degs:
                     dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
                 else:
                     dec_j2000_degs = float(dec_j2000_degs)
@@ -148,35 +156,49 @@ class Autofocuser:
                 pass
         else:
             if not pw_status.mount.is_connected:
-                return CanonicalResponse(errors=[f"cannot get coordinates from mount (mount not connected)"])
+                return CanonicalResponse(
+                    errors=[f"cannot get coordinates from mount (mount not connected)"]
+                )
             dec_j2000_degs = pw_status.mount.dec_j2000_degs
 
         if number_of_images is None:
-            number_of_images = self.unit.unit_conf['autofocus']['images']
+            number_of_images = self.unit.unit_conf["autofocus"]["images"]
         if number_of_images % 2 != 1:
             return CanonicalResponse(errors=[f"bad {number_of_images=}, MUST be odd!"])
 
+        if start_position is None:
+            start_position = self.unit.focuser.position
+
         if ticks_per_step is None:
-            ticks_per_step = self.unit.unit_conf['autofocus']['spacing']
+            ticks_per_step = self.unit.unit_conf["autofocus"]["spacing"]
 
         if exposure is None:
-            exposure = self.unit.unit_conf['autofocus']['exposure']
+            exposure = self.unit.unit_conf["autofocus"]["exposure"]
 
-        Thread(name='wis-autofocus',
-               target=self.do_start_autofocus,
-               args=[
-                   ra_j2000_hours, dec_j2000_degs, exposure, start_position,
-                   ticks_per_step, number_of_images
-               ]).start()
+        Thread(
+            name="wis-autofocus",
+            target=self.do_start_autofocus,
+            args=[
+                ra_j2000_hours,
+                dec_j2000_degs,
+                exposure,
+                start_position,
+                ticks_per_step,
+                number_of_images,
+            ],
+        ).start()
 
-    def do_start_autofocus(self,
-                           target_ra: float | None = None,  # center of ROI
-                           target_dec: float | None = None,  # center of ROI
-                           exposure: float = 5,  # seconds
-                           start_position: int | None = None,  # when None, start from the known-as-good position
-                           ticks_per_step: int = 50,  # focuser ticks per step
-                           number_of_images: int = 5
-                           ):
+    def do_start_autofocus(
+        self,
+        target_ra: float | None = None,  # center of ROI
+        target_dec: float | None = None,  # center of ROI
+        exposure: float = 5,  # seconds
+        start_position: (
+            int | None
+        ) = None,  # when None, start from the known-as-good position
+        ticks_per_step: int = 50,  # focuser ticks per step
+        number_of_images: int = 5,
+    ):
         """
         Use PlaneWave's new method for autofocus:
         - Move the stage to 'Sky'
@@ -216,27 +238,37 @@ class Autofocuser:
             self.unit.mount.goto_ra_dec_j2000(target_ra, target_dec)
 
         if start_position is None:
-            start_position = self.unit.unit_conf['focuser']['known_as_good_position']
-        focuser_position: int = int(start_position - ((number_of_images / 2) * ticks_per_step))
+            start_position = self.unit.unit_conf["focuser"]["known_as_good_position"]
+        focuser_position: int = int(
+            start_position - ((number_of_images / 2) * ticks_per_step)
+        )
         self.unit.focuser.position = focuser_position
 
-        logger.debug(f"{op}: Waiting for components (stage, mount, focuser) to stop moving ...")
-        while (self.unit.stage.is_moving or
-               self.unit.mount.is_moving or
-               self.unit.focuser.is_active(FocuserActivities.Moving)):
-            time.sleep(.5)
+        logger.debug(
+            f"{op}: Waiting for components (stage, mount, focuser) to stop moving ..."
+        )
+        while (
+            self.unit.stage.is_moving
+            or self.unit.mount.is_moving
+            or self.unit.focuser.is_active(FocuserActivities.Moving)
+        ):
+            time.sleep(0.5)
         logger.debug(f"{op}: Components (stage, mount, focuser) stopped moving ...")
         if not self.unit.is_active(UnitActivities.Autofocusing):
             logger.info("activity 'Autofocusing' was stopped")
             return
 
-        acquisition_conf: dict = self.unit.unit_conf['acquisition']
-        unit_roi = UnitRoi(acquisition_conf['roi']['sky_x'], acquisition_conf['roi']['sky_y'],
-                           acquisition_conf['roi']['width'], acquisition_conf['roi']['height'])
+        acquisition_conf: dict = self.unit.unit_conf["acquisition"]
+        unit_roi = UnitRoi(
+            acquisition_conf["roi"]["sky_x"],
+            acquisition_conf["roi"]["sky_y"],
+            acquisition_conf["roi"]["width"],
+            acquisition_conf["roi"]["height"],
+        )
         _binning = CameraBinning(1, 1)
 
-        max_tries: int = self.unit.unit_conf['autofocus']['max_tries']
-        max_tolerance: float = self.unit.unit_conf['autofocus']['max_tolerance']
+        max_tries: int = self.unit.unit_conf["autofocus"]["max_tries"]
+        max_tolerance: float = self.unit.unit_conf["autofocus"]["max_tolerance"]
         try_number: int = 0
 
         for try_number in range(max_tries):
@@ -252,28 +284,40 @@ class Autofocuser:
                     seconds=exposure,
                     binning=_binning,
                     roi=unit_roi.to_camera_roi(binning=_binning),
-                    gain=acquisition_conf['gain'],
-                    image_path=os.path.join(autofocus_folder, f"FOCUS{int(focuser_position):05}.fits"),
+                    gain=acquisition_conf["gain"],
+                    image_path=os.path.join(
+                        autofocus_folder, f"FOCUS{int(focuser_position):05}.fits"
+                    ),
                     save=True,
                 )
 
-                logger.info(f"{op}: starting exposure #{image_no} of {number_of_images} at {focuser_position=} ...")
+                logger.info(
+                    f"{op}: starting exposure #{image_no} of {number_of_images} at {focuser_position=} ..."
+                )
                 self.unit.camera.do_start_exposure(autofocus_settings)
-                logger.info(f"{op}: waiting for exposure #{image_no} of {number_of_images} ...")
+                logger.info(
+                    f"{op}: waiting for exposure #{image_no} of {number_of_images} ..."
+                )
                 self.unit.camera.wait_for_image_saved()
                 files.append(self.unit.camera.latest_settings.image_path)
-                if not self.unit.is_active(UnitActivities.Autofocusing):  # have we been stopped?
+                if not self.unit.is_active(
+                    UnitActivities.Autofocusing
+                ):  # have we been stopped?
                     logger.info(f"{op}: activity 'Autofocusing' was stopped")
                     return
 
                 focuser_position += ticks_per_step
-                logger.info(f"{op}: moving focuser by {ticks_per_step} ticks (to {focuser_position}) ...")
+                logger.info(
+                    f"{op}: moving focuser by {ticks_per_step} ticks (to {focuser_position}) ..."
+                )
                 self.unit.focuser.position = focuser_position
                 while self.unit.focuser.is_active(FocuserActivities.Moving):
-                    time.sleep(.5)
+                    time.sleep(0.5)
                 logger.info(f"{op}: focuser stopped moving")
 
-                if not self.unit.is_active(UnitActivities.Autofocusing):  # have we been stopped?
+                if not self.unit.is_active(
+                    UnitActivities.Autofocusing
+                ):  # have we been stopped?
                     logger.info(f"{op}: activity 'Autofocusing' was stopped")
                     return
 
@@ -281,7 +325,7 @@ class Autofocuser:
 
             self.unit.start_activity(UnitActivities.AutofocusAnalysis)
             ps3_client = PS3CLIClient()
-            ps3_client.connect('127.0.0.1', 8998)
+            ps3_client.connect("127.0.0.1", 8998)
             ps3_client.begin_analyze_focus(files)
 
             status: PS3AutofocusStatus | None = None
@@ -292,15 +336,17 @@ class Autofocuser:
                 # wait for the autofocus analyser to start running
                 d = ps3_client.focus_status()
                 if d is None:
-                    time.sleep(.1)
+                    time.sleep(0.1)
                     continue
                 status = PS3AutofocusStatus(**d)
                 if not status.is_running:
-                    time.sleep(.1)
+                    time.sleep(0.1)
                 else:
                     break
             if datetime.datetime.now() >= end:
-                self.log_and_store_error(f"{op}: autofocus analyser did not start within {timeout} seconds")
+                self.log_and_store_error(
+                    f"{op}: autofocus analyser did not start within {timeout} seconds"
+                )
                 filer.move_ram_to_shared(autofocus_folder)
                 self.unit.end_activity(UnitActivities.AutofocusAnalysis)
                 self.unit.end_activity(UnitActivities.Autofocusing)
@@ -314,10 +360,12 @@ class Autofocuser:
                 if not status.is_running:
                     break
                 else:
-                    time.sleep(.5)
+                    time.sleep(0.5)
 
             if datetime.datetime.now() >= end:
-                self.log_and_store_error(f"{op}: autofocus analyser did not finish within {timeout} seconds")
+                self.log_and_store_error(
+                    f"{op}: autofocus analyser did not finish within {timeout} seconds"
+                )
                 ps3_client.close()
                 filer.move_ram_to_shared(autofocus_folder)
                 self.unit.end_activity(UnitActivities.AutofocusAnalysis)
@@ -327,12 +375,16 @@ class Autofocuser:
             self.unit.end_activity(UnitActivities.AutofocusAnalysis)
 
             if not status.analysis_result:
-                self.log_and_store_error(f"{op}: focus analyser stopped working but empty analysis_result")
+                self.log_and_store_error(
+                    f"{op}: focus analyser stopped working but empty analysis_result"
+                )
                 filer.move_ram_to_shared(autofocus_folder)
                 continue  # next try_number
 
             if not status.analysis_result.has_solution:
-                self.log_and_store_error(f"{op}: focus analyser did not find a solution")
+                self.log_and_store_error(
+                    f"{op}: focus analyser did not find a solution"
+                )
                 filer.move_ram_to_shared(autofocus_folder)
                 continue  # next try_number
 
@@ -340,13 +392,20 @@ class Autofocuser:
             # We have an analysis solution
             #
             self.latest_result = status.analysis_result
-            logger.info(f"{op}: analysis result: " +
-                        f"{self.latest_result.best_focus_position=}, {self.latest_result.best_focus_star_diameter=}, " +
-                        f"{self.latest_result.tolerance=}")
+            logger.info(
+                f"{op}: analysis result: "
+                + f"{self.latest_result.best_focus_position=}, {self.latest_result.best_focus_star_diameter=}, "
+                + f"{self.latest_result.tolerance=}"
+            )
 
-            if math.isnan(self.latest_result.tolerance) or self.latest_result.tolerance > max_tolerance:
-                self.log_and_store_error(f"{op}: {self.latest_result.tolerance=} is either NaN or higher than " +
-                                         f"{max_tolerance=}, ignoring it!")
+            if (
+                math.isnan(self.latest_result.tolerance)
+                or self.latest_result.tolerance > max_tolerance
+            ):
+                self.log_and_store_error(
+                    f"{op}: {self.latest_result.tolerance=} is either NaN or higher than "
+                    + f"{max_tolerance=}, ignoring it!"
+                )
                 continue  # next try_number
 
             position: int = int(self.latest_result.best_focus_position)
@@ -356,27 +415,36 @@ class Autofocuser:
 
             logger.info(f"{op}: waiting for focuser to stop moving ...")
             while self.unit.focuser.is_active(FocuserActivities.Moving):
-                time.sleep(.5)
+                time.sleep(0.5)
             logger.info(f"{op}: focuser stopped moving")
 
-            self.unit.unit_conf['focuser']['known_as_good_position'] = position
+            self.unit.unit_conf["focuser"]["known_as_good_position"] = position
             try:
                 Config().set_unit(self.unit.hostname, self.unit.unit_conf)
-                logger.info(f"saved unit '{self.unit.hostname}' configuration for " +
-                            f"focuser known-as-good-position {position}")
+                logger.info(
+                    f"saved unit '{self.unit.hostname}' configuration for "
+                    + f"focuser known-as-good-position {position}"
+                )
             except Exception as e:
-                self.log_and_store_error(f"could not save unit '{self.unit.hostname}' " +
-                                         f"configuration for focuser known-as-good-position (exception: {e})")
+                self.log_and_store_error(
+                    f"could not save unit '{self.unit.hostname}' "
+                    + f"configuration for focuser known-as-good-position (exception: {e})"
+                )
 
             # filer.move_ram_to_shared(autofocus_folder)
-            pixel_scale: float = self.unit.unit_conf['camera']['pixel_scale_at_bin1']
-            Thread(name='autofocus-analysis-plotter', target=plot_autofocus_analysis,
-                   args=[self.latest_result, autofocus_folder, pixel_scale]).start()
+            pixel_scale: float = self.unit.unit_conf["camera"]["pixel_scale_at_bin1"]
+            Thread(
+                name="autofocus-analysis-plotter",
+                target=plot_autofocus_analysis,
+                args=[self.latest_result, autofocus_folder, pixel_scale],
+            ).start()
 
             break  # the tries loop
 
         if try_number == max_tries - 1:
-            self.log_and_store_error(f"{op}: could not achieve {max_tolerance=} within {max_tries=}")
+            self.log_and_store_error(
+                f"{op}: could not achieve {max_tolerance=} within {max_tries=}"
+            )
 
         self.unit.mount.stop_tracking()
         self.unit.end_activity(UnitActivities.Autofocusing)
@@ -400,12 +468,14 @@ class Autofocuser:
         #
 
         self.unit.pw.request("/autofocus/start")
-        while not self.unit.pw.status().autofocus.is_running:  # wait for it to actually start
-            logger.debug('waiting for PlaneWave autofocus to start')
+        while (
+            not self.unit.pw.status().autofocus.is_running
+        ):  # wait for it to actually start
+            logger.debug("waiting for PlaneWave autofocus to start")
             time.sleep(1)
         if self.unit.autofocus_try == 0:
             self.unit.start_activity(UnitActivities.AutofocusingPWI4)
-        logger.debug('PlaneWave autofocus has started')
+        logger.debug("PlaneWave autofocus has started")
         return CanonicalResponse_Ok
 
     def stop_autofocus(self):
