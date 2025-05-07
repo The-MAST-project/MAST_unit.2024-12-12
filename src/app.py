@@ -25,33 +25,38 @@ unit_conf = Config().get_unit(socket.gethostname())
 # else:
 log_level = logging.WARNING
 logging.basicConfig(level=log_level)
-logger = logging.getLogger('mast.unit.' + __name__)
+logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
 
-logger.info('+--------------+')
-logger.info('| Starting ... |')
-logger.info('+--------------+')
+logger.info("+--------------+")
+logger.info("| Starting ... |")
+logger.info("+--------------+")
 
 # Get rid of HTTP proxy environment variables.  We're talking to PWI4 which lives on this same machine
-if 'http_proxy' in os.environ:
-    del os.environ['http_proxy']
-if 'https_proxy' in os.environ:
-    del os.environ['https_proxy']
+if "http_proxy" in os.environ:
+    del os.environ["http_proxy"]
+if "https_proxy" in os.environ:
+    del os.environ["https_proxy"]
 
 
 def app_quit(reason: str):
-    logger.info(f'Quiting ({reason=}) !')
+    logger.info(f"Quiting ({reason=}) !")
     parent_pid = os.getpid()
     parent = psutil.Process(parent_pid)
-    for child in parent.children(recursive=True):  # or parent.children() for recursive=False
+    for child in parent.children(
+        recursive=True
+    ):  # or parent.children() for recursive=False
         logger.info(f"killing process {child.pid=}, '{child.name()}'")
         child.kill()
     parent.kill()
 
 
-ensure_process_is_running(name='PWI4.exe',
-                          cmd='C:\\Program Files (x86)\\PlaneWave Instruments\\PlaneWave Interface 4\\PWI4.exe',
-                          logger=logger, shell=True)
+ensure_process_is_running(
+    name="PWI4.exe",
+    cmd="C:\\Program Files (x86)\\PlaneWave Instruments\\PlaneWave Interface 4\\PWI4.exe",
+    logger=logger,
+    shell=True,
+)
 
 # try, as soon as possible, to talk to PWI4 and quit if not possible
 while True:
@@ -65,21 +70,25 @@ while True:
         continue
     except Exception as ex:
         logger.error("cannot connect to PWI4, giving up!", exc_info=ex)
-        app_quit(reason='cannot talk to PWI4')
+        app_quit(reason="cannot talk to PWI4")
 
-ensure_process_is_running(name='PWShutter.exe',
-                          cmd="C:\\Program Files (x86)\\PlaneWave Instruments\\" +
-                              "PlaneWave Shutter Control\\PWShutter.exe",
-                          logger=logger,
-                          shell=True)
+ensure_process_is_running(
+    name="PWShutter.exe",
+    cmd="C:\\Program Files (x86)\\PlaneWave Instruments\\"
+    + "PlaneWave Shutter Control\\PWShutter.exe",
+    logger=logger,
+    shell=True,
+)
 
 
-ensure_process_is_running(name='ps3cli.exe',
-                          cwd='C:\\Program Files (x86)\\PlaneWave Instruments\\ps3cli\\ps3cli-2024-09-10',
-                          cmd=f'ps3cli.exe --server --port=8998',
-                          logger=logger,
-                          shell=True,
-                          log_stdout_and_stderr=True)
+ensure_process_is_running(
+    name="ps3cli.exe",
+    cwd="C:\\Program Files (x86)\\PlaneWave Instruments\\ps3cli\\ps3cli-2024-09-10",
+    cmd=f"ps3cli.exe --server --port=8998",
+    logger=logger,
+    shell=True,
+    log_stdout_and_stderr=True,
+)
 
 from camera import router as camera_router
 from covers import router as covers_router
@@ -103,10 +112,10 @@ async def websocket_disconnect_handler(websocket: WebSocket, exc: WebSocketDisco
 
 
 app = FastAPI(
-    docs_url='/docs',
+    docs_url="/docs",
     redocs_url=None,
     lifespan=lifespan,
-    openapi_url='/openapi.json',
+    openapi_url="/openapi.json",
     debug=True,
     default_response_class=ORJSONResponse,
     # exception_handlers={WebSocketDisconnect: websocket_disconnect_handler},
@@ -129,7 +138,11 @@ app.add_middleware(
 
 @app.exception_handler(Exception)
 async def generic_exception_handler(request, exc: Exception):
-    return ORJSONResponse(status_code=500, content={'message': f"{function_name()}: Exception occurred: {exc}"})
+    return ORJSONResponse(
+        status_code=500,
+        content={"message": f"{function_name()}: Exception occurred: {exc}"},
+    )
+
 
 # @app.websocket_route(BASE_UNIT_PATH + '/unit_visual_ws')
 # async def unit_visual_websocket(websocket: WebSocket):
@@ -149,9 +162,9 @@ def read_favicon():
 
 
 if __name__ == "__main__":
-    server_conf = Config().get_service(service_name='unit')
-    host = server_conf['listen_on'] if 'listen_on' in server_conf else '0.0.0.0'
-    port = server_conf['port'] if 'port' in server_conf else 8000
+    server_conf = Config().get_service(service_name="unit")
+    host = server_conf["listen_on"] if "listen_on" in server_conf else "0.0.0.0"
+    port = server_conf["port"] if "port" in server_conf else 8000
 
     logger.info("The MAST Unit server is starting ...")
 
