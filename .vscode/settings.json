@@ -1,0 +1,17 @@
+{
+  "terminal.integrated.accessibleViewFocusOnCommandExecution": true,
+  "terminal.integrated.defaultProfile.windows": "PowerShell",
+  // Linting
+  "python.linting.enabled": true,
+  "python.linting.flake8Enabled": true,
+  "python.linting.pylintEnabled": false,
+  // Formatting
+  "editor.formatOnSave": true,
+  "python.formatting.provider": "black",
+  // Optional: isort to sort imports on save
+  "editor.codeActionsOnSave": {
+    "source.organizeImports": "always",
+  },
+  "editor.accessibilitySupport": "off",
+  "terminal.integrated.accessibilitySupport": false
+}
