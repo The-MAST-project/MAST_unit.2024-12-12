@@ -5,17 +5,21 @@ from astropy.io import fits
 import argparse
 
 
-def main(filepath, fiber_px=4041, plate_scale_arcsec_px=206265 * 2.3 / 1800000, shift=0):
+def main(
+    filepath, fiber_px=4041, plate_scale_arcsec_px=206265 * 2.3 / 1800000, shift=0
+):
     # Open FITS file to get CCD width
     with fits.open(filepath) as hd:
-        ccd_width_px = hd[0].header['NAXIS1']
+        ccd_width_px = hd[0].header["NAXIS1"]
         image_data = hd[0].data
 
     def fiffa_shadow_at_col(w_arr):
         # Load data
         folder = os.path.dirname(__file__)
-        a = np.fromfile(os.path.join(folder, 'MAST_BFD17_ASI1600_GuideMode.dat'), sep=' ')
-        y = np.fromfile(os.path.join(folder, 'MAST_BFD17_ASI1600_YCord.dat'), sep=' ')
+        a = np.fromfile(
+            os.path.join(folder, "MAST_BFD17_ASI1600_GuideMode.dat"), sep=" "
+        )
+        y = np.fromfile(os.path.join(folder, "MAST_BFD17_ASI1600_YCord.dat"), sep=" ")
 
         # Process data
         w_vec0 = np.unique(y)
@@ -49,16 +53,34 @@ def main(filepath, fiber_px=4041, plate_scale_arcsec_px=206265 * 2.3 / 1800000, 
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Apply FIFFA shadow correction to an image.")
+    parser = argparse.ArgumentParser(
+        description="Apply FIFFA shadow correction to an image."
+    )
     parser.add_argument("filepath", type=str, help="Path to the FITS file.")
-    parser.add_argument("--fiber_px", type=int, default=4041, help="Fiber pixel value (default: 4041).")
-    parser.add_argument("--plate_scale_arcsec_px", type=float, default=206265 * 2.3 / 1800000,
-                        help="Plate scale in arcseconds per pixel (default: 206265 * 2.3 / 1800000).")
-    parser.add_argument("--shift", type=int, default=0, help="shift fiber pixel value left by this value")
+    parser.add_argument(
+        "--fiber_px", type=int, default=4041, help="Fiber pixel value (default: 4041)."
+    )
+    parser.add_argument(
+        "--plate_scale_arcsec_px",
+        type=float,
+        default=206265 * 2.3 / 1800000,
+        help="Plate scale in arcseconds per pixel (default: 206265 * 2.3 / 1800000).",
+    )
+    parser.add_argument(
+        "--shift",
+        type=int,
+        default=0,
+        help="shift fiber pixel value left by this value",
+    )
 
     args = parser.parse_args()
-    main(args.filepath, fiber_px=args.fiber_px, plate_scale_arcsec_px=args.plate_scale_arcsec_px, shift=args.shift)
-    '''
+    main(
+        args.filepath,
+        fiber_px=args.fiber_px,
+        plate_scale_arcsec_px=args.plate_scale_arcsec_px,
+        shift=args.shift,
+    )
+    """
     example usage in another python script- filepath input mandatory, fiber_px and plate_scale_arcsec_px optional.
     
     import vignetting as vig
@@ -66,4 +88,4 @@ if __name__ == "__main__":
 
     the vignetted image will be saved in the same directory as the input image with 
       the filename appended with '_vig.fits'
-    '''
+    """
