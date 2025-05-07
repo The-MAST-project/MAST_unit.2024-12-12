@@ -1,25 +1,36 @@
+import datetime
 import logging
+import os
+import platform
+import sys
 import threading
 import time
-from enum import IntEnum, auto, Enum
-import datetime
-from typing import List, Union, Literal, Dict, Optional
+from enum import Enum, IntEnum, auto
+from typing import Dict, List, Literal, Optional, Union
 
-from common.utils import RepeatTimer, time_stamp, CanonicalResponse, CanonicalResponse_Ok
-from common.components import Component, ComponentStatus
-from common.utils import BASE_UNIT_PATH, function_name
-from common.config import Config
-from common.mast_logging import init_log
-from common.dlipowerswitch import SwitchedOutlet, OutletDomain, PowerStatus
-import os
-import sys
-import platform
 from fastapi.routing import APIRouter
-from common.activities import StageActivities
 
-cur_dir = os.path.abspath(os.path.dirname(__file__))                            # Specifies the current directory.
-ximc_dir = os.path.join(cur_dir, "Standa", "ximc-2.13.6", "ximc")               # dependencies for examples.
-sys.path.append(os.path.join(ximc_dir, "crossplatform", "wrappers", "python"))  # add pyximc.py wrapper to python path
+from common.activities import StageActivities
+from common.components import Component, ComponentStatus
+from common.config import Config
+from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
+from common.mast_logging import init_log
+from common.utils import (
+    BASE_UNIT_PATH,
+    CanonicalResponse,
+    CanonicalResponse_Ok,
+    RepeatTimer,
+    function_name,
+    time_stamp,
+)
+
+cur_dir = os.path.abspath(os.path.dirname(__file__))  # Specifies the current directory.
+ximc_dir = os.path.join(
+    cur_dir, "Standa", "ximc-2.13.6", "ximc"
+)  # dependencies for examples.
+sys.path.append(
+    os.path.join(ximc_dir, "crossplatform", "wrappers", "python")
+)  # add pyximc.py wrapper to python path
 
 if platform.system() == "Windows":
     # Determining the directory with dependencies for windows depending on the bit depth.
@@ -28,42 +39,56 @@ if platform.system() == "Windows":
     if sys.version_info >= (3, 8):
         os.add_dll_directory(lib_dir)
     else:
-        os.environ["Path"] = lib_dir + ";" + os.environ["Path"]  # add dll path into an environment variable
+        os.environ["Path"] = (
+            lib_dir + ";" + os.environ["Path"]
+        )  # add dll path into an environment variable
 
-    from pyximc import (Result,  EnumerateFlags, device_information_t, string_at, byref, MvcmdStatus, StateFlags, cast, POINTER,
-                        c_int, status_t, edges_settings_t)
+    from pyximc import (
+        POINTER,
+        EnumerateFlags,
+        MvcmdStatus,
+        Result,
+        StateFlags,
+        byref,
+        c_int,
+        cast,
+        device_information_t,
+        edges_settings_t,
+    )
     from pyximc import lib as ximclib
+    from pyximc import status_t, string_at
 
-logger = logging.getLogger('mast.unit.' + __name__)
+logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
 
 RESULT_MAP = {
     Result.Ok: "Ok",
-    Result.Error: "Error",
+    Result.Error: "error",
     Result.NotImplemented: "NotImplemented",
     Result.ValueError: "ValueError",
     Result.NoDevice: "NoDevice",
 }
 
+
 class StageDirection(IntEnum):
-    Up = auto()   
+    Up = auto()
     Down = auto()
 
 
 class StagePresetPosition(Enum):
-    Sky = 'sky',
-    Spec = 'spec',
-    Min = 'min',
-    Middle = 'mid',
-    Max = 'max',
+    Sky = ("sky",)
+    Spec = ("spec",)
+    Min = ("min",)
+    Middle = ("mid",)
+    Max = ("max",)
     StartUp = Sky
 
 
 stagePositionNames: List[str] = [k for k in StagePresetPosition.__dict__.keys()]
 
 stage_direction_str2int_dict: dict = {
-    'Up': StageDirection.Up,
-    'Down': StageDirection.Down,
+    "Up": StageDirection.Up,
+    "Down": StageDirection.Down,
 }
 
 
@@ -90,15 +115,15 @@ class Stage(Component, SwitchedOutlet):
 
     _positioning_precision: int = 100
 
-    def __init__(self, unit: 'Unit'):
+    def __init__(self, unit: "Unit"):
         if self._initialized:
             return
 
         self.unit = unit
         self.unit_conf: dict = Config().get_unit()
-        self.conf = self.unit_conf['stage']
+        self.conf = self.unit_conf["stage"]
 
-        SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name='Stage')
+        SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name="Stage")
         Component.__init__(self)
 
         self.errors: List[str] = []
@@ -123,9 +148,9 @@ class Stage(Component, SwitchedOutlet):
             time.sleep(3)
 
         self.presets = {
-            StagePresetPosition.Sky: self.conf['presets']['sky'],
-            StagePresetPosition.Spec: self.conf['presets']['spec']
-            }
+            StagePresetPosition.Sky: self.conf["presets"]["sky"],
+            StagePresetPosition.Spec: self.conf["presets"]["spec"],
+        }
 
         # This is device search and enumeration with probing. It gives more information about devices.
         probe_flags = EnumerateFlags.ENUMERATE_PROBE | EnumerateFlags.ENUMERATE_ALL_COM
@@ -147,40 +172,49 @@ class Stage(Component, SwitchedOutlet):
             return
 
         x_device_information = device_information_t()
-        result = ximclib.get_device_information(self.device, byref(x_device_information))
+        result = ximclib.get_device_information(
+            self.device, byref(x_device_information)
+        )
         x_edges_settings = edges_settings_t()
         result1 = ximclib.get_edges_settings(self.device, byref(x_edges_settings))
         if result == Result.Ok and result1 == Result.Ok:
             comport = str(self.device_uri)
-            comport = comport[comport.find('COM'):]
+            comport = comport[comport.find("COM") :]
             self.min_travel = x_edges_settings.LeftBorder
             self.max_travel = x_edges_settings.RightBorder
 
-            self.info['port'] = comport
-            self.info['controller'] = repr(string_at(x_device_information.Manufacturer).decode()).replace("'", '')
-            self.info['product'] = repr(string_at(x_device_information.ProductDescription).decode()).replace("'", '')
-            self.info['version'] = (f"{repr(x_device_information.Major)}.{repr(x_device_information.Minor)}" +
-                                    f".{repr(x_device_information.Release)}")
-            self.info['travel'] = {
-                'min': self.min_travel,
-                'max': self.max_travel,
+            self.info["port"] = comport
+            self.info["controller"] = repr(
+                string_at(x_device_information.Manufacturer).decode()
+            ).replace("'", "")
+            self.info["product"] = repr(
+                string_at(x_device_information.ProductDescription).decode()
+            ).replace("'", "")
+            self.info["version"] = (
+                f"{repr(x_device_information.Major)}.{repr(x_device_information.Minor)}"
+                + f".{repr(x_device_information.Release)}"
+            )
+            self.info["travel"] = {
+                "min": self.min_travel,
+                "max": self.max_travel,
             }
 
-            self.device_info = (
-                "Port: {}, Manufacturer={}, Product={}, Version={}, Range={}..{}, CLOSE_ENOUGH={}".format(
-                    comport,
-                    self.info['controller'],
-                    self.info['product'],
-                    self.info['version'],
-                    self.min_travel,
-                    self.max_travel,
-                    self.CLOSE_ENOUGH,
-                ))
+            self.device_info = "Port: {}, Manufacturer={}, Product={}, version={}, Range={}..{}, CLOSE_ENOUGH={}".format(
+                comport,
+                self.info["controller"],
+                self.info["product"],
+                self.info["version"],
+                self.min_travel,
+                self.max_travel,
+                self.CLOSE_ENOUGH,
+            )
         self.stage_lock = threading.Lock()
 
         self.presets[StagePresetPosition.Min] = self.min_travel
         self.presets[StagePresetPosition.Max] = self.max_travel
-        self.presets[StagePresetPosition.Middle] = int((self.max_travel - self.min_travel) / 2)
+        self.presets[StagePresetPosition.Middle] = int(
+            (self.max_travel - self.min_travel) / 2
+        )
 
         # get initial values from the hardware
         hw_status = status_t()
@@ -191,7 +225,7 @@ class Stage(Component, SwitchedOutlet):
             self.is_moving = hw_status.MvCmdSts & MvcmdStatus.MVCMD_RUNNING
 
         self.timer = RepeatTimer(2, function=self.ontimer)
-        self.timer.name = 'stage-timer-thread'
+        self.timer.name = "stage-timer-thread"
         self.timer.start()
 
         with self.stage_lock:
@@ -200,7 +234,7 @@ class Stage(Component, SwitchedOutlet):
                 self.start_activity(StageActivities.Homing)
 
         self._initialized = True
-        logger.info(f'initialized ({self.device_info})')
+        logger.info(f"initialized ({self.device_info})")
 
     def __del__(self):
         logger.info(f"Closing {self.device=}")
@@ -228,7 +262,7 @@ class Stage(Component, SwitchedOutlet):
             ximclib.close_device(byref(cast(self.device, POINTER(c_int))))
             self.device = -1
 
-        logger.info(f'connected = {value} => {self.connected}')
+        logger.info(f"connected = {value} => {self.connected}")
 
     def connect(self):
         """
@@ -299,10 +333,12 @@ class Stage(Component, SwitchedOutlet):
     @position.setter
     def position(self, value):
         if not self.connected:
-            raise Exception('Not connected')
+            raise Exception("Not connected")
 
         if self.close_enough(value):
-            logger.info(f'Not changing position ({self.position} is close enough to {value}')
+            logger.info(
+                f"Not changing position ({self.position} is close enough to {value}"
+            )
             return
 
         self.target = value
@@ -311,7 +347,7 @@ class Stage(Component, SwitchedOutlet):
         if result == Result.Ok:
             self.start_activity(StageActivities.Moving)
         else:
-            raise Exception(f'Could not start move to {value} ({result=})')
+            raise Exception(f"Could not start move to {value} ({result=})")
 
     def status(self) -> StageStatus:
         at_preset = None
@@ -358,7 +394,9 @@ class Stage(Component, SwitchedOutlet):
 
         self._position = hw_status.CurPosition
 
-        error_bits = StateFlags.STATE_ERRC|StateFlags.STATE_ERRV|StateFlags.STATE_ERRD
+        error_bits = (
+            StateFlags.STATE_ERRC | StateFlags.STATE_ERRV | StateFlags.STATE_ERRD
+        )
         controller_error = hw_status.Flags & error_bits
         if controller_error:
             logger.error(f"CONTR ERROR 0x{controller_error:08X}")
@@ -386,18 +424,26 @@ class Stage(Component, SwitchedOutlet):
                     self.end_activity(StageActivities.Moving)
                 elif hw_status.MvCmdSts & MvcmdStatus.MVCMD_ERROR:
                     self.end_activity(StageActivities.Moving)
-                    logger.error(f"move command 0x{hw_status.MvCmdSts & MvcmdStatus.MVCMD_NANE_BITS:08X} " +
-                                 "ended with MVCMD_ERROR")
+                    logger.error(
+                        f"move command 0x{hw_status.MvCmdSts & MvcmdStatus.MVCMD_NANE_BITS:08X} "
+                        + "ended with MVCMD_ERROR"
+                    )
 
-            if (self.is_active(StageActivities.StartingUp) and
-                    self.close_enough(self.presets[StagePresetPosition.StartUp])):
+            if self.is_active(StageActivities.StartingUp) and self.close_enough(
+                self.presets[StagePresetPosition.StartUp]
+            ):
                 self.end_activity(StageActivities.StartingUp)
 
             if self.is_active(StageActivities.Homing):
                 self.end_activity(StageActivities.Homing)
 
     #
-    def move_to_preset(self, preset: Union[Literal['Sky', 'Spec', 'Min', 'Mid', 'Max'] | StagePresetPosition]):
+    def move_to_preset(
+        self,
+        preset: Union[
+            Literal["Sky", "Spec", "Min", "Mid", "Max"] | StagePresetPosition
+        ],
+    ):
         """
         Starts moving the stage to one of the preset positions
 
@@ -405,8 +451,6 @@ class Stage(Component, SwitchedOutlet):
         ----------
         preset
             Name of a preset position
-
-        :mastapi:
         """
         if not self.detected or not self.connected:
             return
@@ -420,7 +464,9 @@ class Stage(Component, SwitchedOutlet):
 
         preset_position = self.presets[preset]
         if self.close_enough(preset_position):
-            logger.info(f'Not moving {self.position=} is close enough to {preset_position=}')
+            logger.info(
+                f"Not moving {self.position=} is close enough to {preset_position=}"
+            )
             return
 
         return self.move_absolute(preset_position)
@@ -429,35 +475,41 @@ class Stage(Component, SwitchedOutlet):
         op = function_name()
 
         if not self.detected:
-            return CanonicalResponse(errors=['not detected'])
+            return CanonicalResponse(errors=["not detected"])
         if not self.connected:
-            return CanonicalResponse(errors=['not connected'])
+            return CanonicalResponse(errors=["not connected"])
 
         if isinstance(position, str):
             position = int(position)
 
         if self.close_enough(position):
-            logger.info(f'{op}: Not moving {self.position=} is close enough to {position=}')
+            logger.info(
+                f"{op}: Not moving {self.position=} is close enough to {position=}"
+            )
             return
 
         if not (self.min_travel <= position < self.max_travel):
-            return CanonicalResponse(errors=[f"out of range: {self.min_travel} <= position < {self.max_travel}"])
+            return CanonicalResponse(
+                errors=[
+                    f"out of range: {self.min_travel} <= position < {self.max_travel}"
+                ]
+            )
         try:
             with self.stage_lock:
                 response = ximclib.command_move(self.device, position, 0)
                 if response != Result.Ok:
-                    msg = f'Failed to start stage move absolute (command_move({self.device}, {position})'
+                    msg = f"Failed to start stage move absolute (command_move({self.device}, {position})"
                     logger.error(f"{op}: " + msg)
                     return CanonicalResponse(errors=msg)
         except Exception as ex:
-            msg = f'Failed to start stage move absolute (command_move({self.device}, {position})'
+            msg = f"Failed to start stage move absolute (command_move({self.device}, {position})"
             logger.exception(f"{op}: " + msg, ex)
             return CanonicalResponse(exception=ex)
 
         self.ticks_at_start = self.position
         self.target = position
         self.motion_start_time = datetime.datetime.now()
-        logger.info(f'{op}: move: from {self.position=} to {self.target=}')
+        logger.info(f"{op}: move: from {self.position=} to {self.target=}")
         self.start_activity(StageActivities.Moving)
 
         return CanonicalResponse_Ok
@@ -472,7 +524,6 @@ class Stage(Component, SwitchedOutlet):
             The direction to move (**Up**: away from the motor, **Down**: towards the motor)
         amount
             How many units to move
-        :mastapi:
         """
         op = function_name()
 
@@ -488,11 +539,13 @@ class Stage(Component, SwitchedOutlet):
             with self.stage_lock:
                 response = ximclib.command_movr(self.device, amount, 0)
             if response != Result.Ok:
-                msg = f'Failed to start stage move (command_movr({self.device}, {amount})'
+                msg = (
+                    f"Failed to start stage move (command_movr({self.device}, {amount})"
+                )
                 logger.error(f"{op}: " + msg)
                 return CanonicalResponse(errors=msg)
         except Exception as ex:
-            msg = f'Failed to start stage move relative (command_movr({self.device}, {amount})'
+            msg = f"Failed to start stage move relative (command_movr({self.device}, {amount})"
             logger.exception(f"{op}: " + msg, ex)
             return CanonicalResponse(exception=ex)
         return CanonicalResponse_Ok
@@ -500,13 +553,12 @@ class Stage(Component, SwitchedOutlet):
     def abort(self):
         """
         Aborts any in-progress stage activities
-
-        :mastapi:
-        Returns
-        -------
-
         """
-        for activity in (StageActivities.StartingUp, StageActivities.Moving, StageActivities.ShuttingDown):
+        for activity in (
+            StageActivities.StartingUp,
+            StageActivities.Moving,
+            StageActivities.ShuttingDown,
+        ):
             if self.is_active(activity):
                 self.end_activity(activity)
 
@@ -515,16 +567,26 @@ class Stage(Component, SwitchedOutlet):
 
     @property
     def name(self) -> str:
-        return 'stage'
+        return "stage"
 
     @property
     def operational(self) -> bool:
-        return all([self.is_on(), self.detected, self.connected, not self.was_shut_down,
-                    (self.at_preset(StagePresetPosition.Spec) or self.at_preset(StagePresetPosition.Sky))])
+        return all(
+            [
+                self.is_on(),
+                self.detected,
+                self.connected,
+                not self.was_shut_down,
+                (
+                    self.at_preset(StagePresetPosition.Spec)
+                    or self.at_preset(StagePresetPosition.Sky)
+                ),
+            ]
+        )
 
     @property
     def why_not_operational(self) -> List[str]:
-        label = f'{self.name}'
+        label = f"{self.name}"
         ret = []
         if not self.is_on():
             ret.append(f"{label}: not powered")
@@ -535,7 +597,10 @@ class Stage(Component, SwitchedOutlet):
                 ret.append(f"{label}: shut down")
             if not self.connected:
                 ret.append(f"{label}: not connected")
-            elif not (self.at_preset(StagePresetPosition.Spec) or self.at_preset(StagePresetPosition.Sky)):
+            elif not (
+                self.at_preset(StagePresetPosition.Spec)
+                or self.at_preset(StagePresetPosition.Sky)
+            ):
                 ret.append(f"not at 'Spec' or 'Sky' preset positions")
         return ret
 
@@ -548,29 +613,42 @@ class Stage(Component, SwitchedOutlet):
         return self._was_shut_down
 
 
-base_path = BASE_UNIT_PATH + "/stage"
-tag = 'Stage'
-
 stage = Stage(unit=None)
 
 
-def get_position() -> int:
-    return stage.position
+def endpoint_get_position() -> int:
+    return CanonicalResponse(value=stage.position)
 
 
-def set_position(pos: int):
+def endpoint_set_position(pos: int):
     stage.position = pos
     return CanonicalResponse_Ok
 
 
+base_stage_path = BASE_UNIT_PATH + "/stage"
+tag = "Stage"
+
 router = APIRouter()
-router.add_api_route(base_path + '/startup', tags=[tag], endpoint=stage.startup)
-router.add_api_route(base_path + '/shutdown', tags=[tag], endpoint=stage.shutdown)
-router.add_api_route(base_path + '/abort', tags=[tag], endpoint=stage.abort)
-router.add_api_route(base_path + '/status', tags=[tag], endpoint=stage.status)
-router.add_api_route(base_path + '/position', tags=[tag], endpoint=get_position)
-router.add_api_route(base_path + '/position', methods=['PUT'], tags=[tag], endpoint=set_position)
-router.add_api_route(base_path + '/connect', tags=[tag], endpoint=stage.connect)
-router.add_api_route(base_path + '/disconnect', tags=[tag], endpoint=stage.disconnect)
-router.add_api_route(base_path + '/move', tags=[tag], endpoint=stage.move_relative)
-router.add_api_route(base_path + '/move_to_preset', tags=[tag], endpoint=stage.move_to_preset)
+router.add_api_route(base_stage_path + "/startup", tags=[tag], endpoint=stage.startup)
+router.add_api_route(base_stage_path + "/shutdown", tags=[tag], endpoint=stage.shutdown)
+router.add_api_route(base_stage_path + "/abort", tags=[tag], endpoint=stage.abort)
+router.add_api_route(base_stage_path + "/status", tags=[tag], endpoint=stage.status)
+router.add_api_route(
+    base_stage_path + "/position", tags=[tag], endpoint=endpoint_get_position
+)
+router.add_api_route(
+    base_stage_path + "/position",
+    methods=["PUT"],
+    tags=[tag],
+    endpoint=endpoint_set_position,
+)
+router.add_api_route(base_stage_path + "/connect", tags=[tag], endpoint=stage.connect)
+router.add_api_route(
+    base_stage_path + "/disconnect", tags=[tag], endpoint=stage.disconnect
+)
+router.add_api_route(
+    base_stage_path + "/move", tags=[tag], endpoint=stage.move_relative
+)
+router.add_api_route(
+    base_stage_path + "/move_to_preset", tags=[tag], endpoint=stage.move_to_preset
+)
