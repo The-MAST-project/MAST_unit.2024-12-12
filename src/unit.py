@@ -1,49 +1,61 @@
 import datetime
 import io
-import os
-from itertools import chain
-import logging
-import socket
-import numpy as np
-import camera
-from PlaneWave import pwi4_client
-import time
-from typing import List, Any, Optional, Union, Dict, Literal
-from camera import Camera, CameraBinning, CameraStatus
-from covers import Covers, CoverStatus
-from stage import Stage, StageStatus
-from mount import Mount, MountStatus
-from focuser import Focuser, FocuserStatus
-from common.dlipowerswitch import PowerSwitchFactory, SwitchedOutlet, PowerStatus
-from common.utils import RepeatTimer
-from threading import Thread
-from common.utils import BASE_UNIT_PATH, UnitRoi
-from common.components import Component, ComponentStatus
-from common.mast_logging import DailyFileHandler, init_log
-from common.utils import time_stamp, CanonicalResponse, CanonicalResponse_Ok, function_name
-from common.filer import Filer
-from common.config import Config
-from common.activities import UnitActivities, FocuserActivities, CameraActivities
-from common.activities import CoverActivities, StageActivities, MountActivities
-from common.corrections import correction_phases
-from common.paths import PathMaker
-from enum import Enum
-from fastapi.routing import APIRouter
-from fastapi import Query
-from typing import Annotated
-from PIL import Image
 import ipaddress
+import logging
+import os
+import socket
+import time
+from enum import Enum
+from itertools import chain
+from threading import Thread
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
+
+import numpy as np
+from fastapi import Query
+from fastapi.routing import APIRouter
+from PIL import Image
 from starlette.websockets import WebSocket, WebSocketDisconnect
-from common.models.assignments import UnitAssignmentModel
-from common.api import ControllerApi
-from common.tasks.notifications import notify_controller_about_task_acquisition_path
 
-from autofocusing import Autofocuser, AutofocusResult
-from solving import Solver
+import camera
 from acquirer import Acquirer
+from autofocusing import Autofocuser, AutofocusResult
+from camera import Camera, CameraBinning, CameraSettings, CameraStatus
+from common.activities import (
+    CameraActivities,
+    CoverActivities,
+    FocuserActivities,
+    MountActivities,
+    StageActivities,
+    UnitActivities,
+)
+from common.api import ControllerApi
+from common.components import Component, ComponentStatus
+from common.config import Config
+from common.corrections import correction_phases
+from common.dlipowerswitch import PowerStatus, PowerSwitchFactory, SwitchedOutlet
+from common.filer import Filer
+from common.mast_logging import DailyFileHandler, init_log
+from common.models.assignments import UnitAssignmentModel
+from common.paths import PathMaker
+from common.tasks.notifications import notify_controller_about_task_acquisition_path
+from common.utils import (
+    BASE_UNIT_PATH,
+    CanonicalResponse,
+    CanonicalResponse_Ok,
+    RepeatTimer,
+    UnitRoi,
+    function_name,
+    time_stamp,
+)
+from covers import Covers, CoverStatus
+from focuser import Focuser, FocuserStatus
 from guiding import Guider
+from mount import Mount, MountStatus
+from PlaneWave import pwi4_client
+from solving import Solver
+from stage import Stage, StageStatus
 
-logger = logging.getLogger('mast.unit')
+logger = logging.getLogger("mast.unit")
 init_log(logger)
 filer = Filer(logger)
 
@@ -67,7 +79,7 @@ class UnitStatus(ComponentStatus, PowerStatus):
     errors: Optional[List[str]] = None
     autofocus: Optional[Dict] = None
     corrections: Optional[List] = None
-    type: Literal['short', 'full'] = 'full'
+    type: Literal["short", "full"] = "full"
     date: Optional[str] = None
     powered: bool = True
 
@@ -109,12 +121,18 @@ class Unit(Component):
         self.id = id_
         self.unit_conf = Config().get_unit()
 
-        self.min_ra_correction_arcsec: float = float(self.unit_conf['guiding']['min_ra_correction_arcsec']) \
-            if 'min_ra_correction_arcsec' in self.unit_conf['guiding'] else 1
-        self.min_dec_correction_arcsec: float = float(self.unit_conf['guiding']['min_dec_correction_arcsec']) \
-            if 'min_dec_correction_arcsec' in self.unit_conf['guiding'] else 1
+        self.min_ra_correction_arcsec: float = (
+            float(self.unit_conf["guiding"]["min_ra_correction_arcsec"])
+            if "min_ra_correction_arcsec" in self.unit_conf["guiding"]
+            else 1
+        )
+        self.min_dec_correction_arcsec: float = (
+            float(self.unit_conf["guiding"]["min_dec_correction_arcsec"])
+            if "min_dec_correction_arcsec" in self.unit_conf["guiding"]
+            else 1
+        )
 
-        self.autofocus_max_tolerance = self.unit_conf['autofocus']['max_tolerance']
+        self.autofocus_max_tolerance = self.unit_conf["autofocus"]["max_tolerance"]
         self.autofocus_try: int = 0
 
         self.hostname = socket.gethostname()
@@ -132,7 +150,7 @@ class Unit(Component):
             self.acquirer: Acquirer = Acquirer(self)
             self.guider: Guider = Guider(self)
         except Exception as ex:
-            logger.exception(msg='could not create a Unit', exc_info=ex)
+            logger.exception(msg="could not create a Unit", exc_info=ex)
             raise ex
 
         self.components: List[Component] = [
@@ -145,7 +163,7 @@ class Unit(Component):
         ]
 
         self.timer: RepeatTimer = RepeatTimer(2, function=self.ontimer)
-        self.timer.name = 'unit-timer-thread'
+        self.timer.name = "unit-timer-thread"
         self.timer.start()
 
         self.reference_image = None
@@ -160,6 +178,8 @@ class Unit(Component):
 
         self.controller_api = ControllerApi()
 
+        self.spirals_folder: str = None
+
         self._initialized = True
         logger.info("unit: initialized")
 
@@ -170,17 +190,12 @@ class Unit(Component):
     def startup(self):
         """
         Starts the **MAST** ``unit`` subsystem.  Makes it ``operational``.
-
-        Returns
-        -------
-
-        :mastapi:
         """
         if self.is_active(UnitActivities.StartingUp):
             return
 
         self._was_shut_down = False
-        Thread(name='unit-startup-thread', target=self.do_startup).start()
+        Thread(name="unit-startup-thread", target=self.do_startup).start()
         return CanonicalResponse_Ok
 
     def do_shutdown(self):
@@ -191,8 +206,6 @@ class Unit(Component):
     def shutdown(self):
         """
         Shuts down the **MAST** ``unit`` subsystem.  Makes it ``idle``.
-
-        :mastapi:
         """
         if not self.connected:
             self.connect()
@@ -200,7 +213,7 @@ class Unit(Component):
         if self.is_active(UnitActivities.ShuttingDown):
             return
 
-        Thread(name='shutdown-thread', target=self.do_shutdown).start()
+        Thread(name="shutdown-thread", target=self.do_shutdown).start()
         return CanonicalResponse_Ok
 
     @property
@@ -208,10 +221,9 @@ class Unit(Component):
         return all([comp.connected for comp in self.components])
 
     @connected.setter
-    def connected(self, value):
+    def connected(self, value: bool):
         """
         Should connect/disconnect anything that needs connecting/disconnecting
-
         """
         self.mount.connected = value
         self.camera.connected = value
@@ -222,8 +234,6 @@ class Unit(Component):
     def connect(self):
         """
         Connects the **MAST** ``unit`` subsystems to all its ancillaries.
-
-        :mastapi:
         """
         self.connected = True
         return CanonicalResponse_Ok
@@ -231,8 +241,6 @@ class Unit(Component):
     def disconnect(self):
         """
         Disconnects the **MAST** ``unit`` subsystems from all its ancillaries.
-
-        :mastapi:
         """
         self.connected = False
         return CanonicalResponse_Ok
@@ -240,8 +248,6 @@ class Unit(Component):
     def power_all_on(self):
         """
         Turn **ON** all power sockets
-
-        :mastapi:
         """
         for c in self.components:
             if isinstance(c, SwitchedOutlet):
@@ -250,27 +256,37 @@ class Unit(Component):
     def power_all_off(self):
         """
         Turn **OFF** all power sockets
-
-        :mastapi:
         """
         for c in self.components:
             if isinstance(c, SwitchedOutlet):
                 c.power_off()
 
     def status(self) -> CanonicalResponse:
-        autofocus = {
-                'success': self.autofocus_result.success,
-                'best_position': self.autofocus_result.best_position,
-                'tolerance': self.autofocus_result.tolerance,
-                'time_stamp': self.autofocus_result.time_stamp
-            } if self.autofocus_result else None
+        autofocus = (
+            {
+                "success": self.autofocus_result.success,
+                "best_position": self.autofocus_result.best_position,
+                "tolerance": self.autofocus_result.tolerance,
+                "time_stamp": self.autofocus_result.time_stamp,
+            }
+            if self.autofocus_result
+            else None
+        )
 
-        corrections_list = self.acquirer.latest_acquisition.corrections \
-            if self.acquirer.latest_acquisition and self.acquirer.latest_acquisition.corrections else []
-        corrections = [corrections_list[phase].to_dict() for phase in correction_phases if phase in corrections_list]
+        corrections_list = (
+            self.acquirer.latest_acquisition.corrections
+            if self.acquirer.latest_acquisition
+            and self.acquirer.latest_acquisition.corrections
+            else []
+        )
+        corrections = [
+            corrections_list[phase].to_dict()
+            for phase in correction_phases
+            if phase in corrections_list
+        ]
 
         ret = UnitStatus(
-            **self.component_status().dict(),
+            **self.component_status().model_dump(),
             id=id(self),
             guiding=self.guider.is_guiding,
             autofocusing=self.autofocuser.is_autofocusing,
@@ -283,7 +299,7 @@ class Unit(Component):
             errors=self.errors,
             autofocus=autofocus,
             corrections=corrections,
-            type='full',
+            type="full",
             date=time_stamp(),
         ).model_dump()
 
@@ -293,61 +309,56 @@ class Unit(Component):
     def quit():
         """
         Quits the application
-
-        :mastapi:
-        Returns
-        -------
-
         """
         from app import app_quit
-        app_quit(reason='quit()')
+
+        app_quit(reason="quit()")
 
     def abort(self):
         """
         Aborts any in-progress mount activity
-
-        :mastapi:
-        Returns
-        -------
-
         """
         if self.is_active(UnitActivities.Guiding):
             self.guider.stop_acquisition_and_guiding()
             while self.is_active(UnitActivities.Guiding):
-                time.sleep(.2)
+                time.sleep(0.2)
 
-        if self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing):
+        if self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(
+            UnitActivities.Autofocusing
+        ):
             self.autofocuser.stop_autofocus()
-            while self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing):
-                time.sleep(.2)
+            while self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(
+                UnitActivities.Autofocusing
+            ):
+                time.sleep(0.2)
 
         [component.abort() for component in self.components]
 
     def ontimer(self):
         """
         Used in order to end activities that were started elsewhere in the code.
-
-        Returns
-        -------
-
         """
         # UnitActivities.StartingUp
         if self.is_active(UnitActivities.StartingUp):
-            if not (self.mount.is_active(MountActivities.StartingUp) or
-                    self.camera.is_active(CameraActivities.StartingUp) or
-                    self.stage.is_active(StageActivities.StartingUp) or
-                    self.focuser.is_active(FocuserActivities.StartingUp) or
-                    self.covers.is_active(CoverActivities.StartingUp)):
+            if not (
+                self.mount.is_active(MountActivities.StartingUp)
+                or self.camera.is_active(CameraActivities.StartingUp)
+                or self.stage.is_active(StageActivities.StartingUp)
+                or self.focuser.is_active(FocuserActivities.StartingUp)
+                or self.covers.is_active(CoverActivities.StartingUp)
+            ):
                 self.end_activity(UnitActivities.StartingUp)
 
         # UnitActivities.ShuttingDown
         if self.is_active(UnitActivities.ShuttingDown):
-            if not (self.mount.is_active(MountActivities.ShuttingDown) or
-                    self.camera.is_active(CameraActivities.ShuttingDown) or
-                    self.stage.is_active(StageActivities.ShuttingDown) or
-                    self.focuser.is_active(FocuserActivities.ShuttingDown) or
-                    self.covers.is_active(CoverActivities.ShuttingDown) or
-                    self.mount.is_active(MountActivities.ShuttingDown)):
+            if not (
+                self.mount.is_active(MountActivities.ShuttingDown)
+                or self.camera.is_active(CameraActivities.ShuttingDown)
+                or self.stage.is_active(StageActivities.ShuttingDown)
+                or self.focuser.is_active(FocuserActivities.ShuttingDown)
+                or self.covers.is_active(CoverActivities.ShuttingDown)
+                or self.mount.is_active(MountActivities.ShuttingDown)
+            ):
                 self.end_activity(UnitActivities.ShuttingDown)
                 self._was_shut_down = True
 
@@ -355,9 +366,9 @@ class Unit(Component):
         if self.is_active(UnitActivities.AutofocusingPWI4):
             autofocus_status = self.pw.status().autofocus
             if not autofocus_status:
-                logger.error('Empty PWI4 autofocus status')
-            elif not autofocus_status.is_running:   # it's done
-                logger.info('PWI4 autofocus ended, getting status.')
+                logger.error("Empty PWI4 autofocus status")
+            elif not autofocus_status.is_running:  # it's done
+                logger.info("PWI4 autofocus ended, getting status.")
                 self.autofocus_result = AutofocusResult()
                 self.autofocus_result.success = autofocus_status.success
                 if self.autofocus_result.success:
@@ -365,26 +376,34 @@ class Unit(Component):
                     self.autofocus_result.tolerance = autofocus_status.tolerance
 
                     best_position = autofocus_status.best_position
-                    self.unit_conf['focuser']['known_as_good_position'] = best_position
+                    self.unit_conf["focuser"]["known_as_good_position"] = best_position
                     try:
                         Config().set_unit(self.hostname, self.unit_conf)
-                        logger.info(f"autofocus: saved {best_position=} in the configuration for unit {self.hostname}.")
+                        logger.info(
+                            f"autofocus: saved {best_position=} in the configuration for unit {self.hostname}."
+                        )
                         if autofocus_status.tolerance > self.autofocus_max_tolerance:
                             if self.autofocus_try < Unit.MAX_AUTOFOCUS_TRIES:
                                 self.autofocus_try += 1
-                                logger.info(f"autofocus: latest {autofocus_status.tolerance=} greater than" +
-                                            f"{self.autofocus_max_tolerance=}, starting autofocus " +
-                                            f"try #{self.autofocus_try}")
+                                logger.info(
+                                    f"autofocus: latest {autofocus_status.tolerance=} greater than"
+                                    + f"{self.autofocus_max_tolerance=}, starting autofocus "
+                                    + f"try #{self.autofocus_try}"
+                                )
                                 self.autofocuser.start_pwi4_autofocus()
                             else:
-                                logger.info(f"autofocus: failed to reach {self.autofocus_max_tolerance=} " +
-                                            f"in {Unit.MAX_AUTOFOCUS_TRIES=}")
+                                logger.info(
+                                    f"autofocus: failed to reach {self.autofocus_max_tolerance=} "
+                                    + f"in {Unit.MAX_AUTOFOCUS_TRIES=}"
+                                )
                         else:
                             self.autofocus_try = 0
 
                     except Exception as e:
-                        logger.exception("failed to save unit_conf for ['focuser']['know_as_good_position']",
-                                         exc_info=e)
+                        logger.exception(
+                            "failed to save unit_conf for ['focuser']['know_as_good_position']",
+                            exc_info=e,
+                        )
                 else:
                     logger.error(f"PlaneWave autofocus failed")
                     self.autofocus_result.best_position = None
@@ -393,14 +412,14 @@ class Unit(Component):
 
                 self.end_activity(UnitActivities.AutofocusingPWI4)
             else:
-                logger.info(f'PlaneWave autofocus in progress {self.autofocus_try=}')
+                logger.info(f"PlaneWave autofocus in progress {self.autofocus_try=}")
 
     def end_lifespan(self):
-        logger.info('unit end lifespan')
+        logger.info("unit end lifespan")
         self.shutdown()
 
     def start_lifespan(self):
-        logger.debug('unit start lifespan')
+        logger.debug("unit start lifespan")
         self.startup()
 
     @property
@@ -413,7 +432,7 @@ class Unit(Component):
 
     @property
     def name(self) -> str:
-        return 'unit'
+        return "unit"
 
     @property
     def detected(self) -> bool:
@@ -452,43 +471,46 @@ class Unit(Component):
             except Exception as e:
                 logger.error(f"websocket.send error: {e}")
 
-    def expose(self,
-               subfolder: Optional[str] = None,
-               exposure_seconds: float = 3,
-               repeats: int = 1,
-               seconds_between_exposures: float = 0,
-               fiber_x: Optional[int] = None,
-               fiber_y: Optional[int] = None,
-               width: Optional[int] = None,
-               height: Optional[int] = None,
-               binning: int = 1,
-               gain: int = 170,
-               ra_offsets: Annotated[
-                  Optional[str],
-                  Query(
-                      description=(
-                              "#### Optional list of RA offsets (arcsec) between exposures:\n"
-                              "- empty - no RA offsetting\n"
-                              "- list of floats - MUST be same length as `repeats`"
-                      ),
-                  ),
-               ] = None,
-               dec_offsets: Annotated[
-                  Optional[str],
-                  Query(
-                      description=(
-                              "#### Optional list of DEC offsets (arcsec) between exposures:\n"
-                              "- empty - no DEC offsetting\n"
-                              "- list of floats - MUST be same length as `repeats`"
-                      ),
-                  ),
-               ] = None,
-               ) -> CanonicalResponse:
+    def expose(
+        self,
+        subfolder: Optional[str] = None,
+        exposure_seconds: float = 3,
+        repeats: int = 1,
+        seconds_between_exposures: float = 0,
+        fiber_x: Optional[int] = None,
+        fiber_y: Optional[int] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        binning: int = 1,
+        gain: int = 170,
+        ra_offsets: Annotated[
+            Optional[str],
+            Query(
+                description=(
+                    "#### Optional list of RA offsets (arcsec) between exposures:\n"
+                    "- empty - no RA offsetting\n"
+                    "- list of floats - MUST be same length as `repeats`"
+                ),
+            ),
+        ] = None,
+        dec_offsets: Annotated[
+            Optional[str],
+            Query(
+                description=(
+                    "#### Optional list of DEC offsets (arcsec) between exposures:\n"
+                    "- empty - no DEC offsetting\n"
+                    "- list of floats - MUST be same length as `repeats`"
+                ),
+            ),
+        ] = None,
+    ) -> CanonicalResponse:
 
         if ra_offsets is not None:
             ra_offsets = ra_offsets.split()
             if len(ra_offsets) != 1 and len(ra_offsets) != repeats:
-                return CanonicalResponse(errors=[f"ra_offsets must have {repeats} elements"])
+                return CanonicalResponse(
+                    errors=[f"ra_offsets must have {repeats} elements"]
+                )
             if len(ra_offsets) == 1:
                 ra_offsets = [ra_offsets[0]] * repeats
             ra_offsets = [float(val) for val in ra_offsets]
@@ -496,7 +518,9 @@ class Unit(Component):
         if dec_offsets is not None:
             dec_offsets = dec_offsets.split()
             if len(dec_offsets) != 1 and len(dec_offsets) != repeats:
-                return CanonicalResponse(errors=[f"dec_offsets must have {repeats} elements"])
+                return CanonicalResponse(
+                    errors=[f"dec_offsets must have {repeats} elements"]
+                )
             if len(dec_offsets) == 1:
                 dec_offsets = [dec_offsets[0]] * repeats
             dec_offsets = [float(val) for val in dec_offsets]
@@ -506,24 +530,42 @@ class Unit(Component):
             height = self.camera.cameraYSize
             fiber_x = int(width / 2)
             fiber_y = int(height / 2)
-        Thread(name='expose-thread', target=self.do_expose,
-               args=[subfolder, exposure_seconds, repeats, ra_offsets, dec_offsets, seconds_between_exposures,
-                     fiber_x, fiber_y, width, height, binning, gain]).start()
+
+        Thread(
+            name="expose-thread",
+            target=self.do_expose,
+            args=[
+                subfolder,
+                exposure_seconds,
+                repeats,
+                ra_offsets,
+                dec_offsets,
+                seconds_between_exposures,
+                fiber_x,
+                fiber_y,
+                width,
+                height,
+                binning,
+                gain,
+            ],
+        ).start()
         return CanonicalResponse_Ok
 
-    def do_expose(self,
-                  subfolder: Optional[str] = None,
-                  exposure_seconds: float = 3,
-                  repeats: int = 1,
-                  ra_offsets: Optional[List[float]] = None,
-                  dec_offsets: Optional[List[float]] = None,
-                  seconds_between_exposures: float = 0,
-                  fiber_x: int = 6000,
-                  fiber_y: int = 2500,
-                  width: int = 1500,
-                  height: int = 1300,
-                  binning: int = 1,
-                  gain: int = 170) -> CanonicalResponse:
+    def do_expose(
+        self,
+        subfolder: Optional[str] = None,
+        exposure_seconds: float = 3,
+        repeats: int = 1,
+        ra_offsets: Optional[List[float]] = None,
+        dec_offsets: Optional[List[float]] = None,
+        seconds_between_exposures: float = 0,
+        fiber_x: int = 6000,
+        fiber_y: int = 2500,
+        width: int = 1500,
+        height: int = 1300,
+        binning: int = 1,
+        gain: int = 170,
+    ) -> CanonicalResponse:
 
         op = function_name()
         seconds = exposure_seconds
@@ -541,15 +583,18 @@ class Unit(Component):
             unit_roi = UnitRoi(fiber_x, fiber_y, width, height)
             binning: CameraBinning = CameraBinning(binning, binning)
             default_folder = PathMaker().make_exposures_folder()
-            base_folder = os.path.join(default_folder, subfolder) if subfolder else default_folder
+            base_folder = (
+                os.path.join(default_folder, subfolder) if subfolder else default_folder
+            )
             camera_settings = camera.CameraSettings(
                 seconds=seconds,
                 base_folder=base_folder,
                 gain=gain,
                 binning=binning,
                 roi=unit_roi.to_camera_roi(binning=binning),
-                tags={'roi': None},
-                save=True)
+                tags={"roi": None},
+                save=True,
+            )
             logger.info(f"{op}: starting exposure #{repeat} (of {repeats})")
             self.camera.do_start_exposure(camera_settings)
             self.camera.wait_for_image_saved()
@@ -559,13 +604,20 @@ class Unit(Component):
                 now = datetime.datetime.now()
                 if now < end:
                     period = (end - now).seconds
-                    logger.info(f"{op}: sleeping {period} seconds till next exposure ...")
+                    logger.info(
+                        f"{op}: sleeping {period} seconds till next exposure ..."
+                    )
                     time.sleep(period)
 
             if ra_offsets is not None or dec_offsets is not None:
                 if ra_offsets is not None and dec_offsets is not None:
-                    logger.info(f"offsetting mount ra={ra_offsets[repeat]}, dec={dec_offsets[repeat]}")
-                    self.mount.pw.mount_offset(ra_add_arcsec=ra_offsets[repeat], dec_add_arcsec=dec_offsets[repeat])
+                    logger.info(
+                        f"offsetting mount ra={ra_offsets[repeat]}, dec={dec_offsets[repeat]}"
+                    )
+                    self.mount.pw.mount_offset(
+                        ra_add_arcsec=ra_offsets[repeat],
+                        dec_add_arcsec=dec_offsets[repeat],
+                    )
                 elif ra_offsets is not None:
                     logger.info(f"offsetting mount ra={ra_offsets[repeat]}")
                     self.mount.pw.mount_offset(ra_add_arcsec=ra_offsets[repeat])
@@ -579,24 +631,31 @@ class Unit(Component):
         self.mount.stop_tracking()
         return CanonicalResponse_Ok
 
-    def test_stage_repeatability(self,
-                                 start_position: Union[int, str] = 50000,
-                                 end_position: Union[int, str] = 300000,
-                                 step: Union[int, str] = 25000,
-                                 exposure_seconds: Union[int, str] = 5,
-                                 binning: Union[int, str] = 1,
-                                 gain: Union[int, str] = 170) -> CanonicalResponse:
-        Thread(name='test-stage-repeatability', target=self.do_test_stage_repeatability,
-               args=[start_position, end_position, step, exposure_seconds, binning, gain]).start()
+    def test_stage_repeatability(
+        self,
+        start_position: Union[int, str] = 50000,
+        end_position: Union[int, str] = 300000,
+        step: Union[int, str] = 25000,
+        exposure_seconds: Union[int, str] = 5,
+        binning: Union[int, str] = 1,
+        gain: Union[int, str] = 170,
+    ) -> CanonicalResponse:
+        Thread(
+            name="test-stage-repeatability",
+            target=self.do_test_stage_repeatability,
+            args=[start_position, end_position, step, exposure_seconds, binning, gain],
+        ).start()
         return CanonicalResponse_Ok
 
-    def do_test_stage_repeatability(self,
-                                    start_position: Union[int, str] = 50000,
-                                    end_position: Union[int, str] = 300000,
-                                    step: Union[int, str] = 25000,
-                                    exposure_seconds: Union[int, str] = 5,
-                                    binning: Union[int, str] = 1,
-                                    gain: Union[int, str] = 170) -> CanonicalResponse:
+    def do_test_stage_repeatability(
+        self,
+        start_position: Union[int, str] = 50000,
+        end_position: Union[int, str] = 300000,
+        step: Union[int, str] = 25000,
+        exposure_seconds: Union[int, str] = 5,
+        binning: Union[int, str] = 1,
+        gain: Union[int, str] = 170,
+    ) -> CanonicalResponse:
         op = function_name()
 
         if isinstance(start_position, str):
@@ -618,7 +677,7 @@ class Unit(Component):
             logger.info(f"{op}: moving stage to {reference_position=}")
             self.stage.move_absolute(reference_position)
             while self.stage.is_active(StageActivities.Moving):
-                time.sleep(.5)
+                time.sleep(0.5)
 
             # expose at reference
             exposure_settings = camera.CameraSettings(
@@ -630,7 +689,9 @@ class Unit(Component):
                 tags={
                     "stage-repeatability": None,
                     "reference-for": position,
-                }, save=True)
+                },
+                save=True,
+            )
 
             self.camera.do_start_exposure(exposure_settings)
             self.camera.wait_for_image_saved()
@@ -641,7 +702,7 @@ class Unit(Component):
             logger.info(f"{op}: moving stage to shifted {position=}")
             self.stage.move_absolute(position)
             while self.stage.is_active(StageActivities.Moving):
-                time.sleep(.5)
+                time.sleep(0.5)
 
             exposure_settings = camera.CameraSettings(
                 seconds=exposure_seconds,
@@ -653,7 +714,8 @@ class Unit(Component):
                     "stage-repeatability": None,
                     "position": position,
                 },
-                save=True)
+                save=True,
+            )
             self.camera.do_start_exposure(exposure_settings)
             self.camera.wait_for_image_saved()
             logger.info(f"{op}: image at {position=} was saved")
@@ -669,7 +731,10 @@ class Unit(Component):
         :return:
         """
         if assignment.task.autofocus:
-            self.autofocuser.start_autofocus(ra_j2000_hours=assignment.target.ra, dec_j2000_degs=assignment.target.dec)
+            self.autofocuser.start_autofocus(
+                ra_j2000_hours=assignment.target.ra,
+                dec_j2000_degs=assignment.target.dec,
+            )
 
             while self.is_active(UnitActivities.Autofocusing):
                 time.sleep(10)
@@ -683,7 +748,7 @@ class Unit(Component):
 
             notify_controller_about_task_acquisition_path(
                 task_id=assignment.task.ulid,
-                link='autofocus',
+                link="autofocus",
                 src=os.path.dirname(self.camera.latest_settings.image_path),
             )
 
@@ -692,12 +757,12 @@ class Unit(Component):
             #
             self.acquirer.start_acquisition_and_guiding(
                 ra_j2000_hours=assignment.target.ra,
-                dec_j2000_degs=assignment.target.dec
+                dec_j2000_degs=assignment.target.dec,
             )
 
             notify_controller_about_task_acquisition_path(
                 task_id=assignment.task.ulid,
-                link='acquisition',
+                link="acquisition",
                 src=self.acquirer.latest_acquisition.folder,
             )
 
@@ -713,41 +778,93 @@ class Unit(Component):
         return CanonicalResponse_Ok
 
     @staticmethod
-    async def set_sky_and_spec_pixel_values(sky_x: int, sky_y: int, spec_x: int, spec_y: int):
+    async def set_sky_and_spec_pixel_values(
+        sky_x: int, sky_y: int, spec_x: int, spec_y: int
+    ):
 
         cfg = Config().get_unit()
 
-        cfg['acquisition']['roi']['sky_x'] = sky_x
-        cfg['acquisition']['roi']['sky_y'] = sky_y
-        cfg['guiding']['roi']['fiber_x'] = spec_x
-        cfg['guiding']['roi']['fiber_y'] = spec_y
+        cfg["acquisition"]["roi"]["sky_x"] = sky_x
+        cfg["acquisition"]["roi"]["sky_y"] = sky_y
+        cfg["guiding"]["roi"]["fiber_x"] = spec_x
+        cfg["guiding"]["roi"]["fiber_y"] = spec_y
 
-        Config().set_unit(unit_name=cfg['name'], unit_conf=cfg)
+        Config().set_unit(unit_name=cfg["name"], unit_conf=cfg)
 
         return CanonicalResponse_Ok
 
-    async def spiral_new_path(self, x_step_arcsec: float, y_step_arcsec: float):
+    def spiral_new_path(self, x_step_arcsec: float, y_step_arcsec: float):
         """
         Defines a new spiral path
         :param x_step_arcsec:
         :param y_step_arcsec:
         :return:
         """
-        self.mount.pw.mount_spiral_offset_new(x_step_arcsec=x_step_arcsec, y_step_arcsec=y_step_arcsec)
+        self.mount.pw.mount_spiral_offset_new(
+            x_step_arcsec=x_step_arcsec, y_step_arcsec=y_step_arcsec
+        )
+        self.spirals_folder = PathMaker().make_spirals_folder()
 
-    async def spiral_next_step(self):
+        image_path = os.path.join(
+            self.spirals_folder,
+            "step-" + PathMaker().make_seq(self.spirals_folder) + ".fits",
+        )
+        self.camera.latest_settings = CameraSettings(
+            seconds=5, save=True, image_path=image_path
+        )
+        self.camera.do_start_exposure(self.camera.latest_settings)
+        while self.camera.is_active(CameraActivities.Exposing):
+            time.sleep(1)
+        Filer().move_ram_to_shared(image_path)
+        return CanonicalResponse_Ok
+
+    def spiral_next_step(self):
         """
         Takes the next step in the currently defined spiral path
         :return:
         """
+        logger.info(f"calling mount_spiral_offset_next() ...")
         self.mount.pw.mount_spiral_offset_next()
+        while self.mount.is_moving:
+            time.sleep(1)
+        logger.info(f"mount stopped moving")
 
-    async def spiral_previous_step(self):
+        image_path = os.path.join(
+            self.spirals_folder,
+            "step-" + PathMaker().make_seq(self.spirals_folder) + ".fits",
+        )
+        self.camera.latest_settings = CameraSettings(
+            seconds=5, save=True, image_path=image_path
+        )
+        self.camera.do_start_exposure(self.camera.latest_settings)
+        while self.camera.is_active(CameraActivities.Exposing):
+            time.sleep(1)
+        Filer().move_ram_to_shared(image_path)
+        return CanonicalResponse_Ok
+
+    def spiral_previous_step(self):
         """
         Goes back one step in the currently defined spiral path
         :return:
         """
+        logger.info(f"calling mount_spiral_offset_previous() ...")
         self.mount.pw.mount_spiral_offset_previous()
+        while self.mount.is_moving:
+            time.sleep(1)
+        logger.info(f"mount stopped moving")
+
+        image_path = os.path.join(
+            self.spirals_folder,
+            "step-" + PathMaker().make_seq(self.spirals_folder) + ".fits",
+        )
+        self.camera.latest_settings = CameraSettings(
+            seconds=5, save=True, image_path=image_path
+        )
+        self.camera.do_start_exposure(self.camera.latest_settings)
+        while self.camera.is_active(CameraActivities.Exposing):
+            time.sleep(1)
+        Filer().move_ram_to_shared(image_path)
+        return CanonicalResponse_Ok
 
 
 def serialize_ip_addresses(data: Any) -> Any:
@@ -763,7 +880,7 @@ def serialize_ip_addresses(data: Any) -> Any:
 
 unit_id: int | str | None = None
 hostname = socket.gethostname()
-if hostname.startswith('mast'):
+if hostname.startswith("mast"):
     try:
         unit_id = int(hostname[4:])
     except ValueError:
@@ -772,7 +889,7 @@ else:
     logger.error(f"Cannot figure out the MAST unit_id ({hostname=})")
 
 base_path = BASE_UNIT_PATH
-tag = 'Unit'
+tag = "Unit"
 
 unit: Unit | None = None
 if not unit:
@@ -780,22 +897,53 @@ if not unit:
 
 
 router = APIRouter()
-router.add_api_route(base_path + '/startup', tags=[tag], endpoint=unit.startup)
-router.add_api_route(base_path + '/shutdown', tags=[tag], endpoint=unit.shutdown)
-router.add_api_route(base_path + '/abort', tags=[tag], endpoint=unit.abort)
-router.add_api_route(base_path + '/status', tags=[tag], endpoint=unit.status)
-router.add_api_route(base_path + '/start_autofocus', tags=[tag], endpoint=unit.autofocuser.start_autofocus)
-router.add_api_route(base_path + '/stop_autofocus', tags=[tag], endpoint=unit.autofocuser.stop_autofocus)
-router.add_api_route(base_path + '/stop_acquisition_and_guiding', tags=[tag],
-                     endpoint=unit.guider.stop_acquisition_and_guiding)
-router.add_api_route(base_path + '/start_acquisition_and_guiding', tags=[tag],
-                     endpoint=unit.acquirer.start_acquisition_and_guiding)
-router.add_api_route(base_path + '/expose', tags=[tag], endpoint=unit.expose)
-router.add_api_route(base_path + '/test_stage_repeatability', tags=[tag], endpoint=unit.test_stage_repeatability)
-router.add_api_route(base_path + '/execute_assignment', methods=['PUT'], tags=[tag], endpoint=unit.execute_assignment)
-router.add_api_route(base_path + '/calculate_sky_pixel', tags=[tag], endpoint=unit.set_sky_and_spec_pixel_values)
+router.add_api_route(base_path + "/startup", tags=[tag], endpoint=unit.startup)
+router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=unit.shutdown)
+router.add_api_route(base_path + "/abort", tags=[tag], endpoint=unit.abort)
+router.add_api_route(base_path + "/status", tags=[tag], endpoint=unit.status)
+router.add_api_route(
+    base_path + "/start_autofocus",
+    tags=[tag],
+    endpoint=unit.autofocuser.start_autofocus,
+)
+router.add_api_route(
+    base_path + "/stop_autofocus", tags=[tag], endpoint=unit.autofocuser.stop_autofocus
+)
+router.add_api_route(
+    base_path + "/stop_acquisition_and_guiding",
+    tags=[tag],
+    endpoint=unit.guider.stop_acquisition_and_guiding,
+)
+router.add_api_route(
+    base_path + "/start_acquisition_and_guiding",
+    tags=[tag],
+    endpoint=unit.acquirer.start_acquisition_and_guiding,
+)
+router.add_api_route(base_path + "/expose", tags=[tag], endpoint=unit.expose)
+router.add_api_route(
+    base_path + "/test_stage_repeatability",
+    tags=[tag],
+    endpoint=unit.test_stage_repeatability,
+)
+router.add_api_route(
+    base_path + "/execute_assignment",
+    methods=["PUT"],
+    tags=[tag],
+    endpoint=unit.execute_assignment,
+)
+router.add_api_route(
+    base_path + "/calculate_sky_pixel",
+    tags=[tag],
+    endpoint=unit.set_sky_and_spec_pixel_values,
+)
 
-tag = 'PlaneWave mount - spiral path'
-router.add_api_route(base_path + '/spiral_new_path', tags=[tag], endpoint=unit.spiral_new_path)
-router.add_api_route(base_path + '/spiral_next_step', tags=[tag], endpoint=unit.spiral_next_step)
-router.add_api_route(base_path + '/spiral_previous_step', tags=[tag], endpoint=unit.spiral_previous_step)
+tag = "PlaneWave mount - spiral path"
+router.add_api_route(
+    base_path + "/spiral_new_path", tags=[tag], endpoint=unit.spiral_new_path
+)
+router.add_api_route(
+    base_path + "/spiral_next_step", tags=[tag], endpoint=unit.spiral_next_step
+)
+router.add_api_route(
+    base_path + "/spiral_previous_step", tags=[tag], endpoint=unit.spiral_previous_step
+)
