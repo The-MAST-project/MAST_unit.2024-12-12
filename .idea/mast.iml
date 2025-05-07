@@ -10,6 +10,7 @@
       <excludeFolder url="file://$MODULE_DIR$/src/Standa/ximc-2.13.6/examples/test_Python/venv/Scripts" />
       <excludeFolder url="file://$MODULE_DIR$/venv" />
       <excludeFolder url="file://$MODULE_DIR$/venv.1" />
+      <excludeFolder url="file://$MODULE_DIR$/src/Standa" />
     </content>
     <orderEntry type="jdk" jdkName="Python 3.12 (MAST_unit)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
