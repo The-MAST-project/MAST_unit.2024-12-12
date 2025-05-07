@@ -1,6 +1,6 @@
 class Mastapi:
 
-    tag = ':mastapi:'
+    tag = ":mastapi:"
 
     @staticmethod
     def is_api_method(func):
