@@ -11,13 +11,13 @@ from photutils.aperture import EllipticalAperture
 
 def find_optical_center(
     fits_filename,
-    nsigma=2.0,          # threshold detection (in sigma)
-    npixels=5,           # minimum number of connected pixels for a source
-    box_size=50,         # size of the box for background estimation
+    nsigma=2.0,  # threshold detection (in sigma)
+    npixels=5,  # minimum number of connected pixels for a source
+    box_size=50,  # size of the box for background estimation
     filter_sources=True,
-    min_area=10,         # min area (pixels) for a valid source
-    max_area=1e6,        # max area (pixels) for a valid source
-    plot_results=True
+    min_area=10,  # min area (pixels) for a valid source
+    max_area=1e6,  # max area (pixels) for a valid source
+    plot_results=True,
 ):
     """
     Open a FITS file containing an astronomical image and attempt to use
@@ -66,7 +66,7 @@ def find_optical_center(
         box_size=(box_size, box_size),
         filter_size=(3, 3),
         sigma_clip=sigma_clip,
-        bkg_estimator=bkg_estimator
+        bkg_estimator=bkg_estimator,
     )
     data_bkg_sub = data - bkg.background
 
@@ -89,14 +89,13 @@ def find_optical_center(
     # 4) Measure source properties
     # -----------------------------
     # catalog = SourceCatalog(data_bkg_sub, segm_deblend,
-    catalog = SourceCatalog(data_bkg_sub, segm,
-                            background=bkg.background, error=None)
+    catalog = SourceCatalog(data_bkg_sub, segm, background=bkg.background, error=None)
     tbl = catalog.to_table()
 
     # Optionally filter out spurious sources
     if filter_sources:
         # 'area' is the measured source area in pixels
-        area = tbl['area'].size
+        area = tbl["area"].size
         valid = (area >= min_area) & (area <= max_area)
         tbl = tbl[valid]
 
@@ -105,11 +104,11 @@ def find_optical_center(
         return None
 
     # Extract relevant columns
-    x_centroids = tbl.columns['xcentroid']
-    y_centroids = tbl.columns['ycentroid']
-    orientations = tbl.columns['orientation']  # in radians, CCW from +x
-    major_axes = tbl.columns['semimajor_sigma']
-    minor_axes = tbl.columns['semiminor_sigma']
+    x_centroids = tbl.columns["xcentroid"]
+    y_centroids = tbl.columns["ycentroid"]
+    orientations = tbl.columns["orientation"]  # in radians, CCW from +x
+    major_axes = tbl.columns["semimajor_sigma"]
+    minor_axes = tbl.columns["semiminor_sigma"]
 
     # ---------------------------------------------------------
     # 5) Compute approximate optical center using a simple model
@@ -143,8 +142,7 @@ def find_optical_center(
         # Show the background-subtracted image
         vmin = np.percentile(data_bkg_sub, 5)
         vmax = np.percentile(data_bkg_sub, 99)
-        ax.imshow(data_bkg_sub, origin='lower', cmap='gray',
-                  vmin=vmin, vmax=vmax)
+        ax.imshow(data_bkg_sub, origin="lower", cmap="gray", vmin=vmin, vmax=vmax)
         ax.set_title("Detected Sources & Estimated Optical Center")
         ax.set_xlabel("X (pix)")
         ax.set_ylabel("Y (pix)")
@@ -158,18 +156,22 @@ def find_optical_center(
             b = 2.5 * minor_axes[i]
 
             # Mark source centroid
-            ax.plot(x0, y0, marker='o', markersize=3, color='red')
+            ax.plot(x0, y0, marker="o", markersize=3, color="red")
             print(f"{i:3}: {x0:8.3f} {y0:8.3f}")
 
             # Draw an elliptical "contour"
             aper = EllipticalAperture((x0, y0), a.value, b.value, theta=orient)
-            aper.plot(ax=ax, color='yellow', lw=1)
+            aper.plot(ax=ax, color="yellow", lw=1)
 
             # Draw major-axis line from -a to +a along orientation
             dx = a * np.cos(orient)
             dy = a * np.sin(orient)
-            ax.plot([x0 - dx.value, x0 + dx.value], [y0 - dy.value, y0 + dy.value],
-                    color='yellow', lw=2)
+            ax.plot(
+                [x0 - dx.value, x0 + dx.value],
+                [y0 - dy.value, y0 + dy.value],
+                color="yellow",
+                lw=2,
+            )
 
         # Mark the estimated optical center
         # ax.plot(center_x, center_y, marker='+', color='magenta', ms=15, mew=2)
@@ -193,6 +195,6 @@ if __name__ == "__main__":
         filter_sources=True,
         min_area=10,
         max_area=1e5,
-        plot_results=True
+        plot_results=True,
     )
     print("Estimated optical center:", center)
