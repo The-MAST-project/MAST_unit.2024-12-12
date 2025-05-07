@@ -15,38 +15,38 @@ import re
 import shutil
 import json
 
-logger = logging.Logger('astrometry_dot_net')
+logger = logging.Logger("astrometry_dot_net")
 init_log(logger)
 
 
 class AstrometryDotNetSolverResult:
-    index_file: str = ''
+    index_file: str = ""
 
     def to_dict(self):
         return {
-            'index_file': self.index_file,
+            "index_file": self.index_file,
         }
 
 
 def win_to_cygwin(path: str) -> str:
-    if path.startswith('C:') or path.startswith('c:'):
-        path = path.replace('C:', r'/cygdrive/c').replace('c:', r'/cygdrive/c')
-    elif path.startswith('D:') or path.startswith('d:'):
-        path = path.replace('D:', r'/cygdrive/d').replace('d:', r'/cygdrive/d')
-    return path.replace('\\', '/')
+    if path.startswith("C:") or path.startswith("c:"):
+        path = path.replace("C:", r"/cygdrive/c").replace("c:", r"/cygdrive/c")
+    elif path.startswith("D:") or path.startswith("d:"):
+        path = path.replace("D:", r"/cygdrive/d").replace("d:", r"/cygdrive/d")
+    return path.replace("\\", "/")
 
 
 def cygwin_to_win(path: str) -> str:
     # return path.replace('/cygdrive/d', 'D:').replace('/', '\\')
-    return path.replace('/cygdrive/d', 'D:')
+    return path.replace("/cygdrive/d", "D:")
 
 
 def win_to_wsl(path: str) -> str:
-    if path.startswith('C:') or path.startswith('c:'):
-        path = path.replace('C:', r'/mnt/c').replace('c:', r'/mnt/c')
-    elif path.startswith('C:') or path.startswith('c:'):
-        path = path.replace('D:', r'/mnt/d').replace('d:', r'/mnt/d')
-    return path.replace('\\', '/')
+    if path.startswith("C:") or path.startswith("c:"):
+        path = path.replace("C:", r"/mnt/c").replace("c:", r"/mnt/c")
+    elif path.startswith("C:") or path.startswith("c:"):
+        path = path.replace("D:", r"/mnt/d").replace("d:", r"/mnt/d")
+    return path.replace("\\", "/")
 
 
 def _parse_solver_output(lines: List[str]) -> SolvingResult:
@@ -69,50 +69,55 @@ def _parse_solver_output(lines: List[str]) -> SolvingResult:
     ret = SolvingResult(succeeded=False)
     ret.solution = SolvingSolution()
     ret.native_result = AstrometryDotNetSolverResult()
-    pattern_float = r'[-+]?\d+(\.\d+)?'
+    pattern_float = r"[-+]?\d+(\.\d+)?"
 
     try:
         for line in lines:
-            if line.startswith('Field rotation angle'):                             # (1)
-                match = re.match(r'^.* is (' + pattern_float + r') degrees', line)
+            if line.startswith("Field rotation angle"):  # (1)
+                match = re.match(r"^.* is (" + pattern_float + r") degrees", line)
                 if match:
                     ret.solution.rotation_angle_degs = float(match.group(1))
                     # logger.info(f"{ret.solution.rotation_angle_degs=}")
                 else:
                     logger.error(f"bad match for ret.solution.rotation_angle_degs")
 
-            elif line.startswith('Field center: (RA,Dec) ='):                       # (2)
-                match = re.match(r'.*[(](' + pattern_float + r'), (' + pattern_float + r')[)].*', line)
+            elif line.startswith("Field center: (RA,Dec) ="):  # (2)
+                match = re.match(
+                    r".*[(](" + pattern_float + r"), (" + pattern_float + r")[)].*",
+                    line,
+                )
                 if match:
                     ra_degs = float(match.group(1))
                     dec_degs = float(match.group(3))
                     # logger.info(f"{ra_degs=}, {dec_degs=}")
-                    ret.solution.ra_rads = Angle(ra_degs, unit='deg').radian
-                    ret.solution.dec_rads = Angle(dec_degs, unit='deg').radian
-                    ret.solution.ra_hours = Angle(ra_degs, unit='deg').hour
+                    ret.solution.ra_rads = Angle(ra_degs, unit="deg").radian
+                    ret.solution.dec_rads = Angle(dec_degs, unit="deg").radian
+                    ret.solution.ra_hours = Angle(ra_degs, unit="deg").hour
                     ret.solution.dec_degs = dec_degs
                 else:
                     logger.error(f"bad match for ra_degs, dec_degs")
 
-            elif line.startswith('Field 1: solved with index'):                     # (3)
+            elif line.startswith("Field 1: solved with index"):  # (3)
                 ret.succeeded = True
-                match = re.match(r'^.*solved with index (.*)\.$', line)
+                match = re.match(r"^.*solved with index (.*)\.$", line)
                 if match:
                     ret.native_result.index_file = match.group(1)
                     # logger.info(f"{ret.native_result.index_file=}")
                 else:
                     logger.error(f"bad match for ret.native_result.index_file")
 
-            elif line.startswith('  log-odds ratio'):                               # (4)
-                match = re.match(r'^.*[)], (\d+) match,', line)
+            elif line.startswith("  log-odds ratio"):  # (4)
+                match = re.match(r"^.*[)], (\d+) match,", line)
                 if match:
                     ret.solution.matched_stars = int(match.group(1))
                     # logger.info(f"{ret.solution.matched_stars=}")
                 else:
                     logger.error(f"bad match for ret.solution.matched_stars")
 
-            elif line.startswith('  RA,Dec = '):                                    # (5)
-                match = re.match(r'^.*pixel scale (' + pattern_float + r') arcsec', line)
+            elif line.startswith("  RA,Dec = "):  # (5)
+                match = re.match(
+                    r"^.*pixel scale (" + pattern_float + r") arcsec", line
+                )
                 if match:
                     ret.solution.pixel_scale = float(match.group(1))
                     # logger.info(f"{ret.solution.pixel_scale=}")
@@ -124,97 +129,110 @@ def _parse_solver_output(lines: List[str]) -> SolvingResult:
     return ret
 
 
-def astrometry_dot_net_solve(unit: 'Unit', settings: CameraSettings, target: Coord) -> SolvingResult:
+def astrometry_dot_net_solve(
+    unit: "Unit", settings: CameraSettings, target: Coord
+) -> SolvingResult:
     filer = Filer(logger)
-    unix_emulator = 'cygwin'
-    tmp_dir = generate_random_string(prefix='tmp_')
-    win_tmp_dir = r'D:/MAST/tmp/' + tmp_dir
+    unix_emulator = "cygwin"
+    tmp_dir = generate_random_string(prefix="tmp_")
+    win_tmp_dir = r"D:/MAST/tmp/" + tmp_dir
     os.makedirs(win_tmp_dir, exist_ok=True)
-    index_dir = r'D:/Astrometry.net/indexes'
-    solver_name = 'astrometry'
+    index_dir = r"D:/Astrometry.net/indexes"
+    solver_name = "astrometry"
 
     index_file = None
-    os.environ['PATH'] = 'C:/cygwin64/bin;/usr/lib/lapack;C:/Users/mast/PycharmProjects/MAST_unit/venv/Scripts;C:/Windows/system32;C:/Windows;C:/Windows/System32/Wbem;C:/Windows/System32/WindowsPowerShell/v1.0/;C:/Windows/System32/OpenSSH/;C:/Users/mast/Documents/PlaneWave/ps3cli;C:/Program Files/Git/cmd;C:/Users/mast/Downloads/nssm/nssm-2.24/win64;C:/Program Files/MongoDB/Server/7.0/bin;C:/Users/mast/AppData/Local/Programs/Python/Launcher/;C:/Users/mast/AppData/Local/Microsoft/WindowsApps;C:/Program Files/JetBrains/PyCharm Community Edition 2024.1/bin;;C:/Users/mast/PycharmProjects/MAST_unit/src/Standa/ximc-2.13.6/ximc/win64;'
+    os.environ["PATH"] = (
+        "C:/cygwin64/bin;/usr/lib/lapack;C:/Users/mast/PycharmProjects/MAST_unit/venv/Scripts;C:/Windows/system32;C:/Windows;C:/Windows/System32/Wbem;C:/Windows/System32/WindowsPowerShell/v1.0/;C:/Windows/System32/OpenSSH/;C:/Users/mast/Documents/PlaneWave/ps3cli;C:/Program Files/Git/cmd;C:/Users/mast/Downloads/nssm/nssm-2.24/win64;C:/Program Files/MongoDB/Server/7.0/bin;C:/Users/mast/AppData/Local/Programs/Python/Launcher/;C:/Users/mast/AppData/Local/Microsoft/WindowsApps;C:/Program Files/JetBrains/PyCharm Community Edition 2024.1/bin;;C:/Users/mast/PycharmProjects/MAST_unit/src/Standa/ximc-2.13.6/ximc/win64;"
+    )
 
-    cmd = ''
+    cmd = ""
     args = []
-    args += ['--scale-units', 'arcsecperpix']
-    args += ['--scale-low', '0.25']
-    args += ['--scale-high', '0.27']
-    args += ['--ra', f"{target.ra.deg}"]
-    args += ['--dec', f"{target.dec.value}"]
-    args += ['--radius', f"{1}"]
-    args += ['--no-plots', '--overwrite', '--solved', 'none']
-    args += ['--match', 'none', '--rdls', 'none', '--corr', 'none']
-    args += ['--crpix-x', str(int(settings.roi.numX / 2))]
-    args += ['--crpix-y', str(int(settings.roi.numY / 2))]
+    args += ["--scale-units", "arcsecperpix"]
+    args += ["--scale-low", "0.25"]
+    args += ["--scale-high", "0.27"]
+    args += ["--ra", f"{target.ra.deg}"]
+    args += ["--dec", f"{target.dec.value}"]
+    args += ["--radius", f"{1}"]
+    args += ["--no-plots", "--overwrite", "--solved", "none"]
+    args += ["--match", "none", "--rdls", "none", "--corr", "none"]
+    args += ["--crpix-x", str(int(settings.roi.numX / 2))]
+    args += ["--crpix-y", str(int(settings.roi.numY / 2))]
 
     if index_file:
-        args += ['--index-file', index_file]
+        args += ["--index-file", index_file]
     fits_path = settings.image_path
-    new_fits_path = fits_path.replace('.fits', f",solver={solver_name}.fits")
+    new_fits_path = fits_path.replace(".fits", f",solver={solver_name}.fits")
 
-    if unix_emulator == 'cygwin':
-        tmp_path = r'/cygdrive/d/MAST/tmp/' + tmp_dir
+    if unix_emulator == "cygwin":
+        tmp_path = r"/cygdrive/d/MAST/tmp/" + tmp_dir
         os.makedirs(tmp_path, exist_ok=True)
-        
-        cmd = r'C:/cygwin64/usr/local/astrometry/bin/solve-field'
-        args += ['--dir', tmp_path]
-        args += ['--temp-dir', tmp_path]
+
+        cmd = r"C:/cygwin64/usr/local/astrometry/bin/solve-field"
+        args += ["--dir", tmp_path]
+        args += ["--temp-dir", tmp_path]
         # args += ['--index-dir', '/cygdrive/d/Astrometry.net/indexes']
-        args += ['--index-dir', '/usr/local/astrometry/indexes-full']
-        args += ['--new-fits', win_to_cygwin(new_fits_path)]
+        args += ["--index-dir", "/usr/local/astrometry/indexes-full"]
+        args += ["--new-fits", win_to_cygwin(new_fits_path)]
         args += [win_to_cygwin(fits_path)]
 
-    elif unix_emulator == 'wsl':
-        cmd = r'//wsl$/usr/local/astrometry/bin/solve-field'
-        args += ['--dir', win_to_wsl(tmp_dir)]
-        args += ['--temp-dir', win_to_wsl(tmp_dir)]
-        args += ['--index-dir', win_to_wsl(index_dir)]
-        args += ['--new-fits', win_to_wsl(new_fits_path)]
+    elif unix_emulator == "wsl":
+        cmd = r"//wsl$/usr/local/astrometry/bin/solve-field"
+        args += ["--dir", win_to_wsl(tmp_dir)]
+        args += ["--temp-dir", win_to_wsl(tmp_dir)]
+        args += ["--index-dir", win_to_wsl(index_dir)]
+        args += ["--new-fits", win_to_wsl(new_fits_path)]
         args += [win_to_wsl(fits_path)]
 
     # logger.info(f"cmd: {cmd}, args: {args}")
 
     start = datetime.datetime.now()
-    completed_process = subprocess.run(' '.join([cmd] + args), capture_output=True, shell=True)
+    completed_process = subprocess.run(
+        " ".join([cmd] + args), capture_output=True, shell=True
+    )
     stdout_lines = completed_process.stdout.decode().strip().splitlines()
     stderr_lines = completed_process.stderr.decode().strip().splitlines()
     elapsed = datetime.datetime.now() - start
-    logger.info(f"{'succeeded' if completed_process.returncode == 0 else 'failed'}" +
-                f" in {elapsed.total_seconds():.2f} seconds")
+    logger.info(
+        f"{'succeeded' if completed_process.returncode == 0 else 'failed'}"
+        + f" in {elapsed.total_seconds():.2f} seconds"
+    )
 
-    result_file = cygwin_to_win(new_fits_path).replace('.fits', '-result.txt')
-    with open(result_file, 'w') as file:
-        file.write('--- command ---\n')
-        file.write(' '.join([cmd] + args) + '\n')
-        file.write('\n--- stdout ---\n')
+    result_file = cygwin_to_win(new_fits_path).replace(".fits", "-result.txt")
+    with open(result_file, "w") as file:
+        file.write("--- command ---\n")
+        file.write(" ".join([cmd] + args) + "\n")
+        file.write("\n--- stdout ---\n")
         for line in stdout_lines:
-            file.writelines(line + '\n')
-        file.write('\n--- stderr ---\n')
+            file.writelines(line + "\n")
+        file.write("\n--- stderr ---\n")
         for line in stderr_lines:
-            file.writelines(line + '\n')
+            file.writelines(line + "\n")
 
     filer.move_ram_to_shared([result_file, fits_path, cygwin_to_win(new_fits_path)])
 
     if completed_process.returncode == 0:
         ret = _parse_solver_output(stdout_lines)
     else:
-        ret = SolvingResult(succeeded=False, errors=[f"Exit status: {completed_process.returncode}", stderr_lines])
+        ret = SolvingResult(
+            succeeded=False,
+            errors=[f"Exit status: {completed_process.returncode}", stderr_lines],
+        )
 
     shutil.rmtree(win_tmp_dir, ignore_errors=True)
 
     return ret
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     camera_settings: CameraSettings = CameraSettings(
         seconds=5,
-        image_path='/cygdrive/d/MAST/tmp/2024-12-05/Acquisitions/seq=0025,time=18-13-03_987,' +
-                   'target=1.42677311977099,23.5115091209584/guiding/seq=0001,time=18-22-25_715,seconds=5.0,' +
-                   'binning=1x1,gain=170.0,roi=x=300,y=1476,w=7402,h=3968.fits'
+        image_path="/cygdrive/d/MAST/tmp/2024-12-05/Acquisitions/seq=0025,time=18-13-03_987,"
+        + "target=1.42677311977099,23.5115091209584/guiding/seq=0001,time=18-22-25_715,seconds=5.0,"
+        + "binning=1x1,gain=170.0,roi=x=300,y=1476,w=7402,h=3968.fits",
     )
-    target = Coord(ra=Angle(1.42677311977099, unit='hour'), dec=Angle(23.5115091209584, unit='deg'))
+    target = Coord(
+        ra=Angle(1.42677311977099, unit="hour"), dec=Angle(23.5115091209584, unit="deg")
+    )
     result = astrometry_dot_net_solve(None, camera_settings, target=target)
     # print(json.dumps(result.to_dict(), indent=2))
     sys.exit(0)
