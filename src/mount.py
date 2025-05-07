@@ -8,7 +8,13 @@ from PlaneWave import pwi4_client
 from typing import List, Optional
 from common.utils import time_stamp, BASE_UNIT_PATH
 from common.components import Component, ComponentStatus
-from common.utils import RepeatTimer, CanonicalResponse, CanonicalResponse_Ok, function_name, caller_name
+from common.utils import (
+    RepeatTimer,
+    CanonicalResponse,
+    CanonicalResponse_Ok,
+    function_name,
+    caller_name,
+)
 from common.mast_logging import init_log
 from common.dlipowerswitch import SwitchedOutlet, OutletDomain, PowerStatus
 from common.config import Config
@@ -19,7 +25,7 @@ from common.ascom import ascom_run, AscomDispatcher, AscomStatus
 from common.activities import MountActivities
 from pydantic import BaseModel
 
-logger = logging.getLogger('mast.unit.' + __name__)
+logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
 
 
@@ -63,14 +69,14 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def ascom(self) -> win32com.client.Dispatch:
         return self._ascom
 
-    def __init__(self, unit: 'Unit'):
+    def __init__(self, unit: "Unit"):
         if self._initialized:
             return
 
         self.unit = unit
         self.unit_conf: dict = Config().get_unit()
-        self.conf = self.unit_conf['mount']
-        SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name='Mount')
+        self.conf = self.unit_conf["mount"]
+        SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name="Mount")
         Component.__init__(self)
 
         if not self.is_on():
@@ -84,7 +90,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self.guide_rate_degs_per_ms: float
 
         self.pw: pwi4_client = pwi4_client.PWI4()
-        self._ascom = win32com.client.Dispatch('ASCOM.PWI4.Telescope')
+        self._ascom = win32com.client.Dispatch("ASCOM.PWI4.Telescope")
         #
         # Starting with PWI4 version 4.0.99 beta 22 it will be possible to query the ASCOM driver about
         #  the GuideRate for RightAscension and Declination.  The DriverVersion shows 1.0 (disregarding the PWI4
@@ -93,7 +99,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self.guide_rate_degs_per_second = self.default_guide_rate_degs_per_second
         self.guide_rate_degs_per_ms = self.guide_rate_degs_per_second / 1000
         self.timer: RepeatTimer = RepeatTimer(2, function=self.ontimer)
-        self.timer.name = 'mount-timer-thread'
+        self.timer.name = "mount-timer-thread"
         self.timer.start()
 
         self.errors = []
@@ -102,7 +108,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self.is_moving: bool = False
 
         self._initialized = True
-        logger.info('initialized')
+        logger.info("initialized")
 
     def connect(self):
         """
@@ -126,12 +132,14 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     @property
     def connected(self) -> bool:
         st = self.pw.status()
-        response = ascom_run(self, 'Connected', no_entry_log=True)
-        return (self.ascom and
-                (response.succeeded and response.value) and
-                st.mount.is_connected and
-                st.mount.axis0.is_enabled and
-                st.mount.axis1.is_enabled)
+        response = ascom_run(self, "Connected", no_entry_log=True)
+        return (
+            self.ascom
+            and (response.succeeded and response.value)
+            and st.mount.is_connected
+            and st.mount.axis0.is_enabled
+            and st.mount.axis1.is_enabled
+        )
 
     @connected.setter
     def connected(self, value):
@@ -143,27 +151,29 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         st = self.pw.status()
         try:
             if value:
-                response = ascom_run(self, 'Connected = True')
+                response = ascom_run(self, "Connected = True")
                 if response.failed:
                     self.errors.append(f"could not ASCOM connect")
-                    logger.error(f"failed to ASCOM connect (failure='{response.failure}')")
+                    logger.error(
+                        f"failed to ASCOM connect (failure='{response.failure}')"
+                    )
                 if not st.mount.is_connected:
                     self.pw.mount_connect()
                 if not st.mount.axis0.is_enabled:
                     self.pw.mount_enable(0)
                 if not st.mount.axis1.is_enabled:
                     self.pw.mount_enable(1)
-                logger.info(f'connected = {value}, axes enabled')
+                logger.info(f"connected = {value}, axes enabled")
             else:
                 if st.mount.axis0.is_enabled:
                     self.pw.mount_disable(0)
                 if st.mount.axis1.is_enabled:
                     self.pw.mount_disable(1)
                 self.pw.mount_disconnect()
-                response = ascom_run(self, 'Connected = False')
+                response = ascom_run(self, "Connected = False")
                 if response.failed:
                     self.errors.append(response.failure)
-                logger.info(f'connected = {value}, axes disabled, disconnected')
+                logger.info(f"connected = {value}, axes disabled, disconnected")
         except Exception as ex:
             logger.exception(ex)
 
@@ -178,7 +188,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             return
         self.start_activity(MountActivities.StartingUp)
         self._was_shut_down = False
-        self.pw.request('/fans/on')
+        self.pw.request("/fans/on")
         self.find_home()
         return CanonicalResponse_Ok
 
@@ -190,7 +200,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         if self.connected:
             self.disconnect()
         self.start_activity(MountActivities.ShuttingDown)
-        self.pw.request('/fans/off')
+        self.pw.request("/fans/off")
         self.park()
         self.power_off()
         return CanonicalResponse_Ok
@@ -211,14 +221,19 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         :mastapi:
         """
         if self.connected:
-            self.target = 'Home'
+            self.target = "Home"
             self.start_activity(MountActivities.FindingHome)
             self.last_axis0_position_degrees = -99999
             self.last_axis1_position_degrees = -99999
             self.pw.mount_find_home()
         return CanonicalResponse_Ok
 
-    def goto(self, primary_coord: float | str, secondary_coord: float | str, frame: str = 'icrs'):
+    def goto(
+        self,
+        primary_coord: float | str,
+        secondary_coord: float | str,
+        frame: str = "icrs",
+    ):
         op = function_name()
 
         if not self.connected:
@@ -232,7 +247,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             logger.error(error)
             return CanonicalResponse(errors=[error])
 
-        if frame != 'icrs':
+        if frame != "icrs":
             try:
                 j2000_coord = SkyCoord(primary_coord, secondary_coord, frame)
                 primary_coord = j2000_coord.ra
@@ -258,7 +273,10 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         status = self.pw.status()
 
         was_moving = self.is_moving
-        self.is_moving = status.mount.axis0.rms_error_arcsec > 1.0 or status.mount.axis1.rms_error_arcsec > 1.0
+        self.is_moving = (
+            status.mount.axis0.rms_error_arcsec > 1.0
+            or status.mount.axis1.rms_error_arcsec > 1.0
+        )
         if was_moving and not self.is_moving:
             self.end_activity(MountActivities.Moving)
         elif not was_moving and self.is_moving:
@@ -283,16 +301,18 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         if self.is_active(MountActivities.Slewing) and not self.is_moving:
             self.end_activity(MountActivities.Slewing)
             self.target = None
-    
+
     def status(self) -> MountStatus:
         target_verbal = None
         if isinstance(self.target, str):
             target_verbal = self.target
         elif isinstance(self.target, tuple):
-            target_verbal = (f"[{Angle(self.target[0], unit='hour').to_string(unit='hour', sep=':', precision=3)}, " +
-                             f"{Angle(self.target[1], unit='arcsec').to_string(unit='deg', sep=':', precision=3)}]")
-        
-        activities = self.activities            # integrate activities we may have not started
+            target_verbal = (
+                f"[{Angle(self.target[0], unit='hour').to_string(unit='hour', sep=':', precision=3)}, "
+                + f"{Angle(self.target[1], unit='arcsec').to_string(unit='deg', sep=':', precision=3)}]"
+            )
+
+        activities = self.activities  # integrate activities we may have not started
         st = None
         if self.connected:
             st = self.pw.status()
@@ -312,12 +332,16 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         component_status = self.component_status()
         component_status.activities = activities
 
-        spiral = SpiralSettings(
-            x=st.mount.spiral_offset.x,
-            y=st.mount.spiral_offset.y,
-            x_step_arcsec=st.mount.spiral_offset.x_step_arcsec,
-            y_step_arcsec=st.mount.spiral_offset.x_step_arcsec,
-        ) if st else None
+        spiral = (
+            SpiralSettings(
+                x=st.mount.spiral_offset.x,
+                y=st.mount.spiral_offset.y,
+                x_step_arcsec=st.mount.spiral_offset.x_step_arcsec,
+                y_step_arcsec=st.mount.spiral_offset.x_step_arcsec,
+            )
+            if st
+            else None
+        )
 
         return MountStatus(
             **self.power_status().dict(),
@@ -387,8 +411,13 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         -------
 
         """
-        for activity in (MountActivities.FindingHome, MountActivities.StartingUp, MountActivities.ShuttingDown,
-                         MountActivities.Dancing, MountActivities.Slewing):
+        for activity in (
+            MountActivities.FindingHome,
+            MountActivities.StartingUp,
+            MountActivities.ShuttingDown,
+            MountActivities.Dancing,
+            MountActivities.Slewing,
+        ):
             if self.is_active(activity):
                 self.end_activity(activity)
         self.pw.mount_stop()
@@ -398,8 +427,18 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     @property
     def operational(self) -> bool:
         st = self.pw.status()
-        return all([self.is_on(), self.detected, self.connected, not self.was_shut_down,
-                    self.ascom, st.mount.is_connected, st.mount.axis0.is_enabled, st.mount.axis1.is_enabled])
+        return all(
+            [
+                self.is_on(),
+                self.detected,
+                self.connected,
+                not self.was_shut_down,
+                self.ascom,
+                st.mount.is_connected,
+                st.mount.axis0.is_enabled,
+                st.mount.axis1.is_enabled,
+            ]
+        )
 
     @property
     def is_slewing(self):
@@ -418,7 +457,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             ret.append(f"{label}: shut down")
         else:
             if self.ascom:
-                response = ascom_run(self, 'Connected')
+                response = ascom_run(self, "Connected")
                 if response.succeeded and not response.value:
                     ret.append(f"{label}: (ASCOM) - not connected")
             else:
@@ -435,7 +474,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
 
     @property
     def name(self) -> str:
-        return 'mount'
+        return "mount"
 
     @property
     def detected(self) -> bool:
@@ -454,7 +493,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         for coord in coordinates:
             logger.info(f"dance: dancing to {coord=}")
             self.goto_ra_dec_j2000(coord[0], coord[1])
-            time.sleep(2)   # let it start moving
+            time.sleep(2)  # let it start moving
             stat = self.pw.status()
             while stat.mount.is_slewing:
                 time.sleep(2)
@@ -467,7 +506,9 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
 
 
 # Function to generate cone coordinates
-def cone_coordinates_generator(steps=20, base_radius=30, rotation_axis_ra=0, rotation_axis_dec=60):
+def cone_coordinates_generator(
+    steps=20, base_radius=30, rotation_axis_ra=0, rotation_axis_dec=60
+):
     cone_coordinates = []
     for i in range(steps):
         angle = i * 2 * math.pi / steps
@@ -480,20 +521,24 @@ def cone_coordinates_generator(steps=20, base_radius=30, rotation_axis_ra=0, rot
 
 
 base_path = BASE_UNIT_PATH + "/mount"
-tag = 'Mount'
+tag = "Mount"
 
 mount = Mount(unit=None)
 
 router = APIRouter()
-router.add_api_route(base_path + '/startup', tags=[tag], endpoint=mount.startup)
-router.add_api_route(base_path + '/shutdown', tags=[tag], endpoint=mount.shutdown)
-router.add_api_route(base_path + '/abort', tags=[tag], endpoint=mount.abort)
-router.add_api_route(base_path + '/status', tags=[tag], endpoint=mount.status)
-router.add_api_route(base_path + '/connect', tags=[tag], endpoint=mount.connect)
-router.add_api_route(base_path + '/disconnect', tags=[tag], endpoint=mount.disconnect)
-router.add_api_route(base_path + '/start_tracking', tags=[tag], endpoint=mount.start_tracking)
-router.add_api_route(base_path + '/stop_tracking', tags=[tag], endpoint=mount.stop_tracking)
-router.add_api_route(base_path + '/park', tags=[tag], endpoint=mount.park)
-router.add_api_route(base_path + '/find_home', tags=[tag], endpoint=mount.find_home)
-router.add_api_route(base_path + '/goto', tags=[tag], endpoint=mount.goto)
-router.add_api_route(base_path + '/dance', tags=[tag], endpoint=mount.dance)
+router.add_api_route(base_path + "/startup", tags=[tag], endpoint=mount.startup)
+router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=mount.shutdown)
+router.add_api_route(base_path + "/abort", tags=[tag], endpoint=mount.abort)
+router.add_api_route(base_path + "/status", tags=[tag], endpoint=mount.status)
+router.add_api_route(base_path + "/connect", tags=[tag], endpoint=mount.connect)
+router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=mount.disconnect)
+router.add_api_route(
+    base_path + "/start_tracking", tags=[tag], endpoint=mount.start_tracking
+)
+router.add_api_route(
+    base_path + "/stop_tracking", tags=[tag], endpoint=mount.stop_tracking
+)
+router.add_api_route(base_path + "/park", tags=[tag], endpoint=mount.park)
+router.add_api_route(base_path + "/find_home", tags=[tag], endpoint=mount.find_home)
+router.add_api_route(base_path + "/goto", tags=[tag], endpoint=mount.goto)
+router.add_api_route(base_path + "/dance", tags=[tag], endpoint=mount.dance)
