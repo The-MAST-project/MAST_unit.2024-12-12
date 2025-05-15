@@ -98,7 +98,14 @@ class Acquirer:
         if not self.unit.camera.connected:
             self.unit.camera.connected = True
 
-        tries: int = acquisition_conf['tries'] if 'tries' in acquisition_conf else 3
+        tries: int = acquisition_conf["tries"] if "tries" in acquisition_conf else 3
+
+        self.unit.mount.start_tracking()
+        self.unit.start_activity(UnitActivities.Positioning)
+        if self.latest_acquisition.slew_to_target:
+            self.unit.mount.goto_ra_dec_j2000(
+                target_ra_j2000_hours, target_dec_j2000_degs
+            )
 
         if not acquisition.skip_sky:
             phase = "sky"
@@ -107,12 +114,7 @@ class Acquirer:
             #
             # move the stage and mount (if needed) into position
             #
-            self.unit.start_activity(UnitActivities.Positioning)
             self.unit.stage.move_to_preset(StagePresetPosition.Sky)
-
-            self.unit.mount.start_tracking()
-            if self.latest_acquisition.slew_to_target:
-                self.unit.mount.goto_ra_dec_j2000(target_ra_j2000_hours, target_dec_j2000_degs)
 
             while self.unit.stage.is_moving or self.unit.mount.is_moving:
                 time.sleep(0.2)
@@ -244,7 +246,7 @@ class Acquirer:
                     phase=phase,
                 )
 
-            self.unit.acquirer.latest_acquisition.save_corrections('guiding')
+            self.unit.acquirer.latest_acquisition.save_corrections(phase)
 
             if cadence:
                 now = datetime.datetime.now()
@@ -269,7 +271,8 @@ class Acquirer:
 
         # Acquisition was stopped
         self.unit.end_activity(UnitActivities.Acquiring)
-        self.unit.mount.stop_tracking()
+        if acquisition.guiding_mode != GuidingMode.PHD2:
+            self.unit.mount.stop_tracking()
         self.unit.acquirer.latest_acquisition.post_process()
 
     def start_acquisition_and_guiding_for_assignment(
