@@ -29,7 +29,7 @@ from guiding import GuidingMode, GuidingModes
 from solving import SolverId, SolvingTolerance
 from stage import StagePresetPosition
 
-logger = logging.getLogger('mast.unit.' + __name__)
+logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
 
 RA_REGEX = r"^(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
@@ -65,20 +65,33 @@ class Acquirer:
         # - if they were supplied as Longitude and Latitude, transform to float
         # - pass them on to solve_and_correct() as a Coord
         #
-        if not hasattr(acquisition, 'target_ra') or not hasattr(acquisition, 'target_dec'):
+        if not hasattr(acquisition, "target_ra") or not hasattr(
+            acquisition, "target_dec"
+        ):
             st = self.unit.mount.status()
-            acquisition.target_ra = st['ra_j2000_hours ']   # NOTE: the space after _hours is NEEDED
-            acquisition.target_dec = st['dec_j2000_degs ']  # NOTE: the space after _degs is NEEDED
+            acquisition.target_ra = st[
+                "ra_j2000_hours "
+            ]  # NOTE: the space after _hours is NEEDED
+            acquisition.target_dec = st[
+                "dec_j2000_degs "
+            ]  # NOTE: the space after _degs is NEEDED
 
-        target_ra_j2000_hours: float = acquisition.target_ra.value \
-            if isinstance(acquisition.target_ra, Longitude) else acquisition.target_ra
+        target_ra_j2000_hours: float = (
+            acquisition.target_ra.value
+            if isinstance(acquisition.target_ra, Longitude)
+            else acquisition.target_ra
+        )
 
-        target_dec_j2000_degs: float = acquisition.target_dec.value \
-            if isinstance(acquisition.target_dec, Latitude) else acquisition.target_dec
+        target_dec_j2000_degs: float = (
+            acquisition.target_dec.value
+            if isinstance(acquisition.target_dec, Latitude)
+            else acquisition.target_dec
+        )
 
         target = Coord(
-            ra=Angle(target_ra_j2000_hours, unit='hour'),
-            dec=Angle(target_dec_j2000_degs, unit='deg'))
+            ra=Angle(target_ra_j2000_hours, unit="hour"),
+            dec=Angle(target_dec_j2000_degs, unit="deg"),
+        )
 
         self.unit.start_activity(UnitActivities.Acquiring)
 
@@ -88,7 +101,7 @@ class Acquirer:
         tries: int = acquisition_conf['tries'] if 'tries' in acquisition_conf else 3
 
         if not acquisition.skip_sky:
-            phase = 'sky'
+            phase = "sky"
             boxed_info(logger, [f"starting phase '{phase.upper()}'"])
 
             #
@@ -102,16 +115,18 @@ class Acquirer:
                 self.unit.mount.goto_ra_dec_j2000(target_ra_j2000_hours, target_dec_j2000_degs)
 
             while self.unit.stage.is_moving or self.unit.mount.is_moving:
-                time.sleep(.2)
+                time.sleep(0.2)
             self.unit.end_activity(UnitActivities.Positioning)
 
             sky_settings = CameraSettings(
-                seconds=acquisition_conf['exposure'],
+                seconds=acquisition_conf["exposure"],
                 base_folder=os.path.join(self.latest_acquisition.folder, phase),
-                gain=acquisition_conf['gain'],
-                binning=CameraBinning(acquisition_conf['binning']['x'], acquisition_conf['binning']['y']),
-                roi=UnitRoi.from_dict(acquisition_conf['roi']).to_camera_roi(),
-                save=True
+                gain=acquisition_conf["gain"],
+                binning=CameraBinning(
+                    acquisition_conf["binning"]["x"], acquisition_conf["binning"]["y"]
+                ),
+                roi=UnitRoi.from_dict(acquisition_conf["roi"]).to_camera_roi(),
+                save=True,
             )
 
             #
@@ -122,24 +137,33 @@ class Acquirer:
             default_tolerance: Angle = Angle(1 * u.arcsecond)
             ra_tolerance: Angle = default_tolerance
             dec_tolerance: Angle = default_tolerance
-            phase_conf = self.unit.unit_conf['acquisition']
-            if 'tolerance' in phase_conf:
-                if 'ra_arcsec' in phase_conf['tolerance']:
-                    ra_tolerance = Angle(phase_conf['tolerance']['ra_arcsec'] * u.arcsecond)
-                if 'dec_arcsec' in phase_conf['tolerance']:
-                    dec_tolerance = Angle(phase_conf['tolerance']['dec_arcsec'] * u.arcsecond)
+            phase_conf = self.unit.unit_conf["acquisition"]
+            if "tolerance" in phase_conf:
+                if "ra_arcsec" in phase_conf["tolerance"]:
+                    ra_tolerance = Angle(
+                        phase_conf["tolerance"]["ra_arcsec"] * u.arcsecond
+                    )
+                if "dec_arcsec" in phase_conf["tolerance"]:
+                    dec_tolerance = Angle(
+                        phase_conf["tolerance"]["dec_arcsec"] * u.arcsecond
+                    )
 
-            target = Coord(ra=Angle(target_ra_j2000_hours * u.hour), dec=Angle(target_dec_j2000_degs * u.deg))
+            target = Coord(
+                ra=Angle(target_ra_j2000_hours * u.hour),
+                dec=Angle(target_dec_j2000_degs * u.deg),
+            )
 
-            achieved_tolerances = self.unit.solver.solve_and_correct(target=target,
-                                                                     approach_mode=acquisition.approach_mode,
-                                                                     solver_id=acquisition.solver_id,
-                                                                     make_corrections=acquisition.make_corrections,
-                                                                     camera_settings=sky_settings,
-                                                                     solving_tolerance=SolvingTolerance(ra_tolerance,
-                                                                                                        dec_tolerance),
-                                                                     parent_activity=UnitActivities.Acquiring,
-                                                                     phase='sky', max_tries=tries)
+            achieved_tolerances = self.unit.solver.solve_and_correct(
+                target=target,
+                approach_mode=acquisition.approach_mode,
+                solver_id=acquisition.solver_id,
+                make_corrections=acquisition.make_corrections,
+                camera_settings=sky_settings,
+                solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
+                parent_activity=UnitActivities.Acquiring,
+                phase="sky",
+                max_tries=tries,
+            )
             logger.info(f"{op}: phase '{phase.upper()}' {achieved_tolerances=}")
             self.latest_acquisition.save_corrections(phase)
 
@@ -148,36 +172,44 @@ class Acquirer:
                 self.unit.mount.stop_tracking()
                 return
 
-        phase = 'spec'
+        phase = "spec"
         boxed_info(logger, [f"starting phase '{phase.upper()}'"])
 
         self.unit.stage.move_to_preset(StagePresetPosition.Spec)
         while self.unit.stage.is_moving:
-            time.sleep(.2)
+            time.sleep(0.2)
         logger.info(f"sleeping additional 5 seconds to let the stage stop moving ...")
         time.sleep(5)
         logger.info(f"stage now at {self.unit.stage.position}")
 
-        phase_conf = self.unit.unit_conf['guiding']
-        ra_tolerance = Angle(0, unit='hours')
-        dec_tolerance = Angle(0, unit='degs')
-        if 'tolerance' in phase_conf:
-            if 'ra_arcsec' in phase_conf['tolerance']:
-                ra_tolerance = Angle(phase_conf['tolerance']['ra_arcsec'] * u.arcsecond)
-            if 'dec_arcsec' in phase_conf['tolerance']:
-                dec_tolerance = Angle(phase_conf['tolerance']['dec_arcsec'] * u.arcsecond)
+        if self.unit.is_active(UnitActivities.Positioning):
+            self.unit.end_activity(UnitActivities.Positioning)
+
+        phase_conf = self.unit.unit_conf["guiding"]
+        ra_tolerance = Angle(0, unit="hour")
+        dec_tolerance = Angle(0, unit="deg")
+        if "tolerance" in phase_conf:
+            if "ra_arcsec" in phase_conf["tolerance"]:
+                ra_tolerance = Angle(phase_conf["tolerance"]["ra_arcsec"] * u.arcsecond)
+            if "dec_arcsec" in phase_conf["tolerance"]:
+                dec_tolerance = Angle(
+                    phase_conf["tolerance"]["dec_arcsec"] * u.arcsecond
+                )
 
         spec_settings = self.unit.guider.make_guiding_settings(
-            base_folder=os.path.join(self.latest_acquisition.folder, phase))
-        achieved_tolerances = self.unit.solver.solve_and_correct(target=target,
-                                                                 approach_mode=acquisition.approach_mode,
-                                                                 solver_id=acquisition.solver_id,
-                                                                 make_corrections=acquisition.make_corrections,
-                                                                 camera_settings=spec_settings,
-                                                                 solving_tolerance=SolvingTolerance(ra_tolerance,
-                                                                                                    dec_tolerance),
-                                                                 parent_activity=UnitActivities.Acquiring,
-                                                                 phase=phase, max_tries=tries)
+            base_folder=os.path.join(self.latest_acquisition.folder, phase)
+        )
+        achieved_tolerances = self.unit.solver.solve_and_correct(
+            target=target,
+            approach_mode=acquisition.approach_mode,
+            solver_id=acquisition.solver_id,
+            make_corrections=acquisition.make_corrections,
+            camera_settings=spec_settings,
+            solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
+            parent_activity=UnitActivities.Acquiring,
+            phase=phase,
+            max_tries=tries,
+        )
         self.latest_acquisition.save_corrections(phase)
         logger.info(f"{op}: phase '{phase.upper()}' {achieved_tolerances=}")
         if not achieved_tolerances:
@@ -188,10 +220,10 @@ class Acquirer:
         self.unit.reference_image = self.unit.camera.image
 
         if acquisition.guiding_mode == GuidingMode.PlateSolving:
-            phase = 'guiding'
+            phase = "guiding"
             boxed_info(logger, [f"starting phase '{phase.upper()}'"])
 
-            cadence = self.unit.unit_conf['guiding']['cadence_seconds']
+            cadence = self.unit.unit_conf[phase]["cadence_seconds"]
             end: datetime.datetime | None = None
             folder = os.path.join(self.latest_acquisition.folder, phase)
             guiding_settings = self.unit.guider.make_guiding_settings(folder)
@@ -201,12 +233,16 @@ class Acquirer:
                 start = datetime.datetime.now()
                 if cadence:
                     end = start + datetime.timedelta(seconds=cadence)
-                self.unit.solver.solve_and_correct(target=target, approach_mode=acquisition.approach_mode,
-                                                   solver_id=acquisition.solver_id,
-                                                   make_corrections=acquisition.make_corrections,
-                                                   camera_settings=guiding_settings,
-                                                   solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
-                                                   parent_activity=UnitActivities.Acquiring, phase='guiding')
+                self.unit.solver.solve_and_correct(
+                    target=target,
+                    approach_mode=acquisition.approach_mode,
+                    solver_id=acquisition.solver_id,
+                    make_corrections=acquisition.make_corrections,
+                    camera_settings=guiding_settings,
+                    solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
+                    parent_activity=UnitActivities.Acquiring,
+                    phase=phase,
+                )
 
             self.unit.acquirer.latest_acquisition.save_corrections('guiding')
 
@@ -214,10 +250,16 @@ class Acquirer:
                 now = datetime.datetime.now()
                 if now < end:
                     sec = (end - now).seconds
-                    boxed_info(logger, f"phase '{phase.upper()}], sleeping {sec:.2f} seconds till end-of-cadence ...")
+                    boxed_info(
+                        logger,
+                        f"phase '[{phase.upper()}], sleeping {sec:.2f} seconds till end-of-cadence ...",
+                    )
                     time.sleep(sec)
                 else:
-                    boxed_info(logger, f"phase '{phase.upper()}], cycle was longer than {cadence=} sec, not sleeping")
+                    boxed_info(
+                        logger,
+                        f"phase '[{phase.upper()}], cycle was longer than {cadence=} sec, not sleeping",
+                    )
         else:
             if acquisition.guiding_mode == GuidingMode.PHD2:
                 self.unit.camera.connected = False
@@ -230,61 +272,70 @@ class Acquirer:
         self.unit.mount.stop_tracking()
         self.unit.acquirer.latest_acquisition.post_process()
 
-    def start_acquisition_and_guiding_for_assignment(self, assignment: UnitAssignmentModel):
+    def start_acquisition_and_guiding_for_assignment(
+        self, assignment: UnitAssignmentModel
+    ):
         approach_mode: int = 2
         make_corrections = True
         ra_j2000_hours = assignment.target.ra
         dec_j2000_degs = assignment.target.dec
-        solver_name: SolverIdNames = 'AstrometryDotNet'
+        solver_name: SolverIdNames = "AstrometryDotNet"
 
-        acquisition = Acquisition(unit=self.unit, approach_mode=approach_mode, solver_id=SolverId[solver_name],
-                                  make_corrections=make_corrections, target_ra=ra_j2000_hours,
-                                  target_dec=dec_j2000_degs, conf=self.unit.unit_conf['acquisition'])
-        Thread(name='acquisition', target=self.do_acquire, args=[acquisition]).start()
+        acquisition = Acquisition(
+            unit=self.unit,
+            approach_mode=approach_mode,
+            solver_id=SolverId[solver_name],
+            make_corrections=make_corrections,
+            target_ra=ra_j2000_hours,
+            target_dec=dec_j2000_degs,
+            conf=self.unit.unit_conf["acquisition"],
+        )
+        Thread(name="acquisition", target=self.do_acquire, args=[acquisition]).start()
 
         """
         This acquisition is part of an assignment, tell the controller where the products are
         """
         notify_controller_about_task_acquisition_path(
             task_id=assignment.task.ulid,
-            link='acquisition',
+            link="acquisition",
             src=acquisition.folder,
         )
 
-    def start_acquisition_and_guiding(self,
-                                      seconds: Optional[float] = 5.0,
-                                      ra_j2000_hours: Annotated[
-                                          Optional[str | float],
-                                          Query(
-                                              regex=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
-                                              description=(
-                                                      "### Right Ascension (J2000) in either:\n"
-                                                      "- decimal hours (e.g., `12.5`) or\n"
-                                                      "- sexagesimal format (e.g., `12:30:45.123`). \n"
-                                                      "- Decimal range: `0 <= RA < 24`.\n"
-                                                      "If not supplied, taken from telescope"
-                                              ),
-                                          ),
-                                      ] = None,
-                                      dec_j2000_degs: Annotated[
-                                          Optional[str | float],
-                                          Query(
-                                              regex=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
-                                              description=(
-                                                      "### Declination (J2000) in either:\n"
-                                                      "- decimal degrees (e.g., `-45.5`) or\n"
-                                                      "- sexagesimal format (e.g., `-45:30:00.123`). \n"
-                                                      "- Decimal range: `-90 <= DEC <= 90`.\n"
-                                                      "If not supplied, taken from telescope"
-                                              ),
-                                          ),
-                                      ] = None,
-                                      approach_mode: int = 2,
-                                      solver_name: SolverIdNames = 'AstrometryDotNet',
-                                      make_corrections: bool = True,
-                                      skip_sky: bool = False,
-                                      guiding_mode: GuidingModes = 'PlateSolving'
-                                      ):
+    def start_acquisition_and_guiding(
+        self,
+        seconds: Optional[float] = 5.0,
+        ra_j2000_hours: Annotated[
+            Optional[str | float],
+            Query(
+                regex=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
+                description=(
+                    "### Right Ascension (J2000) in either:\n"
+                    "- decimal hours (e.g., `12.5`) or\n"
+                    "- sexagesimal format (e.g., `12:30:45.123`). \n"
+                    "- Decimal range: `0 <= RA < 24`.\n"
+                    "If not supplied, taken from telescope"
+                ),
+            ),
+        ] = None,
+        dec_j2000_degs: Annotated[
+            Optional[str | float],
+            Query(
+                regex=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
+                description=(
+                    "### Declination (J2000) in either:\n"
+                    "- decimal degrees (e.g., `-45.5`) or\n"
+                    "- sexagesimal format (e.g., `-45:30:00.123`). \n"
+                    "- Decimal range: `-90 <= DEC <= 90`.\n"
+                    "If not supplied, taken from telescope"
+                ),
+            ),
+        ] = None,
+        approach_mode: int = 2,
+        solver_name: SolverIdNames = "AstrometryDotNet",
+        make_corrections: bool = True,
+        skip_sky: bool = False,
+        guiding_mode: GuidingModes = "PlateSolving",
+    ):
         """
         Starts an acquisition
 
@@ -303,7 +354,7 @@ class Acquirer:
 
         if ra_j2000_hours:
             if isinstance(ra_j2000_hours, str):
-                if ':' in ra_j2000_hours:
+                if ":" in ra_j2000_hours:
                     ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
                 else:
                     ra_j2000_hours = float(ra_j2000_hours)
@@ -311,12 +362,14 @@ class Acquirer:
                 pass
         else:
             if not pw_status.mount.is_connected:
-                return CanonicalResponse(errors=[f"cannot get coordinates from mount (mount not connected)"])
+                return CanonicalResponse(
+                    errors=[f"cannot get coordinates from mount (mount not connected)"]
+                )
             ra_j2000_hours = pw_status.mount.ra_j2000_hours
 
         if dec_j2000_degs:
             if isinstance(dec_j2000_degs, str):
-                if ':' in dec_j2000_degs:
+                if ":" in dec_j2000_degs:
                     dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
                 else:
                     dec_j2000_degs = float(dec_j2000_degs)
@@ -324,17 +377,25 @@ class Acquirer:
                 pass
         else:
             if not pw_status.mount.is_connected:
-                return CanonicalResponse(errors=[f"cannot get coordinates from mount (mount not connected)"])
+                return CanonicalResponse(
+                    errors=[f"cannot get coordinates from mount (mount not connected)"]
+                )
             dec_j2000_degs = pw_status.mount.dec_j2000_degs
 
         if seconds is None:
-            self.unit.unit_conf['acquisition']['exposure'] = seconds
+            self.unit.unit_conf["acquisition"]["exposure"] = seconds
 
-        acquisition = Acquisition(unit=self.unit, approach_mode=approach_mode, solver_id=SolverId[solver_name],
-                                  make_corrections=make_corrections, target_ra=ra_j2000_hours,
-                                  target_dec=dec_j2000_degs, conf=self.unit.unit_conf['acquisition'],
-                                  skip_sky=skip_sky,
-                                  guiding_mode=GuidingMode[guiding_mode])
-        Thread(name='acquisition', target=self.do_acquire, args=[acquisition]).start()
+        acquisition = Acquisition(
+            unit=self.unit,
+            approach_mode=approach_mode,
+            solver_id=SolverId[solver_name],
+            make_corrections=make_corrections,
+            target_ra=ra_j2000_hours,
+            target_dec=dec_j2000_degs,
+            conf=self.unit.unit_conf["acquisition"],
+            skip_sky=skip_sky,
+            guiding_mode=GuidingMode[guiding_mode],
+        )
+        Thread(name="acquisition", target=self.do_acquire, args=[acquisition]).start()
 
         return CanonicalResponse_Ok
