@@ -79,9 +79,7 @@ class Guider:
 
     def stop_acquisition_and_guiding(self):
         """
-        Stops the ``autoguide`` routine
-
-        :mastapi:
+        Stops the `autoguide` routine
         """
         # if not self.connected:
         #     logger.warning('Cannot stop guiding - not-connected')
