@@ -1,21 +1,17 @@
+import datetime
+import json
+import logging
 import math
 import os.path
-
-from common.utils import function_name, Coord, boxed_info
-from common.mast_logging import init_log
-from common.filer import Filer
-from acquisition import Acquisition
-import logging
 import time
 from typing import List, Optional
 from camera import CameraSettings
 from common.activities import UnitActivities
-from common.corrections import Corrections, Correction
+from common.corrections import Correction, Corrections
+from common.filer import Filer
+from common.mast_logging import init_log
 from common.solving import SolverId
-from astropy.coordinates import Angle
-import astropy.units as u
-import datetime
-import json
+from common.utils import Coord, boxed_info, function_name
 
 logger = logging.Logger("mast.unit." + __name__)
 init_log(logger)
