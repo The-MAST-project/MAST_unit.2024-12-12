@@ -27,8 +27,8 @@ GuidingModes = Literal["NoGuiding", "PlateSolving", "PHD2"]
 
 class Guider:
 
-    def __init__(self, unit: "Unit"):
-        self.unit: "Unit" = unit
+    def __init__(self, unit: "Unit"):  # type: ignore[name]
+        self.unit: "Unit" = unit  # type: ignore[name]
         if self.unit.unit_conf["guider"]["method"] == "phd2":
             WatchedProcess(
                 command="C:/Program Files (x86)/PHDGuiding2/phd2.exe",

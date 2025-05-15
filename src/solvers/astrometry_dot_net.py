@@ -130,7 +130,7 @@ def _parse_solver_output(lines: List[str]) -> SolvingResult:
 
 
 def astrometry_dot_net_solve(
-    unit: "Unit", settings: CameraSettings, target: Coord
+    unit: "Unit", settings: CameraSettings, target: Coord  # type: ignore[name]
 ) -> SolvingResult:
     filer = Filer(logger)
     unix_emulator = "cygwin"

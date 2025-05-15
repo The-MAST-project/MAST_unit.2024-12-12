@@ -46,7 +46,7 @@ class PlaneWaveShmSolvingResult(ExtendedBaseModel):
 
 
 def planewave_shm_solve(
-    unit: "Unit", settings: CameraSettings, target: Coord
+    unit: "Unit", settings: CameraSettings, target: Coord  # type: ignore[name]
 ) -> SolvingResult:
     op = function_name()
     unit.camera.wait_for_image_ready()

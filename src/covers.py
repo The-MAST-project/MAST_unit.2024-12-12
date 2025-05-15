@@ -58,7 +58,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         # return logger
         return logger
 
-    def __init__(self, unit: "Unit"):
+    def __init__(self, unit: "Unit"):  # type: ignore[name]
         if self._initialized:
             return
 

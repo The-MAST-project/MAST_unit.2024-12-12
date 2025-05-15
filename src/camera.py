@@ -182,7 +182,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
     def ascom(self) -> win32com.client.Dispatch:
         return self._ascom
 
-    def __init__(self, unit: "Unit"):
+    def __init__(self, unit: "Unit"):  # type: ignore[name]
         #
         # The Camera() is a Singleton but the initiator is called twice (for the same object ID):
         # - once from this file, with unit as None
@@ -193,7 +193,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
             unit_id = f"0x{id(unit):X}"
         logger.info(f"camera.id: 0x{id(self):X}, unit: {unit_id}")
 
-        self.unit: "Unit" = unit
+        self.unit: "Unit" = unit  # type: ignore[name]
 
         if self._initialized:
             return

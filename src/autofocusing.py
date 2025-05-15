@@ -61,8 +61,8 @@ class PS3AutofocusStatus(ExtendedBaseModel):
 
 class Autofocuser:
 
-    def __init__(self, unit: "Unit"):
-        self.unit: "Unit" = unit
+    def __init__(self, unit: "Unit"):  # type: ignore[name]
+        self.unit: "Unit" = unit  # type: ignore[name]
         self.latest_result: Optional[PS3FocusAnalysisResult] = None
 
     @property

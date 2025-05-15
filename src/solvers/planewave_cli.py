@@ -36,7 +36,7 @@ class PlaneWaveCliSolverResult(ExtendedBaseModel):
 
 
 def planewave_cli_solve(
-    unit: "Unit", settings: CameraSettings, target: Coord
+    unit: "Unit", settings: CameraSettings, target: Coord  # type: ignore[name]
 ) -> SolvingResult:
     op = function_name()
     ps3_solver_status: PlaneWaveCliSolverResult

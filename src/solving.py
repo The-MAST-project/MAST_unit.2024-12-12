@@ -86,8 +86,8 @@ class SolvingTolerance:
 
 class Solver:
 
-    def __init__(self, unit: "Unit"):
-        self.unit: "Unit" = unit
+    def __init__(self, unit: "Unit"):  # type: ignore[name]
+        self.unit: "Unit" = unit  # type: ignore[name]
         self.latest_result: SolvingResult | None = None
 
     def plate_solve(

@@ -115,7 +115,7 @@ class Stage(Component, SwitchedOutlet):
 
     _positioning_precision: int = 100
 
-    def __init__(self, unit: "Unit"):
+    def __init__(self, unit: "Unit"):  # type: ignore[name]
         if self._initialized:
             return
 

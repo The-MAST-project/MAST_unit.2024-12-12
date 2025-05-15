@@ -21,7 +21,7 @@ init_log(logger)
 class Acquisition:
     def __init__(
         self,
-        unit: "Unit",
+        unit: "Unit",  # type: ignore[name]
         approach_mode: int,
         solver_id: SolverId,
         make_corrections: bool = True,

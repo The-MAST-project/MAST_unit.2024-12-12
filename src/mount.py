@@ -69,7 +69,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def ascom(self) -> win32com.client.Dispatch:
         return self._ascom
 
-    def __init__(self, unit: "Unit"):
+    def __init__(self, unit: "Unit"):  # type: ignore[name]
         if self._initialized:
             return
 
