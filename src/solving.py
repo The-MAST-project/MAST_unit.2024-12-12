@@ -5,6 +5,11 @@ import math
 import os.path
 import time
 from typing import List, Optional
+
+import astropy.units as u
+from astropy.coordinates import Angle
+
+from acquisition import Acquisition
 from camera import CameraSettings
 from common.activities import UnitActivities
 from common.corrections import Correction, Corrections
