@@ -1,16 +1,18 @@
 import logging
-from common.mast_logging import init_log
-from camera import CameraSettings
-from common.utils import Coord, function_name
-from common.filer import Filer
-import subprocess
 import os
+import subprocess
 from enum import IntFlag
-from typing import Optional, List
-from common.extended_basemodel import ExtendedBaseModel
-from solving import SolvingResult, SolvingSolution
+from typing import List, Optional
+
 from astropy.coordinates import Angle
 from astropy.io import fits
+
+from camera import CameraSettings
+from common.extended_basemodel import ExtendedBaseModel
+from common.filer import Filer
+from common.mast_logging import init_log
+from common.utils import Coord, function_name
+from solving import SolvingResult, SolvingSolution
 
 logger = logging.Logger("planewave_cli")
 init_log(logger)

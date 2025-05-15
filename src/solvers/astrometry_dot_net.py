@@ -1,19 +1,20 @@
 import datetime
-import os.path
-import sys
-
-from camera import CameraSettings
-from common.utils import Coord, generate_random_string, function_name
-from common.filer import Filer
-from common.mast_logging import init_log
+import json
 import logging
-from solving import SolvingSolution, SolvingResult
-from typing import List
-from astropy.coordinates import Angle
-import subprocess
+import os.path
 import re
 import shutil
-import json
+import subprocess
+import sys
+from typing import List
+
+from astropy.coordinates import Angle
+
+from camera import CameraSettings
+from common.filer import Filer
+from common.mast_logging import init_log
+from common.utils import Coord, function_name, generate_random_string
+from solving import SolvingResult, SolvingSolution
 
 logger = logging.Logger("astrometry_dot_net")
 init_log(logger)
