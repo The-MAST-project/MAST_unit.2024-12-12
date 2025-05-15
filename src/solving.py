@@ -91,7 +91,27 @@ class Solver:
     ) -> SolvingResult:
         op = function_name()
 
-        while self.unit.is_active(UnitActivities.Solving):
+        if settings.binning.x != settings.binning.y:
+            raise Exception(
+                f"cannot deal with non-equal horizontal and vertical binning "
+                + f"({settings.binning.x=}, {settings.binning.y=}"
+            )
+
+        from solvers.astrometry_dot_net import astrometry_dot_net_solve
+        from solvers.planewave_cli import planewave_cli_solve
+        from solvers.planewave_shm import planewave_shm_solve
+
+        solvers_dispatch = {
+            SolverId.PlaneWaveCli: planewave_cli_solve,
+            SolverId.PlaneWaveShm: planewave_shm_solve,
+            SolverId.AstrometryDotNet: astrometry_dot_net_solve,
+        }
+
+        if solver_id not in solvers_dispatch:
+            logger.error(f"No dispatcher for {solver_id=}")
+            raise Exception(f"no dispatcher for {solver_id=}")
+
+        if self.unit.is_active(UnitActivities.Solving):
 
             ret: SolvingResult | None = None
 
@@ -111,26 +131,7 @@ class Solver:
                 ret.errors = [f"could not start exposure ({[response.errors]})"]
                 return ret
 
-            if settings.binning.x != settings.binning.y:
-                raise Exception(
-                    f"cannot deal with non-equal horizontal and vertical binning "
-                    + f"({settings.binning.x=}, {settings.binning.y=}"
-                )
-
-            from solvers.planewave_shm import planewave_shm_solve
-            from solvers.planewave_cli import planewave_cli_solve
-            from solvers.astrometry_dot_net import astrometry_dot_net_solve
-
-            solvers_dispatch = {
-                SolverId.PlaneWaveCli: planewave_cli_solve,
-                SolverId.PlaneWaveShm: planewave_shm_solve,
-                SolverId.AstrometryDotNet: astrometry_dot_net_solve,
-            }
-
-            if solver_id not in solvers_dispatch:
-                logger.error(f"No dispatcher for {solver_id=}")
-            else:
-                return solvers_dispatch[solver_id](self.unit, settings, target)
+            return solvers_dispatch[solver_id](self.unit, settings, target)
 
     def solve_and_correct(
         self,
