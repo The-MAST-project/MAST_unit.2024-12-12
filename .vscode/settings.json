@@ -13,5 +13,6 @@
     "source.organizeImports": "always",
   },
   "editor.accessibilitySupport": "off",
-  "terminal.integrated.accessibilitySupport": false
+  "terminal.integrated.accessibilitySupport": false,
+  "files.eol": "\n",
 }

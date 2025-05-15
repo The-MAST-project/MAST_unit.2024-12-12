@@ -13,10 +13,21 @@
                 "app:app",
                 "--reload",
                 "--port",
-                "8001"
+                "8000"
             ],
-            "cwd":"${workspaceFolder}/src",
-            "jinja": true,
+            "cwd": "${workspaceFolder}/src",
+            // "jinja": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+        },
+        {
+            "name": "Test phd2",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/src",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src"
             },
