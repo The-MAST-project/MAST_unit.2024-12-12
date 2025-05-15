@@ -43,11 +43,11 @@ if platform.system() == "Windows":
             lib_dir + ";" + os.environ["Path"]
         )  # add dll path into an environment variable
 
+    from pyximc import EnumerateFlags  # type: ignore[name]
     from pyximc import (
         POINTER,
-        EnumerateFlags,  # type: ignore[name]
         MvcmdStatus,
-        Result,
+        Result,  # type: ignore[name]
         StateFlags,
         byref,
         c_int,
