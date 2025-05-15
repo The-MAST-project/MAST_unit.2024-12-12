@@ -9,3 +9,4 @@ __pycache__/
 /src/powered_device-sav.py
 *.fits
 src/Standa/
+src/dlipower/
