@@ -45,7 +45,7 @@ if platform.system() == "Windows":
 
     from pyximc import (
         POINTER,
-        EnumerateFlags,
+        EnumerateFlags,  # type: ignore[name]
         MvcmdStatus,
         Result,
         StateFlags,
@@ -55,8 +55,8 @@ if platform.system() == "Windows":
         device_information_t,
         edges_settings_t,
     )
-    from pyximc import lib as ximclib
-    from pyximc import status_t, string_at
+    from pyximc import lib as ximclib  # type: ignore[name]
+    from pyximc import status_t, string_at  # type: ignore[name]
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
