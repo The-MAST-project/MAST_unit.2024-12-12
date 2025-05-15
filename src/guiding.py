@@ -1,14 +1,12 @@
-import enum
 import logging
-from common.utils import CanonicalResponse, CanonicalResponse_Ok
-from common.mast_logging import init_log
-from common.activities import Activities, UnitActivities, CameraActivities
-from common.utils import UnitRoi
-from camera import CameraSettings, CameraBinning
-from typing import Literal
 from enum import Enum, auto
+from typing import Literal
+
+from camera import CameraBinning, CameraSettings
+from common.activities import CameraActivities, UnitActivities
+from common.mast_logging import init_log
 from common.process import WatchedProcess
-from abc import ABC, abstractmethod
+from common.utils import CanonicalResponse, CanonicalResponse_Ok, UnitRoi
 
 logger = logging.Logger("mast.unit." + __name__)
 init_log(logger)

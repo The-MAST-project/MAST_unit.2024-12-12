@@ -1,17 +1,17 @@
 import datetime
-import logging
-import time
-
-from common.paths import PathMaker
-from common.mast_logging import init_log
-from common.corrections import Corrections
-from common.solving import SolverId
-from plotting import plot_acquisition_corrections, plot_phase_corrections
-import os
 import json
-from common.filer import Filer
+import logging
+import os
+import time
 from typing import Dict, Optional
+
+from common.corrections import Corrections
+from common.filer import Filer
+from common.mast_logging import init_log
+from common.paths import PathMaker
+from common.solving import SolverId
 from guiding import GuidingMode
+from plotting import plot_acquisition_corrections, plot_phase_corrections
 
 logger = logging.getLogger("mast.unit." + __name__)
 filer = Filer(logger)

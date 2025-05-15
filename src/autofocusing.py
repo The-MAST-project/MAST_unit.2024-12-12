@@ -1,25 +1,26 @@
 import datetime
-from threading import Thread
-from common.utils import function_name, CanonicalResponse_Ok, CanonicalResponse
-from common.paths import PathMaker
-from common.mast_logging import init_log
-from common.filer import Filer
-from common.config import Config
 import logging
-import time
-import os
-from typing import List, Optional, Annotated
-from PlaneWave.ps3cli_client import PS3CLIClient
-from camera import CameraSettings, CameraBinning
-from stage import StagePresetPosition
-from common.activities import UnitActivities, FocuserActivities
-from common.utils import UnitRoi
-from common.extended_basemodel import ExtendedBaseModel
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
-from plotting import plot_autofocus_analysis
 import math
+import os
+import time
+from threading import Thread
+from typing import Annotated, List, Optional
+
 from fastapi import Query
-from acquirer import RA_REGEX, DEC_REGEX
+
+from acquirer import DEC_REGEX, RA_REGEX
+from camera import CameraBinning, CameraSettings
+from common.activities import FocuserActivities, UnitActivities
+from common.config import Config
+from common.extended_basemodel import ExtendedBaseModel
+from common.filer import Filer
+from common.mast_logging import init_log
+from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.paths import PathMaker
+from common.utils import CanonicalResponse, CanonicalResponse_Ok, UnitRoi, function_name
+from PlaneWave.ps3cli_client import PS3CLIClient
+from plotting import plot_autofocus_analysis
+from stage import StagePresetPosition
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)

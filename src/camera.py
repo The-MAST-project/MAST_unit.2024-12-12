@@ -1,30 +1,36 @@
 import datetime
+import logging
 import os
 import socket
 import threading
 import time
-from logging import Logger
-
-import win32com.client
-from typing import List, Callable, Dict, Tuple, Optional
-import logging
 from enum import IntFlag
-from threading import Thread, Lock
+from logging import Logger
+from threading import Lock, Thread
+from typing import Callable, Dict, List, Optional, Tuple
 
-from common.utils import RepeatTimer, time_stamp, BASE_UNIT_PATH
-from common.utils import CanonicalResponse, CanonicalResponse_Ok, function_name
-from common.components import Component, ComponentStatus
-from common.paths import PathMaker
-from common.config import Config
-from common.camera import CameraRoi, CameraBinning
-from common.mast_logging import init_log
-from common.dlipowerswitch import SwitchedOutlet, OutletDomain, PowerStatus
-from fastapi.routing import APIRouter
-from astropy.io import fits
 import numpy as np
-from common.ascom import ascom_run, AscomDispatcher, AscomStatus
-from common.activities import CameraActivities
+import win32com.client
+from astropy.io import fits
+from fastapi.routing import APIRouter
 from pydantic import BaseModel
+
+from common.activities import CameraActivities
+from common.ascom import AscomDispatcher, AscomStatus, ascom_run
+from common.camera import CameraBinning, CameraRoi
+from common.components import Component, ComponentStatus
+from common.config import Config
+from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
+from common.mast_logging import init_log
+from common.paths import PathMaker
+from common.utils import (
+    BASE_UNIT_PATH,
+    CanonicalResponse,
+    CanonicalResponse_Ok,
+    RepeatTimer,
+    function_name,
+    time_stamp,
+)
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)

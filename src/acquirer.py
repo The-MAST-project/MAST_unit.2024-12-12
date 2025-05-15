@@ -1,28 +1,33 @@
-import time
-import logging
-
-from common.utils import function_name, Coord
-from common.mast_logging import init_log
-from common.activities import UnitActivities
-from common.utils import UnitRoi, CanonicalResponse_Ok, CanonicalResponse, boxed_info
-from common.solving import SolverIdNames
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
-from stage import StagePresetPosition
-from camera import CameraSettings, CameraBinning
-from astropy.coordinates import Angle
-import astropy.units as u
-from solving import SolvingTolerance, SolverId
-from threading import Thread
-from acquisition import Acquisition
-import os
-from typing import Optional
 import datetime
+import logging
+import os
+import time
+from threading import Thread
+from typing import Annotated, Optional
+
+import astropy.units as u
+from astropy.coordinates import Angle, Latitude, Longitude
 from fastapi import Query
-from typing import Annotated
+
+from acquisition import Acquisition
+from camera import CameraBinning, CameraSettings
+from common.activities import UnitActivities
+from common.mast_logging import init_log
+from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.solving import SolverIdNames
 from common.tasks.models import UnitAssignmentModel
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
-from astropy.coordinates import Longitude, Latitude
+from common.utils import (
+    CanonicalResponse,
+    CanonicalResponse_Ok,
+    Coord,
+    UnitRoi,
+    boxed_info,
+    function_name,
+)
 from guiding import GuidingMode, GuidingModes
+from solving import SolverId, SolvingTolerance
+from stage import StagePresetPosition
 
 logger = logging.getLogger('mast.unit.' + __name__)
 init_log(logger)

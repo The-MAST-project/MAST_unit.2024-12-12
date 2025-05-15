@@ -1,23 +1,24 @@
-from typing import List, Optional
 import logging
 from enum import IntEnum, auto
-import win32com.client
+from typing import List, Optional
 
+import win32com.client
+from fastapi.routing import APIRouter
+
+from common.activities import FocuserActivities
+from common.ascom import AscomDispatcher, AscomStatus, ascom_run
+from common.components import Component, ComponentStatus
+from common.config import Config
+from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
+from common.mast_logging import init_log
 from common.utils import (
-    RepeatTimer,
-    time_stamp,
+    BASE_UNIT_PATH,
     CanonicalResponse,
     CanonicalResponse_Ok,
-    BASE_UNIT_PATH,
+    RepeatTimer,
+    time_stamp,
 )
-from common.components import ComponentStatus, Component
-from common.config import Config
-from common.mast_logging import init_log
 from PlaneWave import pwi4_client
-from common.dlipowerswitch import SwitchedOutlet, OutletDomain, PowerStatus
-from fastapi.routing import APIRouter
-from common.ascom import ascom_run, AscomDispatcher, AscomStatus
-from common.activities import FocuserActivities
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
