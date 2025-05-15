@@ -38,8 +38,8 @@ DEC_REGEX = r"^([+-]?)(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
 
 class Acquirer:
 
-    def __init__(self, unit: 'Unit"):  # type: ignore[name]
-        self.unit: 'Unit' = unit
+    def __init__(self, unit: "Unit"):  # type: ignore[name]
+        self.unit: "Unit" = unit  # type: ignore[name]
         self.folder: str | None = None
         self.latest_acquisition: Acquisition | None = None
 
