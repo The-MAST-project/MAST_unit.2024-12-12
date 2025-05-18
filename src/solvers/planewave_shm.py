@@ -2,7 +2,7 @@ import datetime
 import logging
 import time
 from multiprocessing.shared_memory import SharedMemory
-from typing import Literal, Optional
+from typing import Literal
 
 import numpy as np
 from astropy.coordinates import Angle
@@ -40,11 +40,11 @@ class PlaneWaveShmSolvingResult(ExtendedBaseModel):
         "error",
         "unknown",
     ]
-    error_message: Optional[str] = None
-    last_log_message: Optional[str] = None
-    num_extracted_stars: Optional[int] = None
-    running_time_seconds: Optional[float] = None
-    solution: Optional[PlaneWaveShmSolvingSolution] = None
+    error_message: str | None = None
+    last_log_message: str | None = None
+    num_extracted_stars: int | None = None
+    running_time_seconds: float | None = None
+    solution: PlaneWaveShmSolvingSolution | None = None
 
 
 def planewave_shm_solve(

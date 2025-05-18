@@ -1,12 +1,10 @@
 import datetime
-import json
 import logging
 import os.path
 import re
 import shutil
 import subprocess
 import sys
-from typing import List
 
 from astropy.coordinates import Angle
 
@@ -50,7 +48,7 @@ def win_to_wsl(path: str) -> str:
     return path.replace("\\", "/")
 
 
-def _parse_solver_output(lines: List[str]) -> SolvingResult:
+def _parse_solver_output(lines: list[str]) -> SolvingResult:
     op = function_name()
 
     #
@@ -80,7 +78,7 @@ def _parse_solver_output(lines: List[str]) -> SolvingResult:
                     ret.solution.rotation_angle_degs = float(match.group(1))
                     # logger.info(f"{ret.solution.rotation_angle_degs=}")
                 else:
-                    logger.error(f"bad match for ret.solution.rotation_angle_degs")
+                    logger.error("bad match for ret.solution.rotation_angle_degs")
 
             elif line.startswith("Field center: (RA,Dec) ="):  # (2)
                 match = re.match(
@@ -96,7 +94,7 @@ def _parse_solver_output(lines: List[str]) -> SolvingResult:
                     ret.solution.ra_hours = Angle(ra_degs, unit="deg").hour
                     ret.solution.dec_degs = dec_degs
                 else:
-                    logger.error(f"bad match for ra_degs, dec_degs")
+                    logger.error("bad match for ra_degs, dec_degs")
 
             elif line.startswith("Field 1: solved with index"):  # (3)
                 ret.succeeded = True
@@ -105,7 +103,7 @@ def _parse_solver_output(lines: List[str]) -> SolvingResult:
                     ret.native_result.index_file = match.group(1)
                     # logger.info(f"{ret.native_result.index_file=}")
                 else:
-                    logger.error(f"bad match for ret.native_result.index_file")
+                    logger.error("bad match for ret.native_result.index_file")
 
             elif line.startswith("  log-odds ratio"):  # (4)
                 match = re.match(r"^.*[)], (\d+) match,", line)
@@ -113,7 +111,7 @@ def _parse_solver_output(lines: List[str]) -> SolvingResult:
                     ret.solution.matched_stars = int(match.group(1))
                     # logger.info(f"{ret.solution.matched_stars=}")
                 else:
-                    logger.error(f"bad match for ret.solution.matched_stars")
+                    logger.error("bad match for ret.solution.matched_stars")
 
             elif line.startswith("  RA,Dec = "):  # (5)
                 match = re.match(
@@ -123,7 +121,7 @@ def _parse_solver_output(lines: List[str]) -> SolvingResult:
                     ret.solution.pixel_scale = float(match.group(1))
                     # logger.info(f"{ret.solution.pixel_scale=}")
                 else:
-                    logger.error(f"bad match for ret.solution.pixel_scale")
+                    logger.error("bad match for ret.solution.pixel_scale")
     except Exception as e:
         logger.error(f"{op}: exception: {e}")
 

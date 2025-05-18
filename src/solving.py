@@ -4,7 +4,6 @@ import logging
 import math
 import os.path
 import time
-from typing import List, Optional
 
 import astropy.units as u
 from astropy.coordinates import Angle
@@ -24,14 +23,14 @@ filer = Filer(logger)
 
 
 class SolvingSolution:
-    ra_rads: Optional[float] = None
-    dec_rads: Optional[float] = None
+    ra_rads: float | None = None
+    dec_rads: float | None = None
     ra_hours: float = 0.0
     dec_degs: float = 0.0
     matched_stars: int = 0
     catalog_stars: int = 0
-    rotation_angle_degs: Optional[float] = None
-    pixel_scale: Optional[float] = None
+    rotation_angle_degs: float | None = None
+    pixel_scale: float | None = None
 
     def to_dict(self):
         return {
@@ -49,15 +48,15 @@ class SolvingSolution:
 class SolvingResult:
 
     succeeded: bool
-    errors: Optional[List[str]] = None
+    errors: list[str] | None = None
     solution: SolvingSolution
     native_result = None
 
     def __init__(
         self,
         succeeded: bool,
-        errors: Optional[List[str]] = None,
-        solution: Optional[SolvingSolution] = None,
+        errors: list[str] | None = None,
+        solution: SolvingSolution | None = None,
         native_result=None,
     ):
         self.succeeded = succeeded
@@ -98,7 +97,7 @@ class Solver:
 
         if settings.binning.x != settings.binning.y:
             raise Exception(
-                f"cannot deal with non-equal horizontal and vertical binning "
+                "cannot deal with non-equal horizontal and vertical binning "
                 + f"({settings.binning.x=}, {settings.binning.y=}"
             )
 
@@ -146,8 +145,8 @@ class Solver:
         make_corrections: bool,
         camera_settings: CameraSettings,
         solving_tolerance: SolvingTolerance,
-        parent_activity: Optional[UnitActivities] = None,
-        phase: Optional[str] = None,
+        parent_activity: UnitActivities | None = None,
+        phase: str | None = None,
         max_tries: int = 3,
     ) -> bool:
         """
@@ -230,7 +229,7 @@ class Solver:
                     settings=camera_settings, target=target, solver_id=solver_id
                 )
             except TimeoutError:
-                self.log_and_store_error(f"plate solving timed out, continuing ...")
+                self.log_and_store_error("plate solving timed out, continuing ...")
                 continue
 
             self.latest_result = result
@@ -499,7 +498,7 @@ class Solver:
                             time.sleep(1)
 
                         while self.unit.mount.is_moving:
-                            logger.info(f"mount still moving, sleeping 1 second ...")
+                            logger.info("mount still moving, sleeping 1 second ...")
                             time.sleep(1)
 
                         self.unit.end_activity(UnitActivities.Correcting)

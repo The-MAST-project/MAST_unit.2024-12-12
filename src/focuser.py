@@ -1,6 +1,5 @@
 import logging
 from enum import IntEnum, auto
-from typing import List, Optional
 
 import win32com.client
 from fastapi.routing import APIRouter
@@ -11,13 +10,8 @@ from common.components import Component, ComponentStatus
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
 from common.mast_logging import init_log
-from common.utils import (
-    BASE_UNIT_PATH,
-    CanonicalResponse,
-    CanonicalResponse_Ok,
-    RepeatTimer,
-    time_stamp,
-)
+from common.utils import (BASE_UNIT_PATH, CanonicalResponse,
+                          CanonicalResponse_Ok, RepeatTimer, time_stamp)
 from PlaneWave import pwi4_client
 
 logger = logging.getLogger("mast.unit." + __name__)
@@ -30,14 +24,14 @@ class FocusDirection(IntEnum):
 
 
 class FocuserStatus(PowerStatus, AscomStatus, ComponentStatus):
-    lower_limit: Optional[int] = None
-    upper_limit: Optional[int] = None
-    known_as_good_position: Optional[int] = None
-    position: Optional[int] = None
-    target: Optional[int] = None
-    target_verbal: Optional[str] = None
+    lower_limit: int | None = None
+    upper_limit: int | None = None
+    known_as_good_position: int | None = None
+    position: int | None = None
+    target: int | None = None
+    target_verbal: str | None = None
     moving: bool = False
-    date: Optional[str] = None
+    date: str | None = None
 
 
 class Focuser(Component, SwitchedOutlet, AscomDispatcher):
@@ -51,7 +45,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(Focuser, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self, unit: "Unit"):  # type: ignore[name]
@@ -332,7 +326,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         )
 
     @property
-    def why_not_operational(self) -> List[str]:
+    def why_not_operational(self) -> list[str]:
         ret = []
         if not self.is_on():
             ret.append(f"{self.name}: not powered")
@@ -385,5 +379,7 @@ router.add_api_route(
     endpoint=focuser.goto_known_as_good_position,
 )
 router.add_api_route(base_path + "/move", tags=[tag], endpoint=focuser.move)
+router.add_api_route(base_path + "/move_in", tags=[tag], endpoint=focuser.move_in)
+router.add_api_route(base_path + "/move_out", tags=[tag], endpoint=focuser.move_out)
 router.add_api_route(base_path + "/move_in", tags=[tag], endpoint=focuser.move_in)
 router.add_api_route(base_path + "/move_out", tags=[tag], endpoint=focuser.move_out)

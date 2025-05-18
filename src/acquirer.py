@@ -3,7 +3,7 @@ import logging
 import os
 import time
 from threading import Thread
-from typing import Annotated, Optional
+from typing import Annotated
 
 import astropy.units as u
 from astropy.coordinates import Angle, Latitude, Longitude
@@ -13,18 +13,14 @@ from acquisition import Acquisition
 from camera import CameraBinning, CameraSettings
 from common.activities import UnitActivities
 from common.mast_logging import init_log
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.parsers import (sexagesimal_degrees_to_decimal,
+                            sexagesimal_hours_to_decimal)
 from common.solving import SolverIdNames
 from common.tasks.models import UnitAssignmentModel
-from common.tasks.notifications import notify_controller_about_task_acquisition_path
-from common.utils import (
-    CanonicalResponse,
-    CanonicalResponse_Ok,
-    Coord,
-    UnitRoi,
-    boxed_info,
-    function_name,
-)
+from common.tasks.notifications import \
+    notify_controller_about_task_acquisition_path
+from common.utils import (CanonicalResponse, CanonicalResponse_Ok, Coord,
+                          UnitRoi, boxed_info, function_name)
 from guiding import GuidingMode, GuidingModes
 from solving import SolverId, SolvingTolerance
 from stage import StagePresetPosition
@@ -180,7 +176,7 @@ class Acquirer:
         self.unit.stage.move_to_preset(StagePresetPosition.Spec)
         while self.unit.stage.is_moving:
             time.sleep(0.2)
-        logger.info(f"sleeping additional 5 seconds to let the stage stop moving ...")
+        logger.info("sleeping additional 5 seconds to let the stage stop moving ...")
         time.sleep(5)
         logger.info(f"stage now at {self.unit.stage.position}")
 
@@ -254,13 +250,15 @@ class Acquirer:
                     sec = (end - now).seconds
                     boxed_info(
                         logger,
-                        f"phase '[{phase.upper()}], sleeping {sec:.2f} seconds till end-of-cadence ...",
+                        f"phase '[{phase.upper()}], sleeping {sec:.2f} seconds " +
+                        "till end-of-cadence ...",
                     )
                     time.sleep(sec)
                 else:
                     boxed_info(
                         logger,
-                        f"phase '[{phase.upper()}], cycle was longer than {cadence=} sec, not sleeping",
+                        f"phase '[{phase.upper()}], cycle was longer than {cadence=} " +
+                        "sec, not sleeping",
                     )
         else:
             if acquisition.guiding_mode == GuidingMode.PHD2:
@@ -296,7 +294,8 @@ class Acquirer:
         Thread(name="acquisition", target=self.do_acquire, args=[acquisition]).start()
 
         """
-        This acquisition is part of an assignment, tell the controller where the products are
+        This acquisition is part of an assignment, tell the controller where
+         the products are.
         """
         notify_controller_about_task_acquisition_path(
             task_id=assignment.task.ulid,
@@ -306,9 +305,9 @@ class Acquirer:
 
     def start_acquisition_and_guiding(
         self,
-        seconds: Optional[float] = 5.0,
+        seconds: float | None = 5.0,
         ra_j2000_hours: Annotated[
-            Optional[str | float],
+            str | float | None,
             Query(
                 regex=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
                 description=(
@@ -321,7 +320,7 @@ class Acquirer:
             ),
         ] = None,
         dec_j2000_degs: Annotated[
-            Optional[str | float],
+            str | float | None,
             Query(
                 regex=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
                 description=(
@@ -366,7 +365,7 @@ class Acquirer:
         else:
             if not pw_status.mount.is_connected:
                 return CanonicalResponse(
-                    errors=[f"cannot get coordinates from mount (mount not connected)"]
+                    errors=["cannot get coordinates from mount (mount not connected)"]
                 )
             ra_j2000_hours = pw_status.mount.ra_j2000_hours
 
@@ -381,7 +380,7 @@ class Acquirer:
         else:
             if not pw_status.mount.is_connected:
                 return CanonicalResponse(
-                    errors=[f"cannot get coordinates from mount (mount not connected)"]
+                    errors=["cannot get coordinates from mount (mount not connected)"]
                 )
             dec_j2000_degs = pw_status.mount.dec_j2000_degs
 

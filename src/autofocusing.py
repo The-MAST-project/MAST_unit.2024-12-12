@@ -4,7 +4,7 @@ import math
 import os
 import time
 from threading import Thread
-from typing import Annotated, List, Optional
+from typing import Annotated
 
 from fastapi import Query
 
@@ -15,9 +15,11 @@ from common.config import Config
 from common.extended_basemodel import ExtendedBaseModel
 from common.filer import Filer
 from common.mast_logging import init_log
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.parsers import (sexagesimal_degrees_to_decimal,
+                            sexagesimal_hours_to_decimal)
 from common.paths import PathMaker
-from common.utils import CanonicalResponse, CanonicalResponse_Ok, UnitRoi, function_name
+from common.utils import (CanonicalResponse, CanonicalResponse_Ok, UnitRoi,
+                          function_name)
 from PlaneWave.ps3cli_client import PS3CLIClient
 from plotting import plot_autofocus_analysis
 from stage import StagePresetPosition
@@ -36,35 +38,35 @@ class AutofocusResult:
 
 class PS3FocusSample(ExtendedBaseModel):
     is_valid: bool
-    focus_position: Optional[float] = None
-    num_stars: Optional[int] = None
-    star_rms_diameter_pixels: Optional[float] = None
-    vcurve_star_rms_diameter_pixels: Optional[float] = None
+    focus_position: float | None = None
+    num_stars: int | None = None
+    star_rms_diameter_pixels: float | None = None
+    vcurve_star_rms_diameter_pixels: float | None = None
 
 
 class PS3FocusAnalysisResult(ExtendedBaseModel):
     has_solution: bool
-    best_focus_position: Optional[float]
-    best_focus_star_diameter: Optional[float]
-    tolerance: Optional[float]
-    vcurve_a: Optional[float]
-    vcurve_b: Optional[float]
-    vcurve_c: Optional[float]
-    focus_samples: Optional[List[PS3FocusSample]] = []
+    best_focus_position: float | None
+    best_focus_star_diameter: float | None
+    tolerance: float | None
+    vcurve_a: float | None
+    vcurve_b: float | None
+    vcurve_c: float | None
+    focus_samples: list[PS3FocusSample] | None = []
 
 
 class PS3AutofocusStatus(ExtendedBaseModel):
     is_running: bool
-    last_log_message: Optional[str] = None
-    error_message: Optional[str] = None
-    analysis_result: Optional[PS3FocusAnalysisResult] = None
+    last_log_message: str | None = None
+    error_message: str | None = None
+    analysis_result: PS3FocusAnalysisResult | None = None
 
 
 class Autofocuser:
 
     def __init__(self, unit: "Unit"):  # type: ignore[name]
         self.unit: "Unit" = unit  # type: ignore[name]
-        self.latest_result: Optional[PS3FocusAnalysisResult] = None
+        self.latest_result: PS3FocusAnalysisResult | None = None
 
     @property
     def is_autofocusing(self) -> bool:
@@ -82,7 +84,7 @@ class Autofocuser:
     def start_autofocus(
         self,
         ra_j2000_hours: Annotated[
-            Optional[str | float],
+            str | float | None,
             Query(
                 regex=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
                 description=(
@@ -95,7 +97,7 @@ class Autofocuser:
             ),
         ] = None,
         dec_j2000_degs: Annotated[
-            Optional[str | float],
+            str | float | None,
             Query(
                 regex=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
                 description=(
@@ -107,12 +109,10 @@ class Autofocuser:
                 ),
             ),
         ] = None,
-        exposure: Optional[float] = 5,  # seconds
-        start_position: Optional[
-            int
-        ] = None,  # when None, start from know-as-good position
-        ticks_per_step: Optional[int] = 50,  # focuser ticks per step
-        number_of_images: Optional[int] = 5,
+        exposure: float | None = 5,  # seconds
+        start_position: int | None = None,  # when None, start from know-as-good position
+        ticks_per_step: int | None = 50,  # focuser ticks per step
+        number_of_images: int | None = 5,
     ):
         """
 
@@ -143,7 +143,7 @@ class Autofocuser:
         else:
             if not pw_status.mount.is_connected:
                 return CanonicalResponse(
-                    errors=[f"cannot get coordinates from mount (mount not connected)"]
+                    errors=["cannot get coordinates from mount (mount not connected)"]
                 )
             ra_j2000_hours = pw_status.mount.ra_j2000_hours
 
@@ -158,7 +158,7 @@ class Autofocuser:
         else:
             if not pw_status.mount.is_connected:
                 return CanonicalResponse(
-                    errors=[f"cannot get coordinates from mount (mount not connected)"]
+                    errors=["cannot get coordinates from mount (mount not connected)"]
                 )
             dec_j2000_degs = pw_status.mount.dec_j2000_degs
 
@@ -279,7 +279,7 @@ class Autofocuser:
             #
             # Acquire images
             #
-            files: List[str] = []
+            files: list[str] = []
             for image_no in range(number_of_images):
                 autofocus_settings = CameraSettings(
                     seconds=exposure,

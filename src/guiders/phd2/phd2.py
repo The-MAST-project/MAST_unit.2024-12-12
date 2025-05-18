@@ -79,7 +79,7 @@ class PHD2GuideStats:
         self.peak_dec = 0.0
 
 
-class PHD2GuiderException(Exception):
+class PHD2GuiderError(Exception):
     """GuiderException is the base class for any excettions raied by the
     Guider methods
 
@@ -418,7 +418,7 @@ class PHD2Guider(BaseGuider):
     def _make_jsonrpc(method, params):
         req = {"method": method, "id": 1}
         if params is not None:
-            if isinstance(params, (list, dict)):
+            if isinstance(params, list | dict):
                 req["params"] = params
             else:
                 # single non-null parameter
@@ -446,12 +446,12 @@ class PHD2Guider(BaseGuider):
             response = self.response
             self.response = None
         if self._failed(response):
-            raise PHD2GuiderException(response["error"]["message"])
+            raise PHD2GuiderError(response["error"]["message"])
         return response
 
     def check_connected(self):
         if not self.conn.is_connected():
-            raise PHD2GuiderException("PHD2 Server disconnected")
+            raise PHD2GuiderError("PHD2 Server disconnected")
 
     def guide(self, settle_pixels, settle_time, settle_timeout):
         """Start guiding with the given settling parameters. PHD2 takes care
@@ -469,7 +469,7 @@ class PHD2Guider(BaseGuider):
         s.status = 0
         with self.lock:
             if self.settle and not self.settle.done:
-                raise PHD2GuiderException("cannot guide while settling")
+                raise PHD2GuiderError("cannot guide while settling")
             self.settle = s
         try:
             self.call(
@@ -503,7 +503,7 @@ class PHD2Guider(BaseGuider):
         s.status = 0
         with self.lock:
             if self.settle and not self.settle.done:
-                raise PHD2GuiderException("cannot dither while settling")
+                raise PHD2GuiderError("cannot dither while settling")
             self.settle = s
         try:
             self.call(
@@ -554,7 +554,7 @@ class PHD2Guider(BaseGuider):
         ret = PHD2SettleProgress()
         with self.lock:
             if not self.settle:
-                raise PHD2GuiderException("not settling")
+                raise PHD2GuiderError("not settling")
             if self.settle.done:
                 # settle is done
                 ret.done = True
@@ -584,7 +584,7 @@ class PHD2Guider(BaseGuider):
     def stop_capture(self, timeout_seconds=10):
         """stop looping and guiding"""
         self.call("stop_capture")
-        for i in range(0, timeout_seconds):
+        for _ in range(0, timeout_seconds):
             with self.lock:
                 if self.app_state == "Stopped":
                     return
@@ -599,7 +599,7 @@ class PHD2Guider(BaseGuider):
         if st == "Stopped":
             return
         # end workaround
-        raise PHD2GuiderException(
+        raise PHD2GuiderError(
             f"guider did not stop capture after {timeout_seconds} seconds!"
         )
 
@@ -614,13 +614,13 @@ class PHD2Guider(BaseGuider):
         exp_ms = res["result"]
         self.call("loop")
         time.sleep(exp_ms / 1000)
-        for i in range(0, timeout_seconds):
+        for _ in range(0, timeout_seconds):
             with self.lock:
                 if self.app_state == "Looping":
                     return
             time.sleep(1)
             self.check_connected()
-        raise PHD2GuiderException("timed-out waiting for guiding to start looping")
+        raise PHD2GuiderError("timed-out waiting for guiding to start looping")
 
     def pixel_scale(self):
         """get the guider pixel scale in arc-seconds per pixel"""
@@ -649,7 +649,7 @@ class PHD2Guider(BaseGuider):
                     profile_id = p.get("id", -1)
                     break
             if profile_id == -1:
-                raise PHD2GuiderException(
+                raise PHD2GuiderError(
                     f"invalid phd2 profile name: {self.conf.profile}"
                 )
             self.stop_capture(self.DEFAULT_STOP_CAPTURE_TIMEOUT)
@@ -734,7 +734,7 @@ if __name__ == "__main__":
             phd2_guider.connect_equipment()
             print(f"\nphd2 status: {phd2_guider.status()}")
             phd2_guider.start_guiding()
-        except PHD2GuiderException as ex:
+        except PHD2GuiderError as ex:
             logger.error(
                 f"could not connect_equipment('{phd2_guider.profile_name}') error: {ex}"
             )

@@ -2,7 +2,6 @@ import logging
 import math
 import time
 from logging import Logger
-from typing import List, Optional
 
 import win32com.client
 from astropy.coordinates import Angle, SkyCoord, frame_transform_graph
@@ -15,15 +14,9 @@ from common.components import Component, ComponentStatus
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
 from common.mast_logging import init_log
-from common.utils import (
-    BASE_UNIT_PATH,
-    CanonicalResponse,
-    CanonicalResponse_Ok,
-    RepeatTimer,
-    caller_name,
-    function_name,
-    time_stamp,
-)
+from common.utils import (BASE_UNIT_PATH, CanonicalResponse,
+                          CanonicalResponse_Ok, RepeatTimer, caller_name,
+                          function_name, time_stamp)
 from PlaneWave import pwi4_client
 
 logger = logging.getLogger("mast.unit." + __name__)
@@ -38,18 +31,18 @@ class SpiralSettings(BaseModel):
 
 
 class MountStatus(PowerStatus, AscomStatus, ComponentStatus):
-    errors: Optional[List[str]] = None
-    target_verbal: Optional[str] = None
+    errors: list[str] | None = None
+    target_verbal: str | None = None
     tracking: bool = False
     slewing: bool = False
     axis0_enabled: bool = False
     axis1_enabled: bool = False
-    ra_j2000_hours: Optional[float] = None
-    dec_j2000_degs: Optional[float] = None
-    ha_hours: Optional[float] = None
-    lmst_hours: Optional[float] = None
+    ra_j2000_hours: float | None = None
+    dec_j2000_degs: float | None = None
+    ha_hours: float | None = None
+    lmst_hours: float | None = None
     fans: bool = False
-    spiral: Optional[SpiralSettings] = None
+    spiral: SpiralSettings | None = None
     date: str = None
 
 
@@ -59,7 +52,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(Mount, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     @property
@@ -146,7 +139,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def connected(self, value):
         self.errors = []
         if not self.is_on():
-            self.errors.append(f"not powered")
+            self.errors.append("not powered")
             return
 
         st = self.pw.status()
@@ -154,7 +147,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             if value:
                 response = ascom_run(self, "Connected = True")
                 if response.failed:
-                    self.errors.append(f"could not ASCOM connect")
+                    self.errors.append("could not ASCOM connect")
                     logger.error(
                         f"failed to ASCOM connect (failure='{response.failure}')"
                     )
@@ -283,15 +276,13 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         elif not was_moving and self.is_moving:
             self.start_activity(MountActivities.Moving)
 
-        if self.is_active(MountActivities.FindingHome):
-            if not self.is_moving:
+        if self.is_active(MountActivities.FindingHome) and not self.is_moving:
                 self.end_activity(MountActivities.FindingHome)
                 self.target = None
                 if self.is_active(MountActivities.StartingUp):
                     self.end_activity(MountActivities.StartingUp)
 
-        if self.is_active(MountActivities.Parking):
-            if not self.is_moving:
+        if self.is_active(MountActivities.Parking) and not self.is_moving:
                 self.end_activity(MountActivities.Parking)
                 self.target = None
                 if self.is_active(MountActivities.ShuttingDown):
@@ -446,7 +437,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         return self.pw.status().mount.is_slewing
 
     @property
-    def why_not_operational(self) -> List[str]:
+    def why_not_operational(self) -> list[str]:
         st = self.pw.status()
         label = f"{self.name}"
         ret = []
@@ -488,11 +479,11 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
 
     def dance(self):
         coordinates = cone_coordinates_generator()
-        logger.info(f"dance: starting to dance")
+        logger.info("dance: starting to dance")
         self.start_activity(MountActivities.Dancing)
         self.find_home()
         for coord in coordinates:
-            logger.info(f"dance: dancing to {coord=}")
+            logger.info("dance: dancing to {coord=}")
             self.goto_ra_dec_j2000(coord[0], coord[1])
             time.sleep(2)  # let it start moving
             stat = self.pw.status()
@@ -501,7 +492,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                 stat = self.pw.status()
             logger.info(f"dance: resting 10 seconds at {coord=}")
             time.sleep(10)
-        logger.info(f"dance: done dancing")
+        logger.info("dance: done dancing")
         self.find_home()
         self.end_activity(MountActivities.Dancing)
 

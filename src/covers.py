@@ -1,7 +1,6 @@
 import logging
 from enum import Enum
 from logging import Logger
-from typing import List, Optional
 
 import win32com.client
 from fastapi.routing import APIRouter
@@ -12,7 +11,8 @@ from common.components import Component, ComponentStatus
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
 from common.mast_logging import init_log
-from common.utils import BASE_UNIT_PATH, CanonicalResponse_Ok, RepeatTimer, time_stamp
+from common.utils import (BASE_UNIT_PATH, CanonicalResponse_Ok, RepeatTimer,
+                          time_stamp)
 
 logger: logging.Logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
@@ -29,10 +29,10 @@ class CoversState(Enum):
 
 
 class CoverStatus(PowerStatus, AscomStatus, ComponentStatus):
-    target_verbal: Optional[str] = None
-    state: Optional[CoversState] = None
-    state_verbal: Optional[str] = None
-    date: Optional[str] = None
+    target_verbal: str | None = None
+    state: CoversState | None = None
+    state_verbal: str | None = None
+    date: str | None = None
 
 
 class Covers(Component, SwitchedOutlet, AscomDispatcher):
@@ -41,7 +41,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(Covers, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     """
@@ -275,7 +275,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         )
 
     @property
-    def why_not_operational(self) -> List[str]:
+    def why_not_operational(self) -> list[str]:
         ret = []
         if not self.is_on():
             ret.append(f"{self.name}: not powered")

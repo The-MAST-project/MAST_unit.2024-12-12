@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 from enum import Enum, auto
 from typing import Literal
@@ -25,7 +27,7 @@ GuidingModes = Literal["NoGuiding", "PlateSolving", "PHD2"]
 
 class Guider:
 
-    def __init__(self, unit: "Unit"):  # type: ignore[name]
+    def __init__(self, unit: Unit):
         self.unit: "Unit" = unit  # type: ignore[name]
         if self.unit.unit_conf["guider"]["method"] == "phd2":
             WatchedProcess(
@@ -35,7 +37,7 @@ class Guider:
 
     def end_guiding(self):
         self.unit.end_activity(UnitActivities.Guiding)
-        logger.info(f"guiding ended")
+        logger.info("guiding ended")
 
     def make_guiding_settings(self, base_folder: str | None = None) -> CameraSettings:
         """
@@ -87,7 +89,7 @@ class Guider:
 
         if not self.unit.is_active(
             UnitActivities.Acquiring
-        ) and not not self.unit.is_active(UnitActivities.Guiding):
+        ) and not self.unit.is_active(UnitActivities.Guiding):
             error = "not acquiring or guiding"
             logger.error(error)
             return CanonicalResponse(errors=[error])

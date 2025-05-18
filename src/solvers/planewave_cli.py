@@ -30,18 +30,18 @@ class PlaneWaveCliSolverExitCode(IntFlag):
 
 class PlaneWaveCliSolverResult(ExtendedBaseModel):
     succeeded: bool = False
-    ra_j2000_hours: Optional[float] = None
-    dec_j2000_degrees: Optional[float] = None
-    arcsec_per_pixel: Optional[float] = None
-    rot_angle_degs: Optional[float] = None
-    errors: Optional[List[str]] = []
+    ra_j2000_hours: float | None = None
+    dec_j2000_degrees: float | None = None
+    arcsec_per_pixel: float | None = None
+    rot_angle_degs: float | None = None
+    errors: list[str] | None = []
 
 
 def planewave_cli_solve(
     unit: "Unit", settings: CameraSettings, target: Coord  # type: ignore[name]
 ) -> SolvingResult:
     op = function_name()
-    ps3_solver_status: PlaneWaveCliSolverResult
+    # ps3_solver_status: PlaneWaveCliSolverResult
     ret = SolvingResult(succeeded=True)
 
     unit.camera.wait_for_image_saved()
@@ -65,8 +65,7 @@ def planewave_cli_solve(
     try:
         completed_process = subprocess.run(
             command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=True,
             shell=True,
         )
@@ -88,7 +87,7 @@ def planewave_cli_solve(
         ):
             logger.error(
                 f"{op}: solver returned {PlaneWaveCliSolverExitCode(e.returncode).__repr__()}, "
-                + f"guiding aborted."
+                + "guiding aborted."
             )
 
             ret.succeeded = False
@@ -100,7 +99,7 @@ def planewave_cli_solve(
     # solving succeeded, parse output
     if completed_process.returncode == PlaneWaveCliSolverExitCode.Success:
         logger.info(f"{op}: solver found a solution")
-        with open(result_path, "r") as file:
+        with open(result_path) as file:
             solver_output_lines = file.readlines()
 
     elif completed_process.returncode == PlaneWaveCliSolverExitCode.NoStarMatch:

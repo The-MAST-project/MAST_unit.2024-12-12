@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import time
-from typing import Dict, Optional
 
 from common.corrections import Corrections
 from common.filer import Filer
@@ -25,14 +24,14 @@ class Acquisition:
         approach_mode: int,
         solver_id: SolverId,
         make_corrections: bool = True,
-        target_ra: Optional[float] = None,
-        target_dec: Optional[float] = None,
-        conf: Optional[Dict] = None,
+        target_ra: float | None = None,
+        target_dec: float | None = None,
+        conf: dict | None = None,
         skip_sky: bool = False,
         guiding_mode: GuidingMode = GuidingMode.PlateSolving,
     ):
         if not conf:
-            raise Exception(f"Acquisition: conf == None")
+            raise Exception("Acquisition: conf == None")
 
         self.approach_mode = approach_mode
         self.solver_id = solver_id
@@ -51,7 +50,7 @@ class Acquisition:
         self.conf = conf
         self.ra_tolerance = conf["tolerance"]["ra_arcsec"]
         self.dec_tolerance = conf["tolerance"]["dec_arcsec"]
-        self.corrections: Dict[str, Corrections] = {}
+        self.corrections: dict[str, Corrections] = {}
         self.folder = PathMaker().make_acquisition_folder(
             tags={
                 "target": f"{target_ra},{target_dec}",
@@ -63,7 +62,7 @@ class Acquisition:
     def save_corrections(self, phase: str):
         if phase in self.corrections:
             path = os.path.join(self.folder, phase, "corrections.json")
-            for i in range(3):
+            for _ in range(3):
                 try:
                     with open(path, "w") as fp:
                         json.dump((self.corrections[phase]).to_dict(), fp, indent=2)

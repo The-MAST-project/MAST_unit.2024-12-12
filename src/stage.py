@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 from enum import Enum, IntEnum, auto
-from typing import Dict, List, Literal, Optional, Union
+from typing import Literal
 
 from fastapi.routing import APIRouter
 
@@ -15,14 +15,9 @@ from common.components import Component, ComponentStatus
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
 from common.mast_logging import init_log
-from common.utils import (
-    BASE_UNIT_PATH,
-    CanonicalResponse,
-    CanonicalResponse_Ok,
-    RepeatTimer,
-    function_name,
-    time_stamp,
-)
+from common.utils import (BASE_UNIT_PATH, CanonicalResponse,
+                          CanonicalResponse_Ok, RepeatTimer, function_name,
+                          time_stamp)
 
 cur_dir = os.path.abspath(os.path.dirname(__file__))  # Specifies the current directory.
 ximc_dir = os.path.join(
@@ -36,25 +31,13 @@ if platform.system() == "Windows":
     # Determining the directory with dependencies for windows depending on the bit depth.
     arch_dir = "win64" if "64" in platform.architecture()[0] else "win32"  #
     lib_dir = os.path.join(ximc_dir, arch_dir)
-    if sys.version_info >= (3, 8):
-        os.add_dll_directory(lib_dir)
-    else:
-        os.environ["Path"] = (
-            lib_dir + ";" + os.environ["Path"]
-        )  # add dll path into an environment variable
+    os.add_dll_directory(lib_dir)  # add dll path into an environment variable
 
     from pyximc import EnumerateFlags  # type: ignore[name]
-    from pyximc import (
-        POINTER,
-        MvcmdStatus,
-        Result,  # type: ignore[name]
-        StateFlags,
-        byref,
-        c_int,
-        cast,
-        device_information_t,
-        edges_settings_t,
-    )
+    from pyximc import Result  # type: ignore[name]
+    from pyximc import (POINTER, MvcmdStatus, StateFlags,  # type: ignore[name]
+                        byref, c_int, cast, device_information_t,
+                        edges_settings_t)
     from pyximc import lib as ximclib  # type: ignore[name]
     from pyximc import status_t, string_at  # type: ignore[name]
 
@@ -84,7 +67,7 @@ class StagePresetPosition(Enum):
     StartUp = Sky
 
 
-stagePositionNames: List[str] = [k for k in StagePresetPosition.__dict__.keys()]
+stage_position_names: list[str] = [k for k in StagePresetPosition.__dict__]
 
 stage_direction_str2int_dict: dict = {
     "Up": StageDirection.Up,
@@ -93,13 +76,13 @@ stage_direction_str2int_dict: dict = {
 
 
 class StageStatus(PowerStatus, ComponentStatus):
-    info: Optional[Dict] = None
-    presets: Optional[Dict] = None
-    position: Optional[int] = None
-    at_preset: Optional[str] = None
-    target: Optional[int] = None
-    target_verbal: Optional[str] = None
-    date: Optional[str] = None
+    info: dict | None = None
+    presets: dict | None = None
+    position: int | None = None
+    at_preset: str | None = None
+    target: int | None = None
+    target_verbal: str | None = None
+    date: str | None = None
 
 
 class Stage(Component, SwitchedOutlet):
@@ -110,7 +93,7 @@ class Stage(Component, SwitchedOutlet):
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(Stage, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     _positioning_precision: int = 100
@@ -126,19 +109,19 @@ class Stage(Component, SwitchedOutlet):
         SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name="Stage")
         Component.__init__(self)
 
-        self.errors: List[str] = []
+        self.errors: list[str] = []
         self.device = None
-        self.ticks_at_start: Optional[int] = None
-        self.ticks_at_target: Optional[int] = None
-        self.motion_start_time: Optional[datetime.datetime] = None
-        self.timer: Optional[RepeatTimer] = None
-        self.device_uri: Optional[str] = None
-        self._position: Optional[int] = None
+        self.ticks_at_start: int | None = None
+        self.ticks_at_target: int | None = None
+        self.motion_start_time: datetime.datetime | None = None
+        self.timer: RepeatTimer | None = None
+        self.device_uri: str | None = None
+        self._position: int | None = None
         self.is_moving: bool = False
-        self.target: Optional[int] = None
-        self.stage_lock: Optional[threading.Lock] = None
-        self.min_travel: Optional[int] = None
-        self.max_travel: Optional[int] = None
+        self.target: int | None = None
+        self.stage_lock: threading.Lock | None = None
+        self.min_travel: int | None = None
+        self.max_travel: int | None = None
 
         self.info = {}
         self._was_shut_down = False
@@ -352,7 +335,7 @@ class Stage(Component, SwitchedOutlet):
     def status(self) -> StageStatus:
         at_preset = None
         if self.detected:
-            for k in self.presets.keys():
+            for k in self.presets:
                 if self.close_enough(self.presets[k]):
                     at_preset = k.name.lower()
                     break
@@ -388,7 +371,7 @@ class Stage(Component, SwitchedOutlet):
         with self.stage_lock:
             result = ximclib.get_status(self.device, byref(hw_status))
         if result != Result.Ok:
-            result_name = Result(result).name
+            # result_name = Result(result).name
             logger.error(f"could not get_status(), {result=} ({RESULT_MAP[result]}")
             return
 
@@ -408,7 +391,7 @@ class Stage(Component, SwitchedOutlet):
         if hw_status.Flags & StateFlags.STATE_ALARM:
             # should wait for the ALARM cause to go away and then issue a command_stop()
             # for now, just log
-            logger.info(f"Detected StateFlags.STATE_ALARM, issuing a STOP command")
+            logger.info("Detected StateFlags.STATE_ALARM, issuing a STOP command")
             with self.stage_lock:
                 result = ximclib.command_stop(self.device)
             if result != Result.Ok:
@@ -440,9 +423,7 @@ class Stage(Component, SwitchedOutlet):
     #
     def move_to_preset(
         self,
-        preset: Union[
-            Literal["Sky", "Spec", "Min", "Mid", "Max"] | StagePresetPosition
-        ],
+        preset: Literal["Sky", "Spec", "Min", "Mid", "Max"] | StagePresetPosition,
     ):
         """
         Starts moving the stage to one of the preset positions
@@ -585,7 +566,7 @@ class Stage(Component, SwitchedOutlet):
         )
 
     @property
-    def why_not_operational(self) -> List[str]:
+    def why_not_operational(self) -> list[str]:
         label = f"{self.name}"
         ret = []
         if not self.is_on():
@@ -601,7 +582,7 @@ class Stage(Component, SwitchedOutlet):
                 self.at_preset(StagePresetPosition.Spec)
                 or self.at_preset(StagePresetPosition.Sky)
             ):
-                ret.append(f"not at 'Spec' or 'Sky' preset positions")
+                ret.append("not at 'Spec' or 'Sky' preset positions")
         return ret
 
     @property

@@ -4,10 +4,10 @@ import os
 import socket
 import threading
 import time
+from collections.abc import Callable
 from enum import IntFlag
 from logging import Logger
 from threading import Lock, Thread
-from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import win32com.client
@@ -23,14 +23,9 @@ from common.config import Config
 from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
 from common.mast_logging import init_log
 from common.paths import PathMaker
-from common.utils import (
-    BASE_UNIT_PATH,
-    CanonicalResponse,
-    CanonicalResponse_Ok,
-    RepeatTimer,
-    function_name,
-    time_stamp,
-)
+from common.utils import (BASE_UNIT_PATH, CanonicalResponse,
+                          CanonicalResponse_Ok, RepeatTimer, function_name,
+                          time_stamp)
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
@@ -84,14 +79,14 @@ class CameraSettings:
     def __init__(
         self,
         seconds: float,
-        gain: Optional[float] = None,
-        binning: Optional[CameraBinning] = None,
-        roi: Optional[CameraRoi] = None,
-        tags: Optional[Dict] = None,
+        gain: float | None = None,
+        binning: CameraBinning | None = None,
+        roi: CameraRoi | None = None,
+        tags: dict | None = None,
         save: bool = True,
-        fits_cards: Optional[Dict[str, Tuple]] = None,
-        base_folder: Optional[str] = None,
-        image_path: Optional[str] = None,
+        fits_cards: dict[str, tuple] | None = None,
+        base_folder: str | None = None,
+        image_path: str | None = None,
     ):
 
         self.seconds: float = seconds
@@ -102,9 +97,9 @@ class CameraSettings:
         self.roi: CameraRoi | None = roi
         self.tags: dict | None = tags if tags else {}
         self.save: bool = save
-        self.fits_cards: Optional[Dict[str, Tuple]] = fits_cards if fits_cards else {}
+        self.fits_cards: dict[str, tuple] | None = fits_cards if fits_cards else {}
         self.start: datetime.datetime = datetime.datetime.now()
-        self.file_name_parts: List[str] = []
+        self.file_name_parts: list[str] = []
 
         if self.save:
             if self.image_path is not None:
@@ -115,7 +110,7 @@ class CameraSettings:
                 self.make_file_name()
             else:
                 raise Exception(
-                    f"CameraSettings:__init__(): either 'image_path' or 'base_folder' MUST be supplied"
+                    "CameraSettings:__init__(): either 'image_path' or 'base_folder' MUST be supplied"
                 )
 
     def make_file_name(self, additional_tags: dict | None = None):
@@ -152,19 +147,19 @@ class CameraSettings:
 
 
 class ExposureModel(BaseModel):
-    file: Optional[str] = None
-    seconds: Optional[float] = None
-    date: Optional[datetime.datetime] = None
+    file: str | None = None
+    seconds: float | None = None
+    date: datetime.datetime | None = None
 
 
 class CameraStatus(PowerStatus, AscomStatus, ComponentStatus):
-    errors: Optional[List[str]] = None
-    set_point: Optional[float] = None
-    temperature: Optional[float] = None
+    errors: list[str] | None = None
+    set_point: float | None = None
+    temperature: float | None = None
     cooler: bool = False
-    cooler_power: Optional[float] = None
-    latest_exposure: Optional[ExposureModel] = None
-    date: Optional[str] = None
+    cooler_power: float | None = None
+    latest_exposure: ExposureModel | None = None
+    date: str | None = None
 
 
 class Camera(Component, SwitchedOutlet, AscomDispatcher):
@@ -173,7 +168,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(Camera, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     @property
@@ -247,7 +242,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         self.GainMax: float | None = None
         self.image: np.ndarray | None = None
         self.last_state: AscomCameraState = AscomCameraState.Idle
-        self.errors: List[str] = []
+        self.errors: list[str] = []
         self.expected_mid_exposure: datetime.datetime | None = None
         self.ccd_temp_at_mid_exposure: float | None = None
         self._binning: CameraBinning = CameraBinning(1, 1)
@@ -265,7 +260,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         self.image_was_read: bool = False
         self.image_was_saved: bool = False
 
-        self.visualizers: List[Visualizer] = []
+        self.visualizers: list[Visualizer] = []
 
         self.image_ready_event: threading.Event = threading.Event()
         self.image_saved_event: threading.Event = threading.Event()
@@ -423,14 +418,13 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
     @gain.setter
     def gain(self, value: int):
         if not self.connected:
-            raise Exception(f"cannot set gain, not connected")
+            raise Exception("cannot set gain, not connected")
 
-        if self.GainMin is not None and self.GainMax is not None:
-            if self.GainMin > value > self.GainMax:
-                logger.error(
-                    f"Exception({value=} out of bounds [{self.GainMin=}, {self.GainMax=}]"
-                )
-                return
+        if self.GainMin is not None and self.GainMax is not None and self.GainMin > value > self.GainMax:
+            logger.error(
+                f"Exception({value=} out of bounds [{self.GainMin=}, {self.GainMax=}]"
+            )
+            return
 
         response = ascom_run(self, f"Gain = {value}")
         if response.failed:
@@ -463,13 +457,13 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
 
     def endpoint_start_exposure(
         self,
-        seconds: Optional[float] = 5,
-        gain: Optional[float] = 170,
-        binning: Optional[int] = 1,
-        center_x: Optional[int] = None,
-        center_y: Optional[int] = None,
-        width: Optional[int] = None,
-        height: Optional[int] = None,
+        seconds: float | None = 5,
+        gain: float | None = 170,
+        binning: int | None = 1,
+        center_x: int | None = None,
+        center_y: int | None = None,
+        width: int | None = None,
+        height: int | None = None,
     ):
 
         # if isinstance(binning, str):
@@ -516,7 +510,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
 
         if self.is_active(CameraActivities.Exposing):
             logger.info(f"{op}: already exposing")
-            return CanonicalResponse(errors=[f"already exposing"])
+            return CanonicalResponse(errors=["already exposing"])
 
         self.errors = []
 
@@ -802,7 +796,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
                 f"state changed from None to {AscomCameraState(self.last_state).__repr__()}"
             )
         else:
-            if not current_state == self.last_state:
+            if current_state != self.last_state:
                 # percent = ''
                 # if (current_state == AscomCameraState.Exposing or current_state == AscomCameraState.Waiting or
                 #         current_state == AscomCameraState.Reading or current_state == AscomCameraState.Download):
@@ -828,55 +822,54 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         if (
             self.is_active(CameraActivities.Exposing)
             and current_state == AscomCameraState.Idle
-        ):
-            if (
-                not self.image_lock.locked()
-            ):  # it could be already locked by a previous occurrence of onTimer()
-                with self.image_lock:
+        ) and (
+            not self.image_lock.locked()
+        ):  # it could be already locked by a previous occurrence of onTimer()
+            with self.image_lock:
+                #
+                # The lock is held in order to prevent subsequent instances of onTimer() to act upon ImageReady
+                #  and possibly attempt to read the ImageArray.
+                #
+                # While the lock is held:
+                # - We check if ImageReady == True
+                # - If ImageReady == True:
+                #   - We read the image from the camara into self.image (CameraActivities.ReadingOut)
+                #   - We inform others that the image is available (in memory) by setting the image_ready_event
+                # - Optionally, in a separate thread (iff self.latest_exposure.file is not None):
+                #   - We save the image (CameraActivities.Saving)
+                #   - We inform others that the image is available (in memory) by setting the image_saved_event
+                #
+                if self.image is None and not self.is_active(
+                    CameraActivities.ReadingOut
+                ):
                     #
-                    # The lock is held in order to prevent subsequent instances of onTimer() to act upon ImageReady
-                    #  and possibly attempt to read the ImageArray.
+                    # The timer may hit more than once while the image is being read.
+                    #  self.image becomes not None only after ALL the data was downloaded from the camera
                     #
-                    # While the lock is held:
-                    # - We check if ImageReady == True
-                    # - If ImageReady == True:
-                    #   - We read the image from the camara into self.image (CameraActivities.ReadingOut)
-                    #   - We inform others that the image is available (in memory) by setting the image_ready_event
-                    # - Optionally, in a separate thread (iff self.latest_exposure.file is not None):
-                    #   - We save the image (CameraActivities.Saving)
-                    #   - We inform others that the image is available (in memory) by setting the image_saved_event
-                    #
-                    if self.image is None and not self.is_active(
-                        CameraActivities.ReadingOut
-                    ):
-                        #
-                        # The timer may hit more than once while the image is being read.
-                        #  self.image becomes not None only after ALL the data was downloaded from the camera
-                        #
-                        response = ascom_run(self, "ImageReady")
-                        if response.succeeded and response.value:
-                            self.start_activity(CameraActivities.ReadingOut)
-                            # download the image from the camera
-                            response = ascom_run(self, "ImageArray")
-                            self.image = (
-                                np.array(response.value) if response.succeeded else None
-                            )
-                            self.end_activity(CameraActivities.ReadingOut)
-                            self.image_was_read = True
-                            self.latest_settings.fits_cards["UT-END"] = (
-                                datetime.datetime.now(datetime.UTC).isoformat(),
-                                "UT end of exposure",
-                            )
-                            self.image_ready_event.set()  # tell everybody the image is available (in memory)
+                    response = ascom_run(self, "ImageReady")
+                    if response.succeeded and response.value:
+                        self.start_activity(CameraActivities.ReadingOut)
+                        # download the image from the camera
+                        response = ascom_run(self, "ImageArray")
+                        self.image = (
+                            np.array(response.value) if response.succeeded else None
+                        )
+                        self.end_activity(CameraActivities.ReadingOut)
+                        self.image_was_read = True
+                        self.latest_settings.fits_cards["UT-END"] = (
+                            datetime.datetime.now(datetime.UTC).isoformat(),
+                            "UT end of exposure",
+                        )
+                        self.image_ready_event.set()  # tell everybody the image is available (in memory)
 
-                            for visualizer in self.visualizers:
-                                Thread(
-                                    target=visualizer.func,
-                                    name=f"{visualizer.name}",
-                                    args=[self.image],
-                                ).start()
+                        for visualizer in self.visualizers:
+                            Thread(
+                                target=visualizer.func,
+                                name=f"{visualizer.name}",
+                                args=[self.image],
+                            ).start()
 
-                            self.save_to_file()  # in a separate thread, also informs everybody the file was saved
+                        self.save_to_file()  # in a separate thread, also informs everybody the file was saved
 
         if self.latest_temperature_check and (
             now - self.latest_temperature_check
@@ -927,7 +920,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         )
 
     @property
-    def why_not_operational(self) -> List[str]:
+    def why_not_operational(self) -> list[str]:
         label = f"{self.name}"
         response = ascom_run(self, "CoolerOn")
 
@@ -970,7 +963,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
 
         response = ascom_run(self, "CoolerOn = True")
         if response.succeeded:
-            logger.info(f"cooler turned ON")
+            logger.info("cooler turned ON")
         else:
             logger.error(f"cooler ON failed ({response.failure})")
         return response
@@ -983,7 +976,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
 
         response = ascom_run(self, "CoolerOn = False")
         if response.succeeded:
-            logger.info(f"cooler turned OFF")
+            logger.info("cooler turned OFF")
         else:
             logger.error(f"cooler OFF failed ({response.failure})")
         return response
@@ -1008,7 +1001,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         header["NAXIS2"] = (self.image.shape[1], "length of data axis 2")
         header["EXTEND"] = (True, "FITS data sets may contain extensions")
         header["DATE-OBS"] = (
-            datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            datetime.datetime.now(datetime.UTC).isoformat(),
             "Observation datetime",
         )
         header["XBINNING"] = (self.binning.x, "horizontal binning")
