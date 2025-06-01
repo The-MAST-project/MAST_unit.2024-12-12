@@ -7,12 +7,13 @@ from fastapi.routing import APIRouter
 
 from common.activities import CoverActivities
 from common.ascom import AscomDispatcher, AscomStatus, ascom_run
+from common.canonical import CanonicalResponse_Ok
 from common.components import Component, ComponentStatus
 from common.config import Config
+from common.const import Const
 from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
 from common.mast_logging import init_log
-from common.utils import (BASE_UNIT_PATH, CanonicalResponse_Ok, RepeatTimer,
-                          time_stamp)
+from common.utils import RepeatTimer, time_stamp
 
 logger: logging.Logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
@@ -57,7 +58,8 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         # return logger
         return logger
 
-    def __init__(self, unit: "Unit"):  # type: ignore[name]
+    from unit import Unit
+    def __init__(self, unit: Unit):
         if self._initialized:
             return
 
@@ -302,17 +304,23 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         return self._was_shut_down
 
 
-base_path = BASE_UNIT_PATH + "/covers"
-tag = "Covers"
+    @property
+    def api_router(self) -> APIRouter:
+        """
+        Returns the API router for the Covers component.
+        :return: APIRouter instance with Covers endpoints
+        """
+        base_path = Const.BASE_UNIT_PATH + "/covers"
+        tag = "Covers"
 
-covers = Covers(unit=None)
+        router = APIRouter()
+        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup)
+        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown)
+        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort)
+        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
+        router.add_api_route(base_path + "/connect", tags=[tag], endpoint=self.connect)
+        router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
+        router.add_api_route(base_path + "/open", tags=[tag], endpoint=self.open)
+        router.add_api_route(base_path + "/close", tags=[tag], endpoint=self.close)
 
-router = APIRouter()
-router.add_api_route(base_path + "/startup", tags=[tag], endpoint=covers.startup)
-router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=covers.shutdown)
-router.add_api_route(base_path + "/abort", tags=[tag], endpoint=covers.abort)
-router.add_api_route(base_path + "/status", tags=[tag], endpoint=covers.status)
-router.add_api_route(base_path + "/connect", tags=[tag], endpoint=covers.connect)
-router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=covers.disconnect)
-router.add_api_route(base_path + "/open", tags=[tag], endpoint=covers.open)
-router.add_api_route(base_path + "/close", tags=[tag], endpoint=covers.close)
+        return router

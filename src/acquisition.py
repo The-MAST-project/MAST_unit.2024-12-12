@@ -18,9 +18,10 @@ init_log(logger)
 
 
 class Acquisition:
+    from unit import Unit
     def __init__(
         self,
-        unit: "Unit",  # type: ignore[name]
+        unit: Unit,
         approach_mode: int,
         solver_id: SolverId,
         make_corrections: bool = True,

@@ -4,11 +4,12 @@ import logging
 from enum import Enum, auto
 from typing import Literal
 
-from camera import CameraBinning, CameraSettings
 from common.activities import CameraActivities, UnitActivities
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from common.imagers import ImagerBinning, ImagerSettings
 from common.mast_logging import init_log
 from common.process import WatchedProcess
-from common.utils import CanonicalResponse, CanonicalResponse_Ok, UnitRoi
+from common.utils import UnitRoi
 
 logger = logging.Logger("mast.unit." + __name__)
 init_log(logger)
@@ -26,9 +27,13 @@ GuidingModes = Literal["NoGuiding", "PlateSolving", "PHD2"]
 
 
 class Guider:
+    from unit import Unit
 
     def __init__(self, unit: Unit):
-        self.unit: "Unit" = unit  # type: ignore[name]
+        from unit import Unit
+
+        self.unit: Unit = unit
+
         if self.unit.unit_conf["guider"]["method"] == "phd2":
             WatchedProcess(
                 command="C:/Program Files (x86)/PHDGuiding2/phd2.exe",
@@ -39,7 +44,7 @@ class Guider:
         self.unit.end_activity(UnitActivities.Guiding)
         logger.info("guiding ended")
 
-    def make_guiding_settings(self, base_folder: str | None = None) -> CameraSettings:
+    def make_guiding_settings(self, base_folder: str | None = None) -> ImagerSettings:
         """
         The 'guiding' camera exposure settings are used:
         -In the second acquisition phase (stage at 'spec' position)
@@ -68,14 +73,14 @@ class Guider:
         ) * 2
 
         x_binning = guiding_conf["binning"]
-        binning: CameraBinning = CameraBinning(x_binning, x_binning)
+        binning: ImagerBinning = ImagerBinning(x_binning, x_binning)
 
-        return CameraSettings(
+        return ImagerSettings(
             seconds=guiding_conf["exposure"],
             base_folder=base_folder,
             gain=guiding_conf["gain"],
             binning=binning,
-            roi=unit_roi.to_camera_roi(binning=binning),
+            roi=unit_roi.to_imager_roi(binning=binning),
             save=True,
         )
 

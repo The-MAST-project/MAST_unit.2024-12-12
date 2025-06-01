@@ -1,6 +1,5 @@
 import datetime
 import logging
-import os
 import socket
 import threading
 import time
@@ -12,20 +11,18 @@ from threading import Lock, Thread
 import numpy as np
 import win32com.client
 from astropy.io import fits
-from fastapi.routing import APIRouter
-from pydantic import BaseModel
 
 from common.activities import CameraActivities
-from common.ascom import AscomDispatcher, AscomStatus, ascom_run
-from common.camera import CameraBinning, CameraRoi
-from common.components import Component, ComponentStatus
+from common.ascom import AscomDispatcher, ascom_run
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from common.components import Component
 from common.config import Config
-from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
+from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.mast_logging import init_log
 from common.paths import PathMaker
-from common.utils import (BASE_UNIT_PATH, CanonicalResponse,
-                          CanonicalResponse_Ok, RepeatTimer, function_name,
-                          time_stamp)
+from common.utils import RepeatTimer, function_name, time_stamp
+
+from . import ImagerBinning, ImagerExposure, ImagerInterface, ImagerRoi, ImagerSettings, ImagerStatus
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
@@ -50,119 +47,7 @@ class AscomCameraState(IntFlag):
     Error = 5
 
 
-class CameraSettings:
-    """
-
-    Multipurpose camera exposure context
-
-    Callers to start_exposure() fill in:
-    - seconds - duration in seconds
-    - base_folder - [optional] supplied folder under which the new folder/file will reside
-    - gain - to be applied to the camera by start_exposure()
-    - binning - ditto
-    - roi - ditto
-    - tags - a flat dictionary of tags, will be added to the file name as ',name=value' or
-       just ',name' if the value is None
-    - save - whether to save to file or just keep in memory
-    - fits_cards - to be added to the default ones
-
-    After start_exposure() is called:
-    - image_path - contains the full path to the saved file, with a standard combination of the context elements
-               <folder>/seq=<sequence>,tags=<tag1=value1,tag2,tag3=value3>,binning=<binning>,gain=<gain>,roi=<roi>
-    - start - contains the exposure start time
-
-    Note:
-     start_exposure() will copy the context to camera.latest_settings thus making it available for further use
-
-    """
-
-    def __init__(
-        self,
-        seconds: float,
-        gain: float | None = None,
-        binning: CameraBinning | None = None,
-        roi: CameraRoi | None = None,
-        tags: dict | None = None,
-        save: bool = True,
-        fits_cards: dict[str, tuple] | None = None,
-        base_folder: str | None = None,
-        image_path: str | None = None,
-    ):
-
-        self.seconds: float = seconds
-        self.base_folder: str | None = base_folder
-        self.image_path: str | None = image_path
-        self.binning: CameraBinning | None = binning
-        self.gain: float | None = gain
-        self.roi: CameraRoi | None = roi
-        self.tags: dict | None = tags if tags else {}
-        self.save: bool = save
-        self.fits_cards: dict[str, tuple] | None = fits_cards if fits_cards else {}
-        self.start: datetime.datetime = datetime.datetime.now()
-        self.file_name_parts: list[str] = []
-
-        if self.save:
-            if self.image_path is not None:
-                os.makedirs(os.path.dirname(self.image_path), exist_ok=True)
-            elif self.base_folder is not None:
-                self.folder = self.base_folder
-                os.makedirs(self.folder, exist_ok=True)
-                self.make_file_name()
-            else:
-                raise Exception(
-                    "CameraSettings:__init__(): either 'image_path' or 'base_folder' MUST be supplied"
-                )
-
-    def make_file_name(self, additional_tags: dict | None = None):
-        """
-        Makes the file part of the image path.  This will:
-        - generate current seq= and time= file name parts
-        - prepend optional additional_tags to those passed to the constructor
-
-        :param additional_tags: tags specific to THIS making of the file name
-        :return:
-        """
-        self.file_name_parts = []
-        self.file_name_parts.append(
-            f"seq={PathMaker().make_seq(self.folder, start_with=-1)}"
-        )
-        self.file_name_parts.append(f"time={PathMaker().current_utc()}")
-
-        tags = {}
-        if additional_tags:
-            tags = additional_tags
-        if self.tags:
-            tags.update(self.tags)
-        for k, v in tags.items():
-            self.file_name_parts.append(f"{k}" if v is None else f"{k}={v}")
-
-        self.file_name_parts.append(f"seconds={self.seconds}")
-        self.file_name_parts.append(f"binning={self.binning}")
-        self.file_name_parts.append(f"gain={self.gain}")
-        self.file_name_parts.append(f"roi={self.roi}")
-
-        self.image_path = os.path.join(
-            self.folder, ",".join(self.file_name_parts) + ".fits"
-        )
-
-
-class ExposureModel(BaseModel):
-    file: str | None = None
-    seconds: float | None = None
-    date: datetime.datetime | None = None
-
-
-class CameraStatus(PowerStatus, AscomStatus, ComponentStatus):
-    errors: list[str] | None = None
-    set_point: float | None = None
-    temperature: float | None = None
-    cooler: bool = False
-    cooler_power: float | None = None
-    latest_exposure: ExposureModel | None = None
-    date: str | None = None
-
-
-class Camera(Component, SwitchedOutlet, AscomDispatcher):
+class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     _instance = None
     _initialized = False
 
@@ -172,18 +57,21 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         return cls._instance
 
     @property
-    def full_frame_roi(self) -> CameraRoi:
-        return CameraRoi(0, 0, self.cameraXSize, self.cameraYSize)
+    def full_frame_roi(self) -> ImagerRoi:
+        width = self.cameraXSize if self.cameraXSize else 1000
+        height = self.cameraYSize if self.cameraYSize else 1000
+        return ImagerRoi(x=0, y=0, width=width, height=height)
 
     @property
     def logger(self) -> Logger:
         return logger
 
     @property
-    def ascom(self) -> win32com.client.Dispatch:
+    def ascom(self) -> win32com.client.Dispatch: # type: ignore
         return self._ascom
 
-    def __init__(self, unit: "Unit"):  # type: ignore[name]
+    from unit import Unit
+    def __init__(self, unit: Unit, prog_id: str | None = None):
         #
         # The Camera() is a Singleton but the initiator is called twice (for the same object ID):
         # - once from this file, with unit as None
@@ -194,7 +82,9 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
             unit_id = f"0x{id(unit):X}"
         logger.info(f"camera.id: 0x{id(self):X}, unit: {unit_id}")
 
-        self.unit: "Unit" = unit  # type: ignore[name]
+        from unit import Unit
+        self.unit: Unit = unit
+        self.prog_id = prog_id
 
         if self._initialized:
             return
@@ -204,20 +94,28 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         }
 
         self.unit_conf = Config().get_unit()
-        self.conf = self.unit_conf["camera"]
+        self.conf = self.unit_conf["imager"]
         Component.__init__(self)
         SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name="Camera")
+
+        if not prog_id:
+            prog_id = self.conf.get("ascom_driver", None)
+        if not prog_id:
+            raise Exception(
+                "ASCOMImager: no ASCOM driver specified either as parameterb or in the configuration file"
+            )
+        self.prog_id = prog_id
 
         try:
             if not self.is_on():
                 self.power_on()
 
-            self._ascom = win32com.client.Dispatch(self.conf["ascom_driver"])
+            self._ascom = win32com.client.Dispatch(self.prog_id)
         except Exception as ex:
             logger.exception(ex)
             raise ex
 
-        self.latest_settings: None | CameraSettings = None
+        self.latest_settings: None | ImagerSettings = None
         self.latest_temperature_check: datetime.datetime | None = None
         self.temp_check_interval = (
             self.conf["temp_check_interval"]
@@ -245,8 +143,8 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         self.errors: list[str] = []
         self.expected_mid_exposure: datetime.datetime | None = None
         self.ccd_temp_at_mid_exposure: float | None = None
-        self._binning: CameraBinning = CameraBinning(1, 1)
-        self._roi: CameraRoi | None = None
+        self._binning: ImagerBinning = ImagerBinning(x=1, y=1)
+        self._roi: ImagerRoi | None = None
         self._gain: int | None = None
 
         self._was_shut_down: bool = False
@@ -276,10 +174,10 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         return self._binning
 
     @binning.setter
-    def binning(self, value: CameraBinning):
-        if 1 > value.x > self.maxBinX:
+    def binning(self, value: ImagerBinning):
+        if self.maxBinX and (1 > value.x > self.maxBinX):
             raise Exception(f"bad {value.x=}, must be > 1 and < {self.maxBinX=}")
-        if 1 > value.y > self.maxBinY:
+        if self.maxBinY and(1 > value.y > self.maxBinY):
             raise Exception(f"bad {value.y=}, must be > 1 and < {self.maxBinY=}")
 
         current_binning = self._binning
@@ -292,40 +190,40 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         self._binning = value
 
     @property
-    def roi(self) -> CameraRoi:
+    def roi(self) -> ImagerRoi | None:
         return self._roi
 
     @roi.setter
-    def roi(self, value: CameraRoi):
-        if 0 > value.startX > self.cameraXSize:
+    def roi(self, value: ImagerRoi):
+        if self.cameraXSize and (0 > value.x > self.cameraXSize):
             raise Exception(
-                f"bad {value.startX=}, must be 0 > startX > {self.cameraXSize=}"
+                f"bad {value.x=}, must be 0 > x > {self.cameraXSize=}"
             )
-        if 0 > value.startY > self.cameraYSize:
+        if self.cameraYSize and (0 > value.y > self.cameraYSize):
             raise Exception(
-                f"bad {value.startY=}, must be 0 > startY > {self.cameraYSize=}"
+                f"bad {value.y=}, must be 0 > y > {self.cameraYSize=}"
             )
-        if 0 > value.numX > self.cameraXSize:
+        if self.cameraXSize and (0 > value.width > self.cameraXSize):
             raise Exception(
-                f"bad {value.numX=}, must be 0 > width > {self.cameraXSize=}"
+                f"bad {value.width=}, must be 0 > width > {self.cameraXSize=}"
             )
-        if 0 > value.numY > self.cameraYSize:
+        if self.cameraYSize and (0 > value.height > self.cameraYSize):
             raise Exception(
-                f"bad {value.numY=}, must be 0 > height > {self.cameraYSize=}"
+                f"bad {value.height=}, must be 0 > height > {self.cameraYSize=}"
             )
-        if value.startX + value.numX > self.cameraXSize:
+        if self.cameraXSize and (value.x + value.width > self.cameraXSize):
             raise Exception(
-                f"{value.startX=} + {value.numX=} exceeds {self.cameraXSize=}"
+                f"{value.x=} + {value.width=} exceeds {self.cameraXSize=}"
             )
-        if value.startY + value.numY > self.cameraYSize:
+        if self.cameraYSize and (value.y + value.height > self.cameraYSize):
             raise Exception(
-                f"{value.startY=} + {value.numY=} exceeds {self.cameraYSize=}"
+                f"{value.y=} + {value.height=} exceeds {self.cameraYSize=}"
             )
 
-        response_x = ascom_run(self, f"StartX ={value.startX}")
-        response_y = ascom_run(self, f"StartY = {value.startY}")
-        response_width = ascom_run(self, f"NumX = {value.numX}")
-        response_height = ascom_run(self, f"NumY = {value.numY}")
+        response_x = ascom_run(self, f"StartX ={value.x}")
+        response_y = ascom_run(self, f"StartY = {value.y}")
+        response_width = ascom_run(self, f"NumX = {value.width}")
+        response_height = ascom_run(self, f"NumY = {value.height}")
 
         if (
             response_x.failed
@@ -333,24 +231,25 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
             or response_height.failed
             or response_width.failed
         ):
-            ascom_run(self, f"StartX = {self._roi.startX}")
-            ascom_run(self, f"StartY = {self._roi.startY}")
-            ascom_run(self, f"NumX = {self._roi.numX}")
-            ascom_run(self, f"NumY = {self._roi.numY}")
+            if self._roi:
+                ascom_run(self, f"StartX = {self._roi.x}")
+                ascom_run(self, f"StartY = {self._roi.y}")
+                ascom_run(self, f"NumX = {self._roi.width}")
+                ascom_run(self, f"NumY = {self._roi.height}")
 
             raise Exception(
                 f"errors: {response_x.failure=}, {response_y.failure=}, "
                 + f"{response_width.failure=}, {response_height.failure=}"
             )
         else:
-            self._roi = CameraRoi(value.startX, value.startY, value.numX, value.numY)
+            self._roi = ImagerRoi(x=value.x, y=value.y, width=value.width, height=value.height)
 
     @property
     def connected(self) -> bool:
         if not self.is_on() or not self._ascom:
             return False
         response = ascom_run(self, "Connected", no_entry_log=True)
-        return response.value if response.succeeded else False
+        return response.value if response.succeeded else False # type: ignore
 
     @connected.setter
     def connected(self, value: bool):
@@ -370,11 +269,11 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
                     self.PixelSizeY = response.value
 
                 response = ascom_run(self, "MaxBinX")
-                if response.succeeded:
+                if response.succeeded and isinstance(response.value, int):
                     self.maxBinX = int(response.value)
 
                 response = ascom_run(self, "MaxBinY")
-                if response.succeeded:
+                if response.succeeded and isinstance(response.value, int):
                     self.maxBinY = int(response.value)
 
                 response = ascom_run(self, "CameraXSize")
@@ -400,8 +299,9 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
                     + f" driver: '{self.conf['ascom_driver']}'"
                 )
 
-                self.guiding_roi_width = int((self.cameraXSize / 100) * 90)
-                self.guiding_roi_height = int((self.cameraYSize / 100) * 80)
+                if self.cameraXSize and self.cameraYSize:
+                    self.guiding_roi_width = int((self.cameraXSize / 100) * 90)
+                    self.guiding_roi_height = int((self.cameraYSize / 100) * 80)
         else:
             logger.info(f"failed connected = {value} (failure='{response.failure}')")
         self._detected = value
@@ -466,17 +366,23 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         height: int | None = None,
     ):
 
-        # if isinstance(binning, str):
-        #     binning = int(binning)
-        if all([center_x, center_y, width, height]):
-            roi = CameraRoi(center_x, center_y, width, height)
-        else:
-            roi = CameraRoi(0, 0, self.cameraXSize, self.cameraYSize)
-        context = CameraSettings(
-            seconds=float(seconds) if isinstance(seconds, str) else seconds,
+        if self.cameraXSize is None or self.cameraYSize is None:
+            return CanonicalResponse(
+                errors=["cameraXSize or cameraYSize is not set, cannot start exposure"]
+            )
+        center_x = center_x if center_x is not None else int(self.cameraXSize / 2)
+        center_y = center_y if center_y is not None else int(self.cameraYSize / 2)
+        width = width if width is not None else self.cameraXSize
+        height = height if height is not None else self.cameraYSize
+
+        roi = ImagerRoi(x=center_x - int(width / 2), y=center_y - int(height / 2), width=width, height=height)
+        binning = binning if isinstance(binning, int) else 1
+
+        settings = ImagerSettings(
+            seconds=seconds if isinstance(seconds, int | float) else 5,
             base_folder=PathMaker().make_exposures_folder(),
             gain=int(gain) if isinstance(gain, str) else gain,
-            binning=CameraBinning(binning, binning),
+            binning=ImagerBinning(x=binning, y=binning),
             roi=roi,
             tags=None,
             save=True,
@@ -484,9 +390,9 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
 
         # self.do_start_exposure(purpose=ExposurePurpose.Exposure, tags=None, seconds=seconds, gain=gain,
         #   binning=binning, save=True)
-        self.do_start_exposure(context)
+        self.do_start_exposure(settings)
 
-    def do_start_exposure(self, settings: CameraSettings) -> CanonicalResponse:
+    def do_start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:
         """
         Starts a *MAST* camera exposure
 
@@ -531,26 +437,6 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
             logger.error(f"{op}: {self.errors=}")
             return CanonicalResponse(errors=self.errors)
 
-        # folder = None
-        # if settings.save:
-        #     # this is the tricky part: a general purpose file name maker
-        #     if settings.purpose == ExposurePurpose.Acquisition:
-        #         folder = PathMaker().make_acquisition_folder()
-        #     elif settings.purpose == ExposurePurpose.Exposure:
-        #         folder = PathMaker().make_exposure_file_name()
-        #     elif settings.purpose == ExposurePurpose.Guiding:
-        #         if settings.base_folder is None:
-        #             raise Exception(f"for {settings.purpose=} context.folder cannot be None")
-        #         folder = os.path.join(settings.base_folder, 'guiding')
-        #     os.makedirs(folder, exist_ok=True)
-        #
-        #     file = f"seq={PathMaker().make_seq(folder)}," + settings.make_filename()
-        #
-        #     settings.image_path = os.path.join(folder, file)
-        #     logger.info(f"{op}: {settings.image_path=}")
-        # else:
-        #     logger.info('{op}: image will not be saved to a file')
-
         response = ascom_run(self, f"StartExposure({settings.seconds}, True)")
         if response.value is None:
             self.start_activity(CameraActivities.Exposing)
@@ -561,6 +447,8 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
             self.image_was_read = False
             self.image_was_saved = False
             self.latest_settings = settings
+            if not self.latest_settings.fits_cards:
+                self.latest_settings.fits_cards = {}
             self.latest_settings.fits_cards["UT-START"] = (
                 datetime.datetime.now(datetime.UTC).isoformat(),
                 "UT start of exposure",
@@ -575,10 +463,8 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
 
             self.end_activity(CameraActivities.Exposing)
         else:
-            if response.is_exception:
-                self.errors.append(response.exception)
-            if response.is_error:
-                self.errors.append(response.errors)
+            if response.errors:
+                self.errors.extend(response.errors)
 
         return (
             CanonicalResponse(errors=self.errors)
@@ -639,26 +525,21 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
             else CanonicalResponse_Ok
         )
 
-    def status(self) -> CameraStatus:
+    def status(self) -> ImagerStatus:
         """
-        Gets the **MAST** camera status
-
-        :mastapi:
-        Returns
-        -------
-
+        Gets the **MAST** imager status
         """
 
-        return CameraStatus(
-            **self.power_status().dict(),
-            **self.ascom_status().dict(),
-            **self.component_status().dict(),
+        return ImagerStatus(
+            **self.power_status().model_dump(),
+            **self.ascom_status().model_dump(),
+            **self.component_status().model_dump(),
             set_point=self.operational_set_point,
             temperature=self._ascom.CCDTemperature,
             cooler=self._ascom.CoolerOn,
             cooler_power=self._ascom.CoolerPower,
             latest_exposure=(
-                ExposureModel(
+                ImagerExposure(
                     file=self.latest_settings.base_folder,
                     seconds=self.latest_settings.seconds,
                     date=self.latest_settings.start,
@@ -782,6 +663,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         if not self.connected:
             return
 
+        current_state = None
         response = ascom_run(self, "CameraState")
         if response.succeeded:
             current_state = response.value
@@ -790,13 +672,13 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
 
         now = datetime.datetime.now()
         # previous_state = self.last_state
-        if self.last_state is None:
+        if self.last_state is None and current_state is not None:
             self.last_state = current_state
             logger.info(
                 f"state changed from None to {AscomCameraState(self.last_state).__repr__()}"
             )
         else:
-            if current_state != self.last_state:
+            if current_state is not None and current_state != self.last_state:
                 # percent = ''
                 # if (current_state == AscomCameraState.Exposing or current_state == AscomCameraState.Waiting or
                 #         current_state == AscomCameraState.Reading or current_state == AscomCameraState.Download):
@@ -856,10 +738,17 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
                         )
                         self.end_activity(CameraActivities.ReadingOut)
                         self.image_was_read = True
-                        self.latest_settings.fits_cards["UT-END"] = (
-                            datetime.datetime.now(datetime.UTC).isoformat(),
-                            "UT end of exposure",
-                        )
+                        if self.latest_settings and self.latest_settings.fits_cards is None:
+                            self.latest_settings.fits_cards = {}
+                        if self.latest_settings and self.latest_settings.fits_cards is not None:
+                            self.latest_settings.fits_cards["CCD-TEMP"] = (
+                                self.ccd_temp_at_mid_exposure,
+                                "CCD temperature at mid-exposure",
+                            )
+                            self.latest_settings.fits_cards["UT-END"] = (
+                                datetime.datetime.now(datetime.UTC).isoformat(),
+                                "UT end of exposure",
+                            )
                         self.image_ready_event.set()  # tell everybody the image is available (in memory)
 
                         for visualizer in self.visualizers:
@@ -909,7 +798,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
 
         return all(
             [
-                self.power_switch.detected,
+                self.power_switch and self.power_switch.detected,
                 self.is_on(),
                 self.detected,
                 self._ascom,
@@ -922,24 +811,26 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
     @property
     def why_not_operational(self) -> list[str]:
         label = f"{self.name}"
-        response = ascom_run(self, "CoolerOn")
+        cooler_response = ascom_run(self, "CoolerOn")
 
         ret = []
-        if not self.power_switch.detected:
-            ret.append(
-                f"{label}: power switch '{self.power_switch.hostname}' "
-                + f"(at '{self.power_switch.ipaddr}') not detected"
-            )
-        elif not self.is_on():
-            ret.append(f"{label}: not powered")
-        elif not self.detected:
-            ret.append(f"{label}: not detected")
-        elif not self._ascom:
+        if not self.power_switch:
+            ret.append(f"{label}: no power switch")
+        else:
+            if not self.power_switch.detected:
+                ret.append(
+                    f"{label}: power switch '{self.power_switch.hostname}' "
+                    + f"(at '{self.power_switch.ipaddr}') not detected"
+                )
+            else:
+                ret.append(f"{label}: {"powered on" if self.is_on() else "not powered"}")
+        ret.append(f"{label}: {"detected" if self._detected else "not detected"}")
+        if not self._ascom:
             ret.append(f"{label}: (ASCOM) - no handle")
-        elif not self._ascom.connected:
-            ret.append(f"{label}: (ASCOM) - not connected")
-        elif not (response.succeeded and response.value):
-            ret.append(f"{label}: (ASCOM) - cooler not ON")
+        else:
+            ret.append(f"{label}: (ASCOM) - {"connected" if self._ascom.connected else "not connected"}")
+
+        ret.append(f"{label}: (ASCOM) - cooler {"ON" if cooler_response.succeeded and cooler_response.value else "OFF"}")
 
         return ret
 
@@ -991,6 +882,10 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
             logger.error(f"{op}: image is None")
             return
 
+        if not self.latest_settings or not self.latest_settings.image_path:
+            logger.error(f"{op}: no image_path in latest_settings")
+            return
+
         self.start_activity(CameraActivities.Saving)
 
         header = fits.Header()
@@ -1021,7 +916,7 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
             header["STAGEPOS"] = self.unit.stage.position
             header.comments["STAGEPOS"] = "FIFA stage position"
 
-        if self.latest_settings.fits_cards:
+        if self.latest_settings and self.latest_settings.fits_cards:
             for k, v in self.latest_settings.fits_cards.items():
                 header[k] = v
 
@@ -1058,36 +953,3 @@ class Camera(Component, SwitchedOutlet, AscomDispatcher):
         #     logger.info(f"{op}: image was read, not waiting for image_ready_event.")
 
 
-base_camera_path = BASE_UNIT_PATH + "/camera"
-tag = "Camera"
-
-camera = Camera(unit=None)
-
-router = APIRouter()
-router.add_api_route(base_camera_path + "/startup", tags=[tag], endpoint=camera.startup)
-router.add_api_route(
-    base_camera_path + "/shutdown", tags=[tag], endpoint=camera.shutdown
-)
-router.add_api_route(base_camera_path + "/abort", tags=[tag], endpoint=camera.abort)
-router.add_api_route(base_camera_path + "/status", tags=[tag], endpoint=camera.status)
-router.add_api_route(base_camera_path + "/connect", tags=[tag], endpoint=camera.connect)
-router.add_api_route(
-    base_camera_path + "/disconnect", tags=[tag], endpoint=camera.disconnect
-)
-router.add_api_route(
-    base_camera_path + "/start_exposure",
-    tags=[tag],
-    endpoint=camera.endpoint_start_exposure,
-)
-router.add_api_route(
-    base_camera_path + "/stop_exposure", tags=[tag], endpoint=camera.stop_exposure
-)
-router.add_api_route(
-    base_camera_path + "/abort_exposure", tags=[tag], endpoint=camera.abort_exposure
-)
-router.add_api_route(
-    base_camera_path + "/cooler_on", tags=[tag], endpoint=camera.cooler_on
-)
-router.add_api_route(
-    base_camera_path + "/cooler_off", tags=[tag], endpoint=camera.cooler_off
-)

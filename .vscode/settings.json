@@ -1,5 +1,5 @@
 {
-  "terminal.integrated.accessibleViewFocusOnCommandExecution": true,
+  "terminal.integrated.accessibleViewFocusOnCommandExecution": false,
   "terminal.integrated.defaultProfile.windows": "PowerShell",
   // Linting
   "python.linting.enabled": true,
@@ -17,5 +17,6 @@
   "terminal.integrated.accessibilitySupport": false,
   "files.eol": "\n",
   "python.analysis.autoImportCompletions": true,
-  "python.analysis.typeCheckingMode": "off",
+  "python.languageServer": "Pylance",
+  "python.analysis.typeCheckingMode": "basic",
 }

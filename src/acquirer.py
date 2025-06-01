@@ -10,17 +10,14 @@ from astropy.coordinates import Angle, Latitude, Longitude
 from fastapi import Query
 
 from acquisition import Acquisition
-from camera import CameraBinning, CameraSettings
 from common.activities import UnitActivities
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok, Coord, UnitRoi, boxed_info, function_name
+from common.imagers import ImagerBinning, ImagerSettings  # type: ignore
 from common.mast_logging import init_log
-from common.parsers import (sexagesimal_degrees_to_decimal,
-                            sexagesimal_hours_to_decimal)
+from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.solving import SolverIdNames
 from common.tasks.models import UnitAssignmentModel
-from common.tasks.notifications import \
-    notify_controller_about_task_acquisition_path
-from common.utils import (CanonicalResponse, CanonicalResponse_Ok, Coord,
-                          UnitRoi, boxed_info, function_name)
+from common.tasks.notifications import notify_controller_about_task_acquisition_path
 from guiding import GuidingMode, GuidingModes
 from solving import SolverId, SolvingTolerance
 from stage import StagePresetPosition
@@ -34,8 +31,12 @@ DEC_REGEX = r"^([+-]?)(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
 
 class Acquirer:
 
-    def __init__(self, unit: "Unit"):  # type: ignore[name]
-        self.unit: "Unit" = unit  # type: ignore[name]
+    from unit import Unit  # to avoid circular import
+    def __init__(self, unit: Unit):  # type: ignore[name]
+
+        from unit import Unit  # to avoid circular import
+
+        self.unit: Unit = unit  # type: ignore[name]
         self.folder: str | None = None
         self.latest_acquisition: Acquisition | None = None
 
@@ -94,7 +95,7 @@ class Acquirer:
         if not self.unit.camera.connected:
             self.unit.camera.connected = True
 
-        tries: int = acquisition_conf["tries"] if "tries" in acquisition_conf else 3
+        tries: int = acquisition_conf.get("tries", 3)
 
         self.unit.mount.start_tracking()
         self.unit.start_activity(UnitActivities.Positioning)
@@ -116,14 +117,14 @@ class Acquirer:
                 time.sleep(0.2)
             self.unit.end_activity(UnitActivities.Positioning)
 
-            sky_settings = CameraSettings(
+            sky_settings = ImagerSettings(
                 seconds=acquisition_conf["exposure"],
                 base_folder=os.path.join(self.latest_acquisition.folder, phase),
                 gain=acquisition_conf["gain"],
-                binning=CameraBinning(
+                binning=ImagerBinning(
                     acquisition_conf["binning"]["x"], acquisition_conf["binning"]["y"]
                 ),
-                roi=UnitRoi.from_dict(acquisition_conf["roi"]).to_camera_roi(),
+                roi=UnitRoi.from_dict(acquisition_conf["roi"]).to_imager_roi(),
                 save=True,
             )
 

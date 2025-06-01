@@ -1,19 +1,19 @@
-import socket
-
-import uvicorn
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from PlaneWave import pwi4_client
-from common.mast_logging import init_log
 import logging
-from contextlib import asynccontextmanager
-import psutil
 import os
-from fastapi.responses import RedirectResponse, ORJSONResponse
-from common.process import ensure_process_is_running
+import socket
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+import psutil
+import uvicorn
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import ORJSONResponse, RedirectResponse
+
 from common.config import Config
-from common.utils import function_name, BASE_UNIT_PATH
-from fastapi import WebSocket, WebSocketDisconnect
+from common.mast_logging import init_log
+from common.process import ensure_process_is_running
+from PlaneWave import pwi4_client
 
 #
 # Log level configuration from the 'global' section of the 'config' file
@@ -63,10 +63,10 @@ while True:
     try:
         pw = pwi4_client.PWI4()
         pw.status()
-        logger.info(f"OK, established connection to PWI4")
+        logger.info("OK, established connection to PWI4")
         break
     except pwi4_client.PWException as ex:
-        logger.error(f"no PWI4 yet, waiting ...", exc_info=ex)
+        logger.error("no PWI4 yet, waiting ...", exc_info=ex)
         continue
     except Exception as ex:
         logger.error("cannot connect to PWI4, giving up!", exc_info=ex)
@@ -83,42 +83,11 @@ ensure_process_is_running(
 
 ensure_process_is_running(
     name="ps3cli.exe",
-    cwd="C:\\Program Files (x86)\\PlaneWave Instruments\\ps3cli\\ps3cli-2024-09-10",
-    cmd=f"ps3cli.exe --server --port=8998",
+    cwd=str(Path("C:\\Program Files (x86)\\PlaneWave Instruments\\ps3cli\\ps3cli-2024-09-10").as_posix()),
+    cmd="ps3cli.exe --server --port=8998",
     logger=logger,
     shell=True,
     log_stdout_and_stderr=True,
-)
-
-from camera import router as camera_router
-from covers import router as covers_router
-from mount import router as mount_router
-from focuser import router as focuser_router
-from stage import router as stage_router
-from unit import router as unit_router
-from unit import unit
-
-
-@asynccontextmanager
-async def lifespan(fast_app: FastAPI):
-    unit.start_lifespan()
-    yield
-    unit.end_lifespan()
-
-
-async def websocket_disconnect_handler(websocket: WebSocket, exc: WebSocketDisconnect):
-    logger.info(f"websocket disconnected: {exc.code}")
-    await websocket.close()
-
-
-app = FastAPI(
-    docs_url="/docs",
-    redocs_url=None,
-    lifespan=lifespan,
-    openapi_url="/openapi.json",
-    debug=True,
-    default_response_class=ORJSONResponse,
-    # exception_handlers={WebSocketDisconnect: websocket_disconnect_handler},
 )
 
 # Configure logging for WebSocketProtocol
@@ -126,46 +95,77 @@ app = FastAPI(
 # logger = logging.getLogger("uvicorn.protocols.websockets.websockets_impl.WebSocketProtocol")
 # logger.setLevel(logging.DEBUG)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-# app.mount("/static", StaticFiles(directory="static"), name="static")
 
-
-@app.exception_handler(Exception)
-async def generic_exception_handler(request, exc: Exception):
-    return ORJSONResponse(
-        status_code=500,
-        content={"message": f"{function_name()}: Exception occurred: {exc}"},
-    )
-
-
-# @app.websocket_route(BASE_UNIT_PATH + '/unit_visual_ws')
+# @app.websocket_route(Const.BASE_UNIT_PATH + '/unit_visual_ws')
 # async def unit_visual_websocket(websocket: WebSocket):
 #     await unit.unit_visual_ws(websocket)
 
-app.include_router(unit_router)
-app.include_router(mount_router)
-app.include_router(covers_router)
-app.include_router(focuser_router)
-app.include_router(stage_router)
-app.include_router(camera_router)
-
-
-@app.get("/favicon.ico")
-def read_favicon():
-    return RedirectResponse(url="/static/favicon.ico")
 
 
 if __name__ == "__main__":
     server_conf = Config().get_service(service_name="unit")
-    host = server_conf["listen_on"] if "listen_on" in server_conf else "0.0.0.0"
-    port = server_conf["port"] if "port" in server_conf else 8000
+    host = server_conf.get("listen_on", "0.0.0.0")
+    port = server_conf.get("port", 8000)
 
-    logger.info("The MAST Unit server is starting ...")
+    from unit import unit
 
-    uvicorn.run(app, host=host, port=port, log_level=log_level)
+    if not unit:
+        logger.error("Unit is not initialized, exiting ...")
+        app_quit(reason="unit not initialized")
+
+    @asynccontextmanager
+    async def lifespan(fast_app: FastAPI):
+        if unit:
+            unit.start_lifespan()
+            yield
+            unit.end_lifespan()
+
+    async def websocket_disconnect_handler(websocket: WebSocket, exc: WebSocketDisconnect):
+        logger.info(f"websocket disconnected: {exc.code}")
+        await websocket.close()
+
+    app = FastAPI(
+        docs_url="/docs",
+        redocs_url=None,
+        lifespan=lifespan,
+        openapi_url="/openapi.json",
+        debug=True,
+        default_response_class=ORJSONResponse,
+        # exception_handlers={WebSocketDisconnect: websocket_disconnect_handler},
+    )
+
+    @app.get("/favicon.ico")
+    def read_favicon():
+        return RedirectResponse(url="/static/favicon.ico")
+
+    @app.exception_handler(Exception)
+    async def generic_exception_handler(request, exc: Exception):
+        from common.utils import function_name
+
+        return ORJSONResponse(
+            status_code=500,
+            content={"message": f"{function_name()}: Exception occurred: {exc}"},
+        )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    if unit:
+        app.include_router(unit.api_router)
+        app.include_router(unit.mount.api_router)
+        app.include_router(unit.covers.api_router)
+        app.include_router(unit.focuser.api_router)
+        app.include_router(unit.stage.api_router)
+        app.include_router(unit.imager.api_router)
+
+        logger.info(f"The MAST Unit server is starting on {host}:{port} ...")
+
+        uvicorn.run(app, host=host, port=port, log_level=log_level)
+    else:
+        logger.error("Unit is not initialized, cannot start the server.")
+        app_quit(reason="unit not initialized")

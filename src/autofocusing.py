@@ -9,17 +9,15 @@ from typing import Annotated
 from fastapi import Query
 
 from acquirer import DEC_REGEX, RA_REGEX
-from camera import CameraBinning, CameraSettings
 from common.activities import FocuserActivities, UnitActivities
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok, UnitRoi, function_name
 from common.config import Config
 from common.extended_basemodel import ExtendedBaseModel
 from common.filer import Filer
+from common.imagers import ImagerBinning, ImagerSettings
 from common.mast_logging import init_log
-from common.parsers import (sexagesimal_degrees_to_decimal,
-                            sexagesimal_hours_to_decimal)
+from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
-from common.utils import (CanonicalResponse, CanonicalResponse_Ok, UnitRoi,
-                          function_name)
 from PlaneWave.ps3cli_client import PS3CLIClient
 from plotting import plot_autofocus_analysis
 from stage import StagePresetPosition
@@ -266,7 +264,7 @@ class Autofocuser:
             acquisition_conf["roi"]["width"],
             acquisition_conf["roi"]["height"],
         )
-        _binning = CameraBinning(1, 1)
+        _binning = ImagerBinning(1, 1)
 
         max_tries: int = self.unit.unit_conf["autofocus"]["max_tries"]
         max_tolerance: float = self.unit.unit_conf["autofocus"]["max_tolerance"]
@@ -281,10 +279,10 @@ class Autofocuser:
             #
             files: list[str] = []
             for image_no in range(number_of_images):
-                autofocus_settings = CameraSettings(
+                autofocus_settings = ImagerSettings(
                     seconds=exposure,
                     binning=_binning,
-                    roi=unit_roi.to_camera_roi(binning=_binning),
+                    roi=unit_roi.to_imager_roi(binning=_binning),
                     gain=acquisition_conf["gain"],
                     image_path=os.path.join(
                         autofocus_folder, f"FOCUS{int(focuser_position):05}.fits"

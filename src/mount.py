@@ -10,13 +10,13 @@ from pydantic import BaseModel
 
 from common.activities import MountActivities
 from common.ascom import AscomDispatcher, AscomStatus, ascom_run
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.components import Component, ComponentStatus
 from common.config import Config
+from common.const import Const
 from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
 from common.mast_logging import init_log
-from common.utils import (BASE_UNIT_PATH, CanonicalResponse,
-                          CanonicalResponse_Ok, RepeatTimer, caller_name,
-                          function_name, time_stamp)
+from common.utils import RepeatTimer, caller_name, function_name, time_stamp
 from PlaneWave import pwi4_client
 
 logger = logging.getLogger("mast.unit." + __name__)
@@ -495,6 +495,34 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info("dance: done dancing")
         self.find_home()
         self.end_activity(MountActivities.Dancing)
+    
+
+    @property
+    def api_router(self) -> APIRouter:
+        """
+        Returns a FastAPI router with all the mount API endpoints."""
+        base_path = Const.BASE_UNIT_PATH + "/mount"
+        tag = "Mount"
+
+        router = APIRouter()
+        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup)
+        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown)
+        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort)
+        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
+        router.add_api_route(base_path + "/connect", tags=[tag], endpoint=self.connect)
+        router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
+        router.add_api_route(
+            base_path + "/start_tracking", tags=[tag], endpoint=self.start_tracking
+        )
+        router.add_api_route(
+            base_path + "/stop_tracking", tags=[tag], endpoint=self.stop_tracking
+        )
+        router.add_api_route(base_path + "/park", tags=[tag], endpoint=self.park)
+        router.add_api_route(base_path + "/find_home", tags=[tag], endpoint=self.find_home)
+        router.add_api_route(base_path + "/goto", tags=[tag], endpoint=self.goto)
+        router.add_api_route(base_path + "/dance", tags=[tag], endpoint=self.dance)
+
+        return router
 
 
 # Function to generate cone coordinates
@@ -511,26 +539,3 @@ def cone_coordinates_generator(
     # Combine all steps
     return [(rotation_axis_ra, rotation_axis_dec)] + cone_coordinates
 
-
-base_path = BASE_UNIT_PATH + "/mount"
-tag = "Mount"
-
-mount = Mount(unit=None)
-
-router = APIRouter()
-router.add_api_route(base_path + "/startup", tags=[tag], endpoint=mount.startup)
-router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=mount.shutdown)
-router.add_api_route(base_path + "/abort", tags=[tag], endpoint=mount.abort)
-router.add_api_route(base_path + "/status", tags=[tag], endpoint=mount.status)
-router.add_api_route(base_path + "/connect", tags=[tag], endpoint=mount.connect)
-router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=mount.disconnect)
-router.add_api_route(
-    base_path + "/start_tracking", tags=[tag], endpoint=mount.start_tracking
-)
-router.add_api_route(
-    base_path + "/stop_tracking", tags=[tag], endpoint=mount.stop_tracking
-)
-router.add_api_route(base_path + "/park", tags=[tag], endpoint=mount.park)
-router.add_api_route(base_path + "/find_home", tags=[tag], endpoint=mount.find_home)
-router.add_api_route(base_path + "/goto", tags=[tag], endpoint=mount.goto)
-router.add_api_route(base_path + "/dance", tags=[tag], endpoint=mount.dance)

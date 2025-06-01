@@ -6,12 +6,13 @@ from fastapi.routing import APIRouter
 
 from common.activities import FocuserActivities
 from common.ascom import AscomDispatcher, AscomStatus, ascom_run
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.components import Component, ComponentStatus
 from common.config import Config
+from common.const import Const
 from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
 from common.mast_logging import init_log
-from common.utils import (BASE_UNIT_PATH, CanonicalResponse,
-                          CanonicalResponse_Ok, RepeatTimer, time_stamp)
+from common.utils import RepeatTimer, time_stamp
 from PlaneWave import pwi4_client
 
 logger = logging.getLogger("mast.unit." + __name__)
@@ -48,7 +49,8 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, unit: "Unit"):  # type: ignore[name]
+    from unit import Unit
+    def __init__(self, unit: Unit):  # type: ignore[name]
         if self._initialized:
             return
 
@@ -352,34 +354,34 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
     def was_shut_down(self) -> bool:
         return self._was_shut_down
 
+    @property
+    def api_router(self) -> APIRouter:
 
-def get_position():
-    return focuser.position
+        base_path = Const.BASE_UNIT_PATH + "/focuser"
+        tag = "Focuser"
 
+        # focuser = Focuser(unit=None)
 
-base_path = BASE_UNIT_PATH + "/focuser"
-tag = "Focuser"
+        router = APIRouter()
+        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup)
+        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown)
+        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort)
+        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
+        router.add_api_route(base_path + "/connect", tags=[tag], endpoint=self.connect)
+        router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
+        router.add_api_route(base_path + "/position", tags=[tag], endpoint=self.position)
+        router.add_api_route(
+            base_path + "/position", methods=["PUT"], tags=[tag], endpoint=self.set_position
+        )
+        router.add_api_route(
+            base_path + "/goto_known_as_good_position",
+            tags=[tag],
+            endpoint=self.goto_known_as_good_position,
+        )
+        router.add_api_route(base_path + "/move", tags=[tag], endpoint=self.move)
+        router.add_api_route(base_path + "/move_in", tags=[tag], endpoint=self.move_in)
+        router.add_api_route(base_path + "/move_out", tags=[tag], endpoint=self.move_out)
+        router.add_api_route(base_path + "/move_in", tags=[tag], endpoint=self.move_in)
+        router.add_api_route(base_path + "/move_out", tags=[tag], endpoint=self.move_out)
 
-focuser = Focuser(unit=None)
-
-router = APIRouter()
-router.add_api_route(base_path + "/startup", tags=[tag], endpoint=focuser.startup)
-router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=focuser.shutdown)
-router.add_api_route(base_path + "/abort", tags=[tag], endpoint=focuser.abort)
-router.add_api_route(base_path + "/status", tags=[tag], endpoint=focuser.status)
-router.add_api_route(base_path + "/connect", tags=[tag], endpoint=focuser.connect)
-router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=focuser.disconnect)
-router.add_api_route(base_path + "/position", tags=[tag], endpoint=get_position)
-router.add_api_route(
-    base_path + "/position", methods=["PUT"], tags=[tag], endpoint=focuser.set_position
-)
-router.add_api_route(
-    base_path + "/goto_known_as_good_position",
-    tags=[tag],
-    endpoint=focuser.goto_known_as_good_position,
-)
-router.add_api_route(base_path + "/move", tags=[tag], endpoint=focuser.move)
-router.add_api_route(base_path + "/move_in", tags=[tag], endpoint=focuser.move_in)
-router.add_api_route(base_path + "/move_out", tags=[tag], endpoint=focuser.move_out)
-router.add_api_route(base_path + "/move_in", tags=[tag], endpoint=focuser.move_in)
-router.add_api_route(base_path + "/move_out", tags=[tag], endpoint=focuser.move_out)
+        return router

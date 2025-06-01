@@ -11,13 +11,13 @@ from typing import Literal
 from fastapi.routing import APIRouter
 
 from common.activities import StageActivities
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.components import Component, ComponentStatus
 from common.config import Config
+from common.const import Const
 from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
 from common.mast_logging import init_log
-from common.utils import (BASE_UNIT_PATH, CanonicalResponse,
-                          CanonicalResponse_Ok, RepeatTimer, function_name,
-                          time_stamp)
+from common.utils import RepeatTimer, function_name, time_stamp
 
 cur_dir = os.path.abspath(os.path.dirname(__file__))  # Specifies the current directory.
 ximc_dir = os.path.join(
@@ -33,13 +33,21 @@ if platform.system() == "Windows":
     lib_dir = os.path.join(ximc_dir, arch_dir)
     os.add_dll_directory(lib_dir)  # add dll path into an environment variable
 
-    from pyximc import EnumerateFlags  # type: ignore[name]
-    from pyximc import Result  # type: ignore[name]
-    from pyximc import (POINTER, MvcmdStatus, StateFlags,  # type: ignore[name]
-                        byref, c_int, cast, device_information_t,
-                        edges_settings_t)
+    from pyximc import (  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]
+        POINTER,
+        EnumerateFlags,  # type: ignore[name]
+        MvcmdStatus,
+        Result,  # type: ignore[name]
+        StateFlags,
+        byref,
+        c_int,
+        cast,
+        device_information_t,
+        edges_settings_t,
+        status_t,
+        string_at,
+    )
     from pyximc import lib as ximclib  # type: ignore[name]
-    from pyximc import status_t, string_at  # type: ignore[name]
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
@@ -98,7 +106,8 @@ class Stage(Component, SwitchedOutlet):
 
     _positioning_precision: int = 100
 
-    def __init__(self, unit: "Unit"):  # type: ignore[name]
+    from unit import Unit
+    def __init__(self, unit: Unit):  # type: ignore[name]
         if self._initialized:
             return
 
@@ -594,42 +603,42 @@ class Stage(Component, SwitchedOutlet):
         return self._was_shut_down
 
 
-stage = Stage(unit=None)
+    def endpoint_get_position(self) -> int:
+        return CanonicalResponse(value=self.position)
 
 
-def endpoint_get_position() -> int:
-    return CanonicalResponse(value=stage.position)
+    def endpoint_set_position(self, pos: int):
+        self.position = pos
+        return CanonicalResponse_Ok
 
+    @property
+    def api_router(self) -> APIRouter:
+        base_stage_path = Const.BASE_UNIT_PATH + "/stage"
+        tag = "Stage"
 
-def endpoint_set_position(pos: int):
-    stage.position = pos
-    return CanonicalResponse_Ok
+        router = APIRouter()
+        router.add_api_route(base_stage_path + "/startup", tags=[tag], endpoint=self.startup)
+        router.add_api_route(base_stage_path + "/shutdown", tags=[tag], endpoint=self.shutdown)
+        router.add_api_route(base_stage_path + "/abort", tags=[tag], endpoint=self.abort)
+        router.add_api_route(base_stage_path + "/status", tags=[tag], endpoint=self.status)
+        router.add_api_route(
+            base_stage_path + "/position", tags=[tag], endpoint=self.endpoint_get_position
+        )
+        router.add_api_route(
+            base_stage_path + "/position",
+            methods=["PUT"],
+            tags=[tag],
+            endpoint=self.endpoint_set_position,
+        )
+        router.add_api_route(base_stage_path + "/connect", tags=[tag], endpoint=self.connect)
+        router.add_api_route(
+            base_stage_path + "/disconnect", tags=[tag], endpoint=self.disconnect
+        )
+        router.add_api_route(
+            base_stage_path + "/move", tags=[tag], endpoint=self.move_relative
+        )
+        router.add_api_route(
+            base_stage_path + "/move_to_preset", tags=[tag], endpoint=self.move_to_preset
+        )
 
-
-base_stage_path = BASE_UNIT_PATH + "/stage"
-tag = "Stage"
-
-router = APIRouter()
-router.add_api_route(base_stage_path + "/startup", tags=[tag], endpoint=stage.startup)
-router.add_api_route(base_stage_path + "/shutdown", tags=[tag], endpoint=stage.shutdown)
-router.add_api_route(base_stage_path + "/abort", tags=[tag], endpoint=stage.abort)
-router.add_api_route(base_stage_path + "/status", tags=[tag], endpoint=stage.status)
-router.add_api_route(
-    base_stage_path + "/position", tags=[tag], endpoint=endpoint_get_position
-)
-router.add_api_route(
-    base_stage_path + "/position",
-    methods=["PUT"],
-    tags=[tag],
-    endpoint=endpoint_set_position,
-)
-router.add_api_route(base_stage_path + "/connect", tags=[tag], endpoint=stage.connect)
-router.add_api_route(
-    base_stage_path + "/disconnect", tags=[tag], endpoint=stage.disconnect
-)
-router.add_api_route(
-    base_stage_path + "/move", tags=[tag], endpoint=stage.move_relative
-)
-router.add_api_route(
-    base_stage_path + "/move_to_preset", tags=[tag], endpoint=stage.move_to_preset
-)
+        return router
