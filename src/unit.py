@@ -19,9 +19,9 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from acquirer import Acquirer
 from autofocusing import Autofocuser, AutofocusResult
 from common.activities import (
-    CameraActivities,
     CoverActivities,
     FocuserActivities,
+    ImagerActivities,
     MountActivities,
     StageActivities,
     UnitActivities,
@@ -334,7 +334,7 @@ class Unit(Component):
         # UnitActivities.StartingUp
         if self.is_active(UnitActivities.StartingUp) and not (
             self.mount.is_active(MountActivities.StartingUp)
-            or self.imager.is_active(CameraActivities.StartingUp)
+            or self.imager.is_active(ImagerActivities.StartingUp)
             or self.stage.is_active(StageActivities.StartingUp)
             or self.focuser.is_active(FocuserActivities.StartingUp)
             or self.covers.is_active(CoverActivities.StartingUp)
@@ -344,7 +344,7 @@ class Unit(Component):
         # UnitActivities.ShuttingDown
         if self.is_active(UnitActivities.ShuttingDown) and not (
             self.mount.is_active(MountActivities.ShuttingDown)
-            or self.imager.is_active(CameraActivities.ShuttingDown)
+            or self.imager.is_active(ImagerActivities.ShuttingDown)
             or self.stage.is_active(StageActivities.ShuttingDown)
             or self.focuser.is_active(FocuserActivities.ShuttingDown)
             or self.covers.is_active(CoverActivities.ShuttingDown)
@@ -804,7 +804,7 @@ class Unit(Component):
             seconds=5, save=True, image_path=image_path
         )
         self.imager.do_start_exposure(self.imager.latest_settings)
-        while self.imager.is_active(CameraActivities.Exposing):
+        while self.imager.is_active(ImagerActivities.Exposing):
             time.sleep(1)
         Filer().move_ram_to_shared(image_path)
         return CanonicalResponse_Ok
@@ -828,7 +828,7 @@ class Unit(Component):
             seconds=5, save=True, image_path=image_path
         )
         self.imager.do_start_exposure(self.imager.latest_settings)
-        while self.imager.is_active(CameraActivities.Exposing):
+        while self.imager.is_active(ImagerActivities.Exposing):
             time.sleep(1)
         Filer().move_ram_to_shared(image_path)
         return CanonicalResponse_Ok
@@ -852,7 +852,7 @@ class Unit(Component):
             seconds=5, save=True, image_path=image_path
         )
         self.imager.do_start_exposure(self.imager.latest_settings)
-        while self.imager.is_active(CameraActivities.Exposing):
+        while self.imager.is_active(ImagerActivities.Exposing):
             time.sleep(1)
         Filer().move_ram_to_shared(image_path)
         return CanonicalResponse_Ok

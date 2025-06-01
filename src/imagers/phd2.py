@@ -1,4 +1,4 @@
-from . import ImagerInterface
+from . import ImagerInterface, ImagerSettings
 
 
 class PHD2Imager(ImagerInterface):
@@ -7,32 +7,72 @@ class PHD2Imager(ImagerInterface):
     It provides methods to interact with the PHD2 imaging software.
     """
 
-    def __init__(self, unit, imager_params=None):
+    def __init__(self, unit):
         super().__init__()
         self.unit = unit
-        self.imager_params = imager_params or {}
         # Initialize PHD2 connection here if needed
 
-    def capture(self):
-        # Implement capture logic for PHD2
+    def startup(self):
         pass
 
-    def wait_for_image_in_memory(self):
-        # Implement logic to wait for image in memory
+    def shutdown(self):
+        pass
+
+    def abort(self):
+        pass
+
+    def connected(self) -> bool:
+        return False
+
+    def connect(self):
+        pass
+
+    def disconnect(self):
+        pass
+
+    def status(self):
+        pass
+
+    def start_exposure(self, settings: ImagerSettings):
+        pass
+
+    def stop_exposure(self):
+        pass
+
+    def abort_exposure(self):
+        pass
+
+    def wait_for_image_ready(self):
         pass
 
     def wait_for_image_saved(self):
-        # Implement logic to wait for image to be saved
         pass
 
     def temperature(self) -> float:
-        # Implement logic to get camera temperature
         return 0.0
 
     def cooler(self, onoff: bool):
-        # Implement logic to turn cooler on/off
         pass
 
     def cooler_power(self) -> float:
-        # Implement logic to get cooler power
         return 0.0
+
+    @property
+    def name(self) -> str:
+        return "PHD2Imager"
+
+    @property
+    def operational(self) -> bool:
+        return True  # Assuming PHD2 is always operational when connected
+
+    @property
+    def why_not_operational(self) -> list[str]:
+        return []  # No specific reasons for non-operational state in this implementation
+
+    @property
+    def was_shut_down(self) -> bool:
+        return False  # Assuming PHD2 is not shut down in this implementation
+
+    @property
+    def detected(self) -> bool:
+        return False

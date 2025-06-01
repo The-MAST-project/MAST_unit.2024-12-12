@@ -4,7 +4,7 @@ import logging
 from enum import Enum, auto
 from typing import Literal
 
-from common.activities import CameraActivities, UnitActivities
+from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.imagers import ImagerBinning, ImagerSettings
 from common.mast_logging import init_log
@@ -102,7 +102,7 @@ class Guider:
         self.unit.end_activity(UnitActivities.Acquiring)
         self.unit.end_activity(UnitActivities.Guiding)
 
-        if self.unit.camera.is_active(CameraActivities.Exposing):
+        if self.unit.camera.is_active(ImagerActivities.Exposing):
             self.unit.camera.stop_exposure()
             logger.info("stopped exposure")
 

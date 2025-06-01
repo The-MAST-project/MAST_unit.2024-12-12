@@ -101,6 +101,48 @@ ensure_process_is_running(
 #     await unit.unit_visual_ws(websocket)
 
 
+@asynccontextmanager
+async def lifespan(fast_app: FastAPI):
+    from unit import unit
+    if unit:
+        unit.start_lifespan()
+        yield
+        unit.end_lifespan()
+
+async def websocket_disconnect_handler(websocket: WebSocket, exc: WebSocketDisconnect):
+    logger.info(f"websocket disconnected: {exc.code}")
+    await websocket.close()
+
+app = FastAPI(
+    docs_url="/docs",
+    redocs_url=None,
+    lifespan=lifespan,
+    openapi_url="/openapi.json",
+    debug=True,
+    default_response_class=ORJSONResponse,
+    # exception_handlers={WebSocketDisconnect: websocket_disconnect_handler},
+)
+
+@app.get("/favicon.ico")
+def read_favicon():
+    return RedirectResponse(url="/static/favicon.ico")
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request, exc: Exception):
+    from common.utils import function_name
+
+    return ORJSONResponse(
+        status_code=500,
+        content={"message": f"{function_name()}: Exception occurred: {exc}"},
+    )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 if __name__ == "__main__":
     server_conf = Config().get_service(service_name="unit")
@@ -113,47 +155,7 @@ if __name__ == "__main__":
         logger.error("Unit is not initialized, exiting ...")
         app_quit(reason="unit not initialized")
 
-    @asynccontextmanager
-    async def lifespan(fast_app: FastAPI):
-        if unit:
-            unit.start_lifespan()
-            yield
-            unit.end_lifespan()
 
-    async def websocket_disconnect_handler(websocket: WebSocket, exc: WebSocketDisconnect):
-        logger.info(f"websocket disconnected: {exc.code}")
-        await websocket.close()
-
-    app = FastAPI(
-        docs_url="/docs",
-        redocs_url=None,
-        lifespan=lifespan,
-        openapi_url="/openapi.json",
-        debug=True,
-        default_response_class=ORJSONResponse,
-        # exception_handlers={WebSocketDisconnect: websocket_disconnect_handler},
-    )
-
-    @app.get("/favicon.ico")
-    def read_favicon():
-        return RedirectResponse(url="/static/favicon.ico")
-
-    @app.exception_handler(Exception)
-    async def generic_exception_handler(request, exc: Exception):
-        from common.utils import function_name
-
-        return ORJSONResponse(
-            status_code=500,
-            content={"message": f"{function_name()}: Exception occurred: {exc}"},
-        )
-
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
 
     if unit:
         app.include_router(unit.api_router)

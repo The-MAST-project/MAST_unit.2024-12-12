@@ -7,8 +7,9 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from common.ascom import AscomStatus
-from common.components import Component, ComponentStatus, PowerStatus
+from common.components import Component, ComponentStatus
 from common.const import Const
+from common.dlipowerswitch import PowerStatus
 from common.paths import PathMaker
 
 __all__ = ["ImagerInterface", "ImagerType", "ImagerSettings", "ImagerBinning", "ImagerRoi", "ImagerExposure", "ImagerStatus"]
@@ -62,7 +63,7 @@ class ImagerSettings:
     def __init__(
         self,
         seconds: float,
-        gain: float | None = None,
+        gain: int | None = None,
         binning: ImagerBinning | None = None,
         roi: ImagerRoi | None = None,
         tags: dict | None = None,
@@ -166,6 +167,22 @@ class ImagerInterface(Component, ABC):
         pass
 
     @abstractmethod
+    def connect(self):
+        """
+        Connect to the imager.
+        This method should be called before any other methods that require a connection.
+        """
+        pass
+
+    @abstractmethod
+    def disconnect(self):
+        """
+        Disconnect from the imager.
+        This method should be called when the imager is no longer needed.
+        """
+        pass
+
+    @abstractmethod
     def start_exposure(self, settings: ImagerSettings):
         self.latest_settings = settings
         pass
@@ -175,7 +192,11 @@ class ImagerInterface(Component, ABC):
         pass
 
     @abstractmethod
-    def wait_for_image_in_memory(self):
+    def abort_exposure(self):
+        pass
+
+    @abstractmethod
+    def wait_for_image_ready(self):
         pass
 
     @abstractmethod
@@ -227,13 +248,13 @@ class Imager(ImagerInterface):
         type = self.conf.type.lower
         if type.startswith("ascom:"):
             from imagers.ascom import ASCOMImager
-            self._backend = ASCOMImager(unit=unit, prog_id=self.conf.type[6:], imager_params=imager_params)
+            self._backend = ASCOMImager(unit=unit, prog_id=self.conf.type[6:])
         elif type == "phd2":
             from imagers.phd2 import PHD2Imager
-            self._backend = PHD2Imager(unit=unit, imager_params=imager_params)
-        elif type == "zwo":
-            from imagers.zwo import ZWOImager
-            self._backend = ZWOImager(unit=unit, imager_params=imager_params)
+            self._backend = PHD2Imager(unit=unit)
+        # elif type == "zwo":
+        #     from imagers.zwo import ZWOImager
+        #     self._backend = ZWOImager(unit=unit, imager_params=imager_params)
         else:
             raise ValueError(f"Unknown imager type: {self.conf.type}")
 
@@ -250,6 +271,12 @@ class Imager(ImagerInterface):
         base_imager_path = Const.BASE_UNIT_PATH + "/imager"
         tag = "Imager"
 
+        def cooler_on():
+            return self.cooler(True)
+
+        def cooler_off():
+            return self.cooler(False)
+
         router = APIRouter()
         router.add_api_route(base_imager_path + "/startup", tags=[tag], endpoint=self.startup)
         router.add_api_route(
@@ -264,7 +291,7 @@ class Imager(ImagerInterface):
         router.add_api_route(
             base_imager_path + "/start_exposure",
             tags=[tag],
-            endpoint=self.endpoint_start_exposure,
+            endpoint=self.start_exposure,
         )
         router.add_api_route(
             base_imager_path + "/stop_exposure", tags=[tag], endpoint=self.stop_exposure
@@ -273,10 +300,10 @@ class Imager(ImagerInterface):
             base_imager_path + "/abort_exposure", tags=[tag], endpoint=self.abort_exposure
         )
         router.add_api_route(
-            base_imager_path + "/cooler_on", tags=[tag], endpoint=self.cooler_on
+            base_imager_path + "/cooler_on", tags=[tag], endpoint=cooler_on
         )
         router.add_api_route(
-            base_imager_path + "/cooler_off", tags=[tag], endpoint=self.cooler_off
+            base_imager_path + "/cooler_off", tags=[tag], endpoint=cooler_off
         )
 
         return router
