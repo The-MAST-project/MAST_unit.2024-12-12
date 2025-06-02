@@ -33,7 +33,7 @@ if platform.system() == "Windows":
     lib_dir = os.path.join(ximc_dir, arch_dir)
     os.add_dll_directory(lib_dir)  # add dll path into an environment variable
 
-    from pyximc import (  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]
+    from pyximc import (  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]
         POINTER,
         EnumerateFlags,  # type: ignore[name]
         MvcmdStatus,
@@ -128,7 +128,6 @@ class Stage(Component, SwitchedOutlet):
         self._position: int | None = None
         self.is_moving: bool = False
         self.target: int | None = None
-        self.stage_lock: threading.Lock | None = None
         self.min_travel: int | None = None
         self.max_travel: int | None = None
 
@@ -202,10 +201,11 @@ class Stage(Component, SwitchedOutlet):
             )
         self.stage_lock = threading.Lock()
 
-        self.presets[StagePresetPosition.Min] = self.min_travel
-        self.presets[StagePresetPosition.Max] = self.max_travel
-        self.presets[StagePresetPosition.Middle] = int(
-            (self.max_travel - self.min_travel) / 2
+        if self.min_travel is not None and self.max_travel is not None:
+            self.presets[StagePresetPosition.Min] = self.min_travel
+            self.presets[StagePresetPosition.Max] = self.max_travel
+            self.presets[StagePresetPosition.Middle] = int(
+                (self.max_travel - self.min_travel) / 2
         )
 
         # get initial values from the hardware
@@ -429,7 +429,7 @@ class Stage(Component, SwitchedOutlet):
             if self.is_active(StageActivities.Homing):
                 self.end_activity(StageActivities.Homing)
 
-    #
+
     def move_to_preset(
         self,
         preset: Literal["Sky", "Spec", "Min", "Mid", "Max"] | StagePresetPosition,
@@ -478,6 +478,11 @@ class Stage(Component, SwitchedOutlet):
             )
             return
 
+        if self.max_travel is None or self.min_travel is None:
+            return CanonicalResponse(
+                errors=["cannot move - min_travel or max_travel is None"]
+            )
+
         if not (self.min_travel <= position < self.max_travel):
             return CanonicalResponse(
                 errors=[
@@ -488,13 +493,13 @@ class Stage(Component, SwitchedOutlet):
             with self.stage_lock:
                 response = ximclib.command_move(self.device, position, 0)
                 if response != Result.Ok:
-                    msg = f"Failed to start stage move absolute (command_move({self.device}, {position})"
-                    logger.error(f"{op}: " + msg)
-                    return CanonicalResponse(errors=msg)
+                    msg = f"{op}: Failed to start stage move absolute (command_move({self.device}, {position}), {response=}"
+                    logger.error(msg)
+                    return CanonicalResponse(errors=[msg])
         except Exception as ex:
-            msg = f"Failed to start stage move absolute (command_move({self.device}, {position})"
-            logger.exception(f"{op}: " + msg, ex)
-            return CanonicalResponse(exception=ex)
+            msg = f"{op}: Failed to start stage move absolute (command_move({self.device}, {position}), {ex=}"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
 
         self.ticks_at_start = self.position
         self.target = position
@@ -517,6 +522,10 @@ class Stage(Component, SwitchedOutlet):
         """
         op = function_name()
 
+        current_position = self.position
+        if current_position is None:
+            return CanonicalResponse(errors=["cannot get current position"])
+
         if isinstance(direction, str):
             direction = StageDirection(stage_direction_str2int_dict[direction])
         if isinstance(amount, str):
@@ -524,7 +533,7 @@ class Stage(Component, SwitchedOutlet):
 
         amount *= 1 if direction == StageDirection.Up else -1
         try:
-            self.target = self.position + amount
+            self.target = current_position + amount
             self.start_activity(StageActivities.Moving)
             with self.stage_lock:
                 response = ximclib.command_movr(self.device, amount, 0)
@@ -533,11 +542,11 @@ class Stage(Component, SwitchedOutlet):
                     f"Failed to start stage move (command_movr({self.device}, {amount})"
                 )
                 logger.error(f"{op}: " + msg)
-                return CanonicalResponse(errors=msg)
+                return CanonicalResponse(errors=[msg])
         except Exception as ex:
-            msg = f"Failed to start stage move relative (command_movr({self.device}, {amount})"
-            logger.exception(f"{op}: " + msg, ex)
-            return CanonicalResponse(exception=ex)
+            msg = f"{op}: Failed to start stage move relative (command_movr({self.device}, {amount}), {ex=}"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
         return CanonicalResponse_Ok
 
     def abort(self):

@@ -65,11 +65,17 @@ class Guider:
         unit_roi = UnitRoi.from_dict(
             guiding_conf["roi"]
         )  # we use only the center and compute the sizes
+
+        x_size = self.unit.imager.camera_x_size
+        y_size = self.unit.imager.camera_y_size
+        if x_size is None or y_size is None:
+            raise Exception(f"Cannot make guiding settings - camera {x_size=}, {y_size=}")
+
         unit_roi.width = (
-            min(unit_roi.x, self.unit.imager.camera_x_size - unit_roi.x) - h_margin
+            min(unit_roi.x, x_size - unit_roi.x) - h_margin
         ) * 2
         unit_roi.height = (
-            min(unit_roi.y, self.unit.imager.camera_y_size - unit_roi.y) - v_margin
+            min(unit_roi.y, y_size - unit_roi.y) - v_margin
         ) * 2
 
         x_binning = guiding_conf["binning"]

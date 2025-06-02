@@ -146,8 +146,12 @@ app.add_middleware(
 
 if __name__ == "__main__":
     server_conf = Config().get_service(service_name="unit")
-    host = server_conf.get("listen_on", "0.0.0.0")
-    port = server_conf.get("port", 8000)
+    if server_conf is None:
+        logger.error("No server configuration found for 'unit', exiting ...")
+        app_quit(reason="no server configuration")
+    else:
+        host = server_conf.get("listen_on", "0.0.0.0")
+        port = server_conf.get("port", 8000)
 
     from unit import unit
 

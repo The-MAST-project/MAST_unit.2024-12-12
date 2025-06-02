@@ -89,6 +89,10 @@ class PHD2Imager(ImagerInterface):
         return "PHD2Imager"
 
     @property
+    def image_array(self):
+        return None
+
+    @property
     def operational(self) -> bool:
         return True  # Assuming PHD2 is always operational when connected
 

@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from enum import Enum, auto
 from pathlib import Path
 
+import numpy as np
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -247,6 +248,15 @@ class ImagerInterface(Component, ABC):
     def cooler_power(self) -> float | None:
         pass
 
+    @property
+    @abstractmethod
+    def image_array(self) -> np.ndarray | None:
+        """
+        Get the image data from the imager.
+        This method should be called after an exposure has been taken.
+        """
+        pass
+
 
 class Imager(ImagerInterface):
     """
@@ -413,6 +423,15 @@ class Imager(ImagerInterface):
         Check if the imager can capture images to memory.
         """
         return self._backend.can_image_to_memory
+
+    @property
+    def image_array(self) -> np.ndarray | None:
+        """
+        Gets the image data from the imager.
+        This method should be called after an exposure has been taken.
+        :return: The image data as bytes
+        """
+        return self._backend.image_array if self._backend.can_image_to_memory else None
 
     def temperature(self) -> float:
         """

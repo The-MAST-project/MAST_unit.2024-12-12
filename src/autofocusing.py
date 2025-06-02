@@ -10,14 +10,14 @@ from fastapi import Query
 
 from acquirer import DEC_REGEX, RA_REGEX
 from common.activities import FocuserActivities, UnitActivities
-from common.canonical import CanonicalResponse, CanonicalResponse_Ok, UnitRoi
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.extended_basemodel import ExtendedBaseModel
 from common.filer import Filer
 from common.mast_logging import init_log
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
-from common.utils import function_name
+from common.utils import UnitRoi, function_name
 from imagers import ImagerBinning, ImagerSettings
 from PlaneWave.ps3cli_client import PS3CLIClient
 from plotting import plot_autofocus_analysis
@@ -397,8 +397,8 @@ class Autofocuser:
                 + f"{self.latest_result.tolerance=}"
             )
 
-            if (
-                math.isnan(self.latest_result.tolerance)
+            if (self.latest_result.tolerance is None
+                or math.isnan(self.latest_result.tolerance)
                 or self.latest_result.tolerance > max_tolerance
             ):
                 self.log_and_store_error(
@@ -407,28 +407,29 @@ class Autofocuser:
                 )
                 continue  # next try_number
 
-            position: int = int(self.latest_result.best_focus_position)
-            logger.info(f"{op}: moving focuser to best focus position {position} ...")
-            self.unit.focuser.known_as_good_position = position
-            self.unit.focuser.position = self.unit.focuser.known_as_good_position
+            if self.latest_result.best_focus_position is not None:
+                position: int = int(self.latest_result.best_focus_position)
+                logger.info(f"{op}: moving focuser to best focus position {position} ...")
+                self.unit.focuser.known_as_good_position = position
+                self.unit.focuser.position = self.unit.focuser.known_as_good_position
 
-            logger.info(f"{op}: waiting for focuser to stop moving ...")
-            while self.unit.focuser.is_active(FocuserActivities.Moving):
-                time.sleep(0.5)
-            logger.info(f"{op}: focuser stopped moving")
+                logger.info(f"{op}: waiting for focuser to stop moving ...")
+                while self.unit.focuser.is_active(FocuserActivities.Moving):
+                    time.sleep(0.5)
+                logger.info(f"{op}: focuser stopped moving")
 
-            self.unit.unit_conf["focuser"]["known_as_good_position"] = position
-            try:
-                Config().set_unit(self.unit.hostname, self.unit.unit_conf)
-                logger.info(
-                    f"saved unit '{self.unit.hostname}' configuration for "
-                    + f"focuser known-as-good-position {position}"
-                )
-            except Exception as e:
-                self.log_and_store_error(
-                    f"could not save unit '{self.unit.hostname}' "
-                    + f"configuration for focuser known-as-good-position (exception: {e})"
-                )
+                self.unit.unit_conf["focuser"]["known_as_good_position"] = position
+                try:
+                    Config().set_unit(self.unit.hostname, self.unit.unit_conf)
+                    logger.info(
+                        f"saved unit '{self.unit.hostname}' configuration for "
+                        + f"focuser known-as-good-position {position}"
+                    )
+                except Exception as e:
+                    self.log_and_store_error(
+                        f"could not save unit '{self.unit.hostname}' "
+                        + f"configuration for focuser known-as-good-position (exception: {e})"
+                    )
 
             pixel_scale: float = self.unit.unit_conf["camera"]["pixel_scale_at_bin1"]
             Thread(

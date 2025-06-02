@@ -17,7 +17,7 @@ from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.components import Component
 from common.config import Config
-from common.dlipowerswitch import OutletDomain, SwitchedOutlet, TriStateBool
+from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.mast_logging import init_log
 from common.paths import PathMaker
 from common.utils import RepeatTimer, function_name, time_stamp
@@ -180,6 +180,15 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         self._initialized = True
         # logger.info('initialized')
+
+    @property
+    def image_array(self) -> np.ndarray | None:
+        """
+        Returns the image array, if available.  If the image is not available, returns None.
+        """
+        if self.image_was_read and self.image is not None:
+            return self.image
+        return None
 
     @property
     def binning(self):

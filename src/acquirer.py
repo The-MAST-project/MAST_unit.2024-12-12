@@ -220,7 +220,8 @@ class Acquirer:
             self.unit.mount.stop_tracking()
             return
 
-        self.unit.reference_image = self.unit.imager.image
+        if self.unit.imager.can_image_to_memory:
+            self.unit.reference_image = self.unit.imager.image_array
 
         if acquisition.guiding_mode == GuidingMode.PlateSolving:
             phase = "guiding"
@@ -247,10 +248,10 @@ class Acquirer:
                     phase=phase,
                 )
 
-            if self.unit.latest_acquisition is None:
+            if self.unit.acquirer.latest_acquisition is not None:
                 self.unit.acquirer.latest_acquisition.save_corrections(phase)
 
-            if cadence:
+            if cadence and end is not None:
                 now = datetime.datetime.now()
                 if now < end:
                     sec = (end - now).seconds
@@ -268,7 +269,7 @@ class Acquirer:
                     )
         else:
             if acquisition.guiding_mode == GuidingMode.PHD2:
-                self.unit.camera.connected = False
+                self.unit.imager.connected = False
 
             while self.unit.is_active(UnitActivities.Guiding):
                 time.sleep(1)
@@ -277,7 +278,8 @@ class Acquirer:
         self.unit.end_activity(UnitActivities.Acquiring)
         if acquisition.guiding_mode != GuidingMode.PHD2:
             self.unit.mount.stop_tracking()
-        self.unit.acquirer.latest_acquisition.post_process()
+        if self.unit.acquirer.latest_acquisition is not None:
+            self.unit.acquirer.latest_acquisition.post_process()
 
     def start_acquisition_and_guiding_for_assignment(
         self, assignment: UnitAssignmentModel
@@ -293,8 +295,8 @@ class Acquirer:
             approach_mode=approach_mode,
             solver_id=SolverId[solver_name],
             make_corrections=make_corrections,
-            target_ra=ra_j2000_hours,
-            target_dec=dec_j2000_degs,
+            target_ra=float(ra_j2000_hours),
+            target_dec=float(dec_j2000_degs),
             conf=self.unit.unit_conf["acquisition"],
         )
         Thread(name="acquisition", target=self.do_acquire, args=[acquisition]).start()
@@ -303,11 +305,12 @@ class Acquirer:
         This acquisition is part of an assignment, tell the controller where
          the products are.
         """
-        notify_controller_about_task_acquisition_path(
-            task_id=assignment.task.ulid,
-            link="acquisition",
-            src=acquisition.folder,
-        )
+        if assignment.task.ulid is not None:
+            notify_controller_about_task_acquisition_path(
+                task_id=assignment.task.ulid,
+                link="acquisition",
+                src=acquisition.folder,
+            )
 
     def start_acquisition_and_guiding(
         self,
@@ -369,11 +372,11 @@ class Acquirer:
             elif isinstance(ra_j2000_hours, float):
                 pass
         else:
-            if not pw_status.mount.is_connected:
+            if not pw_status.mount.is_connected: # type: ignore
                 return CanonicalResponse(
                     errors=["cannot get coordinates from mount (mount not connected)"]
                 )
-            ra_j2000_hours = pw_status.mount.ra_j2000_hours
+            ra_j2000_hours = pw_status.mount.ra_j2000_hours # type: ignore
 
         if dec_j2000_degs:
             if isinstance(dec_j2000_degs, str):
@@ -384,26 +387,33 @@ class Acquirer:
             elif isinstance(dec_j2000_degs, float):
                 pass
         else:
-            if not pw_status.mount.is_connected:
+            if not pw_status.mount.is_connected: # type: ignore
                 return CanonicalResponse(
                     errors=["cannot get coordinates from mount (mount not connected)"]
                 )
-            dec_j2000_degs = pw_status.mount.dec_j2000_degs
+            dec_j2000_degs = pw_status.mount.dec_j2000_degs # type: ignore
 
         if seconds is None:
             self.unit.unit_conf["acquisition"]["exposure"] = seconds
 
-        acquisition = Acquisition(
-            unit=self.unit,
-            approach_mode=approach_mode,
-            solver_id=SolverId[solver_name],
-            make_corrections=make_corrections,
-            target_ra=ra_j2000_hours,
-            target_dec=dec_j2000_degs,
-            conf=self.unit.unit_conf["acquisition"],
-            skip_sky=skip_sky,
-            guiding_mode=GuidingMode[guiding_mode],
-        )
-        Thread(name="acquisition", target=self.do_acquire, args=[acquisition]).start()
+        if ra_j2000_hours is None or dec_j2000_degs is None:
+            return CanonicalResponse(
+                errors=[
+                    "cannot start acquisition - no coordinates supplied and mount not connected"
+                ]
+            )
+        else:
+            acquisition = Acquisition(
+                unit=self.unit,
+                approach_mode=approach_mode,
+                solver_id=SolverId[solver_name],
+                make_corrections=make_corrections,
+                target_ra=float(ra_j2000_hours),
+                target_dec=float(dec_j2000_degs),
+                conf=self.unit.unit_conf["acquisition"],
+                skip_sky=skip_sky,
+                guiding_mode=GuidingMode[guiding_mode],
+            )
+            Thread(name="acquisition", target=self.do_acquire, args=[acquisition]).start()
 
-        return CanonicalResponse_Ok
+            return CanonicalResponse_Ok

@@ -161,7 +161,7 @@ class Unit(Component):
         self.timer.name = "unit-timer-thread"
         self.timer.start()
 
-        self.reference_image = None
+        self.reference_image: np.ndarray | None = None
         self.autofocus_result: AutofocusResult | None = None
 
         self._was_shut_down = False
