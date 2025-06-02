@@ -10,14 +10,15 @@ from fastapi import Query
 
 from acquirer import DEC_REGEX, RA_REGEX
 from common.activities import FocuserActivities, UnitActivities
-from common.canonical import CanonicalResponse, CanonicalResponse_Ok, UnitRoi, function_name
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok, UnitRoi
 from common.config import Config
 from common.extended_basemodel import ExtendedBaseModel
 from common.filer import Filer
-from common.imagers import ImagerBinning, ImagerSettings
 from common.mast_logging import init_log
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
+from common.utils import function_name
+from imagers import ImagerBinning, ImagerSettings
 from PlaneWave.ps3cli_client import PS3CLIClient
 from plotting import plot_autofocus_analysis
 from stage import StagePresetPosition
@@ -162,7 +163,7 @@ class Autofocuser:
 
         if number_of_images is None:
             number_of_images = self.unit.unit_conf["autofocus"]["images"]
-        if number_of_images % 2 != 1:
+        if number_of_images and number_of_images % 2 != 1:
             return CanonicalResponse(errors=[f"bad {number_of_images=}, MUST be odd!"])
 
         if start_position is None:
@@ -236,8 +237,7 @@ class Autofocuser:
             logger.info(f"{op}: moving mount to {target_ra=}, {target_dec=} ...")
             self.unit.mount.goto_ra_dec_j2000(target_ra, target_dec)
 
-        if start_position is None:
-            start_position = self.unit.unit_conf["focuser"]["known_as_good_position"]
+        start_position = start_position or self.unit.unit_conf["focuser"]["known_as_good_position"]
         focuser_position: int = int(
             start_position - ((number_of_images / 2) * ticks_per_step)
         )
@@ -264,7 +264,7 @@ class Autofocuser:
             acquisition_conf["roi"]["width"],
             acquisition_conf["roi"]["height"],
         )
-        _binning = ImagerBinning(1, 1)
+        _binning = ImagerBinning(x=1, y=1)
 
         max_tries: int = self.unit.unit_conf["autofocus"]["max_tries"]
         max_tolerance: float = self.unit.unit_conf["autofocus"]["max_tolerance"]
@@ -354,7 +354,7 @@ class Autofocuser:
             while datetime.datetime.now() < end:
                 # wait for the autofocus analyser to stop running
                 s = ps3_client.focus_status()
-                status: PS3AutofocusStatus = PS3AutofocusStatus(**s)
+                status = PS3AutofocusStatus(**s if s else {})
                 logger.info(f"{op}: {s=}")
                 if not status.is_running:
                     break
@@ -373,7 +373,7 @@ class Autofocuser:
             ps3_client.close()
             self.unit.end_activity(UnitActivities.AutofocusAnalysis)
 
-            if not status.analysis_result:
+            if not status or not status.analysis_result:
                 self.log_and_store_error(
                     f"{op}: focus analyser stopped working but empty analysis_result"
                 )
@@ -430,7 +430,6 @@ class Autofocuser:
                     + f"configuration for focuser known-as-good-position (exception: {e})"
                 )
 
-            # filer.move_ram_to_shared(autofocus_folder)
             pixel_scale: float = self.unit.unit_conf["camera"]["pixel_scale_at_bin1"]
             Thread(
                 name="autofocus-analysis-plotter",

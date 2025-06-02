@@ -11,13 +11,14 @@ from fastapi import Query
 
 from acquisition import Acquisition
 from common.activities import UnitActivities
-from common.canonical import CanonicalResponse, CanonicalResponse_Ok, Coord, UnitRoi, boxed_info, function_name
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.imagers import ImagerBinning, ImagerSettings  # type: ignore
 from common.mast_logging import init_log
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.solving import SolverIdNames
 from common.tasks.models import UnitAssignmentModel
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
+from common.utils import Coord, UnitRoi, boxed_info, function_name
 from guiding import GuidingMode, GuidingModes
 from solving import SolverId, SolvingTolerance
 from stage import StagePresetPosition
@@ -66,12 +67,15 @@ class Acquirer:
             acquisition, "target_dec"
         ):
             st = self.unit.mount.status()
-            acquisition.target_ra = st[
-                "ra_j2000_hours "
-            ]  # NOTE: the space after _hours is NEEDED
-            acquisition.target_dec = st[
-                "dec_j2000_degs "
-            ]  # NOTE: the space after _degs is NEEDED
+            if st.ra_j2000_hours is None or st.dec_j2000_degs is None:
+                self.unit.errors.append(
+                    "cannot get coordinates from mount (mount not connected)"
+                )
+                self.unit.end_activity(UnitActivities.Acquiring)
+                return
+
+            acquisition.target_ra = st.ra_j2000_hours
+            acquisition.target_dec = st.dec_j2000_degs
 
         target_ra_j2000_hours: float = (
             acquisition.target_ra.value
@@ -92,8 +96,8 @@ class Acquirer:
 
         self.unit.start_activity(UnitActivities.Acquiring)
 
-        if not self.unit.camera.connected:
-            self.unit.camera.connected = True
+        if not self.unit.imager.connected:
+            self.unit.imager.connected = True
 
         tries: int = acquisition_conf.get("tries", 3)
 
@@ -148,7 +152,7 @@ class Acquirer:
                     )
 
             target = Coord(
-                ra=Angle(target_ra_j2000_hours * u.hour),
+                ra=Angle(target_ra_j2000_hours * u.hourangle),
                 dec=Angle(target_dec_j2000_degs * u.deg),
             )
 
@@ -216,7 +220,7 @@ class Acquirer:
             self.unit.mount.stop_tracking()
             return
 
-        self.unit.reference_image = self.unit.camera.image
+        self.unit.reference_image = self.unit.imager.image
 
         if acquisition.guiding_mode == GuidingMode.PlateSolving:
             phase = "guiding"
@@ -243,7 +247,8 @@ class Acquirer:
                     phase=phase,
                 )
 
-            self.unit.acquirer.latest_acquisition.save_corrections(phase)
+            if self.unit.latest_acquisition is None:
+                self.unit.acquirer.latest_acquisition.save_corrections(phase)
 
             if cadence:
                 now = datetime.datetime.now()

@@ -41,7 +41,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
     _initialized = False
 
     @property
-    def ascom(self) -> win32com.client.Dispatch:
+    def ascom(self) -> win32com.client.Dispatch: # type: ignore
         return self._ascom
 
     def __new__(cls, *args, **kwargs):
@@ -156,7 +156,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
     @property
     def connected(self):
         stat = self.pw.status()
-        return stat.focuser.is_connected  # and self.ascom and self.ascom.Connected
+        return stat.focuser.is_connected # type: ignore
 
     @connected.setter
     def connected(self, value):
@@ -178,7 +178,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         :mastapi:
         """
         stat = self.pw.status()
-        return round(stat.focuser.position)
+        return round(stat.focuser.position) # type: ignore
 
     @position.setter
     def position(self, value: int):
@@ -204,8 +204,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         ----------
         position
             The target position
-
-        :mastapi:
         """
 
         if isinstance(position, str):
@@ -218,6 +216,9 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         Go to the 'known-as-good' position
         :mastapi:
         """
+        if self.known_as_good_position is None:
+            return CanonicalResponse(errors=["known_as_good_position is None"])
+
         self.position = self.known_as_good_position
         return CanonicalResponse_Ok
 
@@ -246,13 +247,13 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             if target < self.lower_limit:
                 msg = f"target position ({target}) would be below lower limit ({self.lower_limit})"
                 logger.error(msg)
-                return CanonicalResponse(errors=msg)
+                return CanonicalResponse(errors=[msg])
         else:
             target = current_position + amount
-            if target >= self.upper_limit:
+            if self.upper_limit and target >= self.upper_limit:
                 msg = f"target position ({target}) would be below upper limit ({self.upper_limit})"
                 logger.error(msg)
-                return CanonicalResponse(errors=msg)
+                return CanonicalResponse(errors=[msg])
 
         self.position = target
         return CanonicalResponse_Ok
@@ -294,7 +295,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         is_moving = (
             ascom_response.value
             if ascom_response.succeeded
-            else pw_stat.focuser.is_moving
+            else pw_stat.focuser.is_moving # type: ignore
         )
 
         return FocuserStatus(
@@ -307,7 +308,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             position=self.position,
             target=self.target,
             target_verbal=f"{self.target}",
-            moving=is_moving,
+            moving=is_moving, # type: ignore
             date=time_stamp(),
         )
 
@@ -322,8 +323,8 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             [
                 not self.was_shut_down,
                 self.is_on(),
-                st.focuser.exists,
-                st.focuser.is_connected,
+                st.focuser.exists, # type: ignore
+                st.focuser.is_connected, # type: ignore
             ]
         )
 
@@ -339,16 +340,16 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
                 ret.append(f"{self.name}: not detected")
             else:
                 st = self.pw.status()
-                if not st.focuser.exists:
+                if not st.focuser.exists: # type: ignore
                     ret.append(f"{self.name}: (PWI4) - does not exist")
-                elif not st.focuser.is_connected:
+                elif not st.focuser.is_connected: # type: ignore
                     ret.append(f"{self.name}: (PWI4) - not connected")
         return ret
 
     @property
     def detected(self) -> bool:
         st = self.pw.status()
-        return st.focuser.exists
+        return st.focuser.exists # type: ignore
 
     @property
     def was_shut_down(self) -> bool:
@@ -360,7 +361,8 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         base_path = Const.BASE_UNIT_PATH + "/focuser"
         tag = "Focuser"
 
-        # focuser = Focuser(unit=None)
+        def get_position():
+            return self.position
 
         router = APIRouter()
         router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup)
@@ -369,7 +371,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
         router.add_api_route(base_path + "/connect", tags=[tag], endpoint=self.connect)
         router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
-        router.add_api_route(base_path + "/position", tags=[tag], endpoint=self.position)
+        router.add_api_route(base_path + "/position", tags=[tag], endpoint=get_position)
         router.add_api_route(
             base_path + "/position", methods=["PUT"], tags=[tag], endpoint=self.set_position
         )

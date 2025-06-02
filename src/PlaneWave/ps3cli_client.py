@@ -1,7 +1,7 @@
-from multiprocessing import shared_memory
 import json
 import socket
 import time
+from multiprocessing import shared_memory
 
 
 class PS3CLIClient:
@@ -16,22 +16,22 @@ class PS3CLIClient:
             self.sock.settimeout(1)
         except Exception as e:
             self.sock = None
-            raise Exception(f"Failed to connect to {host}:{port} -- {e}")
-    
+            raise Exception(f"Failed to connect to {host}:{port}") from e
+
     def close(self):
         if self.sock is not None:
             self.sock.close()
             self.sock = None
-    
+
     def is_connected(self):
         return self.sock is not None
-    
+
     def platesolve_status(self):
         return self.send_receive("platesolve_status")
 
-    def begin_platesolve_file(self, 
-                              image_file_path, 
-                              arcsec_per_pixel_guess, 
+    def begin_platesolve_file(self,
+                              image_file_path,
+                              arcsec_per_pixel_guess,
                               enable_all_sky_match=None,
                               enable_local_quad_match=None,
                               enable_local_triangle_match=None,
@@ -55,12 +55,12 @@ class PS3CLIClient:
             params["dec_guess_j2000_rads"] = dec_guess_j2000_rads
 
         return self.send_receive("begin_platesolve", params)
-    
-    def begin_platesolve_shm(self, 
+
+    def begin_platesolve_shm(self,
                              shm_key,
-                             width_pixels, 
-                             height_pixels, 
-                             arcsec_per_pixel_guess, 
+                             width_pixels,
+                             height_pixels,
+                             arcsec_per_pixel_guess,
                              # Optional params; included in request message only if not None
                              enable_all_sky_match=None,
                              enable_local_quad_match=None,
@@ -68,7 +68,7 @@ class PS3CLIClient:
                              ra_guess_j2000_rads=None,
                              dec_guess_j2000_rads=None
                              ):
-        
+
         params = {
             "arcsec_per_pixel": arcsec_per_pixel_guess,
             "shm_image": {
@@ -89,13 +89,13 @@ class PS3CLIClient:
             params["dec_guess_j2000_rads"] = dec_guess_j2000_rads
 
         return self.send_receive("begin_platesolve", params)
-    
+
     def platesolve_cancel(self):
         return self.send_receive("platesolve_cancel")
-    
+
     def focus_status(self):
         return self.send_receive("focus_status")
-    
+
     def begin_analyze_focus(self, file_list: list[str]):
         params = {
             "files": file_list
@@ -104,7 +104,7 @@ class PS3CLIClient:
         # Note: This method currently blocks until the focus analysis has finished.
         # It may change to an asynchronous method in a future version.
         return self.send_receive("begin_analyze_focus", params)
-       
+
     # #### Low-level methods #####
 
     def send_request(self, method, params=None):
@@ -115,12 +115,18 @@ class PS3CLIClient:
             request_dict["params"] = params
 
         request = json.dumps(request_dict).strip()
-        if self.log_exchanges:
-            print("SEND:", request)
-        # Send the message followed by a blank line
-        self.sock.sendall((request + "\r\n\r\n").encode('utf-8'))
+        if self.sock:
+            if self.log_exchanges:
+                print("SEND:", request)
+            # Send the message followed by a blank line
+            self.sock.sendall((request + "\r\n\r\n").encode('utf-8'))
+        else:
+            raise Exception("Not connected, cannot send request")
 
     def receive_response(self):
+        if not self.sock:
+            raise Exception("Not connected, cannot receive response")
+
         # Read data from the socket until a blank line is received
         data = ""
         while True:
@@ -135,7 +141,7 @@ class PS3CLIClient:
         # Parse the JSON response
         response = json.loads(data)
         return response
-    
+
     def send_receive(self, method, params=None):
         self.send_request(method, params)
         response = self.receive_response()
@@ -175,8 +181,8 @@ def test_platesolve_file(ps3: PS3CLIClient):
 
 
 def test_ascom_camera_shm(ps3: PS3CLIClient):
-    from win32com.client import Dispatch
     import numpy as np
+    from win32com.client import Dispatch
 
     prog_id = input("Enter ProgID of ASCOM camera driver: ")
     camera = Dispatch(prog_id)
@@ -208,7 +214,7 @@ def test_ascom_camera_shm(ps3: PS3CLIClient):
 
         result = ps3.begin_platesolve_shm(image_shm.name, camera.NumX, camera.NumY, arcsec_per_pixel_guess)
         print("Result:", result)
-        
+
         monitor_solve_status(ps3)
 
 
@@ -243,18 +249,19 @@ def test_autofocus(ps3: PS3CLIClient):
     result = ps3.begin_analyze_focus(focus_images)
     print("Result:")
     print(json.dumps(result, indent=4))
-    
+
     monitor_focus_status(ps3)
 
 
 def monitor_focus_status(ps3: PS3CLIClient):
     while True:
         status = ps3.focus_status()
-        indented_status = json.dumps(status, indent=4)
-        print(indented_status)
-        if not status["is_running"]:
-            print("Finished")
-            break
+        if status is not None:
+            indented_status = json.dumps(status, indent=4)
+            print(indented_status)
+            if not status["is_running"]:
+                print("Finished")
+                break
         time.sleep(0.1)
 
 
@@ -281,9 +288,9 @@ def main():
         print("4: Analyze focus images")
         print("5: Intentionally send a bad request to check for an error response")
         print("6: Close connection and exit")
-        
+
         option = input("Selection: ").strip()
-        
+
         if option == "0":
             ps3.log_exchanges = True
             print("Enabled logging of exchanged messages")
@@ -301,7 +308,7 @@ def main():
             break
         else:
             print("Unrecognized option")
-    
+
     print("Closing")
     ps3.close()
 

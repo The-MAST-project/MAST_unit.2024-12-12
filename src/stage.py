@@ -33,7 +33,7 @@ if platform.system() == "Windows":
     lib_dir = os.path.join(ximc_dir, arch_dir)
     os.add_dll_directory(lib_dir)  # add dll path into an environment variable
 
-    from pyximc import (  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]
+    from pyximc import (  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]  # type: ignore[name]
         POINTER,
         EnumerateFlags,  # type: ignore[name]
         MvcmdStatus,
@@ -603,7 +603,7 @@ class Stage(Component, SwitchedOutlet):
         return self._was_shut_down
 
 
-    def endpoint_get_position(self) -> int:
+    def endpoint_get_position(self) -> CanonicalResponse:
         return CanonicalResponse(value=self.position)
 
 

@@ -50,7 +50,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
     """
 
     @property
-    def ascom(self) -> win32com.client.Dispatch:
+    def ascom(self) -> win32com.client.Dispatch: # type: ignore
         return self._ascom
 
     @property
@@ -77,8 +77,8 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         Component.__init__(self)
         self._connected: bool = False
 
-        # if not self.is_on():
-        #     self.power_on()
+        if not self.is_on():
+            self.power_on()
 
         self.timer: RepeatTimer = RepeatTimer(2, self.ontimer)
         self.timer.name = "covers-timer-thread"

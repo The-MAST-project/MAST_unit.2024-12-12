@@ -11,6 +11,7 @@ from common.components import Component, ComponentStatus
 from common.const import Const
 from common.dlipowerswitch import PowerStatus
 from common.paths import PathMaker
+from src.common.canonical import CanonicalResponse
 
 __all__ = ["ImagerInterface", "ImagerType", "ImagerSettings", "ImagerBinning", "ImagerRoi", "ImagerExposure", "ImagerStatus"]
 
@@ -158,6 +159,7 @@ class ImagerStatus(PowerStatus, AscomStatus, ComponentStatus):
 
 class ImagerInterface(Component, ABC):
 
+    @property
     @abstractmethod
     def connected(self) -> bool:
         """
@@ -166,19 +168,28 @@ class ImagerInterface(Component, ABC):
         """
         pass
 
+    @connected.setter
     @abstractmethod
-    def connect(self):
+    def connected(self, value: bool):
         """
         Connect to the imager.
         This method should be called before any other methods that require a connection.
         """
         pass
 
+    @property
     @abstractmethod
-    def disconnect(self):
+    def camera_x_size(self) -> int | None:
         """
-        Disconnect from the imager.
-        This method should be called when the imager is no longer needed.
+        Get the camera's X size in pixels.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def camera_y_size(self) -> int | None:
+        """
+        Get the camera's Y size in pixels.
         """
         pass
 
@@ -189,6 +200,15 @@ class ImagerInterface(Component, ABC):
 
     @abstractmethod
     def stop_exposure(self):
+        pass
+
+    @property
+    @abstractmethod
+    def can_image_to_memory(self) -> bool:
+        """
+        Check if the imager can capture images to memory.
+        :return: True if the imager can capture images to memory, False otherwise
+        """
         pass
 
     @abstractmethod
@@ -203,16 +223,28 @@ class ImagerInterface(Component, ABC):
     def wait_for_image_saved(self):
         pass
 
+    @property
     @abstractmethod
     def temperature(self) -> float:
         pass
 
+    @property
     @abstractmethod
-    def cooler(self, onoff: bool):
+    def cooler_on(self) -> bool:
+        """
+        Check if the camera cooler is currently on.
+        :return: True if the cooler is on, False otherwise
+        """
         pass
 
+    @cooler_on.setter
     @abstractmethod
-    def cooler_power(self) -> float:
+    def cooler_on(self, onoff: bool):
+        pass
+
+    @property
+    @abstractmethod
+    def cooler_power(self) -> float | None:
         pass
 
 
@@ -262,6 +294,168 @@ class Imager(ImagerInterface):
         self.latest_settings: ImagerSettings | None = None
         self._initialized = True
 
+    def startup(self) -> CanonicalResponse | None:
+        return self._backend.startup()
+
+    def shutdown(self) -> CanonicalResponse | None:
+        return self._backend.shutdown()
+
+    @property
+    def name(self) -> str:
+        """
+        The getter method for the imager's name.
+        :return: The name of the imager
+        """
+        return self._backend.name
+
+    @property
+    def connected(self) -> bool:
+        """
+        Check if the imager is connected.
+        :return: True if connected, False otherwise
+        """
+        return self._backend.connected
+
+    @connected.setter
+    def connected(self, value: bool):
+        """
+        Connect to the imager.
+        This method should be called before any other methods that require a connection.
+        :param value: True to connect, False to disconnect
+        """
+        self._backend.connected = value
+
+    @property
+    def camera_x_size(self) -> int | None:
+        """
+        Get the camera's X size in pixels.
+        :return: The X size of the camera
+        """
+        return self._backend.camera_x_size
+
+    @property
+    def camera_y_size(self) -> int | None:
+        """
+        Get the camera's Y size in pixels.
+        :return: The Y size of the camera
+        """
+        return self._backend.camera_y_size
+
+    @property
+    def cooler_power(self) -> float | None:
+        """
+        Get the current power of the camera cooler.
+        :return: The cooler power in watts
+        """
+        return self._backend.cooler_power
+
+    @property
+    def operational(self) -> bool:
+        """
+        Check if the imager is operational.
+        :return: True if the imager is operational, False otherwise
+        """
+        return self._backend.operational
+
+    @property
+    def why_not_operational(self) -> list[str]:
+        """
+        Get the reason why the imager is not operational.
+        :return: A string explaining why the imager is not operational, or None if it is operational
+        """
+        return self._backend.why_not_operational
+
+    def abort(self) -> CanonicalResponse | None:
+        """
+        Immediately terminates any in-progress activities and returns the imager to its default state.
+        :return: CanonicalResponse indicating the result of the operation
+        """
+        return self._backend.abort()
+
+    def status(self) -> ImagerStatus | None:
+        """
+        Returns the imager's current status.
+        :return: ImagerStatus object containing the status information
+        """
+        return self._backend.status()
+
+    def connect(self) -> CanonicalResponse | None: # obsoleted by connected property
+        self._backend.connected = True
+
+    def disconnect(self) -> CanonicalResponse | None: # obsoleted by connected property
+        self.connected = False
+
+    def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse | None:
+        """
+        Starts an exposure with the given settings.
+        :param settings: ImagerSettings object containing the exposure settings
+        :return: CanonicalResponse indicating the result of the operation
+        """
+        return self._backend.start_exposure(settings)
+
+    def stop_exposure(self) -> CanonicalResponse | None:
+        """
+        Stops the current exposure.
+        :return: CanonicalResponse indicating the result of the operation
+        """
+        return self._backend.stop_exposure()
+
+    def abort_exposure(self) -> CanonicalResponse | None:
+        """
+        Aborts the current exposure.
+        :return: CanonicalResponse indicating the result of the operation
+        """
+        return self._backend.abort_exposure()
+
+    @property
+    def can_image_to_memory(self) -> bool:
+        """
+        Check if the imager can capture images to memory.
+        """
+        return self._backend.can_image_to_memory
+
+    def temperature(self) -> float:
+        """
+        Gets the current temperature of the camera.
+        """
+        return self._backend.temperature
+
+    def wait_for_image_ready(self) -> CanonicalResponse | None:
+        """
+        Waits for the image to be ready after an exposure.
+        """
+        if self.can_image_to_memory:
+            return self._backend.wait_for_image_ready()
+
+    def wait_for_image_saved(self) -> CanonicalResponse | None:
+        """
+        Waits for the image to be saved after an exposure.
+        """
+        return self._backend.wait_for_image_saved()
+
+    @property
+    def cooler_on(self) -> bool:
+        """
+        Checks if the camera cooler is currently on.
+        """
+        return self._backend.cooler_on
+
+    @cooler_on.setter
+    def cooler_on(self, onoff: bool):
+        """
+        Turns the camera cooler on or off.
+        :param onoff: True to turn on, False to turn off
+        """
+        self._backend.cooler_on = onoff
+
+    @property
+    def detected(self) -> bool:
+        return self._backend.detected
+
+    @property
+    def was_shut_down(self) -> bool:
+        return self._backend.was_shut_down
+
     @property
     def api_router(self) -> APIRouter:
         """
@@ -272,10 +466,10 @@ class Imager(ImagerInterface):
         tag = "Imager"
 
         def cooler_on():
-            return self.cooler(True)
+            self.cooler_on = True
 
         def cooler_off():
-            return self.cooler(False)
+            self.cooler_on = False
 
         router = APIRouter()
         router.add_api_route(base_imager_path + "/startup", tags=[tag], endpoint=self.startup)

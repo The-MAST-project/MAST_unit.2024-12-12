@@ -6,10 +6,10 @@ from typing import Literal
 
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.imagers import ImagerBinning, ImagerSettings
 from common.mast_logging import init_log
 from common.process import WatchedProcess
 from common.utils import UnitRoi
+from imagers import ImagerBinning, ImagerSettings
 
 logger = logging.Logger("mast.unit." + __name__)
 init_log(logger)
@@ -66,14 +66,14 @@ class Guider:
             guiding_conf["roi"]
         )  # we use only the center and compute the sizes
         unit_roi.width = (
-            min(unit_roi.x, self.unit.camera.cameraXSize - unit_roi.x) - h_margin
+            min(unit_roi.x, self.unit.imager.camera_x_size - unit_roi.x) - h_margin
         ) * 2
         unit_roi.height = (
-            min(unit_roi.y, self.unit.camera.cameraYSize - unit_roi.y) - v_margin
+            min(unit_roi.y, self.unit.imager.camera_y_size - unit_roi.y) - v_margin
         ) * 2
 
         x_binning = guiding_conf["binning"]
-        binning: ImagerBinning = ImagerBinning(x_binning, x_binning)
+        binning: ImagerBinning = ImagerBinning(x=x_binning, y=x_binning)
 
         return ImagerSettings(
             seconds=guiding_conf["exposure"],
@@ -102,8 +102,8 @@ class Guider:
         self.unit.end_activity(UnitActivities.Acquiring)
         self.unit.end_activity(UnitActivities.Guiding)
 
-        if self.unit.camera.is_active(ImagerActivities.Exposing):
-            self.unit.camera.stop_exposure()
+        if self.unit.imager.is_active(ImagerActivities.Exposing):
+            self.unit.imager.stop_exposure()
             logger.info("stopped exposure")
 
         if not self.unit.was_tracking_before_guiding:

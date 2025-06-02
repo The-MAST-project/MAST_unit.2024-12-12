@@ -8,13 +8,14 @@ import urllib.error
 
 try:
     # Python 3.x version
+    from urllib.error import HTTPError
     from urllib.parse import urlencode
     from urllib.request import urlopen
-    from urllib.error import HTTPError
 except ImportError:
     # Python 2.7 version
     from urllib import urlencode
-    from urllib2 import urlopen, HTTPError
+
+    from urllib2 import HTTPError, urlopen
 
 
 class PWI4:

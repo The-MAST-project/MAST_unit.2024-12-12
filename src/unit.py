@@ -7,6 +7,7 @@ import socket
 import time
 from enum import Enum
 from itertools import chain
+from pathlib import Path
 from threading import Thread
 from typing import Annotated, Any, Literal
 
@@ -33,7 +34,6 @@ from common.const import Const
 from common.corrections import correction_phases
 from common.dlipowerswitch import PowerStatus, PowerSwitchFactory, PowerSwitchStatus, SwitchedOutlet
 from common.filer import Filer
-from common.imagers import ImagerBinning, ImagerInterface, ImagerSettings, ImagerStatus
 from common.mast_logging import DailyFileHandler, init_log
 from common.models.assignments import UnitAssignmentModel
 from common.paths import PathMaker
@@ -42,9 +42,11 @@ from common.utils import CanonicalResponse, CanonicalResponse_Ok, RepeatTimer, U
 from covers import Covers, CoverStatus
 from focuser import Focuser, FocuserStatus
 from guiding import Guider
+from imagers import Imager, ImagerBinning, ImagerSettings, ImagerStatus
 from mount import Mount, MountStatus
 from PlaneWave import pwi4_client
 from solving import Solver
+from src.acquisition import Acquisition
 from stage import Stage, StageStatus
 
 logger = logging.getLogger("mast.unit")
@@ -107,7 +109,7 @@ class Unit(Component):
 
         if isinstance(id_, int):
             if id_ > Unit.MAX_UNITS:
-                raise f"Bad unit id '{id_}', must be in [1..{Unit.MAX_UNITS}]"
+                raise Exception(f"Bad unit id '{id_}', must be in [1..{Unit.MAX_UNITS}]")
             else:
                 id_ = int(id_)
 
@@ -132,7 +134,7 @@ class Unit(Component):
         try:
             self.power_switch = PowerSwitchFactory.get_instance()
             self.mount: Mount = Mount(self)
-            self.imager: ImagerInterface = ImagerInterface(self)
+            self.imager: Imager = Imager(self)
             self.covers: Covers = Covers(self)
             self.stage: Stage = Stage(self)
             self.focuser: Focuser = Focuser(self)
@@ -171,7 +173,8 @@ class Unit(Component):
 
         self.controller_api = ControllerApi()
 
-        self.spirals_folder: str = None
+        self.spirals_folder: str | None = None
+        self.latest_acquisition: Acquisition | None = None
 
         self._initialized = True
         logger.info("unit: initialized")
@@ -266,17 +269,19 @@ class Unit(Component):
             else None
         )
 
-        corrections_list = (
-            self.acquirer.latest_acquisition.corrections
-            if self.acquirer.latest_acquisition
-            and self.acquirer.latest_acquisition.corrections
-            else []
-        )
-        corrections = [
-            corrections_list[phase].to_dict()
-            for phase in correction_phases
-            if phase in corrections_list
-        ]
+        all_corrections: list = []
+
+        if self.acquirer.latest_acquisition:
+            corrections_list = self.acquirer.latest_acquisition.corrections \
+                if (self.acquirer.latest_acquisition and self.acquirer.latest_acquisition.corrections) else []
+
+            for phase in correction_phases:
+                if phase in corrections_list and isinstance(corrections_list, dict):
+                    correction = corrections_list[phase]
+                    if isinstance(correction, list):
+                        all_corrections.extend(correction)
+                    else:
+                        all_corrections.append(correction)
 
         ret = UnitStatus(
             **self.component_status().model_dump(),
@@ -291,7 +296,7 @@ class Unit(Component):
             stage=self.stage.status(),
             errors=self.errors,
             autofocus=autofocus,
-            corrections=corrections,
+            corrections=all_corrections,
             type="full",
             date=time_stamp(),
         ).model_dump()
@@ -358,26 +363,26 @@ class Unit(Component):
             autofocus_status = self.pw.status().autofocus
             if not autofocus_status:
                 logger.error("Empty PWI4 autofocus status")
-            elif not autofocus_status.is_running:  # it's done
+            elif not autofocus_status.is_running:  # type: ignore # it's done
                 logger.info("PWI4 autofocus ended, getting status.")
                 self.autofocus_result = AutofocusResult()
-                self.autofocus_result.success = autofocus_status.success
+                self.autofocus_result.success = autofocus_status.success # type: ignore
                 if self.autofocus_result.success:
-                    self.autofocus_result.best_position = autofocus_status.best_position
-                    self.autofocus_result.tolerance = autofocus_status.tolerance
+                    self.autofocus_result.best_position = autofocus_status.best_position # type: ignore
+                    self.autofocus_result.tolerance = autofocus_status.tolerance # type: ignore
 
-                    best_position = autofocus_status.best_position
+                    best_position = autofocus_status.best_position # type: ignore
                     self.unit_conf["focuser"]["known_as_good_position"] = best_position
                     try:
                         Config().set_unit(self.hostname, self.unit_conf)
                         logger.info(
                             f"autofocus: saved {best_position=} in the configuration for unit {self.hostname}."
                         )
-                        if autofocus_status.tolerance > self.autofocus_max_tolerance:
+                        if autofocus_status.tolerance > self.autofocus_max_tolerance: # type: ignore
                             if self.autofocus_try < Unit.MAX_AUTOFOCUS_TRIES:
                                 self.autofocus_try += 1
                                 logger.info(
-                                    f"autofocus: latest {autofocus_status.tolerance=} greater than"
+                                    f"autofocus: latest {autofocus_status.tolerance=} greater than" # type: ignore
                                     + f"{self.autofocus_max_tolerance=}, starting autofocus "
                                     + f"try #{self.autofocus_try}"
                                 )
@@ -456,7 +461,7 @@ class Unit(Component):
         for websocket in self.connected_clients:
             try:
                 logger.info(f"pushing to {websocket.url=} ...")
-                await websocket.send(png_data)
+                await websocket.send_bytes(png_data)
                 # loop = asyncio.get_event_loop()
                 # loop.run_until_complete(websocket.send(png_data))
             except Exception as e:
@@ -475,7 +480,7 @@ class Unit(Component):
         binning: int = 1,
         gain: int = 170,
         ra_offsets: Annotated[
-            str | None,
+            str | list[str] | list[float] | None,
             Query(
                 description=(
                     "#### Optional list of RA offsets (arcsec) between exposures:\n"
@@ -485,7 +490,7 @@ class Unit(Component):
             ),
         ] = None,
         dec_offsets: Annotated[
-            str | None,
+            str | list[str] | list[float] | None,
             Query(
                 description=(
                     "#### Optional list of DEC offsets (arcsec) between exposures:\n"
@@ -497,28 +502,28 @@ class Unit(Component):
     ) -> CanonicalResponse:
 
         if ra_offsets is not None:
-            ra_offsets = ra_offsets.split()
-            if len(ra_offsets) != 1 and len(ra_offsets) != repeats:
+            if isinstance(ra_offsets, str):
+                ra_offsets = ra_offsets.split()
+            if len(ra_offsets) != 1 and len(ra_offsets) != repeats: # one element or the same number of elements as repeats
                 return CanonicalResponse(
                     errors=[f"ra_offsets must have {repeats} elements"]
                 )
-            if len(ra_offsets) == 1:
-                ra_offsets = [ra_offsets[0]] * repeats
-            ra_offsets = [float(val) for val in ra_offsets]
+            ra_offsets = [float(ra_offsets[0])] * repeats if len(ra_offsets) == 1 else [float(val) for val in ra_offsets]
 
         if dec_offsets is not None:
-            dec_offsets = dec_offsets.split()
-            if len(dec_offsets) != 1 and len(dec_offsets) != repeats:
+            if isinstance(dec_offsets, str):
+                dec_offsets = dec_offsets.split()
+            if len(dec_offsets) != 1 and len(dec_offsets) != repeats: # one element or the same number of elements as repeats
                 return CanonicalResponse(
                     errors=[f"dec_offsets must have {repeats} elements"]
                 )
-            if len(dec_offsets) == 1:
-                dec_offsets = [dec_offsets[0]] * repeats
-            dec_offsets = [float(val) for val in dec_offsets]
+            dec_offsets = [float(dec_offsets[0])] * repeats if len(dec_offsets) == 1 else [float(val) for val in dec_offsets]
 
         if fiber_x is None and fiber_y is None and width is None and height is None:
-            width = self.imager.cameraXSize
-            height = self.imager.cameraYSize
+            width = self.imager.camera_x_size
+            height = self.imager.camera_y_size
+            if not width or not height:
+                return CanonicalResponse(errors=["cannot get width and height from the imager"])
             fiber_x = int(width / 2)
             fiber_y = int(height / 2)
 
@@ -572,7 +577,7 @@ class Unit(Component):
                 end = start + datetime.timedelta(seconds=seconds_between_exposures)
 
             unit_roi = UnitRoi(fiber_x, fiber_y, width, height)
-            binning: ImagerBinning = ImagerBinning(binning, binning)
+            imager_binning: ImagerBinning = ImagerBinning(x=binning, y=binning)
             default_folder = PathMaker().make_exposures_folder()
             base_folder = (
                 os.path.join(default_folder, subfolder) if subfolder else default_folder
@@ -581,17 +586,19 @@ class Unit(Component):
                 seconds=seconds,
                 base_folder=base_folder,
                 gain=gain,
-                binning=binning,
-                roi=unit_roi.to_imager_roi(binning=binning),
+                binning=imager_binning,
+                roi=unit_roi.to_imager_roi(binning=imager_binning),
                 tags={"roi": None},
                 save=True,
             )
             logger.info(f"{op}: starting exposure #{repeat} (of {repeats})")
-            self.imager.do_start_exposure(imager_settings)
-            self.imager.wait_for_image_saved()
-            filer.move_ram_to_shared(self.imager.latest_settings.image_path)
+            self.imager.start_exposure(imager_settings)
 
-            if seconds_between_exposures != 0.0:
+            if not (self.imager.latest_settings is None or self.imager.latest_settings.image_path is None):
+                self.imager.wait_for_image_saved()
+                filer.move_ram_to_shared(self.imager.latest_settings.image_path)
+
+            if end is not None and seconds_between_exposures != 0.0:
                 now = datetime.datetime.now()
                 if now < end:
                     period = (end - now).seconds
@@ -675,7 +682,7 @@ class Unit(Component):
                 seconds=exposure_seconds,
                 base_folder=PathMaker().make_exposures_folder(),
                 gain=gain,
-                binning=ImagerBinning(binning, binning),
+                binning=ImagerBinning(x=binning, y=binning),
                 roi=None,
                 tags={
                     "stage-repeatability": None,
@@ -684,10 +691,11 @@ class Unit(Component):
                 save=True,
             )
 
-            self.imager.do_start_exposure(exposure_settings)
-            self.imager.wait_for_image_saved()
-            logger.info(f"{op}: reference image was saved")
-            filer.move_ram_to_shared(exposure_settings.image_path)
+            self.imager.start_exposure(exposure_settings)
+            if exposure_settings.image_path is not None:
+                self.imager.wait_for_image_saved()
+                logger.info(f"{op}: reference image was saved")
+                filer.move_ram_to_shared(exposure_settings.image_path)
 
             # expose at shifted position
             logger.info(f"{op}: moving stage to shifted {position=}")
@@ -699,7 +707,7 @@ class Unit(Component):
                 seconds=exposure_seconds,
                 base_folder=PathMaker().make_exposures_folder(),
                 gain=gain,
-                binning=ImagerBinning(binning, binning),
+                binning=ImagerBinning(x=binning, y=binning),
                 roi=None,
                 tags={
                     "stage-repeatability": None,
@@ -707,10 +715,11 @@ class Unit(Component):
                 },
                 save=True,
             )
-            self.imager.do_start_exposure(exposure_settings)
-            self.imager.wait_for_image_saved()
-            logger.info(f"{op}: image at {position=} was saved")
-            filer.move_ram_to_shared(exposure_settings.image_path)
+            self.imager.start_exposure(exposure_settings)
+            if exposure_settings.image_path is not None:
+                self.imager.wait_for_image_saved()
+                logger.info(f"{op}: image at {position=} was saved")
+                filer.move_ram_to_shared(exposure_settings.image_path)
 
         logger.info(f"{op}: done.")
         return CanonicalResponse_Ok
@@ -737,11 +746,12 @@ class Unit(Component):
             if not self.autofocuser.latest_result:
                 return  # should propagate errors as well
 
-            notify_controller_about_task_acquisition_path(
-                task_id=assignment.task.ulid,
-                link="autofocus",
-                src=os.path.dirname(self.imager.latest_settings.image_path),
-            )
+            if assignment.task.ulid is not None and self.imager.latest_settings and self.imager.latest_settings.image_path:
+                notify_controller_about_task_acquisition_path(
+                    task_id=assignment.task.ulid,
+                    link="autofocus",
+                    src=Path(self.imager.latest_settings.image_path).parent.name,
+                )
 
             #
             # At this point we have autofocused and can start acquisition
@@ -751,11 +761,12 @@ class Unit(Component):
                 dec_j2000_degs=assignment.target.dec,
             )
 
-            notify_controller_about_task_acquisition_path(
-                task_id=assignment.task.ulid,
-                link="acquisition",
-                src=self.acquirer.latest_acquisition.folder,
-            )
+            if assignment.task.ulid is not None and self.acquirer.latest_acquisition is not None:
+                notify_controller_about_task_acquisition_path(
+                    task_id=assignment.task.ulid,
+                    link="acquisition",
+                    src=self.acquirer.latest_acquisition.folder,
+                )
 
     async def execute_assignment(self, assignment: UnitAssignmentModel):
         if not self.operational:
@@ -803,9 +814,8 @@ class Unit(Component):
         self.imager.latest_settings = ImagerSettings(
             seconds=5, save=True, image_path=image_path
         )
-        self.imager.do_start_exposure(self.imager.latest_settings)
-        while self.imager.is_active(ImagerActivities.Exposing):
-            time.sleep(1)
+        self.imager.start_exposure(self.imager.latest_settings)
+        self.imager.wait_for_image_saved()
         Filer().move_ram_to_shared(image_path)
         return CanonicalResponse_Ok
 
@@ -820,17 +830,13 @@ class Unit(Component):
             time.sleep(1)
         logger.info("mount stopped moving")
 
-        image_path = os.path.join(
-            self.spirals_folder,
-            "step-" + PathMaker().make_seq(self.spirals_folder) + ".fits",
-        )
-        self.imager.latest_settings = ImagerSettings(
-            seconds=5, save=True, image_path=image_path
-        )
-        self.imager.do_start_exposure(self.imager.latest_settings)
-        while self.imager.is_active(ImagerActivities.Exposing):
-            time.sleep(1)
-        Filer().move_ram_to_shared(image_path)
+        if self.spirals_folder is not None:
+            image_path = str(Path(self.spirals_folder) / Path("step-" + PathMaker().make_seq(self.spirals_folder) + ".fits"))
+            self.imager.latest_settings = ImagerSettings(seconds=5, save=True, image_path=image_path)
+            self.imager.start_exposure(self.imager.latest_settings)
+            self.imager.wait_for_image_saved()
+            Filer().move_ram_to_shared(image_path)
+
         return CanonicalResponse_Ok
 
     def spiral_previous_step(self):
@@ -844,17 +850,13 @@ class Unit(Component):
             time.sleep(1)
         logger.info("mount stopped moving")
 
-        image_path = os.path.join(
-            self.spirals_folder,
-            "step-" + PathMaker().make_seq(self.spirals_folder) + ".fits",
-        )
-        self.imager.latest_settings = ImagerSettings(
-            seconds=5, save=True, image_path=image_path
-        )
-        self.imager.do_start_exposure(self.imager.latest_settings)
-        while self.imager.is_active(ImagerActivities.Exposing):
-            time.sleep(1)
-        Filer().move_ram_to_shared(image_path)
+        if self.spirals_folder is not None:
+            image_path = str(Path(self.spirals_folder) / Path("step-" + PathMaker().make_seq(self.spirals_folder) + ".fits"))
+            self.imager.latest_settings = ImagerSettings(seconds=5, save=True, image_path=image_path)
+            self.imager.start_exposure(self.imager.latest_settings)
+            self.imager.wait_for_image_saved()
+            Filer().move_ram_to_shared(image_path)
+
         return CanonicalResponse_Ok
 
     @property
@@ -947,5 +949,4 @@ tag = "Unit"
 
 unit: Unit | None = None
 if not unit:
-    unit = Unit(id_=unit_id)
-
+    unit = Unit(id_=int(unit_id) if unit_id is not None else 0)

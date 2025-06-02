@@ -57,10 +57,22 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         return cls._instance
 
     @property
+    def can_image_to_memory(self) -> bool:
+        return True
+
+    @property
     def full_frame_roi(self) -> ImagerRoi:
         width = self.cameraXSize if self.cameraXSize else 1000
         height = self.cameraYSize if self.cameraYSize else 1000
         return ImagerRoi(x=0, y=0, width=width, height=height)
+
+    @property
+    def camera_x_size(self) -> int | None:
+        return self.cameraXSize
+
+    @property
+    def camera_y_size(self) -> int | None:
+        return self.cameraYSize
 
     @property
     def logger(self) -> Logger:
@@ -355,7 +367,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         self.connected = False
         return CanonicalResponse_Ok
 
-    def start_exposure(
+    def endpoint_start_exposure(
         self,
         seconds: float | None = 5,
         gain: int | None = 170,
@@ -388,9 +400,9 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             save=True,
         )
 
-        self.do_start_exposure(settings)
+        self.start_exposure(settings)
 
-    def do_start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:
+    def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:
         """
         Starts a *MAST* camera exposure
 
@@ -545,21 +557,25 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         )
 
     @property
-    def cooler(self) -> TriStateBool:
+    def cooler_on(self) -> bool:
+        """
+        Returns the **MAST** camera cooler state
+        """
         if not self.connected:
             self.errors.append("cooler: not connected")
             logger.error("cooler: not connected")
-            return None
+            return False
 
         response = ascom_run(self, "CoolerOn")
-        if response.errors:
+        if response.succeeded and response.value is not None:
+            return bool(response.value)
+        else:
             self.errors.append(f"cooler: {response.errors}")
             logger.error(f"cooler: {response.errors}")
+            return False
 
-        return response.value
-
-    @cooler.setter
-    def cooler(self, value: bool):
+    @cooler_on.setter
+    def cooler_on(self, value: bool):
         if not self.connected:
             self.errors.append("cooler: not connected")
             logger.error("cooler: not connected")
@@ -578,7 +594,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         self.errors = []
         self.power_on()
         self.connect()
-        self.cooler = True
+        self.cooler_on = True
         return (
             CanonicalResponse(errors=self.errors)
             if self.errors
@@ -605,7 +621,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                         f"failed to set set-point (failure='{response.failure}')"
                     )
 
-            self.cooler = True
+            self.cooler_on = True
         return CanonicalResponse_Ok
 
     def shutdown(self):

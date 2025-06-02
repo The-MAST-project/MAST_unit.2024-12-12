@@ -13,6 +13,10 @@ class ZWOImager(ImagerInterface):
         self.imager_params = imager_params or {}
         # Initialize ZWO connection here if needed
 
+    @property
+    def can_image_to_memory(self) -> bool:
+        return True
+
     def capture(self):
         # Implement capture logic for ZWO
         pass
