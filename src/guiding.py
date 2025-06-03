@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import logging
 from enum import Enum, auto
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+
+if TYPE_CHECKING:
+    from unit import Unit
+
 from common.mast_logging import init_log
 from common.process import WatchedProcess
 from common.utils import UnitRoi
@@ -27,12 +31,9 @@ GuidingModes = Literal["NoGuiding", "PlateSolving", "PHD2"]
 
 
 class Guider:
-    from unit import Unit
 
     def __init__(self, unit: Unit):
-        from unit import Unit
-
-        self.unit: Unit = unit
+        self.unit = unit
 
         if self.unit.unit_conf["guider"]["method"] == "phd2":
             WatchedProcess(

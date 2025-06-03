@@ -4,7 +4,7 @@ import time
 from logging import Logger
 
 import win32com.client
-from astropy.coordinates import Angle, SkyCoord, frame_transform_graph
+from astropy.coordinates import Angle
 from fastapi.routing import APIRouter
 from pydantic import BaseModel
 

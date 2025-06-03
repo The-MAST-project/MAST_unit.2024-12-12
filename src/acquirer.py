@@ -12,7 +12,6 @@ from fastapi import Query
 from acquisition import Acquisition
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.imagers import ImagerBinning, ImagerSettings  # type: ignore
 from common.mast_logging import init_log
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.solving import SolverIdNames
@@ -20,6 +19,7 @@ from common.tasks.models import UnitAssignmentModel
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
 from common.utils import Coord, UnitRoi, boxed_info, function_name
 from guiding import GuidingMode, GuidingModes
+from imagers import ImagerBinning, ImagerSettings
 from solving import SolverId, SolvingTolerance
 from stage import StagePresetPosition
 
@@ -31,13 +31,17 @@ DEC_REGEX = r"^([+-]?)(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
 
 
 class Acquirer:
+    from typing import TYPE_CHECKING
+    if TYPE_CHECKING:
+        from unit import Unit
 
-    from unit import Unit  # to avoid circular import
-    def __init__(self, unit: Unit):  # type: ignore[name]
+    def __init__(self, unit: "Unit") -> None:
+        """Initialize the Acquirer with a Unit instance.
 
-        from unit import Unit  # to avoid circular import
-
-        self.unit: Unit = unit  # type: ignore[name]
+        Args:
+            unit: The Unit instance that owns this Acquirer.
+        """
+        self.unit = unit
         self.folder: str | None = None
         self.latest_acquisition: Acquisition | None = None
 
@@ -126,7 +130,7 @@ class Acquirer:
                 base_folder=os.path.join(self.latest_acquisition.folder, phase),
                 gain=acquisition_conf["gain"],
                 binning=ImagerBinning(
-                    acquisition_conf["binning"]["x"], acquisition_conf["binning"]["y"]
+                    x=acquisition_conf["binning"]["x"], y=acquisition_conf["binning"]["y"]
                 ),
                 roi=UnitRoi.from_dict(acquisition_conf["roi"]).to_imager_roi(),
                 save=True,
@@ -137,23 +141,23 @@ class Acquirer:
             #
 
             # set up the tolerances
-            default_tolerance: Angle = Angle(1 * u.arcsecond)
+            default_tolerance: Angle = Angle(1 * u.arcsecond) # type: ignore
             ra_tolerance: Angle = default_tolerance
             dec_tolerance: Angle = default_tolerance
             phase_conf = self.unit.unit_conf["acquisition"]
             if "tolerance" in phase_conf:
                 if "ra_arcsec" in phase_conf["tolerance"]:
                     ra_tolerance = Angle(
-                        phase_conf["tolerance"]["ra_arcsec"] * u.arcsecond
+                        phase_conf["tolerance"]["ra_arcsec"] * u.arcsecond # type: ignore
                     )
                 if "dec_arcsec" in phase_conf["tolerance"]:
                     dec_tolerance = Angle(
-                        phase_conf["tolerance"]["dec_arcsec"] * u.arcsecond
+                        phase_conf["tolerance"]["dec_arcsec"] * u.arcsecond # type: ignore
                     )
 
             target = Coord(
-                ra=Angle(target_ra_j2000_hours * u.hourangle),
-                dec=Angle(target_dec_j2000_degs * u.deg),
+                ra=Angle(target_ra_j2000_hours * u.hourangle), # type: ignore
+                dec=Angle(target_dec_j2000_degs * u.deg), # type: ignore
             )
 
             achieved_tolerances = self.unit.solver.solve_and_correct(
@@ -161,7 +165,7 @@ class Acquirer:
                 approach_mode=acquisition.approach_mode,
                 solver_id=acquisition.solver_id,
                 make_corrections=acquisition.make_corrections,
-                camera_settings=sky_settings,
+                imager_settings=sky_settings,
                 solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
                 parent_activity=UnitActivities.Acquiring,
                 phase="sky",
@@ -193,10 +197,10 @@ class Acquirer:
         dec_tolerance = Angle(0, unit="deg")
         if "tolerance" in phase_conf:
             if "ra_arcsec" in phase_conf["tolerance"]:
-                ra_tolerance = Angle(phase_conf["tolerance"]["ra_arcsec"] * u.arcsecond)
+                ra_tolerance = Angle(phase_conf["tolerance"]["ra_arcsec"] * u.arcsecond) # type: ignore
             if "dec_arcsec" in phase_conf["tolerance"]:
                 dec_tolerance = Angle(
-                    phase_conf["tolerance"]["dec_arcsec"] * u.arcsecond
+                    phase_conf["tolerance"]["dec_arcsec"] * u.arcsecond # type: ignore
                 )
 
         spec_settings = self.unit.guider.make_guiding_settings(
@@ -207,7 +211,7 @@ class Acquirer:
             approach_mode=acquisition.approach_mode,
             solver_id=acquisition.solver_id,
             make_corrections=acquisition.make_corrections,
-            camera_settings=spec_settings,
+            imager_settings=spec_settings,
             solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
             parent_activity=UnitActivities.Acquiring,
             phase=phase,
@@ -242,7 +246,7 @@ class Acquirer:
                     approach_mode=acquisition.approach_mode,
                     solver_id=acquisition.solver_id,
                     make_corrections=acquisition.make_corrections,
-                    camera_settings=guiding_settings,
+                    imager_settings=guiding_settings,
                     solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
                     parent_activity=UnitActivities.Acquiring,
                     phase=phase,

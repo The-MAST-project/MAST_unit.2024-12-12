@@ -18,6 +18,7 @@ from PIL import Image
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from acquirer import Acquirer
+from acquisition import Acquisition
 from autofocusing import Autofocuser, AutofocusResult
 from common.activities import (
     CoverActivities,
@@ -28,6 +29,7 @@ from common.activities import (
     UnitActivities,
 )
 from common.api import ControllerApi
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.components import Component, ComponentStatus
 from common.config import Config
 from common.const import Const
@@ -38,7 +40,7 @@ from common.mast_logging import DailyFileHandler, init_log
 from common.models.assignments import UnitAssignmentModel
 from common.paths import PathMaker
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
-from common.utils import CanonicalResponse, CanonicalResponse_Ok, RepeatTimer, UnitRoi, function_name, time_stamp
+from common.utils import RepeatTimer, UnitRoi, function_name, time_stamp
 from covers import Covers, CoverStatus
 from focuser import Focuser, FocuserStatus
 from guiding import Guider
@@ -46,7 +48,6 @@ from imagers import Imager, ImagerBinning, ImagerSettings, ImagerStatus
 from mount import Mount, MountStatus
 from PlaneWave import pwi4_client
 from solving import Solver
-from src.acquisition import Acquisition
 from stage import Stage, StageStatus
 
 logger = logging.getLogger("mast.unit")
@@ -934,7 +935,7 @@ def serialize_ip_addresses(data: Any) -> Any:
         return data
 
 
-unit_id: int | str | None = None
+# unit_id: int | str | None = None
 hostname = socket.gethostname()
 if hostname.startswith("mast"):
     try:
@@ -949,4 +950,4 @@ tag = "Unit"
 
 unit: Unit | None = None
 if not unit:
-    unit = Unit(id_=int(unit_id) if unit_id is not None else 0)
+    unit = Unit(id_=unit_id)

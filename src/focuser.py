@@ -49,8 +49,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    from unit import Unit
-    def __init__(self, unit: Unit):  # type: ignore[name]
+    def __init__(self, unit: "Unit"):  # type: ignore[name]
         if self._initialized:
             return
 

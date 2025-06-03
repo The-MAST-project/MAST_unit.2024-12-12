@@ -2,17 +2,21 @@ import datetime
 from abc import ABC, abstractmethod
 from enum import Enum, auto
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 from common.ascom import AscomStatus
+from common.canonical import CanonicalResponse
 from common.components import Component, ComponentStatus
+
+if TYPE_CHECKING:
+    from unit import Unit
+
 from common.const import Const
-from common.dlipowerswitch import PowerStatus
 from common.paths import PathMaker
-from src.common.canonical import CanonicalResponse
 
 __all__ = ["ImagerInterface", "ImagerType", "ImagerSettings", "ImagerBinning", "ImagerRoi", "ImagerExposure", "ImagerStatus"]
 
@@ -148,6 +152,9 @@ class ImagerExposure(BaseModel):
     date: datetime.datetime | None = None
 
 
+from common.dlipowerswitch import PowerStatus
+
+
 class ImagerStatus(PowerStatus, AscomStatus, ComponentStatus):
     errors: list[str] | None = None
     set_point: float | None = None
@@ -272,8 +279,7 @@ class Imager(ImagerInterface):
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    from unit import Unit
-    def __init__(self, unit: Unit, imager_params: dict | None = None):
+    def __init__(self, unit: "Unit", imager_params: dict | None = None):
         """
         Initializes the backend of an Imager instance according to the unit configuration.
 
@@ -287,11 +293,11 @@ class Imager(ImagerInterface):
         self.unit = unit
         self.conf: ImagerConf = ImagerConf(**self.unit.unit_conf["imager"])
 
-        type = self.conf.type.lower
-        if type.startswith("ascom:"):
+        imager_type = self.conf.type.lower()
+        if imager_type.startswith("ascom:"):
             from imagers.ascom import ASCOMImager
             self._backend = ASCOMImager(unit=unit, prog_id=self.conf.type[6:])
-        elif type == "phd2":
+        elif imager_type == "phd2":
             from imagers.phd2 import PHD2Imager
             self._backend = PHD2Imager(unit=unit)
         # elif type == "zwo":

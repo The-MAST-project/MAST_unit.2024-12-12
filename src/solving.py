@@ -4,18 +4,19 @@ import logging
 import math
 import os.path
 import time
+from typing import TYPE_CHECKING
 
 import astropy.units as u
 from astropy.coordinates import Angle
 
 from acquisition import Acquisition
-from camera import CameraSettings
 from common.activities import UnitActivities
 from common.corrections import Correction, Corrections
 from common.filer import Filer
 from common.mast_logging import init_log
 from common.solving import SolverId
 from common.utils import Coord, boxed_info, function_name
+from imagers import ImagerSettings
 
 logger = logging.Logger("mast.unit." + __name__)
 init_log(logger)
@@ -49,7 +50,7 @@ class SolvingResult:
 
     succeeded: bool
     errors: list[str] | None = None
-    solution: SolvingSolution
+    solution: SolvingSolution | None
     native_result = None
 
     def __init__(
@@ -59,9 +60,9 @@ class SolvingResult:
         solution: SolvingSolution | None = None,
         native_result=None,
     ):
-        self.succeeded = succeeded
+        self.succeeded: bool = succeeded
         self.errors = errors
-        self.solution = solution
+        self.solution: SolvingSolution | None = solution
         self.native_result = native_result
 
     def to_dict(self):
@@ -85,17 +86,19 @@ class SolvingTolerance:
 
 
 class Solver:
+    if TYPE_CHECKING:
+        from unit import Unit
 
-    def __init__(self, unit: "Unit"):  # type: ignore[name]
-        self.unit: "Unit" = unit  # type: ignore[name]
+    def __init__(self, unit: "Unit"):
+        self.unit = unit
         self.latest_result: SolvingResult | None = None
 
     def plate_solve(
-        self, settings: CameraSettings, target: Coord, solver_id: SolverId
-    ) -> SolvingResult:
+        self, settings: ImagerSettings, target: Coord, solver_id: SolverId
+    ) -> SolvingResult | None:
         op = function_name()
 
-        if settings.binning.x != settings.binning.y:
+        if settings.binning is not None and settings.binning.x != settings.binning.y:
             raise Exception(
                 "cannot deal with non-equal horizontal and vertical binning "
                 + f"({settings.binning.x=}, {settings.binning.y=}"
@@ -125,8 +128,8 @@ class Solver:
             # Start exposure
             #
             logger.info(f"{op}: starting {settings.seconds=} acquisition exposure")
-            response = self.unit.camera.do_start_exposure(settings)
-            if response.failed:
+            response = self.unit.imager.start_exposure(settings)
+            if response and response.failed:
                 self.log_and_store_error(
                     f"{op}: could not start acquisition exposure: {response=}"
                 )
@@ -143,10 +146,10 @@ class Solver:
         approach_mode: int,
         solver_id: SolverId,
         make_corrections: bool,
-        camera_settings: CameraSettings,
+        imager_settings: ImagerSettings,
         solving_tolerance: SolvingTolerance,
+        phase: str,
         parent_activity: UnitActivities | None = None,
-        phase: str | None = None,
         max_tries: int = 3,
     ) -> bool:
         """
@@ -160,7 +163,7 @@ class Solver:
         :param approach_mode:
         :param make_corrections:
         :param solver_id:
-        :param camera_settings: Camera settings for the exposure
+        :param camera_settings: Imager settings for the exposure
         :param solving_tolerance: How close do we need to be to stop trying
         :param parent_activity: If the parent_activity (e.g. UnitActivities.Acquiring, UnitActivities.Guiding)
                is stopped, this function stops as well
@@ -177,7 +180,7 @@ class Solver:
 
         def was_cancelled() -> bool:
             return not self.unit.is_active(UnitActivities.Solving) or (
-                parent_activity and not self.unit.is_active(parent_activity)
+                parent_activity is not None and not self.unit.is_active(parent_activity)
             )
 
         self.unit.start_activity(UnitActivities.Solving)
@@ -189,8 +192,8 @@ class Solver:
                 approach_mode=approach_mode,
                 solver_id=solver_id,
                 make_corrections=make_corrections,
-                target_ra=target.ra.arcsecond,
-                target_dec=target.dec.arcsecond,
+                target_ra=target.ra.arcsecond, # type: ignore
+                target_dec=target.dec.arcsecond, # type: ignore
                 conf={
                     "tolerance": {
                         "ra_arcsec": solving_tolerance.ra.arcsecond,
@@ -205,10 +208,10 @@ class Solver:
             # in case there were no corrections yet for this phase
             self.unit.acquirer.latest_acquisition.corrections[phase] = Corrections(
                 phase=phase,
-                target_ra=target.ra.hour,
-                target_dec=target.dec.deg,
-                tolerance_ra=solving_tolerance.ra.arcsecond,
-                tolerance_dec=solving_tolerance.dec.arcsecond,
+                target_ra=target.ra.hour, # type: ignore
+                target_dec=target.dec.deg, #type: ignore
+                tolerance_ra=solving_tolerance.ra.arcsecond, #type: ignore
+                tolerance_dec=solving_tolerance.dec.arcsecond, #type: ignore
             )
         latest_corrections = self.unit.acquirer.latest_acquisition.corrections[phase]
 
@@ -226,7 +229,7 @@ class Solver:
             # run the plate solver
             try:
                 result = self.plate_solve(
-                    settings=camera_settings, target=target, solver_id=solver_id
+                    settings=imager_settings, target=target, solver_id=solver_id
                 )
             except TimeoutError:
                 self.log_and_store_error("plate solving timed out, continuing ...")
@@ -237,8 +240,13 @@ class Solver:
                 self.log_and_store_error(f"{op}: plate_solve returned None")
                 continue
 
+            if imager_settings.image_path is None:
+                raise Exception(
+                    f"{op}: imager_settings.image_path is None, cannot save the image"
+                )
+
             # save the solver result for debugging
-            result_file_name = camera_settings.image_path.replace(
+            result_file_name = imager_settings.image_path.replace(
                 ".fits", "-solver_result.json"
             )
             os.makedirs(os.path.dirname(result_file_name), exist_ok=True)
@@ -270,7 +278,7 @@ class Solver:
                     msg = f"errors: '{result.errors}'"
                 boxed_info(logger, f"{op}: plate solver failed, {msg=}")
                 self.unit.errors.append(f"{op}: plate solver failed, {msg=}")
-                filer.move_ram_to_shared(camera_settings.image_path)
+                filer.move_ram_to_shared(imager_settings.image_path)
                 continue  # next try
 
             else:
@@ -278,31 +286,21 @@ class Solver:
                     logger,
                     f"phase: {phase.upper()}, plate solver found a match, YEY, YEPEEE, HURRAY !!!",
                 )
-                solved_ra_arcsec: float = Angle(
-                    result.solution.ra_rads * u.radian
-                ).arcsecond
-                solved_dec_arcsec: float = Angle(
-                    result.solution.dec_rads * u.radian
-                ).arcsecond
-
-                delta_dec_arcsec: float = target.dec.arcsecond - solved_dec_arcsec
-                ang_rad: float = Angle(
-                    ((target.dec.arcsecond + solved_dec_arcsec) / 2) * u.arcsecond
-                ).radian
-                delta_ra_arcsec: float = (
-                    target.ra.arcsecond - solved_ra_arcsec
-                ) * math.cos(ang_rad)
+                dec_avg_rad = math.radians((target.dec.arcsecond + Angle(result.solution.dec_rads * u.radian).arcsecond) / 2) # type: ignore
+                delta_ra_arcsec = \
+                    (target.ra.arcsecond - Angle(result.solution.ra_rads * u.radian).arcsecond) * math.cos(dec_avg_rad) # type: ignore
+                delta_dec_arcsec = target.dec.arcsecond - Angle(result.solution.dec_rads * u.radian).arcsecond # type: ignore
 
                 abs_delta_ra_arcsec = abs(delta_ra_arcsec)
                 abs_delta_dec_arcsec = abs(delta_dec_arcsec)
 
                 coord_solved = Coord(
-                    ra=Angle(result.solution.ra_rads * u.radian),
-                    dec=Angle(result.solution.dec_rads * u.radian),
+                    ra=Angle(result.solution.ra_rads * u.radian), # type: ignore
+                    dec=Angle(result.solution.dec_rads * u.radian), # type: ignore
                 )
                 coord_delta = Coord(
-                    ra=Angle(delta_ra_arcsec * u.arcsecond),
-                    dec=Angle(delta_dec_arcsec * u.arcsecond),
+                    ra=Angle(delta_ra_arcsec * u.arcsecond), # type: ignore
+                    dec=Angle(delta_dec_arcsec * u.arcsecond), # type: ignore
                 )
                 coord_tolerance = Coord(
                     ra=solving_tolerance.ra, dec=solving_tolerance.dec
@@ -315,8 +313,8 @@ class Solver:
                 # The various solvers will update the FITS file with their findings
 
                 if (
-                    abs_delta_ra_arcsec <= solving_tolerance.ra.arcsecond
-                    and abs_delta_dec_arcsec <= solving_tolerance.dec.arcsecond
+                    abs_delta_ra_arcsec <= solving_tolerance.ra.arcsecond  # type: ignore
+                    and abs_delta_dec_arcsec <= solving_tolerance.dec.arcsecond # type: ignore
                 ):
                     #
                     # Within tolerance, no correction is needed
@@ -333,11 +331,11 @@ class Solver:
 
                     latest_corrections.last_delta = Correction(
                         time=datetime.datetime.now(datetime.UTC),
-                        ra_arcsec=delta_ra_arcsec,
-                        dec_arcsec=delta_dec_arcsec,
+                        ra_arcsec=delta_ra_arcsec, # type: ignore
+                        dec_arcsec=delta_dec_arcsec, # type: ignore
                     )
 
-                    file_name = os.path.join(camera_settings.folder, "corrections.json")
+                    file_name = os.path.join(imager_settings.folder, "corrections.json")
                     with open(file_name, "w") as f:
                         json.dump(latest_corrections.to_dict(), f, indent=2)
                     time.sleep(2)
@@ -354,8 +352,8 @@ class Solver:
                     latest_corrections.sequence.append(
                         Correction(
                             time=datetime.datetime.now(datetime.UTC),
-                            ra_arcsec=delta_ra_arcsec,
-                            dec_arcsec=delta_dec_arcsec,
+                            ra_arcsec=delta_ra_arcsec, # type: ignore
+                            dec_arcsec=delta_dec_arcsec, # type: ignore
                         )
                     )
 
@@ -488,12 +486,8 @@ class Solver:
                         dec_progress = 0
                         while ra_progress < 1 or dec_progress < 1:
                             st = self.unit.pw.status()
-                            ra_progress = (
-                                st.mount.offsets.axis0_arcsec.gradual_offset_progress
-                            )
-                            dec_progress = (
-                                st.mount.offsets.axis1_arcsec.gradual_offset_progress
-                            )
+                            ra_progress = st.mount.offsets.axis0_arcsec.gradual_offset_progress # type: ignore
+                            dec_progress = st.mount.offsets.axis1_arcsec.gradual_offset_progress # type: ignore
                             logger.info(f"{op}: {ra_progress=}, {dec_progress=}")
                             time.sleep(1)
 

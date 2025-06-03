@@ -7,6 +7,7 @@ from collections.abc import Callable
 from enum import IntFlag
 from logging import Logger
 from threading import Lock, Thread
+from typing import TYPE_CHECKING
 
 import numpy as np
 import win32com.client
@@ -23,6 +24,9 @@ from common.paths import PathMaker
 from common.utils import RepeatTimer, function_name, time_stamp
 
 from . import ImagerBinning, ImagerExposure, ImagerInterface, ImagerRoi, ImagerSettings, ImagerStatus
+
+if TYPE_CHECKING:
+    from unit import Unit
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
@@ -82,20 +86,15 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     def ascom(self) -> win32com.client.Dispatch: # type: ignore
         return self._ascom
 
-    from unit import Unit
-    def __init__(self, unit: Unit, prog_id: str | None = None):
+    def __init__(self, unit: "Unit", prog_id: str | None = None):
         #
         # The Camera() is a Singleton but the initiator is called twice (for the same object ID):
         # - once from this file, with unit as None
         # - one from the unit, with unit as the main Unit object
         #
-        unit_id = None
-        if unit:
-            unit_id = f"0x{id(unit):X}"
-        logger.info(f"camera.id: 0x{id(self):X}, unit: {unit_id}")
 
-        from unit import Unit
-        self.unit: Unit = unit
+
+        self.unit = unit
         self.prog_id = prog_id
 
         if self._initialized:
@@ -127,7 +126,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             logger.exception(ex)
             raise ex
 
-        self.latest_settings: None | ImagerSettings = None
+        self.latest_settings: ImagerSettings | None = None
         self.latest_temperature_check: datetime.datetime | None = None
         self.temp_check_interval = (
             self.conf["temp_check_interval"]
@@ -137,9 +136,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         self._is_exposing: bool = False
         self.operational_set_point: float = -25
-        self.warm_set_point: float = (
-            5  # temperature at which the camera is considered warm
-        )
+        self.warm_set_point: float = 5  # temperature at which the camera is considered warm
         self._image_width: int | None = None
         self._image_height: int | None = None
         self.PixelSizeX: int | None = None
@@ -324,7 +321,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                     self.guiding_roi_width = int((self.cameraXSize / 100) * 90)
                     self.guiding_roi_height = int((self.cameraYSize / 100) * 80)
         else:
-            logger.info(f"failed connected = {value} (failure='{response.failure}')")
+            logger.error(f"failed 'connected = {value}' (failure='{response.failure}')")
         self._detected = value
 
     @property
@@ -571,29 +568,29 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         Returns the **MAST** camera cooler state
         """
         if not self.connected:
-            self.errors.append("cooler: not connected")
-            logger.error("cooler: not connected")
+            self.errors.append("cooler_on.getter: not connected")
+            logger.error("cooler_on.getter: not connected")
             return False
 
         response = ascom_run(self, "CoolerOn")
         if response.succeeded and response.value is not None:
             return bool(response.value)
         else:
-            self.errors.append(f"cooler: {response.errors}")
-            logger.error(f"cooler: {response.errors}")
+            self.errors.append(f"cooler_on.getter: {response.errors}")
+            logger.error(f"cooler_on.getter: {response.errors}")
             return False
 
     @cooler_on.setter
     def cooler_on(self, value: bool):
         if not self.connected:
-            self.errors.append("cooler: not connected")
-            logger.error("cooler: not connected")
+            self.errors.append("cooler_on.setter: not connected")
+            logger.error("cooler_on.setter: not connected")
             return
 
         response = ascom_run(self, f"CoolerOn = {"True" if value else "False"}")
         if response.errors:
-            self.errors.append(f"cooler: {response.errors}")
-            logger.error(f"cooler: {response.errors}")
+            self.errors.append(f"cooler_on.setter: {response.errors}")
+            logger.error(f"cooler_on.setter: {response.errors}")
 
     def startup(self):
         """
