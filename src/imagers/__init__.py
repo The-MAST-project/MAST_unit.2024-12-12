@@ -1,6 +1,5 @@
 import datetime
 from abc import ABC, abstractmethod
-from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -16,9 +15,10 @@ if TYPE_CHECKING:
     from unit import Unit
 
 from common.const import Const
+from common.dlipowerswitch import PowerStatus
 from common.paths import PathMaker
 
-__all__ = ["ImagerInterface", "ImagerType", "ImagerSettings", "ImagerBinning", "ImagerRoi", "ImagerExposure", "ImagerStatus"]
+__all__ = ["ImagerInterface", "ImagerSettings", "ImagerBinning", "ImagerRoi", "ImagerExposure", "ImagerStatus"]
 
 class ImagerBinning(BaseModel):
     x: int = 1
@@ -136,12 +136,6 @@ class ImagerSettings:
         self.image_path = str(Path(self.folder, ",".join(self.file_name_parts) + ".fits"))
 
 
-class ImagerType(Enum):
-    Ascom = auto()
-    ZWO = auto()
-    PHD2 = auto()
-
-
 class ImagerConf(BaseModel):
     type: str
 
@@ -152,7 +146,6 @@ class ImagerExposure(BaseModel):
     date: datetime.datetime | None = None
 
 
-from common.dlipowerswitch import PowerStatus
 
 
 class ImagerStatus(PowerStatus, AscomStatus, ComponentStatus):
@@ -298,10 +291,10 @@ class Imager(ImagerInterface):
             from imagers.ascom import ASCOMImager
             self._backend = ASCOMImager(unit=unit, prog_id=self.conf.type[6:])
         elif imager_type == "phd2":
-            from imagers.phd2 import PHD2Imager
-            self._backend = PHD2Imager(unit=unit)
+            from phd2.phd2 import PHD2Connector
+            self._backend = PHD2Connector(unit=unit)
         # elif type == "zwo":
-        #     from imagers.zwo import ZWOImager
+        #     from imagers.zwo.zwo_imager import ZWOImager
         #     self._backend = ZWOImager(unit=unit, imager_params=imager_params)
         else:
             raise ValueError(f"Unknown imager type: {self.conf.type}")

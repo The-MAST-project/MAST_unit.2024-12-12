@@ -1,5 +1,6 @@
 import logging
 from enum import IntEnum, auto
+from typing import TYPE_CHECKING
 
 import win32com.client
 from fastapi.routing import APIRouter
@@ -14,6 +15,9 @@ from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
 from common.mast_logging import init_log
 from common.utils import RepeatTimer, time_stamp
 from PlaneWave import pwi4_client
+
+if TYPE_CHECKING:
+    from unit import Unit
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)

@@ -1,14 +1,14 @@
 from abc import ABC, abstractmethod
+
 from common.activities import Activities
 
 
-class BaseGuider(ABC, Activities):
+class GuiderInterface(ABC, Activities):
 
     @abstractmethod
     def start_guiding(self):
         """
         Starts guiding
-        :return:
         """
         pass
 

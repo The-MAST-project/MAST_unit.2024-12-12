@@ -42,6 +42,7 @@ class PHD2Activities(IntFlag):
     Settling = auto()
     Calibrating = auto()
     Looping = auto()
+    Saving = auto()
 
 
 class PHD2Status(BaseModel):
@@ -201,7 +202,7 @@ class PHD2Connection:
         self._terminate = True
 
 
-class PHD2Client(GuiderInterface, ImagerInterface):
+class PHD2Connector(GuiderInterface, ImagerInterface):
     """The main class for interacting with PHD2 both as a guider and as an imager."""
 
     DEFAULT_STOP_CAPTURE_TIMEOUT = 10
@@ -839,7 +840,7 @@ class PHD2Client(GuiderInterface, ImagerInterface):
 if __name__ == "__main__":
     default_profile = "PWI4+ASI-native"
 
-    with PHD2Client() as phd2_client:
+    with PHD2Connector() as phd2_client:
 
         try:
             phd2_client.connect()

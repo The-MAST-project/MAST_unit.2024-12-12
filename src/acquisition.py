@@ -12,21 +12,21 @@ from common.paths import PathMaker
 from common.solving import SolverId
 from plotting import plot_acquisition_corrections, plot_phase_corrections
 
+if TYPE_CHECKING:
+    from unit import Unit
+
 logger = logging.getLogger("mast.unit." + __name__)
 filer = Filer(logger)
 init_log(logger)
 
 
 class Acquisition:
-    from typing import TYPE_CHECKING
 
     from guiding import GuidingMode
-    if TYPE_CHECKING:
-        from unit import Unit
 
     def __init__(
         self,
-        unit: "Unit",
+        unit: Unit,
         approach_mode: int,
         solver_id: SolverId,
         make_corrections: bool = True,

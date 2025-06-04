@@ -188,7 +188,7 @@ class Solver:
         if not self.unit.acquirer.latest_acquisition:
             # when not part of an acquisition sequence
             self.unit.acquirer.latest_acquisition = Acquisition(
-                self.unit,
+                unit=self.unit,
                 approach_mode=approach_mode,
                 solver_id=solver_id,
                 make_corrections=make_corrections,

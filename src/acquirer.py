@@ -21,6 +21,7 @@ from common.utils import Coord, UnitRoi, boxed_info, function_name
 from guiding import GuidingMode, GuidingModes
 from imagers import ImagerBinning, ImagerSettings
 from solving import SolverId, SolvingTolerance
+from src.imagers.phd2.phd2_imager import PHD2Imager
 from stage import StagePresetPosition
 
 logger = logging.getLogger("mast.unit." + __name__)
@@ -272,15 +273,14 @@ class Acquirer:
                         "sec, not sleeping",
                     )
         else:
-            if acquisition.guiding_mode == GuidingMode.PHD2:
-                self.unit.imager.connected = False
 
             while self.unit.is_active(UnitActivities.Guiding):
                 time.sleep(1)
 
         # Acquisition was stopped
         self.unit.end_activity(UnitActivities.Acquiring)
-        if acquisition.guiding_mode != GuidingMode.PHD2:
+
+        if not isinstance(self.unit.imager, PHD2Imager):
             self.unit.mount.stop_tracking()
         if self.unit.acquirer.latest_acquisition is not None:
             self.unit.acquirer.latest_acquisition.post_process()

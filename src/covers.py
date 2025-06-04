@@ -1,6 +1,7 @@
 import logging
 from enum import Enum
 from logging import Logger
+from typing import TYPE_CHECKING
 
 import win32com.client
 from fastapi.routing import APIRouter
@@ -14,6 +15,9 @@ from common.const import Const
 from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
 from common.mast_logging import init_log
 from common.utils import RepeatTimer, time_stamp
+
+if TYPE_CHECKING:
+    from unit import Unit
 
 logger: logging.Logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)

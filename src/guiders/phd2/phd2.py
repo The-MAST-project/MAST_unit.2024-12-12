@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from common.config import Config
 from common.mast_logging import init_log
 from common.process import WatchedProcess
-from guiders.base_guider import BaseGuider
+from guiders.base_guider import GuiderInterface
 
 logger = logging.Logger("mast.unit.phd2_guider")
 init_log(logger)
@@ -192,7 +192,7 @@ class PHD2Connection:
         self._terminate = True
 
 
-class PHD2Guider(BaseGuider):
+class PHD2Guider(GuiderInterface):
     """The main class for interacting with PHD2"""
 
     DEFAULT_STOP_CAPTURE_TIMEOUT = 10
@@ -203,7 +203,7 @@ class PHD2Guider(BaseGuider):
         hostname="localhost",
         instance=1,
     ):
-        BaseGuider.__init__(self)
+        GuiderInterface.__init__(self)
         self.unit = unit
         self.hostname = hostname
         self.instance = instance
