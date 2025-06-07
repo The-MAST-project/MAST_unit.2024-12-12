@@ -2,18 +2,22 @@ import datetime
 import logging
 import time
 from multiprocessing.shared_memory import SharedMemory
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from astropy.coordinates import Angle
 from astropy.io import fits
 
-from camera import CameraSettings
+from common.const import Const
 from common.extended_basemodel import ExtendedBaseModel
 from common.mast_logging import init_log
-from common.utils import PLATE_SOLVING_SHM_NAME, Coord, function_name
+from common.utils import Coord, function_name
+from imagers import ImagerSettings
 from PlaneWave.ps3cli_client import PS3CLIClient
 from solving import SolvingResult, SolvingSolution
+
+if TYPE_CHECKING:
+    from unit import Unit  # type: ignore[import-untyped]
 
 logger = logging.Logger("planewave_shm")
 init_log(logger)
@@ -48,20 +52,29 @@ class PlaneWaveShmSolvingResult(ExtendedBaseModel):
 
 
 def planewave_shm_solve(
-    unit: "Unit", settings: CameraSettings, target: Coord  # type: ignore[name]
+    unit: Unit, imager_settings: ImagerSettings, target: Coord
 ) -> SolvingResult:
     op = function_name()
-    unit.camera.wait_for_image_ready()
 
-    width = settings.roi.numX
-    height = settings.roi.numY
-    pixel_scale = unit.unit_conf["camera"]["pixel_scale_at_bin1"] * settings.binning.x
+    assert(unit.imager.can_image_to_memory), f"{op}: unit.imager cannot image to memory"
+    assert(imager_settings.roi and imager_settings.roi.width is not None and imager_settings.roi.height is not None), (
+        f"{op}: imager_settings.roi is not set or has unset width or height"
+    )
+
+    unit.imager.wait_for_image_ready()
+
+    width = imager_settings.roi.width
+    height = imager_settings.roi.height
+    pixel_scale = unit.unit_conf["imager"]["pixel_scale_at_bin1"] * imager_settings.binning.x
 
     shm = SharedMemory(
-        name=PLATE_SOLVING_SHM_NAME, create=True, size=width * height * 2
+        name=Const.PLATE_SOLVING_SHM_NAME, create=True, size=width * height * 2
     )
     shared_image = np.ndarray((width, height), dtype=np.uint16, buffer=shm.buf)
-    shared_image[:] = unit.camera.image[:]
+
+    assert(unit.imager.image_array is not None), "{op}: unit.imager.image_array is None"
+
+    shared_image[:] = unit.imager.image_array[:]
     ps3_shm_client: PS3CLIClient = PS3CLIClient()
 
     ps3_shm_client.connect("127.0.0.1", 8998)
@@ -70,9 +83,9 @@ def planewave_shm_solve(
     end = start + datetime.timedelta(seconds=timeout_seconds)
     logger.info(f"{op}: calling ps3_client.begin_platesolve_shm ...")
     ps3_shm_client.begin_platesolve_shm(
-        shm_key=PLATE_SOLVING_SHM_NAME,
-        height_pixels=settings.roi.numY,
-        width_pixels=settings.roi.numX,
+        shm_key=Const.PLATE_SOLVING_SHM_NAME,
+        height_pixels=imager_settings.roi.width,
+        width_pixels=imager_settings.roi.height,
         arcsec_per_pixel_guess=pixel_scale,
         enable_all_sky_match=True,
         enable_local_quad_match=True,
@@ -83,9 +96,9 @@ def planewave_shm_solve(
 
     ps3_solver_status: PlaneWaveShmSolvingResult
     while True:
-        ps3_solver_status = PlaneWaveShmSolvingResult(
-            **ps3_shm_client.platesolve_status()
-        )
+        status_result = ps3_shm_client.platesolve_status()
+        status_dict = {str(k): v for k, v in (status_result.items() if status_result else {})}
+        ps3_solver_status = PlaneWaveShmSolvingResult(state="unknown", **status_dict)
 
         if (
             ps3_solver_status.state == "error"
@@ -97,35 +110,51 @@ def planewave_shm_solve(
         if datetime.datetime.now() >= end:
             ps3_shm_client.platesolve_cancel()
             ps3_solver_status = PlaneWaveShmSolvingResult(
-                **{
-                    "state": "error",
-                    "error_message": f"time out ({timeout_seconds} seconds), cancelled",
-                }
+                state="error",
+                error_message=f"time out ({timeout_seconds} seconds), cancelled",
+                num_extracted_stars=None,
+                running_time_seconds=None,
+                solution=None,
+                last_log_message=None
             )
             break
         else:
             time.sleep(0.1)
 
-    unit.camera.wait_for_image_saved()
+    unit.imager.wait_for_image_saved()
     time.sleep(2)
 
+    assert(
+        unit.imager.latest_settings is not None
+    ), f"{op}: unit.imager.latest_settings is None"
+    assert(
+        unit.imager.latest_settings.image_path is not None
+    ), f"{op}: unit.imager.latest_settings.image_path is None"
+    assert(ps3_solver_status and ps3_solver_status.solution is not None), (
+        f"{op}: ps3_solver_status or ps3_solver_status.solution is None"
+    )
+
     # Update FITS headers
-    with fits.open(unit.camera.latest_settings.image_path, mode="update") as hdul:
+    with fits.open(unit.imager.latest_settings.image_path, mode="update") as hdul:  # type: ignore[misc]
         header = hdul[0].header
 
-        roi = unit.camera.latest_settings.roi
-        header["CRPIX1"] = roi.startX + (roi.numX / 2)
+        roi = unit.imager.latest_settings.roi
+        assert(roi is not None), f"{op}: roi is None"
+
+        header["CRPIX1"] = roi.x + (roi.width / 2)
         header.comments["CRPIX1"] = "RA reference pixel"
-        header["CRPIX2"] = roi.startY + (roi.numY / 2)
+        header["CRPIX2"] = roi.y + (roi.height / 2)
         header.comments["CRPIX2"] = "DEC reference pixel"
 
-        header["CRVAL1"] = ps3_solver_status.solution.ra.deg
+        header["CRVAL1"] = Angle(ps3_solver_status.solution.center_ra_j2000_rads, unit="radian").hour
         header.comments["CRVAL1"] = "solved ra of reference pixel"
-        header["CRVAL2"] = ps3_solver_status.solution.dec.deg
+        header["CRVAL2"] = Angle(ps3_solver_status.solution.center_dec_j2000_rads, unit="radian").degs
         header.comments["CRVAL2"] = "solved dec of reference pixel"
 
-        binning = unit.camera.latest_settings.binning
-        pixel_scale_at_binning1 = unit.unit_conf["camera"]["pixel_scale_at_bin1"]
+        binning = unit.imager.latest_settings.binning
+        assert(binning is not None), f"{op}: binning is None"
+
+        pixel_scale_at_binning1 = unit.unit_conf["imager"]["pixel_scale_at_bin1"]
         header["CDELT1"] = pixel_scale_at_binning1 * binning.x
         header.comments["CDELT1"] = "ra pixel scale"
         header["CDELT2"] = pixel_scale_at_binning1 * binning.y
@@ -142,9 +171,9 @@ def planewave_shm_solve(
         ret.succeeded = True
         ret.solution = SolvingSolution()
         ret.solution.ra_rads = ps3_solver_status.solution.center_ra_j2000_rads
-        ret.solution.ra_hours = Angle(ret.solution.ra_rads, unit="radian").hour
+        ret.solution.ra_hours = float(Angle(ret.solution.ra_rads, unit="radian").hour)
         ret.solution.dec_rads = ps3_solver_status.solution.center_dec_j2000_rads
-        ret.solution.dec_degs = Angle(ret.solution.dec_rads, unit="radian").degs
+        ret.solution.dec_degs = float(Angle(ret.solution.dec_rads, unit="radian").degs)
         ret.solution.matched_stars = ps3_solver_status.solution.num_matched_stars
         ret.solution.rotation_angle_degs = (
             ps3_solver_status.solution.rotation_angle_degs
@@ -152,8 +181,8 @@ def planewave_shm_solve(
     else:
         ret.succeeded = False
         ret.errors = [
-            ps3_solver_status.error_message,
-            ps3_solver_status.last_log_message,
+            ps3_solver_status.error_message if ps3_solver_status.error_message else "no error message",
+            ps3_solver_status.last_log_message if ps3_solver_status.last_log_message else "no last log message",
         ]
 
     return ret

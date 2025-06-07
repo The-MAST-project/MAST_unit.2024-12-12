@@ -5,18 +5,21 @@ import re
 import shutil
 import subprocess
 import sys
+from typing import TYPE_CHECKING
 
 from astropy.coordinates import Angle
 
-from camera import CameraSettings
 from common.filer import Filer
 from common.mast_logging import init_log
 from common.utils import Coord, function_name, generate_random_string
+from imagers import ImagerSettings
 from solving import SolvingResult, SolvingSolution
 
 logger = logging.Logger("astrometry_dot_net")
 init_log(logger)
 
+if TYPE_CHECKING:
+    from unit import Unit  # type: ignore[import-untyped]
 
 class AstrometryDotNetSolverResult:
     index_file: str = ""
@@ -129,7 +132,7 @@ def _parse_solver_output(lines: list[str]) -> SolvingResult:
 
 
 def astrometry_dot_net_solve(
-    unit: "Unit", settings: CameraSettings, target: Coord  # type: ignore[name]
+    unit: Unit | None, settings: ImagerSettings, target: Coord  # type: ignore[name]
 ) -> SolvingResult:
     filer = Filer(logger)
     unix_emulator = "cygwin"
@@ -141,8 +144,17 @@ def astrometry_dot_net_solve(
 
     index_file = None
     os.environ["PATH"] = (
-        "C:/cygwin64/bin;/usr/lib/lapack;C:/Users/mast/PycharmProjects/MAST_unit/venv/Scripts;C:/Windows/system32;C:/Windows;C:/Windows/System32/Wbem;C:/Windows/System32/WindowsPowerShell/v1.0/;C:/Windows/System32/OpenSSH/;C:/Users/mast/Documents/PlaneWave/ps3cli;C:/Program Files/Git/cmd;C:/Users/mast/Downloads/nssm/nssm-2.24/win64;C:/Program Files/MongoDB/Server/7.0/bin;C:/Users/mast/AppData/Local/Programs/Python/Launcher/;C:/Users/mast/AppData/Local/Microsoft/WindowsApps;C:/Program Files/JetBrains/PyCharm Community Edition 2024.1/bin;;C:/Users/mast/PycharmProjects/MAST_unit/src/Standa/ximc-2.13.6/ximc/win64;"
+        "C:/cygwin64/bin;/usr/lib/lapack;C:/Users/mast/PycharmProjects/MAST_unit/venv/Scripts;C:/Windows/system32;" +
+        "C:/Windows;C:/Windows/System32/Wbem;C:/Windows/System32/WindowsPowerShell/v1.0/;C:/Windows/System32/OpenSSH/;" +
+        "C:/Users/mast/Documents/PlaneWave/ps3cli;C:/Program Files/Git/cmd;C:/Users/mast/Downloads/nssm/nssm-2.24/win64;" +
+        "C:/Program Files/MongoDB/Server/7.0/bin;C:/Users/mast/AppData/Local/Programs/Python/Launcher/;" +
+        "C:/Users/mast/AppData/Local/Microsoft/WindowsApps;C:/Program Files/JetBrains/PyCharm Community Edition 2024.1/bin;"+
+        "C:/Users/mast/PycharmProjects/MAST_unit/src/Standa/ximc-2.13.6/ximc/win64;"
     )
+
+    assert(settings.roi is not None), f"{function_name()}: settings.roi is None"
+    assert(settings.image_path is not None), (f"{function_name()}: settings.image_path is None")
+
 
     cmd = ""
     args = []
@@ -154,8 +166,8 @@ def astrometry_dot_net_solve(
     args += ["--radius", f"{1}"]
     args += ["--no-plots", "--overwrite", "--solved", "none"]
     args += ["--match", "none", "--rdls", "none", "--corr", "none"]
-    args += ["--crpix-x", str(int(settings.roi.numX / 2))]
-    args += ["--crpix-y", str(int(settings.roi.numY / 2))]
+    args += ["--crpix-x", str(int(settings.roi.width / 2))]
+    args += ["--crpix-y", str(int(settings.roi.height / 2))]
 
     if index_file:
         args += ["--index-file", index_file]
@@ -214,7 +226,7 @@ def astrometry_dot_net_solve(
     else:
         ret = SolvingResult(
             succeeded=False,
-            errors=[f"Exit status: {completed_process.returncode}", stderr_lines],
+            errors=[f"Exit status: {completed_process.returncode}", ', '.join(stderr_lines)],
         )
 
     shutil.rmtree(win_tmp_dir, ignore_errors=True)
@@ -223,7 +235,7 @@ def astrometry_dot_net_solve(
 
 
 if __name__ == "__main__":
-    camera_settings: CameraSettings = CameraSettings(
+    imager_settings: ImagerSettings = ImagerSettings(
         seconds=5,
         image_path="/cygdrive/d/MAST/tmp/2024-12-05/Acquisitions/seq=0025,time=18-13-03_987,"
         + "target=1.42677311977099,23.5115091209584/guiding/seq=0001,time=18-22-25_715,seconds=5.0,"
@@ -232,6 +244,6 @@ if __name__ == "__main__":
     target = Coord(
         ra=Angle(1.42677311977099, unit="hour"), dec=Angle(23.5115091209584, unit="deg")
     )
-    result = astrometry_dot_net_solve(None, camera_settings, target=target)
+    result = astrometry_dot_net_solve(None, imager_settings, target=target)
     # print(json.dumps(result.to_dict(), indent=2))
     sys.exit(0)

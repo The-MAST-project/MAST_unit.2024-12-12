@@ -89,7 +89,7 @@ class Solver:
     if TYPE_CHECKING:
         from unit import Unit
 
-    def __init__(self, unit: "Unit"):
+    def __init__(self, unit: Unit):
         self.unit = unit
         self.latest_result: SolvingResult | None = None
 
