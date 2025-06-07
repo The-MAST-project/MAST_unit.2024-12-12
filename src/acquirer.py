@@ -292,7 +292,21 @@ class Acquirer:
         make_corrections = True
         ra_j2000_hours = assignment.target.ra
         dec_j2000_degs = assignment.target.dec
-        solver_name: SolverIdNames = "AstrometryDotNet"
+
+        solver_name = self.unit.unit_conf["acquisition"]["solving"].get("method", "AstrometryDotNet")
+        if solver_name not in SolverIdNames:
+            logger.error(
+                f"solver_name '{solver_name}' is not a valid SolverIdNames, "
+                "using 'AstrometryDotNet' instead"
+            )
+            solver_name = "AstrometryDotNet"
+
+        logger.info(
+            f"starting acquisition for assignment {assignment.task.ulid}, "
+            f"approach_mode={approach_mode}, solver_name={solver_name} (from unit config), "
+            f"make_corrections={make_corrections}, "
+            f"ra_j2000_hours={ra_j2000_hours}, dec_j2000_degs={dec_j2000_degs}"
+        )
 
         acquisition = Acquisition(
             unit=self.unit,
@@ -346,7 +360,7 @@ class Acquirer:
             ),
         ] = None,
         approach_mode: int = 2,
-        solver_name: SolverIdNames = "AstrometryDotNet",
+        # solver_name: SolverIdNames = "AstrometryDotNet",
         make_corrections: bool = True,
         skip_sky: bool = False,
         guiding_mode: GuidingModes = "PlateSolving",
@@ -399,6 +413,14 @@ class Acquirer:
 
         if seconds is None:
             self.unit.unit_conf["acquisition"]["exposure"] = seconds
+
+        solver_name = self.unit.unit_conf["acquisition"]["solving"].get("method", "AstrometryDotNet")
+        if solver_name not in SolverIdNames:
+            logger.error(
+                f"solver_name '{solver_name}' is not a valid SolverIdNames, "
+                "using 'AstrometryDotNet' instead"
+            )
+            solver_name = "AstrometryDotNet"
 
         if ra_j2000_hours is None or dec_j2000_degs is None:
             return CanonicalResponse(

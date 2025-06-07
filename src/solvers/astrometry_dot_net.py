@@ -1,6 +1,6 @@
 import datetime
 import logging
-import os.path
+import os
 import re
 import shutil
 import subprocess
@@ -92,8 +92,8 @@ def _parse_solver_output(lines: list[str]) -> SolvingResult:
                     ra_degs = float(match.group(1))
                     dec_degs = float(match.group(3))
                     # logger.info(f"{ra_degs=}, {dec_degs=}")
-                    ret.solution.ra_rads = Angle(ra_degs, unit="deg").radian
-                    ret.solution.dec_rads = Angle(dec_degs, unit="deg").radian
+                    ret.solution.ra_rads = float(Angle(ra_degs, unit="deg").radian)
+                    ret.solution.dec_rads = float(Angle(dec_degs, unit="deg").radian)
                     ret.solution.ra_hours = Angle(ra_degs, unit="deg").hour
                     ret.solution.dec_degs = dec_degs
                 else:
@@ -140,7 +140,7 @@ def astrometry_dot_net_solve(
     win_tmp_dir = r"D:/MAST/tmp/" + tmp_dir
     os.makedirs(win_tmp_dir, exist_ok=True)
     index_dir = r"D:/Astrometry.net/indexes"
-    solver_name = "astrometry"
+    solver_name = "AstrometryDotNet"
 
     index_file = None
     os.environ["PATH"] = (

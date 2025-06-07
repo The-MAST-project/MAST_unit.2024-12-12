@@ -2,29 +2,31 @@ import logging
 import os
 import subprocess
 from enum import IntFlag
-from typing import List, Optional
+from typing import TYPE_CHECKING
 
 from astropy.coordinates import Angle
 from astropy.io import fits
 
-from camera import CameraSettings
 from common.extended_basemodel import ExtendedBaseModel
 from common.filer import Filer
 from common.mast_logging import init_log
 from common.utils import Coord, function_name
+from imagers import ImagerSettings
 from solving import SolvingResult, SolvingSolution
 
 logger = logging.Logger("planewave_cli")
 init_log(logger)
 filer = Filer(logger)
 
+if TYPE_CHECKING:
+    from unit import Unit
 
 class PlaneWaveCliSolverExitCode(IntFlag):
-    Success = (0,)
-    InvalidArguments = (1,)
-    CatalogNotFound = (2,)
-    NoStarMatch = (3,)
-    NoImageLoad = (4,)
+    Success = 0
+    InvalidArguments = 1
+    CatalogNotFound = 2
+    NoStarMatch = 3
+    NoImageLoad = 4
     GeneralFailure = 99
 
 
@@ -38,18 +40,23 @@ class PlaneWaveCliSolverResult(ExtendedBaseModel):
 
 
 def planewave_cli_solve(
-    unit: "Unit", settings: CameraSettings, target: Coord  # type: ignore[name]
+    unit: Unit, imager_settings: ImagerSettings, target: Coord  # type: ignore[name]
 ) -> SolvingResult:
     op = function_name()
     # ps3_solver_status: PlaneWaveCliSolverResult
     ret = SolvingResult(succeeded=True)
 
-    unit.camera.wait_for_image_saved()
+    unit.imager.wait_for_image_saved()
 
-    pixel_scale = unit.unit_conf["camera"]["pixel_scale_at_bin1"] * settings.binning.x
+    assert(imager_settings.binning and imager_settings.binning.x is not None), (
+        f"{op}: imager_settings.binning is not set or has unset x binning")
+
+    pixel_scale = unit.unit_conf["camera"]["pixel_scale_at_bin1"] * imager_settings.binning.x
 
     cmd = "C:\\Program Files (x86)\\PlaneWave Instruments\\ps3cli\\ps3cli"
-    image_path = settings.image_path
+    assert(imager_settings.image_path), f"{op}: settings.image_path is not set"
+
+    image_path = imager_settings.image_path
     result_path = os.path.join(os.path.dirname(image_path), "result.txt")
     command = [
         cmd,
@@ -97,6 +104,7 @@ def planewave_cli_solve(
             return ret
 
     # solving succeeded, parse output
+    assert completed_process is not None, f"{op}: completed_process is None"
     if completed_process.returncode == PlaneWaveCliSolverExitCode.Success:
         logger.info(f"{op}: solver found a solution")
         with open(result_path) as file:
@@ -141,17 +149,23 @@ def planewave_cli_solve(
     solution.dec_degs = solver_output["dec_j2000_degrees"]
     solution.dec_rads = Angle(solution.dec_degs, unit="degree").radian
     solution.rotation_angle_degs = solver_output["rot_angle_degs"]
-    solution.matched_stars = solver_output
+    solution.matched_stars = solver_output["matched_stars"]
     ret.solution = solution
 
+    assert unit.imager.latest_settings is not None, (
+        f"{op}: unit.imager.latest_settings is None"
+    )
+    assert( unit.imager.latest_settings.image_path is not None and unit.imager.latest_settings.roi is not None), (
+        f"{op}: unit.imager.latest_settings.image_path or roi is None")
+
     # Update FITS headers
-    with fits.open(unit.camera.latest_settings.image_path, mode="update") as hdul:
+    with fits.open(unit.imager.latest_settings.image_path, mode="update") as hdul:
         header = hdul[0].header
 
-        roi = unit.camera.latest_settings.roi
-        header["CRPIX1"] = roi.startX + (roi.numX / 2)
+        roi = unit.imager.latest_settings.roi
+        header["CRPIX1"] = roi.x + (roi.width / 2)
         header.comments["CRPIX1"] = "RA reference pixel"
-        header["CRPIX2"] = roi.startY + (roi.numY / 2)
+        header["CRPIX2"] = roi.y + (roi.height / 2)
         header.comments["CRPIX2"] = "DEC reference pixel"
 
         header["CRVAL1"] = Angle(solution.ra_hours, unit="hour").degs
@@ -159,7 +173,7 @@ def planewave_cli_solve(
         header["CRVAL2"] = solution.dec_degs
         header.comments["CRVAL2"] = "solved dec of reference pixel"
 
-        binning = unit.camera.latest_settings.binning
+        binning = unit.imager.latest_settings.binning
         pixel_scale_at_binning1 = unit.unit_conf["camera"]["pixel_scale_at_bin1"]
         header["CDELT1"] = pixel_scale_at_binning1 * binning.x
         header.comments["CDELT1"] = "ra pixel scale"
