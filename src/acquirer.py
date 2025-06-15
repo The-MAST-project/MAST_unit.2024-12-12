@@ -14,14 +14,13 @@ from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.mast_logging import init_log
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
-from common.solving import SolverIdNames
 from common.tasks.models import UnitAssignmentModel
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
-from common.utils import Coord, UnitRoi, boxed_info, function_name
+from common.utils import Coord, boxed_info, function_name
 from guiding import GuidingMode, GuidingModes
-from imagers import ImagerBinning, ImagerSettings
+from imagers import ImagerBinning, ImagerRoi, ImagerSettings
+from phd2.phd2 import PHD2Connector
 from solving import SolverId, SolvingTolerance
-from src.imagers.phd2.phd2_imager import PHD2Imager
 from stage import StagePresetPosition
 
 logger = logging.getLogger("mast.unit." + __name__)
@@ -104,7 +103,7 @@ class Acquirer:
         if not self.unit.imager.connected:
             self.unit.imager.connected = True
 
-        tries: int = acquisition_conf.get("tries", 3)
+        tries: int = acquisition_conf.tries
 
         self.unit.mount.start_tracking()
         self.unit.start_activity(UnitActivities.Positioning)
@@ -126,14 +125,13 @@ class Acquirer:
                 time.sleep(0.2)
             self.unit.end_activity(UnitActivities.Positioning)
 
+            imager_binning = ImagerBinning(x=acquisition_conf.binning.x, y=acquisition_conf.binning.y)
             sky_settings = ImagerSettings(
-                seconds=acquisition_conf["exposure"],
+                seconds=acquisition_conf.exposure,
                 base_folder=os.path.join(self.latest_acquisition.folder, phase),
-                gain=acquisition_conf["gain"],
-                binning=ImagerBinning(
-                    x=acquisition_conf["binning"]["x"], y=acquisition_conf["binning"]["y"]
-                ),
-                roi=UnitRoi.from_dict(acquisition_conf["roi"]).to_imager_roi(),
+                gain=acquisition_conf.gain,
+                binning=imager_binning,
+                roi=ImagerRoi.from_other(imager_binning, acquisition_conf.roi),
                 save=True,
             )
 
@@ -145,16 +143,9 @@ class Acquirer:
             default_tolerance: Angle = Angle(1 * u.arcsecond) # type: ignore
             ra_tolerance: Angle = default_tolerance
             dec_tolerance: Angle = default_tolerance
-            phase_conf = self.unit.unit_conf["acquisition"]
-            if "tolerance" in phase_conf:
-                if "ra_arcsec" in phase_conf["tolerance"]:
-                    ra_tolerance = Angle(
-                        phase_conf["tolerance"]["ra_arcsec"] * u.arcsecond # type: ignore
-                    )
-                if "dec_arcsec" in phase_conf["tolerance"]:
-                    dec_tolerance = Angle(
-                        phase_conf["tolerance"]["dec_arcsec"] * u.arcsecond # type: ignore
-                    )
+            phase_conf = self.unit.unit_conf.acquisition
+            ra_tolerance = Angle(phase_conf.tolerance.ra_arcsec * u.arcsecond) # type: ignore
+            dec_tolerance = Angle(phase_conf.tolerance.dec_arcsec * u.arcsecond) # type: ignore
 
             target = Coord(
                 ra=Angle(target_ra_j2000_hours * u.hourangle), # type: ignore
@@ -193,16 +184,9 @@ class Acquirer:
         if self.unit.is_active(UnitActivities.Positioning):
             self.unit.end_activity(UnitActivities.Positioning)
 
-        phase_conf = self.unit.unit_conf["guiding"]
-        ra_tolerance = Angle(0, unit="hour")
-        dec_tolerance = Angle(0, unit="deg")
-        if "tolerance" in phase_conf:
-            if "ra_arcsec" in phase_conf["tolerance"]:
-                ra_tolerance = Angle(phase_conf["tolerance"]["ra_arcsec"] * u.arcsecond) # type: ignore
-            if "dec_arcsec" in phase_conf["tolerance"]:
-                dec_tolerance = Angle(
-                    phase_conf["tolerance"]["dec_arcsec"] * u.arcsecond # type: ignore
-                )
+        phase_conf = self.unit.unit_conf.guiding
+        ra_tolerance = Angle(phase_conf.tolerance.ra_arcsec * u.arcsecond) # type: ignore
+        dec_tolerance = Angle(phase_conf.tolerance.dec_arcsec * u.arcsecond) # type: ignore
 
         spec_settings = self.unit.guider.make_guiding_settings(
             base_folder=os.path.join(self.latest_acquisition.folder, phase)
@@ -232,7 +216,7 @@ class Acquirer:
             phase = "guiding"
             boxed_info(logger, [f"starting phase '{phase.upper()}'"])
 
-            cadence = self.unit.unit_conf[phase]["cadence_seconds"]
+            cadence = self.unit.unit_conf.guiding.cadence_seconds
             end: datetime.datetime | None = None
             folder = os.path.join(self.latest_acquisition.folder, phase)
             guiding_settings = self.unit.guider.make_guiding_settings(folder)
@@ -280,7 +264,7 @@ class Acquirer:
         # Acquisition was stopped
         self.unit.end_activity(UnitActivities.Acquiring)
 
-        if not isinstance(self.unit.imager, PHD2Imager):
+        if not isinstance(self.unit.imager, PHD2Connector):
             self.unit.mount.stop_tracking()
         if self.unit.acquirer.latest_acquisition is not None:
             self.unit.acquirer.latest_acquisition.post_process()
@@ -293,13 +277,7 @@ class Acquirer:
         ra_j2000_hours = assignment.target.ra
         dec_j2000_degs = assignment.target.dec
 
-        solver_name = self.unit.unit_conf["acquisition"]["solving"].get("method", "AstrometryDotNet")
-        if solver_name not in SolverIdNames:
-            logger.error(
-                f"solver_name '{solver_name}' is not a valid SolverIdNames, "
-                "using 'AstrometryDotNet' instead"
-            )
-            solver_name = "AstrometryDotNet"
+        solver_name = self.unit.unit_conf.solving.method
 
         logger.info(
             f"starting acquisition for assignment {assignment.task.ulid}, "
@@ -315,7 +293,7 @@ class Acquirer:
             make_corrections=make_corrections,
             target_ra=float(ra_j2000_hours),
             target_dec=float(dec_j2000_degs),
-            conf=self.unit.unit_conf["acquisition"],
+            conf=self.unit.unit_conf.acquisition,
         )
         Thread(name="acquisition", target=self.do_acquire, args=[acquisition]).start()
 
@@ -411,16 +389,13 @@ class Acquirer:
                 )
             dec_j2000_degs = pw_status.mount.dec_j2000_degs # type: ignore
 
-        if seconds is None:
-            self.unit.unit_conf["acquisition"]["exposure"] = seconds
+        if seconds is not None:
+            self.unit.unit_conf.acquisition.exposure = seconds
 
-        solver_name = self.unit.unit_conf["acquisition"]["solving"].get("method", "AstrometryDotNet")
-        if solver_name not in SolverIdNames:
-            logger.error(
-                f"solver_name '{solver_name}' is not a valid SolverIdNames, "
-                "using 'AstrometryDotNet' instead"
-            )
-            solver_name = "AstrometryDotNet"
+        assert(self.unit.unit_conf.solving.method in self.unit.unit_conf.solving.allowed_methods), \
+            "unit unit_conf.solving.method is not in allowed_methods"
+
+        solver_name = self.unit.unit_conf.solving.method
 
         if ra_j2000_hours is None or dec_j2000_degs is None:
             return CanonicalResponse(
@@ -436,7 +411,7 @@ class Acquirer:
                 make_corrections=make_corrections,
                 target_ra=float(ra_j2000_hours),
                 target_dec=float(dec_j2000_degs),
-                conf=self.unit.unit_conf["acquisition"],
+                conf=self.unit.unit_conf.acquisition,
                 skip_sky=skip_sky,
                 guiding_mode=GuidingMode[guiding_mode],
             )

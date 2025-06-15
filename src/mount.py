@@ -2,6 +2,7 @@ import logging
 import math
 import time
 from logging import Logger
+from typing import TYPE_CHECKING
 
 import win32com.client
 from astropy.coordinates import Angle
@@ -18,6 +19,9 @@ from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
 from common.mast_logging import init_log
 from common.utils import RepeatTimer, caller_name, function_name, time_stamp
 from PlaneWave import pwi4_client
+
+if TYPE_CHECKING:
+    from unit import Unit
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
@@ -68,8 +72,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             return
 
         self.unit = unit
-        self.unit_conf: dict = Config().get_unit()
-        self.conf = self.unit_conf["mount"]
+        self.conf = Config().get_unit().mount
         SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name="Mount")
         Component.__init__(self)
 
@@ -84,7 +87,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self.guide_rate_degs_per_ms: float
 
         self.pw: pwi4_client.PWI4 = pwi4_client.PWI4()
-        self._ascom = win32com.client.Dispatch("ASCOM.PWI4.Telescope")
+        self._ascom = win32com.client.Dispatch(self.conf.ascom_driver)
         #
         # Starting with PWI4 version 4.0.99 beta 22 it will be possible to query the ASCOM driver about
         #  the GuideRate for RightAscension and Declination.  The DriverVersion shows 1.0 (disregarding the PWI4
@@ -495,7 +498,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info("dance: done dancing")
         self.find_home()
         self.end_activity(MountActivities.Dancing)
-    
+
 
     @property
     def api_router(self) -> APIRouter:

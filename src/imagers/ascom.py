@@ -104,16 +104,15 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             "temp_check_interval": 15,
         }
 
-        self.unit_conf = Config().get_unit()
-        self.conf = self.unit_conf["imager"]
+        self.conf = Config().get_unit().imager
         Component.__init__(self)
         SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name="Camera")
 
         if not prog_id:
-            prog_id = self.conf.get("ascom_driver", None)
+            prog_id = Config().get_unit().imager.imager_type.replace("ascom:", "")
         if not prog_id:
             raise Exception(
-                "ASCOMImager: no ASCOM driver specified either as parameterb or in the configuration file"
+                "ASCOMImager: no ASCOM driver specified either as parameter or in the configuration"
             )
         self.prog_id = prog_id
 
@@ -128,11 +127,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         self.latest_settings: ImagerSettings | None = None
         self.latest_temperature_check: datetime.datetime | None = None
-        self.temp_check_interval = (
-            self.conf["temp_check_interval"]
-            if "temp_check_interval" in self.conf
-            else self.defaults["temp_check_interval"]
-        )
+        self.temp_check_interval = self.conf.temp_check_interval
 
         self._is_exposing: bool = False
         self.operational_set_point: float = -25
@@ -314,7 +309,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 logger.info(
                     f"Camera: {a.ascom.name}, {a.ascom.description}, "
                     + f"{self.cameraXSize}x{self.cameraYSize}"
-                    + f" driver: '{self.conf['ascom_driver']}'"
+                    + f" driver: '{self.conf.imager_type}'"
                 )
 
                 if self.cameraXSize and self.cameraYSize:
@@ -990,5 +985,3 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             self.image_ready_event.clear()
         # else:
         #     logger.info(f"{op}: image was read, not waiting for image_ready_event.")
-
-

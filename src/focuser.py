@@ -58,10 +58,9 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             return
 
         self.unit = unit
-        self.unit_conf = Config().get_unit()
-        self.conf = self.unit_conf["focuser"]
+        self.conf = Config().get_unit().focuser
         try:
-            self._ascom = win32com.client.Dispatch(self.conf["ascom_driver"])
+            self._ascom = win32com.client.Dispatch(self.conf.ascom_driver)
         except Exception as ex:
             logger.exception(ex)
             raise ex
@@ -84,11 +83,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         else:
             self.upper_limit = response.value
 
-        self.known_as_good_position: int | None = (
-            int(self.conf["known_as_good_position"])
-            if "known_as_good_position" in self.conf
-            else int(self.upper_limit / 2) if self.upper_limit else None
-        )
+        self.known_as_good_position = self.conf.known_as_good_position
         logger.info(f"focuser: known_as_good_position: {self.known_as_good_position}")
 
         self._was_shut_down = False

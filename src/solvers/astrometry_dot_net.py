@@ -92,9 +92,9 @@ def _parse_solver_output(lines: list[str]) -> SolvingResult:
                     ra_degs = float(match.group(1))
                     dec_degs = float(match.group(3))
                     # logger.info(f"{ra_degs=}, {dec_degs=}")
-                    ret.solution.ra_rads = float(Angle(ra_degs, unit="deg").radian)
-                    ret.solution.dec_rads = float(Angle(dec_degs, unit="deg").radian)
-                    ret.solution.ra_hours = Angle(ra_degs, unit="deg").hour
+                    ret.solution.ra_rads = float(Angle(ra_degs, unit="deg").radian) # type: ignore[assignment]
+                    ret.solution.dec_rads = float(Angle(dec_degs, unit="deg").radian) # type: ignore[assignment]
+                    ret.solution.ra_hours = Angle(ra_degs, unit="deg").hour # type: ignore[assignment]
                     ret.solution.dec_degs = dec_degs
                 else:
                     logger.error("bad match for ra_degs, dec_degs")
@@ -132,7 +132,7 @@ def _parse_solver_output(lines: list[str]) -> SolvingResult:
 
 
 def astrometry_dot_net_solve(
-    unit: Unit | None, settings: ImagerSettings, target: Coord  # type: ignore[name]
+    unit: "Unit", settings: ImagerSettings, target: Coord  # type: ignore[name]
 ) -> SolvingResult:
     filer = Filer(logger)
     unix_emulator = "cygwin"

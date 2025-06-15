@@ -39,11 +39,39 @@ class ImagerRoi(BaseModel):
     def __str__(self):
         return f"{self.x},{self.y},{self.width},{self.height}"
 
+    @staticmethod
+    def from_other(binning: ImagerBinning, other):
+        """
+        An imager ROI has a starting pixel (x, y) at lower left corner, width and height
+        """
+        if not binning:
+            binning = ImagerBinning(x=1, y=1)
 
-class ImagerSettings:
+        if other.width is None or other.height is None:
+            raise ValueError(f"ImagerRoi.from_other(): width or height is None in {other}")
+
+        if hasattr(other, "sky_x") and hasattr(other, "sky_y"):
+            center_x = other.sky_x
+            center_y = other.sky_y
+        elif hasattr(other, "fiber_x") and hasattr(other, "fiber_y"):
+            center_x = other.fiber_x
+            center_y = other.fiber_y
+        elif hasattr(other, "center_x") and hasattr(other, "center_y"):
+            center_x = other.center_x
+            center_y = other.center_y
+        else:
+            raise ValueError(f"ImagerRoi.from_other(): unknown type {type(other)}")
+
+        return ImagerRoi(
+            x=(center_x - int(other.width / 2)) * binning.x,
+            y=(center_y - int(other.height / 2)) * binning.y,
+            width=other.width * binning.x,
+            height=other.height * binning.y,
+        )
+
+class ImagerSettings(BaseModel):
     """
-
-    Multipurpose self exposure context
+    Multipurpose exposure context
 
     Callers to start_exposure() fill in:
     - seconds - duration in seconds
@@ -55,54 +83,34 @@ class ImagerSettings:
        just ',name' if the value is None
     - save - whether to save to file or just keep in memory
     - fits_cards - to be added to the default ones
-
-    After start_exposure() is called:
-    - image_path - contains the full path to the saved file, with a standard combination of the context elements
-               <folder>/seq=<sequence>,tags=<tag1=value1,tag2,tag3=value3>,binning=<binning>,gain=<gain>,roi=<roi>
-    - start - contains the exposure start time
-
-    Note:
-     start_exposure() copies these settings to imager.latest_settings thus making it available for further use
-
     """
+    seconds: float
+    base_folder: str | None = None
+    image_path: str | None = None
+    binning: ImagerBinning | None = None
+    gain: int | None = None
+    roi: ImagerRoi | None = None
+    tags: dict | None = {}
+    save: bool = True
+    fits_cards: dict[str, tuple] | None = {}
+    start: datetime.datetime = datetime.datetime.now()
+    file_name_parts: list[str] = []
+    folder: str | None = None
 
-    def __init__(
-        self,
-        seconds: float,
-        gain: int | None = None,
-        binning: ImagerBinning | None = None,
-        roi: ImagerRoi | None = None,
-        tags: dict | None = None,
-        save: bool = True,
-        fits_cards: dict[str, tuple] | None = None,
-        base_folder: str | None = None,
-        image_path: str | None = None,
-    ):
-
-        self.seconds: float = seconds
-        self.base_folder: str | None = base_folder
-        self.image_path: str | None = image_path
-        self.binning: ImagerBinning | None = binning
-        self.gain: int | None = gain
-        self.roi: ImagerRoi | None = roi
-        self.tags: dict | None = tags if tags else {}
-        self.save: bool = save
-        self.fits_cards: dict[str, tuple] | None = fits_cards if fits_cards else {}
-        self.start: datetime.datetime = datetime.datetime.now()
-        self.file_name_parts: list[str] = []
-
+    def model_post_init(self, __context):
         if self.save:
             if self.image_path is not None:
-                path = Path(self.image_path)
-                path.parent.mkdir(parents=True, exist_ok=True)
+                folder = Path(self.image_path).parent
+                self.folder = str(folder)
+                folder.mkdir(parents=True, exist_ok=True)
             elif self.base_folder is not None:
-                self.folder = self.base_folder
-                path = Path(self.folder)
-                path.mkdir(parents=True, exist_ok=True)
+                folder = Path(self.base_folder)
+                folder.mkdir(parents=True, exist_ok=True)
+                self.folder = str(folder)
                 self.make_file_name()
             else:
-                raise Exception(
-                    "CameraSettings:__init__(): either 'image_path' or 'base_folder' MUST be supplied"
+                raise ValueError(
+                    "ImagerSettings: either 'image_path' or 'base_folder' MUST be supplied when save=True"
                 )
 
     def make_file_name(self, additional_tags: dict | None = None):
@@ -114,6 +122,9 @@ class ImagerSettings:
         :param additional_tags: tags specific to THIS making of the file name
         :return:
         """
+        if not self.folder:
+            raise ValueError("ImagerSettings: 'folder' must be set before making file name")
+
         self.file_name_parts = []
         self.file_name_parts.append(
             f"seq={PathMaker().make_seq(self.folder, start_with=-1)}"
@@ -135,17 +146,10 @@ class ImagerSettings:
 
         self.image_path = str(Path(self.folder, ",".join(self.file_name_parts) + ".fits"))
 
-
-class ImagerConf(BaseModel):
-    type: str
-
-
 class ImagerExposure(BaseModel):
     file: str | None = None
     seconds: float | None = None
     date: datetime.datetime | None = None
-
-
 
 
 class ImagerStatus(PowerStatus, AscomStatus, ComponentStatus):
@@ -257,6 +261,16 @@ class ImagerInterface(Component, ABC):
         """
         pass
 
+    @property
+    def full_frame(self) -> ImagerRoi:
+        """
+        Get the full frame ROI of the imager.
+        """
+        if self.camera_x_size is None or self.camera_y_size is None:
+            raise ValueError("Camera X and Y sizes must be set before getting full frame ROI")
+
+        return ImagerRoi(x=0, y=0, width=self.camera_x_size, height=self.camera_y_size)
+
 
 class Imager(ImagerInterface):
     """
@@ -276,7 +290,7 @@ class Imager(ImagerInterface):
         """
         Initializes the backend of an Imager instance according to the unit configuration.
 
-        :param unit: Unit instance
+        :param unit: "Unit" instance
         :param imager_params: Parameters for the imager
         """
         if self._initialized:
@@ -284,12 +298,12 @@ class Imager(ImagerInterface):
 
         super().__init__()
         self.unit = unit
-        self.conf: ImagerConf = ImagerConf(**self.unit.unit_conf["imager"])
+        self.conf = self.unit.unit_conf.imager
 
-        imager_type = self.conf.type.lower()
+        imager_type = self.conf.imager_type.lower()
         if imager_type.startswith("ascom:"):
             from imagers.ascom import ASCOMImager
-            self._backend = ASCOMImager(unit=unit, prog_id=self.conf.type[6:])
+            self._backend = ASCOMImager(unit=unit, prog_id=self.conf.imager_type[6:])
         elif imager_type == "phd2":
             from phd2.phd2 import PHD2Connector
             self._backend = PHD2Connector(unit=unit)
@@ -297,7 +311,7 @@ class Imager(ImagerInterface):
         #     from imagers.zwo.zwo_imager import ZWOImager
         #     self._backend = ZWOImager(unit=unit, imager_params=imager_params)
         else:
-            raise ValueError(f"Unknown imager type: {self.conf.type}")
+            raise ValueError(f"Unknown imager type: {self.conf.imager_type}")
 
         self.imager_params = imager_params
         self.latest_settings: ImagerSettings | None = None
@@ -381,7 +395,7 @@ class Imager(ImagerInterface):
         """
         return self._backend.abort()
 
-    def status(self) -> ImagerStatus | None:
+    def status(self):
         """
         Returns the imager's current status.
         :return: ImagerStatus object containing the status information
@@ -497,25 +511,11 @@ class Imager(ImagerInterface):
         router.add_api_route(base_imager_path + "/abort", tags=[tag], endpoint=self.abort)
         router.add_api_route(base_imager_path + "/status", tags=[tag], endpoint=self.status)
         router.add_api_route(base_imager_path + "/connect", tags=[tag], endpoint=self.connect)
-        router.add_api_route(
-            base_imager_path + "/disconnect", tags=[tag], endpoint=self.disconnect
-        )
-        router.add_api_route(
-            base_imager_path + "/start_exposure",
-            tags=[tag],
-            endpoint=self.start_exposure,
-        )
-        router.add_api_route(
-            base_imager_path + "/stop_exposure", tags=[tag], endpoint=self.stop_exposure
-        )
-        router.add_api_route(
-            base_imager_path + "/abort_exposure", tags=[tag], endpoint=self.abort_exposure
-        )
-        router.add_api_route(
-            base_imager_path + "/cooler_on", tags=[tag], endpoint=cooler_on
-        )
-        router.add_api_route(
-            base_imager_path + "/cooler_off", tags=[tag], endpoint=cooler_off
-        )
+        router.add_api_route(base_imager_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
+        router.add_api_route(base_imager_path + "/start_exposure", tags=[tag], endpoint=self.start_exposure)
+        router.add_api_route(base_imager_path + "/stop_exposure", tags=[tag], endpoint=self.stop_exposure)
+        router.add_api_route(base_imager_path + "/abort_exposure", tags=[tag], endpoint=self.abort_exposure)
+        router.add_api_route(base_imager_path + "/cooler_on", tags=[tag], endpoint=cooler_on)
+        router.add_api_route(base_imager_path + "/cooler_off", tags=[tag], endpoint=cooler_off)
 
         return router

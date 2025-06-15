@@ -5,6 +5,7 @@ import os
 import time
 from typing import TYPE_CHECKING
 
+from common.config import AcquisitionConfig
 from common.corrections import Corrections
 from common.filer import Filer
 from common.mast_logging import init_log
@@ -26,13 +27,13 @@ class Acquisition:
 
     def __init__(
         self,
-        unit: Unit,
+        unit: "Unit",
         approach_mode: int,
         solver_id: SolverId,
         make_corrections: bool = True,
         target_ra: float | None = None,
         target_dec: float | None = None,
-        conf: dict | None = None,
+        conf: AcquisitionConfig | None = None,
         skip_sky: bool = False,
         guiding_mode: GuidingMode = GuidingMode.PlateSolving,
     ):
@@ -64,8 +65,8 @@ class Acquisition:
                 )
 
         self.conf = conf
-        self.ra_tolerance = conf["tolerance"]["ra_arcsec"]
-        self.dec_tolerance = conf["tolerance"]["dec_arcsec"]
+        self.ra_tolerance = conf.tolerance.ra_arcsec
+        self.dec_tolerance = conf.tolerance.dec_arcsec
         self.corrections: dict[str, Corrections] = {}
         self.folder = PathMaker().make_acquisition_folder(
             tags={

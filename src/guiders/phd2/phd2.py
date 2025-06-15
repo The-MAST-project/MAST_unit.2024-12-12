@@ -4,10 +4,12 @@ import logging
 import math
 import selectors
 import socket
+import stat
 import sys
 import threading
 import time
 from enum import IntFlag, auto
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
@@ -15,6 +17,9 @@ from common.config import Config
 from common.mast_logging import init_log
 from common.process import WatchedProcess
 from guiders.base_guider import GuiderInterface
+
+if TYPE_CHECKING:
+    from unit import Unit
 
 logger = logging.Logger("mast.unit.phd2_guider")
 init_log(logger)
@@ -91,12 +96,12 @@ class PHD2GuiderError(Exception):
 class PHD2Accumulator:
     def __init__(self):
         self.n = 0
-        self.a = self.q = self.peak = 0
+        self.a = self.q = self._peak = 0
         self.reset()
 
     def reset(self):
         self.n = 0
-        self.a = self.q = self.peak = 0
+        self.a = self.q = self._peak = 0
 
     def add(self, x):
         ax = abs(x)
@@ -142,7 +147,8 @@ class PHD2Connection:
 
     def disconnect(self):
         if self.sel is not None:
-            self.sel.unregister(self.sock)
+            if self.sock:
+                self.sel.unregister(self.sock)
             self.sel = None
         if self.sock is not None:
             self.sock.close()
@@ -153,6 +159,10 @@ class PHD2Connection:
 
     def read_line(self):
         # print(f"DBG: ReadLine enter lines:{len(self.lines)}")
+        assert self.sel is not None, "PHD2Connection sel is None"
+        assert self.sock is not None, "PHD2Connection sock is None"
+
+
         while not self.lines:
             # print("DBG: begin wait")
             while True:
@@ -180,6 +190,8 @@ class PHD2Connection:
         return self.lines.pop(0)
 
     def write_line(self, s):
+        assert self.sock is not None, "PHD2 write_line sock is None"
+
         b = s.encode()
         totsent = 0
         while totsent < len(b):
@@ -224,12 +236,7 @@ class PHD2Guider(GuiderInterface):
         self.stats = PHD2GuideStats()
         self.settle = None
 
-        d = (
-            self.unit.unit_conf["guider"]["phd2"]
-            if self.unit
-            else Config().get_unit()["guider"]["phd2"]
-        )
-        self.conf: PHD2Configuration = PHD2Configuration(**d)
+        self.conf = Config().get_unit().phd2
 
         self.activities = PHD2Activities.Idle
 
@@ -361,6 +368,8 @@ class PHD2Guider(GuiderInterface):
             pass
 
     def _worker(self):
+        assert self.conn is not None, "PHD2Connection is None"
+
         while not self._terminate:
             line = self.conn.read_line()
             # print(f"DBG: L: {line}")
@@ -405,7 +414,8 @@ class PHD2Guider(GuiderInterface):
             if self.worker.is_alive():
                 # print("DBG: terminating worker")
                 self._terminate = True
-                self.conn.terminate()
+                if self.conn:
+                    self.conn.terminate()
                 # print("DBG: joining worker")
                 self.worker.join()
             self.worker = None
@@ -435,6 +445,8 @@ class PHD2Guider(GuiderInterface):
         more convenient to use the higher-level methods below
 
         """
+        assert self.conn is not None, "PHD2Connection (call) is None"
+
         s = self._make_jsonrpc(method, params)
         # print(f"DBG: Call: {s}")
         # send request
@@ -450,6 +462,8 @@ class PHD2Guider(GuiderInterface):
         return response
 
     def check_connected(self):
+        assert self.conn is not None, "PHD2Connection (check_connected) is None"
+
         if not self.conn.is_connected():
             raise PHD2GuiderError("PHD2 Server disconnected")
 
@@ -578,6 +592,7 @@ class PHD2Guider(GuiderInterface):
         self.check_connected()
         with self.lock:
             stats = copy.copy(self.stats)
+        assert(stats is not None), "(get_stats) PHD2GuideStats is None"
         stats.rms_tot = math.hypot(stats.rms_ra, stats.rms_dec)
         return stats
 
@@ -736,7 +751,7 @@ if __name__ == "__main__":
             phd2_guider.start_guiding()
         except PHD2GuiderError as ex:
             logger.error(
-                f"could not connect_equipment('{phd2_guider.profile_name}') error: {ex}"
+                f"could not connect_equipment('{phd2_guider.conf.profile}') error: {ex}"
             )
             phd2_guider.shutdown()
             print("bailing out")

@@ -11,6 +11,7 @@ from astropy.coordinates import Angle
 
 from acquisition import Acquisition
 from common.activities import UnitActivities
+from common.config import AcquisitionConfig, ImagerBinningConfig, SkyRoiConfig, ToleranceConfig
 from common.corrections import Correction, Corrections
 from common.filer import Filer
 from common.mast_logging import init_log
@@ -89,9 +90,13 @@ class Solver:
     if TYPE_CHECKING:
         from unit import Unit
 
-    def __init__(self, unit: Unit):
+    def __init__(self, unit: "Unit"):
         self.unit = unit
         self.latest_result: SolvingResult | None = None
+
+    def log_and_store_error(self, message: str):
+        logger.error(message)
+        self.unit.errors.append(message)
 
     def plate_solve(
         self, settings: ImagerSettings, target: Coord, solver_id: SolverId
@@ -174,6 +179,7 @@ class Solver:
         :return: True if succeeded to achieve tolerances within max_tries, False otherwise
 
         """
+
         op = function_name()
         if phase:
             op += f":{phase=}:{approach_mode=}"
@@ -187,6 +193,40 @@ class Solver:
 
         if not self.unit.acquirer.latest_acquisition:
             # when not part of an acquisition sequence
+            tolerance = ToleranceConfig(
+                ra_arcsec=float(solving_tolerance.ra.arcsecond), # type: ignore
+                dec_arcsec=float(solving_tolerance.dec.arcsecond)) # type: ignore
+
+            if imager_settings.roi:
+                sky_roi_config = SkyRoiConfig(
+                    sky_x=imager_settings.roi.x,
+                    sky_y=imager_settings.roi.y,
+                    width=imager_settings.roi.width,
+                    height=imager_settings.roi.height)
+            else:
+                sky_roi_config = SkyRoiConfig(
+                    sky_x=self.unit.imager.full_frame.x,
+                    sky_y=self.unit.imager.full_frame.y,
+                    width=self.unit.imager.full_frame.width,
+                    height=self.unit.imager.full_frame.height)
+
+            if imager_settings.binning is not None:
+                imager_binning_config = ImagerBinningConfig(x=imager_settings.binning.x, y=imager_settings.binning.y)
+            else:
+                imager_binning_config = ImagerBinningConfig(x=1, y=1)
+
+            conf = AcquisitionConfig(
+                exposure=imager_settings.seconds,
+                binning=imager_binning_config,
+                roi=sky_roi_config,
+                gain=imager_settings.gain or 100,
+                tries=self.unit.unit_conf.acquisition.tries,
+                tolerance=tolerance,
+                )
+            if self.unit.acquirer is None:
+                raise Exception(
+                    f"{op}: unit.acquirer is None, cannot create latest_acquisition"
+                )
             self.unit.acquirer.latest_acquisition = Acquisition(
                 unit=self.unit,
                 approach_mode=approach_mode,
@@ -194,12 +234,7 @@ class Solver:
                 make_corrections=make_corrections,
                 target_ra=target.ra.arcsecond, # type: ignore
                 target_dec=target.dec.arcsecond, # type: ignore
-                conf={
-                    "tolerance": {
-                        "ra_arcsec": solving_tolerance.ra.arcsecond,
-                        "dec_arcsec": solving_tolerance.dec.arcsecond,
-                    }
-                },
+                conf=conf,
             )
 
             self.unit.acquirer.latest_acquisition.corrections = {}
@@ -508,7 +543,3 @@ class Solver:
             )
         self.unit.end_activity(UnitActivities.Solving)
         return False
-
-    def log_and_store_error(self, message: str):
-        logger.error(message)
-        self.unit.errors.append(message)

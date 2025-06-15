@@ -6,14 +6,14 @@ from typing import TYPE_CHECKING, Literal
 
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from common.config import ImagerBinningConfig
 
 if TYPE_CHECKING:
     from unit import Unit
 
 from common.mast_logging import init_log
 from common.process import WatchedProcess
-from common.utils import UnitRoi
-from imagers import ImagerBinning, ImagerSettings
+from imagers import ImagerBinning, ImagerRoi, ImagerSettings
 
 logger = logging.Logger("mast.unit." + __name__)
 init_log(logger)
@@ -32,10 +32,10 @@ GuidingModes = Literal["NoGuiding", "PlateSolving", "PHD2"]
 
 class Guider:
 
-    def __init__(self, unit: Unit):
+    def __init__(self, unit: "Unit"):
         self.unit = unit
 
-        if self.unit.unit_conf["guider"]["method"] == "phd2":
+        if self.unit.unit_conf.guider.method == "phd2":
             WatchedProcess(
                 command="C:/Program Files (x86)/PHDGuiding2/phd2.exe",
                 logger=logger,
@@ -55,39 +55,42 @@ class Guider:
         :return: camera settings for guiding exposures
         """
 
-        guiding_conf = self.unit.unit_conf["guiding"]
+        guiding_conf = self.unit.unit_conf.guiding
 
         h_margin = 1000  # 300  # right and left
         v_margin = 200  # top and bottom
 
-        d = guiding_conf["roi"]
-        d["sky_x"] = d["fiber_x"]
-        d["sky_y"] = d["fiber_y"]
-        unit_roi = UnitRoi.from_dict(
-            guiding_conf["roi"]
-        )  # we use only the center and compute the sizes
+        camera_x_size = self.unit.imager.camera_x_size
+        camera_y_size = self.unit.imager.camera_y_size
+        if camera_x_size is None or camera_y_size is None:
+            raise Exception(f"Cannot make guiding settings - camera {camera_x_size=}, {camera_y_size=}")
 
-        x_size = self.unit.imager.camera_x_size
-        y_size = self.unit.imager.camera_y_size
-        if x_size is None or y_size is None:
-            raise Exception(f"Cannot make guiding settings - camera {x_size=}, {y_size=}")
+        half_width = min(guiding_conf.roi.fiber_x, camera_x_size - guiding_conf.roi.fiber_x) - h_margin
+        half_height = min(guiding_conf.roi.fiber_y, camera_y_size - guiding_conf.roi.fiber_y) - v_margin
 
-        unit_roi.width = (
-            min(unit_roi.x, x_size - unit_roi.x) - h_margin
-        ) * 2
-        unit_roi.height = (
-            min(unit_roi.y, y_size - unit_roi.y) - v_margin
-        ) * 2
+        guiding_binning: ImagerBinningConfig = guiding_conf.binning
+        imager_binning = ImagerBinning(
+            x=guiding_binning.x if guiding_binning.x is not None else 1,
+            y=guiding_binning.y if guiding_binning.y is not None else 1,
+        )
 
-        x_binning = guiding_conf["binning"]
-        binning: ImagerBinning = ImagerBinning(x=x_binning, y=x_binning)
+        if guiding_conf.roi:
+            imager_roi = ImagerRoi(x=guiding_conf.roi.fiber_x,
+                                   y=guiding_conf.roi.fiber_y,
+                                   width=guiding_conf.roi.width,
+                                   height=guiding_conf.roi.height)
+        else:
+            imager_roi = ImagerRoi(x=guiding_conf.roi.fiber_x - half_width,
+                                   y=guiding_conf.roi.fiber_y - half_height,
+                                   width=half_width * 2,
+                                   height=half_height * 2)
 
         return ImagerSettings(
-            seconds=guiding_conf["exposure"],
+            seconds=guiding_conf.exposure,
             base_folder=base_folder,
-            gain=guiding_conf["gain"],
-            binning=binning,
-            roi=unit_roi.to_imager_roi(binning=binning),
+            gain=guiding_conf.gain,
+            binning=imager_binning,
+            roi=imager_roi,
             save=True,
         )
 

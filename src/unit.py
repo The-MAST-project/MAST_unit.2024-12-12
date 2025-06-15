@@ -39,13 +39,15 @@ from common.filer import Filer
 from common.mast_logging import DailyFileHandler, init_log
 from common.models.assignments import UnitAssignmentModel
 from common.paths import PathMaker
+from common.rois import UnitRoi
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
-from common.utils import RepeatTimer, UnitRoi, function_name, time_stamp
+from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers, CoverStatus
 from focuser import Focuser, FocuserStatus
 from guiding import Guider
 from imagers import Imager, ImagerBinning, ImagerSettings, ImagerStatus
 from mount import Mount, MountStatus
+from phd2.phd2 import PHD2Status
 from PlaneWave import pwi4_client
 from solving import Solver
 from stage import Stage, StageStatus
@@ -68,7 +70,7 @@ class UnitStatus(ComponentStatus, PowerStatus):
     autofocusing: bool = False
     power_switch: PowerSwitchStatus | None = None
     mount: MountStatus | None = None
-    imager: ImagerStatus | None = None
+    imager: ImagerStatus | PHD2Status | None = None
     covers: CoverStatus | None = None
     focuser: FocuserStatus | None = None
     stage: StageStatus | None = None
@@ -97,7 +99,7 @@ class Unit(Component):
     def __init__(self, id_: int | str):
         if self._initialized:
             return
-        logger.info(f"Unit.__init__: initiating instance 0x{id(self):x}")
+        # logger.info(f"Unit.__init__: initiating instance 0x{id(self):x}")
 
         Component.__init__(self)
 
@@ -117,18 +119,10 @@ class Unit(Component):
         self.id = id_
         self.unit_conf = Config().get_unit()
 
-        self.min_ra_correction_arcsec: float = (
-            float(self.unit_conf["guiding"]["min_ra_correction_arcsec"])
-            if "min_ra_correction_arcsec" in self.unit_conf["guiding"]
-            else 1
-        )
-        self.min_dec_correction_arcsec: float = (
-            float(self.unit_conf["guiding"]["min_dec_correction_arcsec"])
-            if "min_dec_correction_arcsec" in self.unit_conf["guiding"]
-            else 1
-        )
+        self.min_ra_correction_arcsec = self.unit_conf.guiding.min_ra_correction_arcsec
+        self.min_dec_correction_arcsec = self.unit_conf.guiding.min_dec_correction_arcsec
 
-        self.autofocus_max_tolerance = self.unit_conf["autofocus"]["max_tolerance"]
+        self.autofocus_max_tolerance = self.unit_conf.autofocus.max_tolerance
         self.autofocus_try: int = 0
 
         self.hostname = socket.gethostname()
@@ -373,7 +367,7 @@ class Unit(Component):
                     self.autofocus_result.tolerance = autofocus_status.tolerance # type: ignore
 
                     best_position = autofocus_status.best_position # type: ignore
-                    self.unit_conf["focuser"]["known_as_good_position"] = best_position
+                    self.unit_conf.focuser.known_as_good_position = best_position
                     try:
                         Config().set_unit(self.hostname, self.unit_conf)
                         logger.info(
@@ -787,12 +781,12 @@ class Unit(Component):
 
         cfg = Config().get_unit()
 
-        cfg["acquisition"]["roi"]["sky_x"] = sky_x
-        cfg["acquisition"]["roi"]["sky_y"] = sky_y
-        cfg["guiding"]["roi"]["fiber_x"] = spec_x
-        cfg["guiding"]["roi"]["fiber_y"] = spec_y
+        cfg.acquisition.roi.sky_x = sky_x
+        cfg.acquisition.roi.sky_y = sky_y
+        cfg.guiding.roi.fiber_x = spec_x
+        cfg.guiding.roi.fiber_y = spec_y
 
-        Config().set_unit(unit_name=cfg["name"], unit_conf=cfg)
+        Config().set_unit(unit_name=cfg.name, unit_conf=cfg)
 
         return CanonicalResponse_Ok
 
@@ -948,6 +942,6 @@ else:
 base_path = Const.BASE_UNIT_PATH
 tag = "Unit"
 
-unit: Unit | None = None
+unit = None
 if not unit:
     unit = Unit(id_=unit_id)

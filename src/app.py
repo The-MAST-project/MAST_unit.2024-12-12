@@ -20,8 +20,8 @@ from PlaneWave import pwi4_client
 #
 unit_conf = Config().get_unit(socket.gethostname())
 
-# if 'log_level' in unit_conf['global']:
-#     log_level = getattr(logging, unit_conf['global']['log_level'].upper())
+# if 'log_level' in unit_conf.global:
+#     log_level = getattr(logging, unit_conf.global.log_level.upper())
 # else:
 log_level = logging.WARNING
 logging.basicConfig(level=log_level)
@@ -145,13 +145,13 @@ app.add_middleware(
 )
 
 if __name__ == "__main__":
-    server_conf = Config().get_service(service_name="unit")
-    if server_conf is None:
+    service_conf = Config().get_service(service_name="unit")
+    if service_conf is None:
         logger.error("No server configuration found for 'unit', exiting ...")
         app_quit(reason="no server configuration")
     else:
-        host = server_conf.get("listen_on", "0.0.0.0")
-        port = server_conf.get("port", 8000)
+        host = service_conf.listen_on
+        port = service_conf.port
 
     from unit import unit
 

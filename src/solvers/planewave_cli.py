@@ -40,7 +40,7 @@ class PlaneWaveCliSolverResult(ExtendedBaseModel):
 
 
 def planewave_cli_solve(
-    unit: Unit, imager_settings: ImagerSettings, target: Coord  # type: ignore[name]
+    unit: "Unit", imager_settings: ImagerSettings, target: Coord  # type: ignore[name]
 ) -> SolvingResult:
     op = function_name()
     # ps3_solver_status: PlaneWaveCliSolverResult
@@ -51,7 +51,7 @@ def planewave_cli_solve(
     assert(imager_settings.binning and imager_settings.binning.x is not None), (
         f"{op}: imager_settings.binning is not set or has unset x binning")
 
-    pixel_scale = unit.unit_conf["camera"]["pixel_scale_at_bin1"] * imager_settings.binning.x
+    pixel_scale = unit.unit_conf.imager.pixel_scale_at_bin1 * imager_settings.binning.x
 
     cmd = "C:\\Program Files (x86)\\PlaneWave Instruments\\ps3cli\\ps3cli"
     assert(imager_settings.image_path), f"{op}: settings.image_path is not set"
@@ -145,9 +145,9 @@ def planewave_cli_solve(
     ret.native_result = solver_output
     solution = SolvingSolution()
     solution.ra_hours = solver_output["ra_j2000_hours"]
-    solution.ra_rads = Angle(solution.ra_hours, unit="hour").radian
+    solution.ra_rads = Angle(solution.ra_hours, unit="hour").radian # type: ignore[assignment]
     solution.dec_degs = solver_output["dec_j2000_degrees"]
-    solution.dec_rads = Angle(solution.dec_degs, unit="degree").radian
+    solution.dec_rads = Angle(solution.dec_degs, unit="degree").radian # type: ignore[assignment]
     solution.rotation_angle_degs = solver_output["rot_angle_degs"]
     solution.matched_stars = solver_output["matched_stars"]
     ret.solution = solution
@@ -159,7 +159,7 @@ def planewave_cli_solve(
         f"{op}: unit.imager.latest_settings.image_path or roi is None")
 
     # Update FITS headers
-    with fits.open(unit.imager.latest_settings.image_path, mode="update") as hdul:
+    with fits.open(unit.imager.latest_settings.image_path, mode="update") as hdul: # type: ignore[misc]
         header = hdul[0].header
 
         roi = unit.imager.latest_settings.roi
@@ -174,11 +174,12 @@ def planewave_cli_solve(
         header.comments["CRVAL2"] = "solved dec of reference pixel"
 
         binning = unit.imager.latest_settings.binning
-        pixel_scale_at_binning1 = unit.unit_conf["camera"]["pixel_scale_at_bin1"]
-        header["CDELT1"] = pixel_scale_at_binning1 * binning.x
-        header.comments["CDELT1"] = "ra pixel scale"
-        header["CDELT2"] = pixel_scale_at_binning1 * binning.y
-        header.comments["CDELT2"] = "dec pixel scale"
+        pixel_scale_at_binning1 = unit.unit_conf.imager.pixel_scale_at_bin1
+        if binning:
+            header["CDELT1"] = pixel_scale_at_binning1 * binning.x
+            header.comments["CDELT1"] = "ra pixel scale"
+            header["CDELT2"] = pixel_scale_at_binning1 * binning.y
+            header.comments["CDELT2"] = "dec pixel scale"
 
         header["CUNIT1"] = "deg"
         header["CUNIT2"] = "deg"

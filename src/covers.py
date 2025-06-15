@@ -67,10 +67,9 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             return
 
         self.unit = unit
-        self.unit_conf: dict = Config().get_unit()
-        self.conf = self.unit_conf["covers"]
+        self.conf = Config().get_unit().covers
         try:
-            self._ascom = win32com.client.Dispatch(self.conf["ascom_driver"])
+            self._ascom = win32com.client.Dispatch(self.conf.ascom_driver)
         except Exception as ex:
             # logger.exception(ex)
             logger.exception(ex)

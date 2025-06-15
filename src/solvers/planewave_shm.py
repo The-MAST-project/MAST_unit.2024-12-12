@@ -52,7 +52,7 @@ class PlaneWaveShmSolvingResult(ExtendedBaseModel):
 
 
 def planewave_shm_solve(
-    unit: Unit, imager_settings: ImagerSettings, target: Coord
+    unit: "Unit", imager_settings: ImagerSettings, target: Coord
 ) -> SolvingResult:
     op = function_name()
 
@@ -68,7 +68,7 @@ def planewave_shm_solve(
 
     width = imager_settings.roi.width
     height = imager_settings.roi.height
-    pixel_scale = unit.unit_conf["imager"]["pixel_scale_at_bin1"] * imager_settings.binning.x
+    pixel_scale = unit.unit_conf.imager.pixel_scale_at_bin1 * imager_settings.binning.x
 
     shm = SharedMemory(
         name=Const.PLATE_SOLVING_SHM_NAME, create=True, size=width * height * 2
@@ -157,7 +157,7 @@ def planewave_shm_solve(
         binning = unit.imager.latest_settings.binning
         assert(binning is not None), f"{op}: binning is None"
 
-        pixel_scale_at_binning1 = unit.unit_conf["imager"]["pixel_scale_at_bin1"]
+        pixel_scale_at_binning1 = unit.unit_conf.imager.pixel_scale_at_bin1
         header["CDELT1"] = pixel_scale_at_binning1 * binning.x
         header.comments["CDELT1"] = "ra pixel scale"
         header["CDELT2"] = pixel_scale_at_binning1 * binning.y
@@ -174,9 +174,9 @@ def planewave_shm_solve(
         ret.succeeded = True
         ret.solution = SolvingSolution()
         ret.solution.ra_rads = ps3_solver_status.solution.center_ra_j2000_rads
-        ret.solution.ra_hours = Angle(ret.solution.ra_rads, unit="radian").hour
+        ret.solution.ra_hours = float(Angle(ret.solution.ra_rads, unit="radian").hour) # type: ignore[assignment]
         ret.solution.dec_rads = ps3_solver_status.solution.center_dec_j2000_rads
-        ret.solution.dec_degs = Angle(ret.solution.dec_rads, unit="radian").degs
+        ret.solution.dec_degs = float(Angle(ret.solution.dec_rads, unit="radian").degs) # type: ignore[assignment]
         ret.solution.matched_stars = ps3_solver_status.solution.num_matched_stars
         ret.solution.rotation_angle_degs = (
             ps3_solver_status.solution.rotation_angle_degs
