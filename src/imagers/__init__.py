@@ -1,11 +1,12 @@
 import datetime
 from abc import ABC, abstractmethod
+from math import e
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from common.ascom import AscomStatus
 from common.canonical import CanonicalResponse
@@ -87,15 +88,15 @@ class ImagerSettings(BaseModel):
     seconds: float
     base_folder: str | None = None
     image_path: str | None = None
-    binning: ImagerBinning | None = None
+    binning: ImagerBinning | None = ImagerBinning(x=1, y=1)
     gain: int | None = None
     roi: ImagerRoi | None = None
     tags: dict | None = {}
     save: bool = True
     fits_cards: dict[str, tuple] | None = {}
-    start: datetime.datetime = datetime.datetime.now()
-    file_name_parts: list[str] = []
-    folder: str | None = None
+    start: datetime.datetime = Field(default=datetime.datetime.now(), exclude=True)
+    file_name_parts: list[str] = Field(default=[], exclude=True)
+    folder: str | None = Field(default=None, exclude=True)
 
     def model_post_init(self, __context):
         if self.save:

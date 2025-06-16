@@ -4,6 +4,7 @@ import logging
 import math
 import os.path
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import astropy.units as u
@@ -11,7 +12,8 @@ from astropy.coordinates import Angle
 
 from acquisition import Acquisition
 from common.activities import UnitActivities
-from common.config import AcquisitionConfig, ImagerBinningConfig, SkyRoiConfig, ToleranceConfig
+from common.config import (AcquisitionConfig, ImagerBinningConfig,
+                           SkyRoiConfig, ToleranceConfig)
 from common.corrections import Correction, Corrections
 from common.filer import Filer
 from common.mast_logging import init_log
@@ -370,7 +372,9 @@ class Solver:
                         dec_arcsec=delta_dec_arcsec, # type: ignore
                     )
 
-                    file_name = os.path.join(imager_settings.folder, "corrections.json")
+                    if not imager_settings.folder:
+                        raise Exception(f"{function_name()}: empty imager_settings.folder")
+                    file_name = str(Path(imager_settings.folder) / "corrections.json")
                     with open(file_name, "w") as f:
                         json.dump(latest_corrections.to_dict(), f, indent=2)
                     time.sleep(2)

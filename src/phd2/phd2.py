@@ -55,13 +55,16 @@ class PHD2Activities(IntFlag):
 
 
 class PHD2Status(BaseModel):
-    name: str
-    activities: int
-    activities_verbal: str
-    is_guiding: bool
-    is_settling: bool
-    app_state: str
-    avg_dist: float
+    name: str = "phd2"
+    activities: int = 0
+    activities_verbal: str | None = None
+    operational: bool = False
+    why_not_operational: list[str] = []
+    connected: bool = False
+    is_guiding: bool = False
+    is_settling: bool = False
+    app_state: str | None = None
+    avg_dist: float | None = None
 
 
 class PHD2SettleProgress:
@@ -271,6 +274,15 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             shell=True,
         )
         self.watched_process.start()
+
+        try:
+            self.connect()
+            self.connect_equipment()
+            self.loop()
+        except PHD2GuiderError as ex:
+            self.connected = False
+            logger.error(f"{function_name()}: Failed to connect {ex=}")
+
         self._initialized = True
 
     def __enter__(self):
@@ -299,13 +311,15 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
     def _handle_event(self, ev):
         e = ev["Event"]
-        logger.debug(f"DBG: event: {e}")
+
         if e == "AppState":
             with self.lock:
                 self.app_state = ev["State"]
                 logger.debug(f"event: {e}, app_state: {self.app_state}")
                 if self._is_guiding(self.app_state):
                     self.avg_dist = 0  # until we get a GuideStep event
+        elif e == "Alert":
+            logger.debug(f"event: {e}, Type: {ev["Type"]}, Msg: {ev["Msg"]}")
         elif e == "Version":
             with self.lock:
                 self.version = ev["PHDVersion"]
@@ -406,9 +420,12 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 self.single_frame = result
             self.image_was_saved = True
             self.image_saved_event.set()
+            self.end_activity(ImagerActivities.Exposing)
             self.end_activity(ImagerActivities.Saving)
+        elif e == "ConfigurationChange":
+                logger.debug(f"event: {e}")
         else:
-            print(f"DBG: todo: handle event {e}")
+            logger.error(f"TODO: Unhandled event {e}")
             pass
 
     def _worker(self):
@@ -517,7 +534,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         CheckSettling() periodically to see when settling is complete.
 
         """
-        self.check_connected()
+        # self.check_connected()
+        if not self.connected:
+            logger.error(f"{function_name()}: not connected")
+            return CanonicalResponse(errors=["not connected"])
         s = PHD2SettleProgress()
         s.done = False
         s.distance = 0
@@ -585,7 +605,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def is_settling(self):
         """Check if phd2 is currently in the process of settling after a Guide
         or Dither"""
-        self.check_connected()
+        # self.check_connected()
+        if not self.connected:
+            return False
         with self.lock:
             if self.settle:
                 return True
@@ -734,17 +756,22 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def status(self) -> PHD2Status:
 
         return PHD2Status(
-            name="phd2",
+            activities=int(self.activities),
+            activities_verbal=self.activities.__repr__(),
+            connected=self.connected,
+            operational=self.operational,
+            why_not_operational=self.why_not_operational,
             app_state=self.app_state,
             avg_dist=self.avg_dist,
             is_guiding=self.is_guiding(),
             is_settling=self.is_settling(),
-            activities=int(self.activities),
-            activities_verbal=self.activities.__repr__(),
         )
 
     def is_guiding(self) -> bool:
         """check if currently guiding"""
+        if not self.connected:
+            return False
+
         st, dist = self.get_status()
         return self._is_guiding(st)
 
@@ -770,17 +797,29 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if self.watched_process:
             self.watched_process.terminate()
 
-    def start_guiding(self):
-        self.connect()
-        self.connect_equipment()
+    def start_guiding(self) -> CanonicalResponse:
+        if not self.connected:
+            return CanonicalResponse(errors=["not connected"])
+
+        try:
+            self.connect()
+            self.connect_equipment()
+        except PHD2GuiderError as ex:
+            return CanonicalResponse(errors=[f"cannot connect {ex=}"])
+
         self.guide(
             settle_pixels=self.conf.settle.pixels,
             settle_time=self.conf.settle.time,
             settle_timeout=self.conf.settle.timeout,
         )
+        return CanonicalResponse_Ok
 
-    def stop_guiding(self):
+    def stop_guiding(self) -> CanonicalResponse:
+        if not self.connected:
+            return CanonicalResponse(errors=["not connected"])
+
         self.stop_capture()
+        return CanonicalResponse_Ok
 
     @property
     def can_image_to_memory(self) -> bool:
@@ -819,9 +858,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         else:
             self.disconnect()
 
-    def start_exposure(self, settings: ImagerSettings):
+    def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:
         if not self.connected:
-            raise PHD2GuiderError("not connected to PHD2 server")
+            return CanonicalResponse(errors=["not connected"])
 
         self.start_activity(ImagerActivities.Exposing)
         self.start_activity(ImagerActivities.Saving)
@@ -841,41 +880,28 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 raise PHD2GuiderError(
                     "PHD2 start_exposure MUST have an image path"
                 )
-            params: dict = {}
-            params["exposure"] = settings.seconds * 1000  # convert to milliseconds
-            if settings.gain is not None:
-                params["gain"] = settings.gain
-            if settings.binning is not None:
-                params["binning"] = settings.binning.x
-            if settings.roi is not None:
-                params["roi"] = {
-                    "x": settings.roi.x,
-                    "y": settings.roi.y,
-                    "width": settings.roi.width,
-                    "height": settings.roi.height,
+            params = {
+                "exposure": settings.seconds * 1000,  # convert to milliseconds
+                "gain": settings.gain,
+                "binning": settings.binning,
+                "roi": settings.roi,
+                "save": True,
+                "path": settings.image_path,
                 }
-            params["save"] = True
-            params["path"] = settings.image_path
-            if settings.save:
-                self.image_saved_event.wait()
-                self.image_saved_event.clear()
-            self.end_activity(ImagerActivities.Exposing)
 
             res = self.call("capture_single_frame", params)
 
         if res.error_message:
             self.errors.append = res.error_message
-        return (
-            CanonicalResponse(errors=self.errors)
-            if self.errors
-            else CanonicalResponse_Ok
-        )
+        return CanonicalResponse(errors=self.errors) if self.errors else CanonicalResponse_Ok
 
-    def stop_exposure(self):
+    def stop_exposure(self) -> CanonicalResponse:
         self.end_activity(ImagerActivities.Exposing)
+        return CanonicalResponse_Ok
 
-    def abort_exposure(self):
+    def abort_exposure(self) -> CanonicalResponse:
         self.end_activity(ImagerActivities.Exposing)
+        return CanonicalResponse_Ok
 
     def wait_for_image_ready(self):
         pass
@@ -887,7 +913,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.image_saved_event.wait()
             logger.info(f"{op}: got image_saved_event")
             self.image_saved_event.clear()
-            self.end_activity(ImagerActivities.Saving)
 
     @property
     def temperature(self) -> float:
