@@ -23,7 +23,8 @@ from common.mast_logging import init_log
 from common.paths import PathMaker
 from common.utils import RepeatTimer, function_name, time_stamp
 
-from . import ImagerBinning, ImagerExposure, ImagerInterface, ImagerRoi, ImagerSettings, ImagerStatus
+from . import (ImagerBinning, ImagerExposure, ImagerInterface, ImagerRoi,
+               ImagerSettings, ImagerStatus)
 
 if TYPE_CHECKING:
     from unit import Unit
@@ -265,7 +266,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         return response.value if response.succeeded else False # type: ignore
 
     @connected.setter
-    def connected(self, value: bool):
+    def connected(self, value: bool):  # noqa: C901
         if not self.is_on() or not self._ascom:
             return
 
@@ -403,7 +404,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         self.start_exposure(settings)
 
-    def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:
+    def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:  # noqa: C901
         """
         Starts a *MAST* camera exposure
 
@@ -689,7 +690,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         self.abort_exposure()
         return CanonicalResponse_Ok
 
-    def ontimer(self):
+    def ontimer(self):  # noqa: C901
         """
         Called by timer, checks if any ongoing activities have changed state
         """

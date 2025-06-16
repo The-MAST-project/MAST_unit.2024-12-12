@@ -15,7 +15,8 @@ from common.config import Config
 from common.extended_basemodel import ExtendedBaseModel
 from common.filer import Filer
 from common.mast_logging import init_log
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.parsers import (sexagesimal_degrees_to_decimal,
+                            sexagesimal_hours_to_decimal)
 from common.paths import PathMaker
 from common.rois import UnitRoi
 from common.utils import function_name
@@ -84,7 +85,7 @@ class Autofocuser:
             and self.unit.pw.status().autofocus.is_running # type: ignore[union-attr]
         )
 
-    def start_autofocus(
+    def start_autofocus(  # noqa: C901
         self,
         ra_j2000_hours: Annotated[
             str | float | None,
@@ -192,7 +193,7 @@ class Autofocuser:
             ],
         ).start()
 
-    def do_start_autofocus(
+    def do_start_autofocus(  # noqa: C901
         self,
         target_ra: float | None = None,  # center of ROI
         target_dec: float | None = None,  # center of ROI

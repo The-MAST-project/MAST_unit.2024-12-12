@@ -20,27 +20,24 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from acquirer import Acquirer
 from acquisition import Acquisition
 from autofocusing import Autofocuser, AutofocusResult
-from common.activities import (
-    CoverActivities,
-    FocuserActivities,
-    ImagerActivities,
-    MountActivities,
-    StageActivities,
-    UnitActivities,
-)
+from common.activities import (CoverActivities, FocuserActivities,
+                               ImagerActivities, MountActivities,
+                               StageActivities, UnitActivities)
 from common.api import ControllerApi
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.components import Component, ComponentStatus
 from common.config import Config
 from common.const import Const
 from common.corrections import correction_phases
-from common.dlipowerswitch import PowerStatus, PowerSwitchFactory, PowerSwitchStatus, SwitchedOutlet
+from common.dlipowerswitch import (PowerStatus, PowerSwitchFactory,
+                                   PowerSwitchStatus, SwitchedOutlet)
 from common.filer import Filer
 from common.mast_logging import DailyFileHandler, init_log
 from common.models.assignments import UnitAssignmentModel
 from common.paths import PathMaker
 from common.rois import UnitRoi
-from common.tasks.notifications import notify_controller_about_task_acquisition_path
+from common.tasks.notifications import \
+    notify_controller_about_task_acquisition_path
 from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers, CoverStatus
 from focuser import Focuser, FocuserStatus
@@ -542,7 +539,7 @@ class Unit(Component):
         ).start()
         return CanonicalResponse_Ok
 
-    def do_expose(
+    def do_expose(  # noqa: C901
         self,
         subfolder: str | None = None,
         exposure_seconds: float = 3,
@@ -640,7 +637,7 @@ class Unit(Component):
         ).start()
         return CanonicalResponse_Ok
 
-    def do_test_stage_repeatability(
+    def do_test_stage_repeatability(  # noqa: C901
         self,
         start_position: int | str = 50000,
         end_position: int | str = 300000,

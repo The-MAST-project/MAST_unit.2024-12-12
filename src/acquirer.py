@@ -13,9 +13,11 @@ from acquisition import Acquisition
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.mast_logging import init_log
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.parsers import (sexagesimal_degrees_to_decimal,
+                            sexagesimal_hours_to_decimal)
 from common.tasks.models import UnitAssignmentModel
-from common.tasks.notifications import notify_controller_about_task_acquisition_path
+from common.tasks.notifications import \
+    notify_controller_about_task_acquisition_path
 from common.utils import Coord, boxed_info, function_name
 from guiding import GuidingMode, GuidingModes
 from imagers import ImagerBinning, ImagerRoi, ImagerSettings
@@ -45,7 +47,7 @@ class Acquirer:
         self.folder: str | None = None
         self.latest_acquisition: Acquisition | None = None
 
-    def do_acquire(self, acquisition: Acquisition):
+    def do_acquire(self, acquisition: Acquisition):  # noqa: C901
         """
         Called from start_acquisition()
 
@@ -308,7 +310,7 @@ class Acquirer:
                 src=acquisition.folder,
             )
 
-    def start_acquisition_and_guiding(
+    def start_acquisition_and_guiding(  # noqa: C901
         self,
         seconds: float | None = 5.0,
         ra_j2000_hours: Annotated[

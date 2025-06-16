@@ -1,6 +1,5 @@
 import datetime
 from abc import ABC, abstractmethod
-from math import e
 from pathlib import Path
 from typing import TYPE_CHECKING
 

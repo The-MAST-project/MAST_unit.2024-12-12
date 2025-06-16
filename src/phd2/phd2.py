@@ -309,7 +309,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         stats.peak_dec = dec._peak
         return stats
 
-    def _handle_event(self, ev):
+    def _handle_event(self, ev):  # noqa: C901
         e = ev["Event"]
 
         if e == "AppState":

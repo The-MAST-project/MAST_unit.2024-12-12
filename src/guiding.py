@@ -32,7 +32,7 @@ GuidingModes = Literal["NoGuiding", "PlateSolving", "PHD2"]
 
 class Guider:
 
-    def __init__(self, unit: "Unit"):
+    def __init__(self, unit: "Unit"):  # noqa: UP037
         self.unit = unit
 
         if self.unit.unit_conf.guider.method == "phd2":

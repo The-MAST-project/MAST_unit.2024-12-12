@@ -147,7 +147,7 @@ class Solver:
 
             return solvers_dispatch[solver_id](self.unit, settings, target)
 
-    def solve_and_correct(
+    def solve_and_correct(  # noqa: C901
         self,
         target: Coord,
         approach_mode: int,
