@@ -103,6 +103,7 @@ class ImagerSettings(BaseModel):
                 folder = Path(self.image_path).parent
                 self.folder = str(folder)
                 folder.mkdir(parents=True, exist_ok=True)
+                self.make_file_name()
             elif self.base_folder is not None:
                 folder = Path(self.base_folder)
                 folder.mkdir(parents=True, exist_ok=True)
@@ -145,14 +146,16 @@ class ImagerSettings(BaseModel):
         self.file_name_parts.append(f"roi={self.roi}")
 
         self.image_path = str(Path(self.folder, ",".join(self.file_name_parts) + ".fits"))
+        pass
 
 class ImagerExposure(BaseModel):
     file: str | None = None
     seconds: float | None = None
-    date: datetime.datetime | None = None
+    date: str | None = None
+    start: datetime.datetime = Field(default_factory=datetime.datetime.now, exclude=True)
 
 
-class ImagerStatus(PowerStatus, AscomStatus, ComponentStatus):
+class ImagerStatus(PowerStatus, ComponentStatus):
     errors: list[str] | None = None
     set_point: float | None = None
     temperature: float | None = None
@@ -286,7 +289,10 @@ class Imager(ImagerInterface):
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, unit: "Unit", imager_params: dict | None = None):
+    def __init__(self,
+                 unit: "Unit",
+                 backend: str | None = None,
+                 params: dict | None = None):
         """
         Initializes the backend of an Imager instance according to the unit configuration.
 
@@ -300,20 +306,20 @@ class Imager(ImagerInterface):
         self.unit = unit
         self.conf = self.unit.unit_conf.imager
 
-        imager_type = self.conf.imager_type.lower()
-        if imager_type.startswith("ascom:"):
+        backend = backend or self.conf.imager_type.lower()
+        if backend.startswith("ascom:"):
             from imagers.ascom import ASCOMImager
             self._backend = ASCOMImager(unit=unit, prog_id=self.conf.imager_type[6:])
-        elif imager_type == "phd2":
+        elif backend == "phd2":
             from phd2.phd2 import PHD2Connector
             self._backend = PHD2Connector(unit=unit)
-        # elif type == "zwo":
-        #     from imagers.zwo.zwo_imager import ZWOImager
-        #     self._backend = ZWOImager(unit=unit, imager_params=imager_params)
+        elif backend == "zwo":
+            from zwo import ZWOImager
+            self._backend = ZWOImager(unit=unit, imager_params=params)
         else:
             raise ValueError(f"Unknown imager type: {self.conf.imager_type}")
 
-        self.imager_params = imager_params
+        self.imager_params = params
         self.latest_settings: ImagerSettings | None = None
         self._initialized = True
 
@@ -446,6 +452,7 @@ class Imager(ImagerInterface):
         """
         return self._backend.image_array if self._backend.can_image_to_memory else None
 
+    @property
     def temperature(self) -> float:
         """
         Gets the current temperature of the camera.

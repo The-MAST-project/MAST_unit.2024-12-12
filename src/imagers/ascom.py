@@ -23,8 +23,7 @@ from common.mast_logging import init_log
 from common.paths import PathMaker
 from common.utils import RepeatTimer, function_name, time_stamp
 
-from . import (ImagerBinning, ImagerExposure, ImagerInterface, ImagerRoi,
-               ImagerSettings, ImagerStatus)
+from . import AscomStatus, ImagerBinning, ImagerExposure, ImagerInterface, ImagerRoi, ImagerSettings, ImagerStatus
 
 if TYPE_CHECKING:
     from unit import Unit
@@ -38,6 +37,9 @@ class Visualizer:
         self.name = name
         self.func = func
 
+
+class AscomImagerStatus(ImagerStatus, AscomStatus):
+    pass
 
 class AscomCameraState(IntFlag):
     """
@@ -550,7 +552,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 ImagerExposure(
                     file=self.latest_settings.base_folder,
                     seconds=self.latest_settings.seconds,
-                    date=self.latest_settings.start,
+                    date=self.latest_settings.start.isoformat(),
                 )
                 if self.latest_settings
                 else None
