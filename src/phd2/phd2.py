@@ -904,7 +904,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         return CanonicalResponse_Ok
 
     def wait_for_image_ready(self):
-        pass
+        raise NotImplementedError
 
     def wait_for_image_saved(self):
         op = function_name()
@@ -930,11 +930,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         raise PHD2GuiderError("PHD2 does not implement cooler_on.setter")
 
     @property
-    def cooler_power(self) -> float:
+    def cooler_power(self) -> float | None:
         cooler_status: CoolerStatus | None = self.call("get_cooler_status")
         if cooler_status:
             return cooler_status.power
-        return float('nan')
+        return None
 
     @property
     def name(self) -> str:
@@ -952,7 +952,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def why_not_operational(self) -> list[str]:
         ret = []
         if not self.connected:
-            ret.append("not connected")
+            ret.append(f"{self.name}: not connected")
         return ret
 
     @property
