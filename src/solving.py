@@ -12,8 +12,7 @@ from astropy.coordinates import Angle
 
 from acquisition import Acquisition
 from common.activities import UnitActivities
-from common.config import (AcquisitionConfig, ImagerBinningConfig,
-                           SkyRoiConfig, ToleranceConfig)
+from common.config import AcquisitionConfig, ImagerBinningConfig, SkyRoiConfig, ToleranceConfig
 from common.corrections import Correction, Corrections
 from common.filer import Filer
 from common.mast_logging import init_log

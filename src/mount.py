@@ -139,7 +139,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         )
 
     @connected.setter
-    def connected(self, value):
+    def connected(self, value):  # noqa: C901
         self.errors = []
         if not self.is_on():
             self.errors.append("not powered")
