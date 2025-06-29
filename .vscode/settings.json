@@ -19,4 +19,7 @@
   "python.analysis.autoImportCompletions": true,
   "python.languageServer": "Pylance",
   "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.extraPaths": [
+    "./src/Standa/ximc-2.13.6/ximc/crossplatform/wrappers/python"
+  ],
 }
