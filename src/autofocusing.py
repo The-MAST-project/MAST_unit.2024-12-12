@@ -15,8 +15,7 @@ from common.config import Config
 from common.extended_basemodel import ExtendedBaseModel
 from common.filer import Filer
 from common.mast_logging import init_log
-from common.parsers import (sexagesimal_degrees_to_decimal,
-                            sexagesimal_hours_to_decimal)
+from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
 from common.rois import UnitRoi
 from common.utils import function_name
