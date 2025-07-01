@@ -1,13 +1,12 @@
 import datetime
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from common.ascom import AscomStatus
 from common.canonical import CanonicalResponse
 from common.components import Component, ComponentStatus
 
@@ -97,22 +96,36 @@ class ImagerSettings(BaseModel):
     file_name_parts: list[str] = Field(default=[], exclude=True)
     folder: str | None = Field(default=None, exclude=True)
 
-    def model_post_init(self, __context):
+    def model_post_init(self, context: dict[str, Any] | None ):  # noqa: C901
+        defaults: ImagerSettings | None = None
+        if context and (imager := context.get("imager")):
+            defaults = imager.default_settings
+
+        if defaults:
+            if not self.seconds and defaults.seconds:
+                self.seconds = defaults.seconds
+            if not self.gain and defaults.gain:
+                self.gain = defaults.gain
+            if not self.binning and defaults.binning:
+                self.binning = defaults.binning
+            if not self.base_folder and defaults.base_folder:
+                self.base_folder = defaults.base_folder
+            if not self.roi and defaults.roi:
+                self.roi = defaults.roi
+
         if self.save:
+            if self.image_path is None and self.base_folder is None:
+                raise ValueError("ImagerSettings: either 'image_path' or 'base_folder' MUST be supplied when save=True")
+
             if self.image_path is not None:
                 folder = Path(self.image_path).parent
                 self.folder = str(folder)
                 folder.mkdir(parents=True, exist_ok=True)
-                self.make_file_name()
             elif self.base_folder is not None:
                 folder = Path(self.base_folder)
                 folder.mkdir(parents=True, exist_ok=True)
                 self.folder = str(folder)
                 self.make_file_name()
-            else:
-                raise ValueError(
-                    "ImagerSettings: either 'image_path' or 'base_folder' MUST be supplied when save=True"
-                )
 
     def make_file_name(self, additional_tags: dict | None = None):
         """
@@ -224,7 +237,15 @@ class ImagerInterface(Component, ABC):
         pass
 
     @abstractmethod
+    def can_send_image_ready_event(self) -> bool:
+        pass
+
+    @abstractmethod
     def wait_for_image_ready(self):
+        pass
+
+    @abstractmethod
+    def can_send_image_saved_event(self) -> bool:
         pass
 
     @abstractmethod
@@ -322,6 +343,14 @@ class Imager(ImagerInterface):
         self.imager_params = params
         self.latest_settings: ImagerSettings | None = None
         self._initialized = True
+
+    @property
+    def can_send_image_ready_event(self) -> bool:
+        return self._backend.can_send_image_ready_event
+
+    @property
+    def can_send_image_saved_event(self) -> bool:
+        return self._backend.can_send_image_saved_event
 
     def startup(self) -> CanonicalResponse | None:
         return self._backend.startup()
