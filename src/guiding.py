@@ -49,7 +49,7 @@ class GuiderInterface(ABC, Activities):
 
 
 class Guider(GuiderInterface):
-    valid_guider_types = ['solver', 'phd2']
+    valid_guider_types = ['solving', 'phd2']
 
     def __init__(self, unit: "Unit", guider_type: str | None = None):  # noqa: UP037
         self.unit = unit
@@ -68,7 +68,7 @@ class Guider(GuiderInterface):
         Activities.__init__(self)
         if guider_type == "phd2":
             self._backend = PHD2Connector()
-        elif guider_type == 'solver':
+        elif guider_type == 'solving':
             self._backend = SolvingGuider()
 
     def status(self):
