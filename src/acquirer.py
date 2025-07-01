@@ -1,4 +1,3 @@
-import datetime
 import logging
 import os
 import time
@@ -17,7 +16,6 @@ from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_
 from common.tasks.models import UnitAssignmentModel
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
 from common.utils import Coord, boxed_info, function_name
-from guiding import GuidingMode, GuidingModes
 from imagers import ImagerBinning, ImagerRoi, ImagerSettings
 from phd2.phd2 import PHD2Connector
 from solving import SolverId, SolvingTolerance
@@ -212,54 +210,56 @@ class Acquirer:
         if self.unit.imager.can_image_to_memory:
             self.unit.reference_image = self.unit.imager.image_array
 
-        if acquisition.guiding_mode == GuidingMode.PlateSolving:
-            phase = "guiding"
-            boxed_info(logger, [f"starting phase '{phase.upper()}'"])
+        self.unit.guider.start_guiding()
 
-            cadence = self.unit.unit_conf.guiding.cadence_seconds
-            end: datetime.datetime | None = None
-            folder = os.path.join(self.latest_acquisition.folder, phase)
-            guiding_settings = self.unit.guider.make_guiding_settings(folder)
+        # if acquisition.guiding_mode == GuidingMode.PlateSolving:
+        #     phase = "guiding"
+        #     boxed_info(logger, [f"starting phase '{phase.upper()}'"])
 
-            self.unit.start_activity(UnitActivities.Guiding)
-            while self.unit.is_active(UnitActivities.Guiding):
-                start = datetime.datetime.now()
-                if cadence:
-                    end = start + datetime.timedelta(seconds=cadence)
-                self.unit.solver.solve_and_correct(
-                    target=target,
-                    approach_mode=acquisition.approach_mode,
-                    solver_id=acquisition.solver_id,
-                    make_corrections=acquisition.make_corrections,
-                    imager_settings=guiding_settings,
-                    solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
-                    parent_activity=UnitActivities.Acquiring,
-                    phase=phase,
-                )
+        #     cadence = self.unit.unit_conf.guiding.cadence_seconds
+        #     end: datetime.datetime | None = None
+        #     folder = os.path.join(self.latest_acquisition.folder, phase)
+        #     guiding_settings = self.unit.guider.make_guiding_settings(folder)
 
-            if self.unit.acquirer.latest_acquisition is not None:
-                self.unit.acquirer.latest_acquisition.save_corrections(phase)
+        #     self.unit.start_activity(UnitActivities.Guiding)
+        #     while self.unit.is_active(UnitActivities.Guiding):
+        #         start = datetime.datetime.now()
+        #         if cadence:
+        #             end = start + datetime.timedelta(seconds=cadence)
+        #         self.unit.solver.solve_and_correct(
+        #             target=target,
+        #             approach_mode=acquisition.approach_mode,
+        #             solver_id=acquisition.solver_id,
+        #             make_corrections=acquisition.make_corrections,
+        #             imager_settings=guiding_settings,
+        #             solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
+        #             parent_activity=UnitActivities.Acquiring,
+        #             phase=phase,
+        #         )
 
-            if cadence and end is not None:
-                now = datetime.datetime.now()
-                if now < end:
-                    sec = (end - now).seconds
-                    boxed_info(
-                        logger,
-                        f"phase '[{phase.upper()}], sleeping {sec:.2f} seconds " +
-                        "till end-of-cadence ...",
-                    )
-                    time.sleep(sec)
-                else:
-                    boxed_info(
-                        logger,
-                        f"phase '[{phase.upper()}], cycle was longer than {cadence=} " +
-                        "sec, not sleeping",
-                    )
-        else:
+        #     if self.unit.acquirer.latest_acquisition is not None:
+        #         self.unit.acquirer.latest_acquisition.save_corrections(phase)
 
-            while self.unit.is_active(UnitActivities.Guiding):
-                time.sleep(1)
+        #     if cadence and end is not None:
+        #         now = datetime.datetime.now()
+        #         if now < end:
+        #             sec = (end - now).seconds
+        #             boxed_info(
+        #                 logger,
+        #                 f"phase '[{phase.upper()}], sleeping {sec:.2f} seconds " +
+        #                 "till end-of-cadence ...",
+        #             )
+        #             time.sleep(sec)
+        #         else:
+        #             boxed_info(
+        #                 logger,
+        #                 f"phase '[{phase.upper()}], cycle was longer than {cadence=} " +
+        #                 "sec, not sleeping",
+        #             )
+        # else:
+
+        while self.unit.is_active(UnitActivities.Guiding):
+            time.sleep(1)
 
         # Acquisition was stopped
         self.unit.end_activity(UnitActivities.Acquiring)
@@ -341,7 +341,6 @@ class Acquirer:
         # solver_name: SolverIdNames = "AstrometryDotNet",
         make_corrections: bool = True,
         skip_sky: bool = False,
-        guiding_mode: GuidingModes = "PlateSolving",
     ):
         """
         Starts an acquisition
@@ -413,7 +412,6 @@ class Acquirer:
                 target_dec=float(dec_j2000_degs),
                 conf=self.unit.unit_conf.acquisition,
                 skip_sky=skip_sky,
-                guiding_mode=GuidingMode[guiding_mode],
             )
             Thread(name="acquisition", target=self.do_acquire, args=[acquisition]).start()
 

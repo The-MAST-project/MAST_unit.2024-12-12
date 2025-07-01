@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import logging
-from enum import Enum, auto
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import ImagerBinningConfig
+from phd2.phd2 import PHD2Connector
+from solving_guider import SolvingGuider
+from src.common.utils import function_name
 
 if TYPE_CHECKING:
     from unit import Unit
 
+from abc import ABC, abstractmethod
+
+from common.activities import Activities
 from common.mast_logging import init_log
-from common.process import WatchedProcess
 from imagers import ImagerBinning, ImagerRoi, ImagerSettings
 
 logger = logging.Logger("mast.unit." + __name__)
@@ -20,28 +24,63 @@ init_log(logger)
 
 guider_address_port = ("127.0.0.1", 8001)
 
+class GuiderInterface(ABC, Activities):
 
-class GuidingMode(Enum):
-    NoGuiding = auto()
-    PlateSolving = auto()
-    PHD2 = auto()
+    @abstractmethod
+    def start_guiding(self):
+        """
+        Starts guiding
+        """
+        pass
+
+    @abstractmethod
+    def stop_guiding(self):
+        """Stops guiding"""
+        pass
+
+    @abstractmethod
+    def status(self):
+        pass
+
+    @property
+    @abstractmethod
+    def is_guiding(self) -> bool:
+        pass
 
 
-GuidingModes = Literal["NoGuiding", "PlateSolving", "PHD2"]
+class Guider(GuiderInterface):
+    valid_guider_types = ['solver', 'phd2']
 
-
-class Guider:
-
-    def __init__(self, unit: "Unit"):  # noqa: UP037
+    def __init__(self, unit: "Unit", guider_type: str | None = None):  # noqa: UP037
         self.unit = unit
+        self._backend = None
 
-        if self.unit.unit_conf.guider.method == "phd2":
-            WatchedProcess(
-                command="C:/Program Files (x86)/PHDGuiding2/phd2.exe",
-                logger=logger,
-            ).start()
+        if guider_type is not None:
+            if guider_type not in self.valid_guider_types:
+                raise ValueError(f"{function_name()}: bad guider_type argument '{guider_type}' "
+                                 + f"(valid types={self.valid_guider_types})")
+        elif self.unit.unit_conf.guider.method is not None:
+            if self.unit.unit_conf.guider.method not in self.valid_guider_types:
+                raise ValueError(f"{function_name()}: bad guider_type configuration '{self.unit.unit_conf.guider.method} "
+                                 + f"(valid types={self.valid_guider_types})")
+            guider_type = self.unit.unit_conf.guider.method
 
-    def end_guiding(self):
+        Activities.__init__(self)
+        if guider_type == "phd2":
+            self._backend = PHD2Connector()
+        elif guider_type == 'solver':
+            self._backend = SolvingGuider()
+
+    def status(self):
+        return self._backend.status() if self._backend else None
+
+    def start_guiding(self):
+        if self._backend:
+            self._backend.start_guiding()
+
+    def stop_guiding(self):
+        if self._backend:
+            self._backend.stop_guiding()
         self.unit.end_activity(UnitActivities.Guiding)
         logger.info("guiding ended")
 
@@ -102,9 +141,7 @@ class Guider:
         #     logger.warning('Cannot stop guiding - not-connected')
         #     return
 
-        if not self.unit.is_active(
-            UnitActivities.Acquiring
-        ) and not self.unit.is_active(UnitActivities.Guiding):
+        if not self.unit.is_active(UnitActivities.Acquiring) and not self.unit.is_active(UnitActivities.Guiding):
             error = "not acquiring or guiding"
             logger.error(error)
             return CanonicalResponse(errors=[error])
@@ -124,7 +161,6 @@ class Guider:
 
     @property
     def is_guiding(self) -> bool:
-        if not self.unit.connected:
-            return False
-
-        return self.unit.is_active(UnitActivities.Guiding)
+        if self._backend:
+            return self._backend.is_guiding
+        return False

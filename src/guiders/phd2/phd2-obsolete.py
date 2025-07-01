@@ -4,7 +4,6 @@ import logging
 import math
 import selectors
 import socket
-import stat
 import sys
 import threading
 import time
@@ -16,7 +15,7 @@ from pydantic import BaseModel
 from common.config import Config
 from common.mast_logging import init_log
 from common.process import WatchedProcess
-from guiders.base_guider import GuiderInterface
+from guiding import GuiderInterface
 
 if TYPE_CHECKING:
     from unit import Unit
@@ -693,12 +692,13 @@ class PHD2Guider(GuiderInterface):
             name="phd2",
             app_state=self.app_state,
             avg_dist=self.avg_dist,
-            is_guiding=self.is_guiding(),
+            is_guiding=self.is_guiding,
             is_settling=self.is_settling(),
             activities=int(self.activities),
             activities_verbal=self.activities.__repr__(),
         )
 
+    @property
     def is_guiding(self) -> bool:
         """check if currently guiding"""
         st, dist = self.get_status()

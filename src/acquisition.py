@@ -23,8 +23,6 @@ init_log(logger)
 
 class Acquisition:
 
-    from guiding import GuidingMode
-
     def __init__(
         self,
         unit: "Unit",
@@ -35,7 +33,6 @@ class Acquisition:
         target_dec: float | None = None,
         conf: AcquisitionConfig | None = None,
         skip_sky: bool = False,
-        guiding_mode: GuidingMode = GuidingMode.PlateSolving,
     ):
         if not conf:
             raise Exception("Acquisition: conf == None")
@@ -74,7 +71,6 @@ class Acquisition:
             }
         )
         self.skip_sky = skip_sky
-        self.guiding_mode = guiding_mode
 
     def save_corrections(self, phase: str):
         if phase in self.corrections:
