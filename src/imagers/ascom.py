@@ -1,4 +1,5 @@
 import datetime
+import json
 import logging
 import socket
 import threading
@@ -14,7 +15,7 @@ import win32com.client
 from astropy.io import fits
 
 from common.activities import ImagerActivities
-from common.ascom import AscomDispatcher, ascom_run
+from common.ascom import AscomDispatcher, AscomStatus, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.components import Component
 from common.config import Config
@@ -22,8 +23,7 @@ from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.mast_logging import init_log
 from common.paths import PathMaker
 from common.utils import RepeatTimer, function_name, time_stamp
-
-from . import AscomStatus, ImagerBinning, ImagerExposure, ImagerInterface, ImagerRoi, ImagerSettings, ImagerStatus
+from imagers import ImagerBinning, ImagerExposure, ImagerInterface, ImagerRoi, ImagerSettings, ImagerStatus
 
 if TYPE_CHECKING:
     from unit import Unit
@@ -89,7 +89,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     def ascom(self) -> win32com.client.Dispatch: # type: ignore
         return self._ascom
 
-    def __init__(self, unit: "Unit", prog_id: str | None = None):
+    def __init__(self, unit = None, prog_id: str | None = None):
         #
         # The Camera() is a Singleton but the initiator is called twice (for the same object ID):
         # - once from this file, with unit as None
@@ -175,6 +175,18 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         self._initialized = True
         # logger.info('initialized')
+
+    @property
+    def default_settings(self) -> ImagerSettings:
+        assert(self.camera_x_size is not None and self.camera_y_size is not None), \
+            "don't have camera_x_size or camera_y_size yet!"
+
+        return ImagerSettings(
+            seconds=5,
+            roi = ImagerRoi(x=0, y=0, width=self.camera_x_size, height=self.camera_y_size),
+            binning=ImagerBinning(x=1, y=1),
+            base_folder="c:/temp/ascom_images",
+        )
 
     @property
     def image_array(self) -> np.ndarray | None:
@@ -310,9 +322,9 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
                 a = self.ascom_status()
                 logger.info(
-                    f"Camera: {a.ascom.name}, {a.ascom.description}, "
-                    + f"{self.cameraXSize}x{self.cameraYSize}"
-                    + f" driver: '{self.conf.imager_type}'"
+                    f"Camera: model={a.ascom.name}, desc={a.ascom.description}, "
+                    + f"size={self.cameraXSize}x{self.cameraYSize}, "
+                    + f" prog_id='{self.prog_id}', version={a.ascom.version}"
                 )
 
                 if self.cameraXSize and self.cameraYSize:
@@ -875,15 +887,17 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                     f"{label}: power switch '{self.power_switch.hostname}' "
                     + f"(at '{self.power_switch.ipaddr}') not detected"
                 )
-            else:
-                ret.append(f"{label}: {"powered on" if self.is_on() else "not powered"}")
-        ret.append(f"{label}: {"detected" if self._detected else "not detected"}")
+            elif not self.is_on():
+                ret.append(f"{label}: not powered")
+        if not self._detected:
+            ret.append(f"{label}: not detected")
         if not self._ascom:
             ret.append(f"{label}: (ASCOM) - no handle")
-        else:
-            ret.append(f"{label}: (ASCOM) - {"connected" if self._ascom.connected else "not connected"}")
+        elif not self._ascom.connected:
+            ret.append(f"{label}: (ASCOM) - not connected")
 
-        ret.append(f"{label}: (ASCOM) - cooler {"ON" if cooler_response.succeeded and cooler_response.value else "OFF"}")
+        if not cooler_response.succeeded or not cooler_response.value:
+            ret.append(f"{label}: (ASCOM) - cooler OFF")
 
         return ret
 
@@ -976,8 +990,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             self.image_saved_event.wait()
             logger.info(f"{op}: got image_saved_event")
             self.image_saved_event.clear()
-        # else:
-        #     logger.info(f"{op}: image was saved, not waiting for image_saved_event.")
 
     def wait_for_image_ready(self):
         op = function_name()
@@ -986,5 +998,26 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             self.image_ready_event.wait()
             logger.info(f"{op}: image was not read, got image_ready_event")
             self.image_ready_event.clear()
-        # else:
-        #     logger.info(f"{op}: image was read, not waiting for image_ready_event.")
+
+    @property
+    def can_send_image_ready_event(self) -> bool:
+        return True
+
+    @property
+    def can_send_image_saved_event(self) -> bool:
+        return True
+
+if __name__ == "__main__":
+    cam = ASCOMImager(prog_id="ASCOM.ASICamera2.Camera")
+    # cam.make_pythonian_classes()
+    cam.startup()
+    cam.start_exposure(ImagerSettings.model_validate({"seconds": 5}, context={"imager": cam}))
+    print(json.dumps(cam.status().model_dump(), indent=2))
+    if cam.can_send_image_ready_event:
+        cam.wait_for_image_ready()
+        logger.info("got image ready event")
+
+    if cam.can_send_image_saved_event:
+        cam.wait_for_image_saved()
+        logger.info("got image saved event")
+    exit(0)
