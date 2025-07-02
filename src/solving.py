@@ -12,129 +12,85 @@ from astropy.coordinates import Angle
 
 from acquisition import Acquisition
 from common.activities import UnitActivities
-from common.config import AcquisitionConfig, ImagerBinningConfig, SkyRoiConfig, ToleranceConfig
+from common.config import AcquisitionConfig, Config, ImagerBinningConfig, SkyRoiConfig, ToleranceConfig
 from common.corrections import Correction, Corrections
 from common.filer import Filer
+from common.interfaces.imager import ImagerSettings
+from common.interfaces.solving import SolverInterface, SolvingResult, SolvingTolerance
 from common.mast_logging import init_log
 from common.solving import SolverId
 from common.utils import Coord, boxed_info, function_name
-from imagers import ImagerSettings
 
 logger = logging.Logger("mast.unit." + __name__)
 init_log(logger)
 filer = Filer(logger)
 
 
-class SolvingSolution:
-    ra_rads: float | None = None
-    dec_rads: float | None = None
-    ra_hours: float = 0.0
-    dec_degs: float = 0.0
-    matched_stars: int = 0
-    catalog_stars: int = 0
-    rotation_angle_degs: float | None = None
-    pixel_scale: float | None = None
-
-    def to_dict(self):
-        return {
-            "ra_rads": self.ra_rads,
-            "dec_rads": self.dec_rads,
-            "ra_hours": self.ra_hours,
-            "dec_degs": self.dec_degs,
-            "matched_stars": self.matched_stars,
-            "catalog_stars": self.catalog_stars,
-            "rotation_angle_degs": self.rotation_angle_degs,
-            "pixel_scale": self.pixel_scale,
-        }
-
-
-class SolvingResult:
-
-    succeeded: bool
-    errors: list[str] | None = None
-    solution: SolvingSolution | None
-    native_result = None
-
-    def __init__(
-        self,
-        succeeded: bool,
-        errors: list[str] | None = None,
-        solution: SolvingSolution | None = None,
-        native_result=None,
-    ):
-        self.succeeded: bool = succeeded
-        self.errors = errors
-        self.solution: SolvingSolution | None = solution
-        self.native_result = native_result
-
-    def to_dict(self):
-        return {
-            "succeeded": self.succeeded,
-            "errors": self.errors,
-            "solution": self.solution.to_dict() if self.solution else None,
-            "native_result": (
-                self.native_result.to_dict() if self.native_result else None
-            ),
-        }
-
-
-class SolvingTolerance:
-    ra: Angle
-    dec: Angle
-
-    def __init__(self, ra: Angle, dec: Angle):
-        self.ra = ra
-        self.dec = dec
-
-
-class Solver:
+class Solver(SolverInterface):
     if TYPE_CHECKING:
         from unit import Unit
 
+    _instance = None
+    _initialized = False
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self, unit: "Unit"):
+        if self._initialized:
+            return
+
         self.unit = unit
         self.latest_result: SolvingResult | None = None
+
+        from solvers.astrometry_dot_net import AstrometryDotNet
+        from solvers.planewave_cli import PlaneWaveCli
+        from solvers.planewave_shm import PlaneWaveShm
+
+        self._backend: SolverInterface | None = None
+        method = Config().get_unit().solving.method
+        valid_methods = Config().get_unit().solving.method
+        if method not in valid_methods:
+            raise ValueError(f"invalid solving method '{method}' in configuration, must be one of {valid_methods}")
+
+        if method == "AstrometryDotNet":
+            self._backend = AstrometryDotNet()
+        elif method == "PlaneWaveCli":
+            self._backend = PlaneWaveCli()
+        elif method == "PlanewaveShm":
+            self._backend = PlaneWaveShm()
+        if not self._backend:
+            raise Exception("could not figure out solving backend")
+
+        self._initialized = True
 
     def log_and_store_error(self, message: str):
         logger.error(message)
         self.unit.errors.append(message)
 
-    def plate_solve(
-        self, settings: ImagerSettings, target: Coord, solver_id: SolverId
-    ) -> SolvingResult | None:
+    def solve(self, imager_settings: ImagerSettings, target: Coord) -> SolvingResult | None:
         op = function_name()
 
-        if settings.binning is not None and settings.binning.x != settings.binning.y:
+        assert(self._backend is not None), "solve: self._backend is None"
+        if imager_settings.binning is not None and imager_settings.binning.x != imager_settings.binning.y:
             raise Exception(
                 "cannot deal with non-equal horizontal and vertical binning "
-                + f"({settings.binning.x=}, {settings.binning.y=}"
+                + f"({imager_settings.binning.x=}, {imager_settings.binning.y=}"
             )
-
-        from solvers.astrometry_dot_net import astrometry_dot_net_solve
-        from solvers.planewave_cli import planewave_cli_solve
-        from solvers.planewave_shm import planewave_shm_solve
-
-        solvers_dispatch = {
-            SolverId.PlaneWaveCli: planewave_cli_solve,
-            SolverId.PlaneWaveShm: planewave_shm_solve,
-            SolverId.AstrometryDotNet: astrometry_dot_net_solve,
-        }
-
-        if solver_id not in solvers_dispatch:
-            logger.error(f"No dispatcher for {solver_id=}")
-            raise Exception(f"no dispatcher for {solver_id=}")
 
         if self.unit.is_active(UnitActivities.Solving):
 
             ret: SolvingResult | None = None
 
-            settings.make_file_name()
+            imager_settings.make_file_name()
 
             #
             # Start exposure
             #
-            logger.info(f"{op}: starting {settings.seconds=} acquisition exposure")
-            response = self.unit.imager.start_exposure(settings)
+            logger.info(f"{op}: starting {imager_settings.seconds=} acquisition exposure")
+            response = self.unit.imager.start_exposure(imager_settings)
             if response and response.failed:
                 self.log_and_store_error(
                     f"{op}: could not start acquisition exposure: {response=}"
@@ -144,7 +100,7 @@ class Solver:
                 ret.errors = [f"could not start exposure ({[response.errors]})"]
                 return ret
 
-            return solvers_dispatch[solver_id](self.unit, settings, target)
+            return self._backend.solve(unit=self.unit, settings=imager_settings, target=target)
 
     def solve_and_correct(  # noqa: C901
         self,
@@ -160,7 +116,7 @@ class Solver:
     ) -> bool:
         """
         Tries for max_tries times to:
-        - Take an exposure using camera_settings
+        - Take an exposure using imager_settings
         - Plate solve the image
         - If the solved coordinates are NOT within the solving_tolerance from the target, correct the mount
 
@@ -169,7 +125,7 @@ class Solver:
         :param approach_mode:
         :param make_corrections:
         :param solver_id:
-        :param camera_settings: Imager settings for the exposure
+        :param imager_settings: Imager settings for the exposure
         :param solving_tolerance: How close do we need to be to stop trying
         :param parent_activity: If the parent_activity (e.g. UnitActivities.Acquiring, UnitActivities.Guiding)
                is stopped, this function stops as well
@@ -264,9 +220,7 @@ class Solver:
 
             # run the plate solver
             try:
-                result = self.plate_solve(
-                    settings=imager_settings, target=target, solver_id=solver_id
-                )
+                result = self.solve(imager_settings=imager_settings, target=target)
             except TimeoutError:
                 self.log_and_store_error("plate solving timed out, continuing ...")
                 continue

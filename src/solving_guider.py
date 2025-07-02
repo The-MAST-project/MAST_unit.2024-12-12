@@ -8,9 +8,9 @@ import astropy.units as u
 from astropy.coordinates import Angle
 
 from common.activities import UnitActivities
+from common.interfaces.guiding import GuiderInterface
 from common.mast_logging import init_log
 from common.utils import Coord, boxed_info
-from guiding import GuiderInterface
 from solving import SolvingTolerance
 
 logger = Logger('mast-unit-solving-guider')
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from unit import Unit
 
 class SolvingGuider(GuiderInterface):
-    _interface = None
+    _instance = None
     _initialized = False
 
     def __new__(cls, *args, **kwargs):
@@ -28,7 +28,7 @@ class SolvingGuider(GuiderInterface):
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, unit: Unit | None = None):
+    def __init__(self, unit):
         if self._initialized:
             return
 

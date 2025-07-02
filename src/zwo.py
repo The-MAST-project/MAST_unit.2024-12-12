@@ -11,13 +11,13 @@ import pyzwoasi as asi
 from astropy.io import fits
 
 from common.activities import ImagerActivities
-from common.components import Component
 
 # from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.interfaces.components import Component
+from common.interfaces.imager import ImagerBinning, ImagerExposure, ImagerInterface, ImagerRoi, ImagerSettings, ImagerStatus
 from common.mast_logging import init_log
 from common.utils import RepeatTimer, function_name, time_stamp
-from imagers import ImagerBinning, ImagerExposure, ImagerInterface, ImagerRoi, ImagerSettings, ImagerStatus
 
 logger = logging.Logger('mast-unit-imager-zwo')
 init_log(logger)

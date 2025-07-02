@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from common.config import Config
+from common.interfaces.guiding import GuiderInterface
 from common.mast_logging import init_log
 from common.process import WatchedProcess
-from guiding import GuiderInterface
 
 if TYPE_CHECKING:
     from unit import Unit

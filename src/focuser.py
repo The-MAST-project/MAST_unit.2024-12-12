@@ -8,10 +8,10 @@ from fastapi.routing import APIRouter
 from common.activities import FocuserActivities
 from common.ascom import AscomDispatcher, AscomStatus, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.components import Component, ComponentStatus
 from common.config import Config
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
+from common.interfaces.components import Component, ComponentStatus
 from common.mast_logging import init_log
 from common.utils import RepeatTimer, time_stamp
 from PlaneWave import pwi4_client

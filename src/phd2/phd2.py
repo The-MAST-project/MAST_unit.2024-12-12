@@ -15,11 +15,11 @@ from pydantic import BaseModel
 from common.activities import ImagerActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
+from common.interfaces.guiding import GuiderInterface
+from common.interfaces.imager import ImagerBinning, ImagerInterface, ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
 from common.process import WatchedProcess
 from common.utils import function_name
-from guiding import GuiderInterface
-from imagers import ImagerBinning, ImagerInterface, ImagerRoi, ImagerSettings
 
 # if TYPE_CHECKING:
 #     from unit import Unit  # type: ignore[name-defined]

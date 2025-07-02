@@ -11,13 +11,14 @@ from fastapi import Query
 from acquisition import Acquisition
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from common.interfaces.imager import ImagerBinning, ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.tasks.models import UnitAssignmentModel
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
 from common.utils import Coord, boxed_info, function_name
-from imagers import ImagerBinning, ImagerRoi, ImagerSettings
-from phd2.phd2 import PHD2Connector
+
+# from phd2.phd2 import PHD2Connector
 from solving import SolverId, SolvingTolerance
 from stage import StagePresetPosition
 
@@ -264,8 +265,8 @@ class Acquirer:
         # Acquisition was stopped
         self.unit.end_activity(UnitActivities.Acquiring)
 
-        if not isinstance(self.unit.imager, PHD2Connector):
-            self.unit.mount.stop_tracking()
+        # if not isinstance(self.unit.imager, PHD2Connector):
+        #     self.unit.mount.stop_tracking()
         if self.unit.acquirer.latest_acquisition is not None:
             self.unit.acquirer.latest_acquisition.post_process()
 
@@ -391,7 +392,7 @@ class Acquirer:
         if seconds is not None:
             self.unit.unit_conf.acquisition.exposure = seconds
 
-        assert(self.unit.unit_conf.solving.method in self.unit.unit_conf.solving.allowed_methods), \
+        assert(self.unit.unit_conf.solving.method in self.unit.unit_conf.solving.valid_methods), \
             "unit unit_conf.solving.method is not in allowed_methods"
 
         solver_name = self.unit.unit_conf.solving.method

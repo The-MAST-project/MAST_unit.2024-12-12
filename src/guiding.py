@@ -6,70 +6,54 @@ from typing import TYPE_CHECKING
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import ImagerBinningConfig
-from phd2.phd2 import PHD2Connector
+from common.utils import function_name
+
+# from phd2.phd2 import PHD2Connector
 from solving_guider import SolvingGuider
-from src.common.utils import function_name
 
 if TYPE_CHECKING:
     from unit import Unit
 
-from abc import ABC, abstractmethod
-
 from common.activities import Activities
+from common.interfaces.guiding import GuiderInterface
+from common.interfaces.imager import ImagerBinning, ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
-from imagers import ImagerBinning, ImagerRoi, ImagerSettings
 
 logger = logging.Logger("mast.unit." + __name__)
 init_log(logger)
 
 guider_address_port = ("127.0.0.1", 8001)
 
-class GuiderInterface(ABC, Activities):
-
-    @abstractmethod
-    def start_guiding(self):
-        """
-        Starts guiding
-        """
-        pass
-
-    @abstractmethod
-    def stop_guiding(self):
-        """Stops guiding"""
-        pass
-
-    @abstractmethod
-    def status(self):
-        pass
-
-    @property
-    @abstractmethod
-    def is_guiding(self) -> bool:
-        pass
-
 
 class Guider(GuiderInterface):
-    valid_guider_types = ['solving', 'phd2']
+
+    @staticmethod
+    def valid_guiding_methods():
+        from common.config import Config
+        return Config().get_unit().guider.method
 
     def __init__(self, unit: "Unit", guider_type: str | None = None):  # noqa: UP037
+        from phd2.phd2 import PHD2Connector
+
         self.unit = unit
         self._backend = None
+        valid_guiding_methods = Guider.valid_guiding_methods()
 
         if guider_type is not None:
-            if guider_type not in self.valid_guider_types:
+            if guider_type not in valid_guiding_methods:
                 raise ValueError(f"{function_name()}: bad guider_type argument '{guider_type}' "
-                                 + f"(valid types={self.valid_guider_types})")
+                                 + f"(valid methods={valid_guiding_methods})")
         elif self.unit.unit_conf.guider.method is not None:
-            if self.unit.unit_conf.guider.method not in self.valid_guider_types:
+            if self.unit.unit_conf.guider.method not in valid_guiding_methods:
                 raise ValueError(f"{function_name()}: bad guider_type configuration '{self.unit.unit_conf.guider.method} "
-                                 + f"(valid types={self.valid_guider_types})")
+                                 + f"(valid types={valid_guiding_methods})")
             guider_type = self.unit.unit_conf.guider.method
 
         Activities.__init__(self)
         if guider_type == "phd2":
             self._backend = PHD2Connector()
         elif guider_type == 'solving':
-            self._backend = SolvingGuider()
+            self._backend = SolvingGuider(self.unit)
 
     def status(self):
         return self._backend.status() if self._backend else None

@@ -15,6 +15,8 @@ import numpy as np
 from fastapi import Query
 from fastapi.routing import APIRouter
 from PIL import Image
+
+# from pydantic import Field
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from acquirer import Acquirer
@@ -30,12 +32,15 @@ from common.activities import (
 )
 from common.api import ControllerApi
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.components import Component, ComponentStatus
 from common.config import Config
 from common.const import Const
 from common.corrections import correction_phases
 from common.dlipowerswitch import PowerStatus, PowerSwitchFactory, PowerSwitchStatus, SwitchedOutlet
 from common.filer import Filer
+from common.interfaces.components import Component, ComponentStatus
+
+# from guiding import Guider
+from common.interfaces.imager import ImagerBinning, ImagerSettings, ImagerStatus
 from common.mast_logging import DailyFileHandler, init_log
 from common.models.assignments import UnitAssignmentModel
 from common.paths import PathMaker
@@ -44,8 +49,7 @@ from common.tasks.notifications import notify_controller_about_task_acquisition_
 from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers, CoverStatus
 from focuser import Focuser, FocuserStatus
-from guiding import Guider
-from imagers import Imager, ImagerBinning, ImagerSettings, ImagerStatus
+from imagers import Imager
 from mount import Mount, MountStatus
 from phd2.phd2 import PHD2Status
 from PlaneWave import pwi4_client
@@ -56,6 +60,10 @@ logger = logging.getLogger("mast.unit")
 init_log(logger)
 filer = Filer(logger)
 
+def make_imager_enum():
+    return Enum("ImagerType", {name: name for name in Imager.valid_imager_types()})
+
+ImagerTypeEnum = make_imager_enum()
 
 class GuideDirections(Enum):
     guide_north = 0
@@ -97,6 +105,8 @@ class Unit(Component):
         return cls._instance
 
     def __init__(self, id_: int | str):
+        from guiding import Guider
+
         if self._initialized:
             return
         # logger.info(f"Unit.__init__: initiating instance 0x{id(self):x}")
@@ -464,6 +474,7 @@ class Unit(Component):
 
     def expose(
         self,
+        # imager: ImagerTypeEnum = Field(default=ImagerTypeEnum(Imager.configured_imager())),
         subfolder: str | None = None,
         exposure_seconds: float = 3,
         repeats: int = 1,

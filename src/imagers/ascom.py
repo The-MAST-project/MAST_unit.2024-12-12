@@ -17,13 +17,13 @@ from astropy.io import fits
 from common.activities import ImagerActivities
 from common.ascom import AscomDispatcher, AscomStatus, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.components import Component
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.interfaces.components import Component
+from common.interfaces.imager import ImagerBinning, ImagerExposure, ImagerInterface, ImagerRoi, ImagerSettings, ImagerStatus
 from common.mast_logging import init_log
 from common.paths import PathMaker
 from common.utils import RepeatTimer, function_name, time_stamp
-from imagers import ImagerBinning, ImagerExposure, ImagerInterface, ImagerRoi, ImagerSettings, ImagerStatus
 
 if TYPE_CHECKING:
     from unit import Unit

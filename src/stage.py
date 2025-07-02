@@ -12,10 +12,10 @@ from fastapi.routing import APIRouter
 
 from common.activities import StageActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.components import Component, ComponentStatus
 from common.config import Config
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
+from common.interfaces.components import Component, ComponentStatus
 from common.mast_logging import init_log
 from common.utils import RepeatTimer, function_name, time_stamp
 
