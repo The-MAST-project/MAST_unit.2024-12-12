@@ -5,21 +5,21 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import TYPE_CHECKING
 
+# from typing import TYPE_CHECKING
 from astropy.coordinates import Angle
 
 from common.filer import Filer
+from common.interfaces.solving import SolverInterface, SolvingResult, SolvingSolution
 from common.mast_logging import init_log
 from common.utils import Coord, function_name, generate_random_string
 from imagers import ImagerSettings
-from solving import SolvingResult, SolvingSolution
 
 logger = logging.Logger("astrometry_dot_net")
 init_log(logger)
 
-if TYPE_CHECKING:
-    from unit import Unit  # type: ignore[import-untyped]
+# if TYPE_CHECKING:
+#     from unit import Unit  # type: ignore[import-untyped]
 
 class AstrometryDotNetSolverResult:
     index_file: str = ""
@@ -51,7 +51,7 @@ def win_to_wsl(path: str) -> str:
     return path.replace("\\", "/")
 
 
-def _parse_solver_output(lines: list[str]) -> SolvingResult:
+def _parse_solver_output(lines: list[str]) -> SolvingResult:  # noqa: C901
     op = function_name()
 
     #
@@ -130,109 +130,112 @@ def _parse_solver_output(lines: list[str]) -> SolvingResult:
 
     return ret
 
+class AstrometryDotNet(SolverInterface):
 
-def astrometry_dot_net_solve(
-    unit: "Unit", settings: ImagerSettings, target: Coord  # type: ignore[name]
-) -> SolvingResult:
-    filer = Filer(logger)
-    unix_emulator = "cygwin"
-    tmp_dir = generate_random_string(prefix="tmp_")
-    win_tmp_dir = r"D:/MAST/tmp/" + tmp_dir
-    os.makedirs(win_tmp_dir, exist_ok=True)
-    index_dir = r"D:/Astrometry.net/indexes"
-    solver_name = "AstrometryDotNet"
+    def solve(self, unit, settings: ImagerSettings, target: Coord) -> SolvingResult:  # type: ignore[name]
 
-    index_file = None
-    os.environ["PATH"] = (
-        "C:/cygwin64/bin;/usr/lib/lapack;C:/Users/mast/PycharmProjects/MAST_unit/venv/Scripts;C:/Windows/system32;" +
-        "C:/Windows;C:/Windows/System32/Wbem;C:/Windows/System32/WindowsPowerShell/v1.0/;C:/Windows/System32/OpenSSH/;" +
-        "C:/Users/mast/Documents/PlaneWave/ps3cli;C:/Program Files/Git/cmd;C:/Users/mast/Downloads/nssm/nssm-2.24/win64;" +
-        "C:/Program Files/MongoDB/Server/7.0/bin;C:/Users/mast/AppData/Local/Programs/Python/Launcher/;" +
-        "C:/Users/mast/AppData/Local/Microsoft/WindowsApps;C:/Program Files/JetBrains/PyCharm Community Edition 2024.1/bin;"+
-        "C:/Users/mast/PycharmProjects/MAST_unit/src/Standa/ximc-2.13.6/ximc/win64;"
-    )
+        filer = Filer(logger)
+        unix_emulator = "cygwin"
+        tmp_dir = generate_random_string(prefix="tmp_")
+        win_tmp_dir = r"D:/MAST/tmp/" + tmp_dir
+        os.makedirs(win_tmp_dir, exist_ok=True)
+        index_dir = r"D:/Astrometry.net/indexes"
+        solver_name = "AstrometryDotNet"
 
-    assert(settings.roi is not None), f"{function_name()}: settings.roi is None"
-    assert(settings.image_path is not None), (f"{function_name()}: settings.image_path is None")
-
-
-    cmd = ""
-    args = []
-    args += ["--scale-units", "arcsecperpix"]
-    args += ["--scale-low", "0.25"]
-    args += ["--scale-high", "0.27"]
-    args += ["--ra", f"{target.ra.deg}"]
-    args += ["--dec", f"{target.dec.value}"]
-    args += ["--radius", f"{1}"]
-    args += ["--no-plots", "--overwrite", "--solved", "none"]
-    args += ["--match", "none", "--rdls", "none", "--corr", "none"]
-    args += ["--crpix-x", str(int(settings.roi.width / 2))]
-    args += ["--crpix-y", str(int(settings.roi.height / 2))]
-
-    if index_file:
-        args += ["--index-file", index_file]
-    fits_path = settings.image_path
-    new_fits_path = fits_path.replace(".fits", f",solver={solver_name}.fits")
-
-    if unix_emulator == "cygwin":
-        tmp_path = r"/cygdrive/d/MAST/tmp/" + tmp_dir
-        os.makedirs(tmp_path, exist_ok=True)
-
-        cmd = r"C:/cygwin64/usr/local/astrometry/bin/solve-field"
-        args += ["--dir", tmp_path]
-        args += ["--temp-dir", tmp_path]
-        # args += ['--index-dir', '/cygdrive/d/Astrometry.net/indexes']
-        args += ["--index-dir", "/usr/local/astrometry/indexes-full"]
-        args += ["--new-fits", win_to_cygwin(new_fits_path)]
-        args += [win_to_cygwin(fits_path)]
-
-    elif unix_emulator == "wsl":
-        cmd = r"//wsl$/usr/local/astrometry/bin/solve-field"
-        args += ["--dir", win_to_wsl(tmp_dir)]
-        args += ["--temp-dir", win_to_wsl(tmp_dir)]
-        args += ["--index-dir", win_to_wsl(index_dir)]
-        args += ["--new-fits", win_to_wsl(new_fits_path)]
-        args += [win_to_wsl(fits_path)]
-
-    # logger.info(f"cmd: {cmd}, args: {args}")
-
-    start = datetime.datetime.now()
-    completed_process = subprocess.run(
-        " ".join([cmd] + args), capture_output=True, shell=True
-    )
-    stdout_lines = completed_process.stdout.decode().strip().splitlines()
-    stderr_lines = completed_process.stderr.decode().strip().splitlines()
-    elapsed = datetime.datetime.now() - start
-    logger.info(
-        f"{'succeeded' if completed_process.returncode == 0 else 'failed'}"
-        + f" in {elapsed.total_seconds():.2f} seconds"
-    )
-
-    result_file = cygwin_to_win(new_fits_path).replace(".fits", "-result.txt")
-    with open(result_file, "w") as file:
-        file.write("--- command ---\n")
-        file.write(" ".join([cmd] + args) + "\n")
-        file.write("\n--- stdout ---\n")
-        for line in stdout_lines:
-            file.writelines(line + "\n")
-        file.write("\n--- stderr ---\n")
-        for line in stderr_lines:
-            file.writelines(line + "\n")
-
-    filer.move_ram_to_shared([result_file, fits_path, cygwin_to_win(new_fits_path)])
-
-    if completed_process.returncode == 0:
-        ret = _parse_solver_output(stdout_lines)
-    else:
-        ret = SolvingResult(
-            succeeded=False,
-            errors=[f"Exit status: {completed_process.returncode}", ', '.join(stderr_lines)],
+        index_file = None
+        os.environ["PATH"] = (
+            "C:/cygwin64/bin;/usr/lib/lapack;C:/Users/mast/PycharmProjects/MAST_unit/venv/Scripts;C:/Windows/system32;"
+            + "C:/Windows;C:/Windows/System32/Wbem;C:/Windows/System32/WindowsPowerShell/v1.0/;C:/Windows/System32/OpenSSH/;"
+            + "C:/Users/mast/Documents/PlaneWave/ps3cli;C:/Program Files/Git/cmd;"
+            + "C:/Users/mast/Downloads/nssm/nssm-2.24/win64;C:/Program Files/JetBrains/PyCharm Community Edition 2024.1/bin;"
+            + "C:/Users/mast/AppData/Local/Microsoft/WindowsApps;"
+            + "C:/Program Files/MongoDB/Server/7.0/bin;C:/Users/mast/AppData/Local/Programs/Python/Launcher/;"
+            + "C:/Users/mast/PycharmProjects/MAST_unit/src/Standa/ximc-2.13.6/ximc/win64;"
         )
 
-    shutil.rmtree(win_tmp_dir, ignore_errors=True)
+        assert(settings.roi is not None), f"{function_name()}: settings.roi is None"
+        assert(settings.image_path is not None), (f"{function_name()}: settings.image_path is None")
 
-    return ret
 
+        cmd = ""
+        args = []
+        args += ["--scale-units", "arcsecperpix"]
+        args += ["--scale-low", "0.25"]
+        args += ["--scale-high", "0.27"]
+        args += ["--ra", f"{target.ra.deg}"]
+        args += ["--dec", f"{target.dec.value}"]
+        args += ["--radius", f"{1}"]
+        args += ["--no-plots", "--overwrite", "--solved", "none"]
+        args += ["--match", "none", "--rdls", "none", "--corr", "none"]
+        args += ["--crpix-x", str(int(settings.roi.width / 2))]
+        args += ["--crpix-y", str(int(settings.roi.height / 2))]
+
+        if index_file:
+            args += ["--index-file", index_file]
+        fits_path = settings.image_path
+        new_fits_path = fits_path.replace(".fits", f",solver={solver_name}.fits")
+
+        if unix_emulator == "cygwin":
+            tmp_path = r"/cygdrive/d/MAST/tmp/" + tmp_dir
+            os.makedirs(tmp_path, exist_ok=True)
+
+            cmd = r"C:/cygwin64/usr/local/astrometry/bin/solve-field"
+            args += ["--dir", tmp_path]
+            args += ["--temp-dir", tmp_path]
+            # args += ['--index-dir', '/cygdrive/d/Astrometry.net/indexes']
+            args += ["--index-dir", "/usr/local/astrometry/indexes-full"]
+            args += ["--new-fits", win_to_cygwin(new_fits_path)]
+            args += [win_to_cygwin(fits_path)]
+
+        elif unix_emulator == "wsl":
+            cmd = r"//wsl$/usr/local/astrometry/bin/solve-field"
+            args += ["--dir", win_to_wsl(tmp_dir)]
+            args += ["--temp-dir", win_to_wsl(tmp_dir)]
+            args += ["--index-dir", win_to_wsl(index_dir)]
+            args += ["--new-fits", win_to_wsl(new_fits_path)]
+            args += [win_to_wsl(fits_path)]
+
+        # logger.info(f"cmd: {cmd}, args: {args}")
+
+        start = datetime.datetime.now()
+        completed_process = subprocess.run(
+            " ".join([cmd] + args), capture_output=True, shell=True
+        )
+        stdout_lines = completed_process.stdout.decode().strip().splitlines()
+        stderr_lines = completed_process.stderr.decode().strip().splitlines()
+        elapsed = datetime.datetime.now() - start
+        logger.info(
+            f"{'succeeded' if completed_process.returncode == 0 else 'failed'}"
+            + f" in {elapsed.total_seconds():.2f} seconds"
+        )
+
+        result_file = cygwin_to_win(new_fits_path).replace(".fits", "-result.txt")
+        with open(result_file, "w") as file:
+            file.write("--- command ---\n")
+            file.write(" ".join([cmd] + args) + "\n")
+            file.write("\n--- stdout ---\n")
+            for line in stdout_lines:
+                file.writelines(line + "\n")
+            file.write("\n--- stderr ---\n")
+            for line in stderr_lines:
+                file.writelines(line + "\n")
+
+        filer.move_ram_to_shared([result_file, fits_path, cygwin_to_win(new_fits_path)])
+
+        if completed_process.returncode == 0:
+            ret = _parse_solver_output(stdout_lines)
+        else:
+            ret = SolvingResult(
+                succeeded=False,
+                errors=[f"Exit status: {completed_process.returncode}", ', '.join(stderr_lines)],
+            )
+
+        shutil.rmtree(win_tmp_dir, ignore_errors=True)
+
+        return ret
+
+    def solve_and_correct(self):
+        pass
 
 if __name__ == "__main__":
     imager_settings: ImagerSettings = ImagerSettings(
@@ -244,6 +247,7 @@ if __name__ == "__main__":
     target = Coord(
         ra=Angle(1.42677311977099, unit="hour"), dec=Angle(23.5115091209584, unit="deg")
     )
-    result = astrometry_dot_net_solve(None, imager_settings, target=target)
+    solver = AstrometryDotNet()
+    result = solver.solve(unit=None, settings=imager_settings, target=target)
     # print(json.dumps(result.to_dict(), indent=2))
     sys.exit(0)
