@@ -8,30 +8,37 @@ import threading
 import time
 from dataclasses import dataclass
 from enum import IntFlag, auto
+from typing import TYPE_CHECKING, Literal
 
-# from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from common.activities import ImagerActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.interfaces.guiding import GuiderInterface
-from common.interfaces.imager import ImagerBinning, ImagerInterface, ImagerRoi, ImagerSettings
+from common.interfaces.imager import (
+    ImagerBinning,
+    ImagerInterface,
+    ImagerRoi,
+    ImagerSettings,
+)
 from common.mast_logging import init_log
 from common.process import WatchedProcess
-from common.utils import function_name
+from common.utils import RepeatTimer, function_name
 
-# if TYPE_CHECKING:
-#     from unit import Unit  # type: ignore[name-defined]
+if TYPE_CHECKING:
+    from unit import Unit  # type: ignore[name-defined]
 
 logger = logging.Logger("mast.unit." + __name__)
 init_log(logger)
+
 
 class CoolerStatus(BaseModel):
     temperature: float
     coolerOn: bool  # noqa: N815
     setpoint: float
     power: float
+
 
 class SettleModel(BaseModel):
     pixels: int = 0
@@ -53,7 +60,7 @@ class PHD2Activities(IntFlag):
     Saving = auto()
 
 
-class PHD2Status(BaseModel):
+class PHD2ImagerStatus(BaseModel):
     name: str = "phd2"
     activities: int = 0
     activities_verbal: str | None = None
@@ -63,6 +70,9 @@ class PHD2Status(BaseModel):
     temperature: float | None = None
     cooler_on: bool = False
     cooler_power: float | None = None
+
+
+class PHD2GuiderStatus(BaseModel):
     is_guiding: bool = False
     is_settling: bool = False
     app_state: str | None = None
@@ -219,11 +229,13 @@ class PHD2Connection:
     def terminate(self):
         self._terminate = True
 
+
 @dataclass
 class SingleFrameResult:
     success: bool
     error_message: str | None
     path: str | None
+
 
 class PHD2Connector(GuiderInterface, ImagerInterface):
     """The main class for interacting with PHD2 both as a guider and as an imager."""
@@ -243,10 +255,13 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         hostname="localhost",
         instance=1,
     ):
+        if self._initialized:
+            return  # singleton, do not re-initialize
+
         GuiderInterface.__init__(self)
         ImagerInterface.__init__(self)
 
-        self.unit = unit
+        self.unit: "Unit" | None = unit  # type: ignore
         self.hostname = hostname
         self.instance = instance
         self.conn = None
@@ -270,6 +285,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.image_was_saved: bool = False
         self.image_saved_event: threading.Event = threading.Event()
 
+        self.guiding_verification_timer: RepeatTimer = RepeatTimer(
+            interval=30.0, function=self.verify_guiding
+        )
+
         self.conf = Config().get_unit().phd2
 
         self.activities = PHD2Activities.Idle
@@ -280,6 +299,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             shell=True,
         )
         self.watched_process.start()
+        secs = 3
+        logger.info(f"sleeping {secs} seconds to allow PHD2 to start")
+        time.sleep(secs)
 
         self._connected = False
         try:
@@ -288,6 +310,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         except PHD2ConnectorError as ex:
             self.connected = False
             logger.error(f"{function_name()}: Failed to connect {ex=}")
+
+        self.cooler_on = True
 
         self._initialized = True
 
@@ -301,6 +325,47 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if self.watched_process:
             self.watched_process.terminate()
             self.watched_process = None
+
+    def verify_guiding(self):
+        if not self.is_active(PHD2Activities.Guiding):
+            logger.info(f"{function_name()} not verifying guiding, not guiding")
+            return
+
+        self.call("stop_capture")  # stop guiding
+        assert self.unit is not None
+        settings = self.unit.guider.make_guiding_settings()
+        assert settings.roi is not None
+        try:
+            self.call(
+                "capture_single_frame",
+                params={
+                    "exposure": int(settings.seconds * 1000),  # convert to milliseconds
+                    "gain": settings.gain,
+                    "binning": settings.binning.x if settings.binning else 1,
+                    "subframe": [
+                        settings.roi.x,
+                        settings.roi.y,
+                        settings.roi.width,
+                        settings.roi.height,
+                    ],
+                    "save": True,
+                    "path": settings.image_path,
+                },
+            )
+        except PHD2ConnectorError as ex:
+            self.log_and_append(f"{ex=}")
+
+        self.wait_for_image_saved()
+        # TODO: fire a thread to solve the image and verify guiding
+        logger.warning(
+            f"{function_name()}: image saved in '{settings.image_path}', but not veryfied yet"
+        )
+        logger.info("resuming guiding ...")
+        self.guide(
+            settle_pixels=self.conf.settle.pixels,
+            settle_time=self.conf.settle.time,
+            settle_timeout=self.conf.settle.timeout,
+        )
 
     @staticmethod
     def _is_guiding(st):
@@ -333,6 +398,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 logger.debug(f"event: {e}, {self.version=}, {self.sub_version=}")
         elif e == "StartGuiding":
             self.start_activity(PHD2Activities.Guiding)
+            self.guiding_verification_timer.start()
             self.accumulators_active = True
             self.ra_accumulator.reset()
             self.dec_accumulator.reset()
@@ -404,7 +470,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             with self.lock:
                 self.app_state = "Looping"
         elif e == "LoopingExposuresStopped" or e == "GuidingStopped":
-            self.end_activity(PHD2Activities.Looping if e == "LoopingExposuresStopped" else PHD2Activities.Guiding)
+            activity = (
+                PHD2Activities.Looping
+                if e == "LoopingExposuresStopped"
+                else PHD2Activities.Guiding
+            )
+            self.end_activity(activity)
+            if activity == PHD2Activities.Guiding:
+                self.guiding_verification_timer.cancel()
             with self.lock:
                 self.app_state = "Stopped"
 
@@ -427,8 +500,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.end_activity(ImagerActivities.Exposing)
             self.end_activity(ImagerActivities.Saving)
         elif e == "ConfigurationChange":
-                # logger.debug(f"event: {e}")
-                pass
+            # logger.debug(f"event: {e}")
+            pass
         else:
             logger.error(f"TODO: Unhandled event {e}")
             pass
@@ -440,11 +513,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         while not self._terminate:
             try:
                 line = self.conn.read_line()
-            except ConnectionResetError:
-                logger.info("trying to reconnect ...")
-                self.conn.disconnect()
+            except ConnectionResetError as ex:
+                logger.info(f"trying to reconnect {ex=}...")
                 time.sleep(3)
-                self.conn.connect(hostname=self.hostname, port=4400)
+                self.connect()
                 self.connect_equipment()
                 continue
 
@@ -537,7 +609,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             response = self.response
             self.response = None
         if self._failed(response):
-            raise PHD2ConnectorError(f"error from RPC: {method=}, {params=}, message={response["error"]["message"]}")
+            raise PHD2ConnectorError(
+                f"error from RPC: {method=}, {params=}, message={response["error"]["message"]}"
+            )
         return response
 
     def check_connected(self):
@@ -769,22 +843,28 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         with self.lock:
             return self.app_state, self.avg_dist
 
-    def status(self) -> PHD2Status:
+    def status(
+        self, capacity: Literal["imager", "guider"] = "imager"
+    ) -> PHD2ImagerStatus | PHD2GuiderStatus:
 
-        return PHD2Status(
-            activities=int(self.activities),
-            activities_verbal=self.activities.__repr__(),
-            connected=self.connected,
-            operational=self.operational,
-            why_not_operational=self.why_not_operational,
-            temperature=self.temperature,
-            cooler_on=self.cooler_on,
-            cooler_power=self.cooler_power if self.cooler_power else None,
-            app_state=self.app_state,
-            avg_dist=self.avg_dist,
-            is_guiding=self.is_guiding,
-            is_settling=self.is_settling(),
-        )
+        if capacity == "imager":
+            return PHD2ImagerStatus(
+                activities=int(self.activities),
+                activities_verbal=self.activities.__repr__(),
+                connected=self.connected,
+                operational=self.operational,
+                why_not_operational=self.why_not_operational,
+                temperature=self.temperature,
+                cooler_on=self.cooler_on,
+                cooler_power=self.cooler_power if self.cooler_power else None,
+            )
+        else:
+            return PHD2GuiderStatus(
+                is_guiding=self.is_guiding,
+                is_settling=self.is_settling(),
+                app_state=self.app_state,
+                avg_dist=self.avg_dist,
+            )
 
     @property
     def is_guiding(self) -> bool:
@@ -850,7 +930,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.check_connected()
         response = self.call("get_camera_frame_size")
         if response and response["result"]:
-            arr =response["result"]
+            arr = response["result"]
             return arr[0]
         logger.error(f"{function_name()}: got None from 'get_camera_frame_size'")
         return 0
@@ -910,20 +990,34 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 self.errors.append(f"{ex=}")
         else:
             # while not guiding we use capture_single_frame()
-            assert(settings.roi is not None), "start_exposure: settings.roi is None"
+            assert settings.roi is not None, "start_exposure: settings.roi is None"
 
             try:
-                self.call("capture_single_frame", params={
-                    "exposure": int(settings.seconds * 1000),  # convert to milliseconds
-                    "gain": settings.gain,
-                    "binning": settings.binning.x if settings.binning else 1,
-                    "subframe": [settings.roi.x, settings.roi.y, settings.roi.width, settings.roi.height],
-                    "save": True,
-                    "path": settings.image_path,
-                    })
+                self.call(
+                    "capture_single_frame",
+                    params={
+                        "exposure": int(
+                            settings.seconds * 1000
+                        ),  # convert to milliseconds
+                        "gain": settings.gain,
+                        "binning": settings.binning.x if settings.binning else 1,
+                        "subframe": [
+                            settings.roi.x,
+                            settings.roi.y,
+                            settings.roi.width,
+                            settings.roi.height,
+                        ],
+                        "save": True,
+                        "path": settings.image_path,
+                    },
+                )
             except PHD2ConnectorError as ex:
                 self.log_and_append(f"{ex=}")
-        return CanonicalResponse(errors=self.errors) if self.errors else CanonicalResponse_Ok
+        return (
+            CanonicalResponse(errors=self.errors)
+            if self.errors
+            else CanonicalResponse_Ok
+        )
 
     def stop_exposure(self) -> CanonicalResponse:
         logger.info("stopping exposure")
@@ -960,7 +1054,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
     @cooler_on.setter
     def cooler_on(self, onoff: bool):
-        raise PHD2ConnectorError("PHD2 does not implement cooler_on.setter")
+        reply = self.call("set_cooler_state", onoff)
 
     @property
     def cooler_power(self) -> float | None:
@@ -1004,7 +1098,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             base_folder="c:/temp/phd2_images",
             binning=ImagerBinning(x=1, y=1),
             gain=85,
-            roi=ImagerRoi(x=0, y=0, width=self.camera_x_size, height=self.camera_y_size)
+            roi=ImagerRoi(
+                x=0, y=0, width=self.camera_x_size, height=self.camera_y_size
+            ),
         )
 
     @property
@@ -1015,11 +1111,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def can_send_image_saved_event(self) -> bool:
         return True
 
+
 if __name__ == "__main__":
     cam = PHD2Connector()
     cam.startup()
-    cam.start_exposure(ImagerSettings.model_validate({"seconds": 5}, context={"imager": cam}))
-    print(json.dumps(cam.status().model_dump(), indent=2))
+    cam.start_exposure(
+        ImagerSettings.model_validate({"seconds": 5}, context={"imager": cam})
+    )
+    print(json.dumps(cam.status(capacity="imager").model_dump(), indent=2))
     if cam.can_send_image_ready_event:
         cam.wait_for_image_ready()
         logger.info("got image ready event")
@@ -1027,5 +1126,5 @@ if __name__ == "__main__":
     if cam.can_send_image_saved_event:
         cam.wait_for_image_saved()
         logger.info("got image saved event")
-    print(json.dumps(cam.status().model_dump(), indent=2))
+    print(json.dumps(cam.status(capacity="imager").model_dump(), indent=2))
     exit(0)
