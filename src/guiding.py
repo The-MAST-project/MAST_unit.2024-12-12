@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from unit import Unit
 
 from common.activities import Activities
-from common.interfaces.guiding import GuiderInterface
+from common.interfaces.guiding import GuiderInterface, GuiderTypes
 from common.interfaces.imager import ImagerBinning, ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
 
@@ -30,6 +30,7 @@ class Guider(GuiderInterface):
     @staticmethod
     def valid_guiding_methods():
         from common.config import Config
+
         return Config().get_unit().guider.method
 
     def __init__(self, unit: "Unit", guider_type: str | None = None):  # noqa: UP037
@@ -41,19 +42,25 @@ class Guider(GuiderInterface):
 
         if guider_type is not None:
             if guider_type not in valid_guiding_methods:
-                raise ValueError(f"{function_name()}: bad guider_type argument '{guider_type}' "
-                                 + f"(valid methods={valid_guiding_methods})")
+                raise ValueError(
+                    f"{function_name()}: bad guider_type argument '{guider_type}' "
+                    + f"(valid methods={valid_guiding_methods})"
+                )
         elif self.unit.unit_conf.guider.method is not None:
             if self.unit.unit_conf.guider.method not in valid_guiding_methods:
-                raise ValueError(f"{function_name()}: bad guider_type configuration '{self.unit.unit_conf.guider.method} "
-                                 + f"(valid types={valid_guiding_methods})")
+                raise ValueError(
+                    f"{function_name()}: bad guider_type configuration '{self.unit.unit_conf.guider.method} "
+                    + f"(valid types={valid_guiding_methods})"
+                )
             guider_type = self.unit.unit_conf.guider.method
 
         Activities.__init__(self)
         if guider_type == "phd2":
             self._backend = PHD2Connector()
-        elif guider_type == 'solving':
+            self.guider_type = GuiderTypes.Phd2
+        elif guider_type == "solving":
             self._backend = SolvingGuider(self.unit)
+            self.guider_type = GuiderTypes.Solving
 
     def status(self):
         return self._backend.status() if self._backend else None
@@ -86,10 +93,18 @@ class Guider(GuiderInterface):
         camera_x_size = self.unit.imager.camera_x_size
         camera_y_size = self.unit.imager.camera_y_size
         if camera_x_size is None or camera_y_size is None:
-            raise Exception(f"Cannot make guiding settings - camera {camera_x_size=}, {camera_y_size=}")
+            raise Exception(
+                f"Cannot make guiding settings - camera {camera_x_size=}, {camera_y_size=}"
+            )
 
-        half_width = min(guiding_conf.roi.fiber_x, camera_x_size - guiding_conf.roi.fiber_x) - h_margin
-        half_height = min(guiding_conf.roi.fiber_y, camera_y_size - guiding_conf.roi.fiber_y) - v_margin
+        half_width = (
+            min(guiding_conf.roi.fiber_x, camera_x_size - guiding_conf.roi.fiber_x)
+            - h_margin
+        )
+        half_height = (
+            min(guiding_conf.roi.fiber_y, camera_y_size - guiding_conf.roi.fiber_y)
+            - v_margin
+        )
 
         guiding_binning: ImagerBinningConfig = guiding_conf.binning
         imager_binning = ImagerBinning(
@@ -98,15 +113,19 @@ class Guider(GuiderInterface):
         )
 
         if guiding_conf.roi:
-            imager_roi = ImagerRoi(x=guiding_conf.roi.fiber_x,
-                                   y=guiding_conf.roi.fiber_y,
-                                   width=guiding_conf.roi.width,
-                                   height=guiding_conf.roi.height)
+            imager_roi = ImagerRoi(
+                x=guiding_conf.roi.fiber_x,
+                y=guiding_conf.roi.fiber_y,
+                width=guiding_conf.roi.width,
+                height=guiding_conf.roi.height,
+            )
         else:
-            imager_roi = ImagerRoi(x=guiding_conf.roi.fiber_x - half_width,
-                                   y=guiding_conf.roi.fiber_y - half_height,
-                                   width=half_width * 2,
-                                   height=half_height * 2)
+            imager_roi = ImagerRoi(
+                x=guiding_conf.roi.fiber_x - half_width,
+                y=guiding_conf.roi.fiber_y - half_height,
+                width=half_width * 2,
+                height=half_height * 2,
+            )
 
         return ImagerSettings(
             seconds=guiding_conf.exposure,
@@ -125,7 +144,9 @@ class Guider(GuiderInterface):
         #     logger.warning('Cannot stop guiding - not-connected')
         #     return
 
-        if not self.unit.is_active(UnitActivities.Acquiring) and not self.unit.is_active(UnitActivities.Guiding):
+        if not self.unit.is_active(
+            UnitActivities.Acquiring
+        ) and not self.unit.is_active(UnitActivities.Guiding):
             error = "not acquiring or guiding"
             logger.error(error)
             return CanonicalResponse(errors=[error])
