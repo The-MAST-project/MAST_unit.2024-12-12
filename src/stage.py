@@ -17,10 +17,12 @@ from common.const import Const
 from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
 from common.interfaces.components import Component, ComponentStatus
 from common.mast_logging import init_log
-from common.utils import RepeatTimer, function_name, time_stamp
+from common.utils import RepeatTimer, Timeout, function_name, time_stamp
 
 if TYPE_CHECKING:
     from unit import Unit
+
+os.environ["XILOG"] = "C:/temp/ximc.log"  # Enables logging for ximc library.
 
 cur_dir = os.path.abspath(os.path.dirname(__file__))  # Specifies the current directory.
 ximc_dir = os.path.join(
@@ -36,21 +38,20 @@ if platform.system() == "Windows":
     lib_dir = os.path.join(ximc_dir, arch_dir)
     os.add_dll_directory(lib_dir)  # add dll path into an environment variable
 
+    from pyximc import EnumerateFlags  # type: ignore[name]
+    from pyximc import Result  # type: ignore[name]
     from pyximc import (
         POINTER,
-        EnumerateFlags,  # type: ignore[name]
         MvcmdStatus,
-        Result,  # type: ignore[name]
         StateFlags,
         byref,
         c_int,
         cast,
         device_information_t,
         edges_settings_t,
-        status_t,
-        string_at,
     )
     from pyximc import lib as ximclib  # type: ignore[name]
+    from pyximc import status_t, string_at
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
@@ -109,10 +110,11 @@ class Stage(Component, SwitchedOutlet):
 
     _positioning_precision: int = 100
 
-    def __init__(self, unit: "Unit"): # type: ignore
+    def __init__(self, unit: "Unit"):  # type: ignore
         if self._initialized:
             return
 
+        op = "Stage.__init__"
         self.unit = unit
         self.conf = Config().get_unit().stage
 
@@ -147,31 +149,39 @@ class Stage(Component, SwitchedOutlet):
         # This is device search and enumeration with probing. It gives more information about devices.
         probe_flags = EnumerateFlags.ENUMERATE_PROBE | EnumerateFlags.ENUMERATE_ALL_COM
         enum_hints = b"addr="
-        assert(ximclib)
-        dev_enum = ximclib.enumerate_devices(probe_flags, enum_hints)
-
+        assert ximclib
         self.device = -1
-        dev_count = ximclib.get_device_count(dev_enum)
-        if dev_count == 0:
-            logger.error(f"stage.__init__: no device detected ({dev_count=})")
+        # dev_enum = ximclib.enumerate_devices(probe_flags, enum_hints)
+        try:
+            with Timeout(2) as timeout:
+                dev_enum = timeout.run(
+                    ximclib.enumerate_devices, probe_flags, enum_hints
+                )
+        except TimeoutError as ex:
+            logger.error(f"{op}: timeout while enumerating devices: {ex}")
             return
 
-        assert(ximclib)
+        dev_count = ximclib.get_device_count(dev_enum)
+        if dev_count == 0:
+            logger.error(f"{op}: no device detected ({dev_count=})")
+            return
+
+        assert ximclib
         self.device_uri = ximclib.get_device_name(dev_enum, 0)
         ximclib.free_enumerate_devices(dev_enum)
         self.device = ximclib.open_device(self.device_uri)
 
         if not self.detected:
-            logger.error(f"no device detected ({self.device=}")
+            logger.error(f"{op}: no device detected ({self.device=}")
             return
 
         x_device_information = device_information_t()
-        assert(ximclib)
+        assert ximclib
         result = ximclib.get_device_information(
             self.device, byref(x_device_information)
         )
         x_edges_settings = edges_settings_t()
-        assert(ximclib)
+        assert ximclib
         result1 = ximclib.get_edges_settings(self.device, byref(x_edges_settings))
         if result == Result.Ok and result1 == Result.Ok:
             comport = str(self.device_uri)
@@ -211,12 +221,12 @@ class Stage(Component, SwitchedOutlet):
             self.presets[StagePresetPosition.Max] = self.max_travel
             self.presets[StagePresetPosition.Middle] = int(
                 (self.max_travel - self.min_travel) / 2
-        )
+            )
 
         # get initial values from the hardware
         hw_status = status_t()
         with self.stage_lock:
-            assert(ximclib)
+            assert ximclib
             result = ximclib.get_status(self.device, byref(hw_status))
         if result == Result.Ok:
             self._position = hw_status.CurPosition
@@ -227,7 +237,7 @@ class Stage(Component, SwitchedOutlet):
         self.timer.start()
 
         with self.stage_lock:
-            assert(ximclib)
+            assert ximclib
             result = ximclib.command_homezero(self.device)
             if result == Result.Ok:
                 self.start_activity(StageActivities.Homing)
@@ -237,8 +247,8 @@ class Stage(Component, SwitchedOutlet):
 
     def __del__(self):
         logger.info(f"Closing {self.device=}")
-        assert(ximclib)
-        assert(self.device)
+        assert ximclib
+        assert self.device
         ximclib.close_device(byref(cast(self.device, POINTER(c_int))))
 
     def __repr__(self):
@@ -257,8 +267,8 @@ class Stage(Component, SwitchedOutlet):
         if not self.is_on():
             return
 
-        assert(ximclib)
-        assert(self.device)
+        assert ximclib
+        assert self.device
         if value:
             self.device = ximclib.open_device(self.device_uri)
         else:
@@ -346,7 +356,7 @@ class Stage(Component, SwitchedOutlet):
 
         self.target = value
         with self.stage_lock:
-            assert(ximclib), "No ximclib"
+            assert ximclib, "No ximclib"
             result = ximclib.command_move(self.device, value)
         if result == Result.Ok:
             self.start_activity(StageActivities.Moving)
@@ -390,7 +400,7 @@ class Stage(Component, SwitchedOutlet):
 
         hw_status = status_t()
         with self.stage_lock:
-            assert(ximclib)
+            assert ximclib
             result = ximclib.get_status(self.device, byref(hw_status))
         if result != Result.Ok:
             # result_name = Result(result).name
@@ -441,7 +451,6 @@ class Stage(Component, SwitchedOutlet):
 
             if self.is_active(StageActivities.Homing):
                 self.end_activity(StageActivities.Homing)
-
 
     def move_to_preset(
         self,
@@ -504,7 +513,7 @@ class Stage(Component, SwitchedOutlet):
             )
         try:
             with self.stage_lock:
-                assert(ximclib)
+                assert ximclib
                 response = ximclib.command_move(self.device, position, 0)
                 if response != Result.Ok:
                     msg = f"{op}: Failed to start stage move absolute (command_move({self.device}, {position}), {response=}"
@@ -550,7 +559,7 @@ class Stage(Component, SwitchedOutlet):
             self.target = current_position + amount
             self.start_activity(StageActivities.Moving)
             with self.stage_lock:
-                assert(ximclib)
+                assert ximclib
                 response = ximclib.command_movr(self.device, amount, 0)
             if response != Result.Ok:
                 msg = (
@@ -576,7 +585,7 @@ class Stage(Component, SwitchedOutlet):
             if self.is_active(activity):
                 self.end_activity(activity)
 
-        assert(ximclib)
+        assert ximclib
         ximclib.command_stop(self.device)
         return CanonicalResponse_Ok
 
@@ -616,9 +625,11 @@ class Stage(Component, SwitchedOutlet):
                 self.at_preset(StagePresetPosition.Spec)
                 or self.at_preset(StagePresetPosition.Sky)
             ):
-                ret.append(f"{label}: at {self.position}, not at 'Spec' "
-                           + f"({self.presets[StagePresetPosition.Spec]}) or 'Sky' "
-                           + f"({self.presets[StagePresetPosition.Sky]}) preset positions")
+                ret.append(
+                    f"{label}: at {self.position}, not at 'Spec' "
+                    + f"({self.presets[StagePresetPosition.Spec]}) or 'Sky' "
+                    + f"({self.presets[StagePresetPosition.Sky]}) preset positions"
+                )
         return ret
 
     @property
@@ -629,10 +640,8 @@ class Stage(Component, SwitchedOutlet):
     def was_shut_down(self) -> bool:
         return self._was_shut_down
 
-
     def endpoint_get_position(self) -> CanonicalResponse:
         return CanonicalResponse(value=self.position)
-
 
     def endpoint_set_position(self, pos: int):
         self.position = pos
@@ -644,12 +653,22 @@ class Stage(Component, SwitchedOutlet):
         tag = "Stage"
 
         router = APIRouter()
-        router.add_api_route(base_stage_path + "/startup", tags=[tag], endpoint=self.startup)
-        router.add_api_route(base_stage_path + "/shutdown", tags=[tag], endpoint=self.shutdown)
-        router.add_api_route(base_stage_path + "/abort", tags=[tag], endpoint=self.abort)
-        router.add_api_route(base_stage_path + "/status", tags=[tag], endpoint=self.status)
         router.add_api_route(
-            base_stage_path + "/position", tags=[tag], endpoint=self.endpoint_get_position
+            base_stage_path + "/startup", tags=[tag], endpoint=self.startup
+        )
+        router.add_api_route(
+            base_stage_path + "/shutdown", tags=[tag], endpoint=self.shutdown
+        )
+        router.add_api_route(
+            base_stage_path + "/abort", tags=[tag], endpoint=self.abort
+        )
+        router.add_api_route(
+            base_stage_path + "/status", tags=[tag], endpoint=self.status
+        )
+        router.add_api_route(
+            base_stage_path + "/position",
+            tags=[tag],
+            endpoint=self.endpoint_get_position,
         )
         router.add_api_route(
             base_stage_path + "/position",
@@ -657,7 +676,9 @@ class Stage(Component, SwitchedOutlet):
             tags=[tag],
             endpoint=self.endpoint_set_position,
         )
-        router.add_api_route(base_stage_path + "/connect", tags=[tag], endpoint=self.connect)
+        router.add_api_route(
+            base_stage_path + "/connect", tags=[tag], endpoint=self.connect
+        )
         router.add_api_route(
             base_stage_path + "/disconnect", tags=[tag], endpoint=self.disconnect
         )
@@ -665,7 +686,9 @@ class Stage(Component, SwitchedOutlet):
             base_stage_path + "/move", tags=[tag], endpoint=self.move_relative
         )
         router.add_api_route(
-            base_stage_path + "/move_to_preset", tags=[tag], endpoint=self.move_to_preset
+            base_stage_path + "/move_to_preset",
+            tags=[tag],
+            endpoint=self.move_to_preset,
         )
 
         return router
