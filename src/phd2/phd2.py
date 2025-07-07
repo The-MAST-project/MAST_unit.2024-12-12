@@ -6,10 +6,12 @@ import selectors
 import socket
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import IntFlag, auto
 from typing import TYPE_CHECKING, Literal
 
+from astropy.coordinates import Angle
 from pydantic import BaseModel
 
 from common.activities import ImagerActivities
@@ -24,7 +26,7 @@ from common.interfaces.imager import (
 )
 from common.mast_logging import init_log
 from common.process import WatchedProcess
-from common.utils import RepeatTimer, function_name
+from common.utils import Coord, RepeatTimer, boxed_info, function_name
 
 if TYPE_CHECKING:
     from unit import Unit  # type: ignore[name-defined]
@@ -58,6 +60,9 @@ class PHD2Activities(IntFlag):
     Calibrating = auto()
     Looping = auto()
     Saving = auto()
+    Verifying = auto()
+    ExposingForVerification = auto()
+    SolvingForVerification = auto()
 
 
 class PHD2ImagerStatus(BaseModel):
@@ -280,6 +285,13 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.dec_accumulator = PHD2Accumulator()
         self.stats = PHD2GuideStats()
         self.settle = None
+
+        default_settling = Config().get_unit().phd2.settle
+        self.settling_settings: SettleModel = SettleModel(
+            pixels=default_settling.pixels,
+            time=default_settling.time,
+            timeout=default_settling.timeout,
+        )
         self.errors = []
 
         self.image_was_saved: bool = False
@@ -331,11 +343,13 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             logger.info(f"{function_name()} not verifying guiding, not guiding")
             return
 
+        self.start_activity(PHD2Activities.Verifying)
         self.call("stop_capture")  # stop guiding
         assert self.unit is not None
         settings = self.unit.guider.make_guiding_settings()
         assert settings.roi is not None
         try:
+            self.start_activity(PHD2Activities.ExposingForVerification)
             self.call(
                 "capture_single_frame",
                 params={
@@ -354,18 +368,53 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             )
         except PHD2ConnectorError as ex:
             self.log_and_append(f"{ex=}")
+            self.end_activity(PHD2Activities.ExposingForVerification)
+            self.end_activity(PHD2Activities.Verifying)
+            self.guide()
+            return
 
         self.wait_for_image_saved()
-        # TODO: fire a thread to solve the image and verify guiding
-        logger.warning(
-            f"{function_name()}: image saved in '{settings.image_path}', but not veryfied yet"
+
+        logger.info(f"{function_name()}: resuming guiding ...")
+        self.guide()
+
+        assert self.unit.acquirer.latest_acquisition is not None
+        assert settings.image_path is not None
+        target: Coord = Coord(
+            Angle(self.unit.acquirer.latest_acquisition.target_ra, unit="hours"),
+            Angle(self.unit.acquirer.latest_acquisition.target_dec, unit="degrees"),
         )
-        logger.info("resuming guiding ...")
-        self.guide(
-            settle_pixels=self.conf.settle.pixels,
-            settle_time=self.conf.settle.time,
-            settle_timeout=self.conf.settle.timeout,
-        )
+        tolerance = Config().get_unit().guiding.tolerance
+
+        self.start_activity(PHD2Activities.SolvingForVerification)
+        with ThreadPoolExecutor() as executor:
+            logger.info(f"{function_name()}: starting solving for {target=}")
+            future = executor.submit(self.unit.solver.solve, settings, target)
+            solving_result = future.result()
+
+        logger.info(f"{function_name()}: solving result: {solving_result=}")
+        if solving_result and solving_result.succeeded and solving_result.solution:
+            delta_ra = solving_result.solution.ra_hours - target.ra.hours  # type: ignore
+            delta_dec = solving_result.solution.dec_degs - target.dec.degrees  # type: ignore
+            within_tolerance = (
+                abs(delta_ra) <= tolerance.ra_arcsec
+                and abs(delta_dec) <= tolerance.dec_arcsec
+            )
+            boxed_info(
+                info_logger=logger,
+                ll=[
+                    f"{delta_ra=}, {delta_dec=}",
+                    f"{tolerance=}",
+                    f"within tolerance: {within_tolerance}",
+                ],
+            )
+
+            if not within_tolerance:
+                # TBD: what to do if the target is not within tolerance?
+                pass
+
+        self.end_activity(PHD2Activities.SolvingForVerification)
+        self.end_activity(PHD2Activities.Verifying)
 
     @staticmethod
     def _is_guiding(st):
