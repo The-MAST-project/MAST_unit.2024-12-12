@@ -20,7 +20,14 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.interfaces.imager import ImagerBinning, ImagerExposure, ImagerInterface, ImagerRoi, ImagerSettings, ImagerStatus
+from common.interfaces.imager import (
+    ImagerBinning,
+    ImagerExposure,
+    ImagerInterface,
+    ImagerRoi,
+    ImagerSettings,
+    ImagerStatus,
+)
 from common.mast_logging import init_log
 from common.paths import PathMaker
 from common.utils import RepeatTimer, function_name, time_stamp
@@ -40,6 +47,7 @@ class Visualizer:
 
 class AscomImagerStatus(ImagerStatus, AscomStatus):
     pass
+
 
 class AscomCameraState(IntFlag):
     """
@@ -86,16 +94,15 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         return logger
 
     @property
-    def ascom(self) -> win32com.client.Dispatch: # type: ignore
+    def ascom(self) -> win32com.client.Dispatch:  # type: ignore
         return self._ascom
 
-    def __init__(self, unit = None, prog_id: str | None = None):
+    def __init__(self, unit=None, prog_id: str | None = None):
         #
         # The Camera() is a Singleton but the initiator is called twice (for the same object ID):
         # - once from this file, with unit as None
         # - one from the unit, with unit as the main Unit object
         #
-
 
         self.unit = unit
         self.prog_id = prog_id
@@ -134,7 +141,9 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         self._is_exposing: bool = False
         self.operational_set_point: float = -25
-        self.warm_set_point: float = 5  # temperature at which the camera is considered warm
+        self.warm_set_point: float = (
+            5  # temperature at which the camera is considered warm
+        )
         self._image_width: int | None = None
         self._image_height: int | None = None
         self.PixelSizeX: int | None = None
@@ -156,7 +165,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         self._was_shut_down: bool = False
 
-        self.timer: RepeatTimer = RepeatTimer(1, function=self.ontimer)
+        self.timer: RepeatTimer | None = RepeatTimer(1, function=self.ontimer)
         self.timer.name = "camera-timer-thread"
         self.timer.start()
 
@@ -178,12 +187,15 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
     @property
     def default_settings(self) -> ImagerSettings:
-        assert(self.camera_x_size is not None and self.camera_y_size is not None), \
-            "don't have camera_x_size or camera_y_size yet!"
+        assert (
+            self.camera_x_size is not None and self.camera_y_size is not None
+        ), "don't have camera_x_size or camera_y_size yet!"
 
         return ImagerSettings(
             seconds=5,
-            roi = ImagerRoi(x=0, y=0, width=self.camera_x_size, height=self.camera_y_size),
+            roi=ImagerRoi(
+                x=0, y=0, width=self.camera_x_size, height=self.camera_y_size
+            ),
             binning=ImagerBinning(x=1, y=1),
             base_folder="c:/temp/ascom_images",
         )
@@ -205,7 +217,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     def binning(self, value: ImagerBinning):
         if self.maxBinX and (1 > value.x > self.maxBinX):
             raise Exception(f"bad {value.x=}, must be > 1 and < {self.maxBinX=}")
-        if self.maxBinY and(1 > value.y > self.maxBinY):
+        if self.maxBinY and (1 > value.y > self.maxBinY):
             raise Exception(f"bad {value.y=}, must be > 1 and < {self.maxBinY=}")
 
         current_binning = self._binning
@@ -224,13 +236,9 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     @roi.setter
     def roi(self, value: ImagerRoi):
         if self.cameraXSize and (0 > value.x > self.cameraXSize):
-            raise Exception(
-                f"bad {value.x=}, must be 0 > x > {self.cameraXSize=}"
-            )
+            raise Exception(f"bad {value.x=}, must be 0 > x > {self.cameraXSize=}")
         if self.cameraYSize and (0 > value.y > self.cameraYSize):
-            raise Exception(
-                f"bad {value.y=}, must be 0 > y > {self.cameraYSize=}"
-            )
+            raise Exception(f"bad {value.y=}, must be 0 > y > {self.cameraYSize=}")
         if self.cameraXSize and (0 > value.width > self.cameraXSize):
             raise Exception(
                 f"bad {value.width=}, must be 0 > width > {self.cameraXSize=}"
@@ -240,13 +248,9 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 f"bad {value.height=}, must be 0 > height > {self.cameraYSize=}"
             )
         if self.cameraXSize and (value.x + value.width > self.cameraXSize):
-            raise Exception(
-                f"{value.x=} + {value.width=} exceeds {self.cameraXSize=}"
-            )
+            raise Exception(f"{value.x=} + {value.width=} exceeds {self.cameraXSize=}")
         if self.cameraYSize and (value.y + value.height > self.cameraYSize):
-            raise Exception(
-                f"{value.y=} + {value.height=} exceeds {self.cameraYSize=}"
-            )
+            raise Exception(f"{value.y=} + {value.height=} exceeds {self.cameraYSize=}")
 
         response_x = ascom_run(self, f"StartX ={value.x}")
         response_y = ascom_run(self, f"StartY = {value.y}")
@@ -270,14 +274,16 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 + f"{response_width.failure=}, {response_height.failure=}"
             )
         else:
-            self._roi = ImagerRoi(x=value.x, y=value.y, width=value.width, height=value.height)
+            self._roi = ImagerRoi(
+                x=value.x, y=value.y, width=value.width, height=value.height
+            )
 
     @property
     def connected(self) -> bool:
         if not self.is_on() or not self._ascom:
             return False
         response = ascom_run(self, "Connected", no_entry_log=True)
-        return response.value if response.succeeded else False # type: ignore
+        return response.value if response.succeeded else False  # type: ignore
 
     @connected.setter
     def connected(self, value: bool):  # noqa: C901
@@ -322,9 +328,9 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
                 a = self.ascom_status()
                 logger.info(
-                    f"Camera: model={a.ascom.name}, desc={a.ascom.description}, "
+                    f"Camera: model='{a.ascom.name}', desc='{a.ascom.description}', "
                     + f"size={self.cameraXSize}x{self.cameraYSize}, "
-                    + f" prog_id='{self.prog_id}', version={a.ascom.version}"
+                    + f" prog_id='{self.prog_id}', version='{a.ascom.version}'"
                 )
 
                 if self.cameraXSize and self.cameraYSize:
@@ -348,7 +354,11 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if not self.connected:
             raise Exception("cannot set gain, not connected")
 
-        if self.GainMin is not None and self.GainMax is not None and self.GainMin > value > self.GainMax:
+        if (
+            self.GainMin is not None
+            and self.GainMax is not None
+            and self.GainMin > value > self.GainMax
+        ):
             logger.error(
                 f"Exception({value=} out of bounds [{self.GainMin=}, {self.GainMax=}]"
             )
@@ -403,7 +413,12 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         width = width if width is not None else self.cameraXSize
         height = height if height is not None else self.cameraYSize
 
-        roi = ImagerRoi(x=center_x - int(width / 2), y=center_y - int(height / 2), width=width, height=height)
+        roi = ImagerRoi(
+            x=center_x - int(width / 2),
+            y=center_y - int(height / 2),
+            width=width,
+            height=height,
+        )
         binning = binning if isinstance(binning, int) else 1
 
         settings = ImagerSettings(
@@ -418,7 +433,9 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         self.start_exposure(settings)
 
-    def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:  # noqa: C901
+    def start_exposure(
+        self, settings: ImagerSettings
+    ) -> CanonicalResponse:  # noqa: C901
         """
         Starts a *MAST* camera exposure
 
@@ -704,6 +721,20 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         self.abort_exposure()
         return CanonicalResponse_Ok
 
+    def __del__(self):
+        """
+        Destructor, stops the timer and disconnects from the ASCOM camera
+        """
+        if self.timer:
+            self.timer.cancel()
+            self.timer = None
+
+        if self.connected:
+            try:
+                self.disconnect()
+            except Exception as e:
+                logger.error(f"failed to disconnect from ASCOM camera: {e}")
+
     def ontimer(self):  # noqa: C901
         """
         Called by timer, checks if any ongoing activities have changed state
@@ -786,9 +817,15 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                         )
                         self.end_activity(ImagerActivities.ReadingOut)
                         self.image_was_read = True
-                        if self.latest_settings and self.latest_settings.fits_cards is None:
+                        if (
+                            self.latest_settings
+                            and self.latest_settings.fits_cards is None
+                        ):
                             self.latest_settings.fits_cards = {}
-                        if self.latest_settings and self.latest_settings.fits_cards is not None:
+                        if (
+                            self.latest_settings
+                            and self.latest_settings.fits_cards is not None
+                        ):
                             self.latest_settings.fits_cards["CCD-TEMP"] = (
                                 self.ccd_temp_at_mid_exposure,
                                 "CCD temperature at mid-exposure",
@@ -1007,11 +1044,14 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     def can_send_image_saved_event(self) -> bool:
         return True
 
+
 if __name__ == "__main__":
     cam = ASCOMImager(prog_id="ASCOM.ASICamera2.Camera")
     # cam.make_pythonian_classes()
     cam.startup()
-    cam.start_exposure(ImagerSettings.model_validate({"seconds": 5}, context={"imager": cam}))
+    cam.start_exposure(
+        ImagerSettings.model_validate({"seconds": 5}, context={"imager": cam})
+    )
     print(json.dumps(cam.status().model_dump(), indent=2))
     if cam.can_send_image_ready_event:
         cam.wait_for_image_ready()
