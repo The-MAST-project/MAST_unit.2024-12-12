@@ -45,7 +45,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
     _initialized = False
 
     @property
-    def ascom(self) -> win32com.client.Dispatch: # type: ignore
+    def ascom(self) -> win32com.client.Dispatch:  # type: ignore
         return self._ascom
 
     def __new__(cls, *args, **kwargs):
@@ -154,7 +154,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
     @property
     def connected(self):
         stat = self.pw.status()
-        return stat.focuser.is_connected # type: ignore
+        return stat.focuser.is_connected  # type: ignore
 
     @connected.setter
     def connected(self, value):
@@ -176,7 +176,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         :mastapi:
         """
         stat = self.pw.status()
-        return round(stat.focuser.position) # type: ignore
+        return round(stat.focuser.position)  # type: ignore
 
     @position.setter
     def position(self, value: int):
@@ -293,7 +293,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         is_moving = (
             ascom_response.value
             if ascom_response.succeeded
-            else pw_stat.focuser.is_moving # type: ignore
+            else pw_stat.focuser.is_moving  # type: ignore
         )
 
         return FocuserStatus(
@@ -306,7 +306,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             position=self.position,
             target=self.target,
             target_verbal=f"{self.target}",
-            moving=is_moving, # type: ignore
+            moving=is_moving,  # type: ignore
             date=time_stamp(),
         )
 
@@ -321,8 +321,8 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             [
                 not self.was_shut_down,
                 self.is_on(),
-                st.focuser.exists, # type: ignore
-                st.focuser.is_connected, # type: ignore
+                st.focuser.exists,  # type: ignore
+                st.focuser.is_connected,  # type: ignore
             ]
         )
 
@@ -338,16 +338,16 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
                 ret.append(f"{self.name}: not detected")
             else:
                 st = self.pw.status()
-                if not st.focuser.exists: # type: ignore
+                if not st.focuser.exists:  # type: ignore
                     ret.append(f"{self.name}: (PWI4) - does not exist")
-                elif not st.focuser.is_connected: # type: ignore
+                elif not st.focuser.is_connected:  # type: ignore
                     ret.append(f"{self.name}: (PWI4) - not connected")
         return ret
 
     @property
     def detected(self) -> bool:
         st = self.pw.status()
-        return st.focuser.exists # type: ignore
+        return st.focuser.exists  # type: ignore
 
     @property
     def was_shut_down(self) -> bool:
@@ -364,14 +364,21 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
         router = APIRouter()
         router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup)
-        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown)
+        router.add_api_route(
+            base_path + "/shutdown", tags=[tag], endpoint=self.shutdown
+        )
         router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort)
         router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
         router.add_api_route(base_path + "/connect", tags=[tag], endpoint=self.connect)
-        router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
+        router.add_api_route(
+            base_path + "/disconnect", tags=[tag], endpoint=self.disconnect
+        )
         router.add_api_route(base_path + "/position", tags=[tag], endpoint=get_position)
         router.add_api_route(
-            base_path + "/position", methods=["PUT"], tags=[tag], endpoint=self.set_position
+            base_path + "/position",
+            methods=["PUT"],
+            tags=[tag],
+            endpoint=self.set_position,
         )
         router.add_api_route(
             base_path + "/goto_known_as_good_position",
@@ -380,8 +387,8 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         )
         router.add_api_route(base_path + "/move", tags=[tag], endpoint=self.move)
         router.add_api_route(base_path + "/move_in", tags=[tag], endpoint=self.move_in)
-        router.add_api_route(base_path + "/move_out", tags=[tag], endpoint=self.move_out)
-        router.add_api_route(base_path + "/move_in", tags=[tag], endpoint=self.move_in)
-        router.add_api_route(base_path + "/move_out", tags=[tag], endpoint=self.move_out)
+        router.add_api_route(
+            base_path + "/move_out", tags=[tag], endpoint=self.move_out
+        )
 
         return router
