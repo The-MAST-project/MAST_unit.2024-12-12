@@ -618,7 +618,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if not self.conn or not self.conn.is_connected():
             raise PHD2ConnectorError("PHD2 Server not connected")
 
-    def guide(self, settle_pixels, settle_time, settle_timeout):
+    def guide(self, settings: SettleModel | None = None):
         """Start guiding with the given settling parameters. PHD2 takes care
         of looping exposures, guide star selection, and settling. Call
         CheckSettling() periodically to see when settling is complete.
@@ -628,12 +628,15 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if not self.connected:
             logger.error(f"{function_name()}: not connected")
             return CanonicalResponse(errors=["not connected"])
+        if not settings:
+            settings = self.settling_settings
+
         s = PHD2SettleProgress()
         s.done = False
         s.distance = 0
-        s.settle_px = settle_pixels
+        s.settle_px = settings.pixels
         s.time = 0
-        s.settle_time = settle_time
+        s.settle_time = settings.time
         s.status = 0
         with self.lock:
             if self.settle and not self.settle.done:
@@ -644,14 +647,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 "guide",
                 [
                     {
-                        "pixels": settle_pixels,
-                        "time": settle_time,
-                        "timeout": settle_timeout,
+                        "pixels": settings.pixels,
+                        "time": settings.time,
+                        "timeout": settings.timeout,
                     },
                     False,  # don't force calibration
                 ],
             )
-            self.settle_px = settle_pixels
+            self.settle_px = settings.pixels
         except Exception:
             with self.lock:
                 self.settle = None
@@ -906,11 +909,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 return CanonicalResponse(errors=[f"cannot connect {ex=}"])
 
         logger.info("starting guiding")
-        self.guide(
-            settle_pixels=self.conf.settle.pixels,
-            settle_time=self.conf.settle.time,
-            settle_timeout=self.conf.settle.timeout,
-        )
+        self.guide()
         return CanonicalResponse_Ok
 
     def stop_guiding(self) -> CanonicalResponse:
