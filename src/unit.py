@@ -12,7 +12,7 @@ from threading import Thread
 from typing import Annotated, Any, Literal
 
 import numpy as np
-from fastapi import Query
+from fastapi import Depends, Query
 from fastapi.routing import APIRouter
 from PIL import Image
 
@@ -35,12 +35,23 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.const import Const
 from common.corrections import correction_phases
-from common.dlipowerswitch import PowerStatus, PowerSwitchFactory, PowerSwitchStatus, SwitchedOutlet
+from common.dlipowerswitch import (
+    PowerStatus,
+    PowerSwitchFactory,
+    PowerSwitchStatus,
+    SwitchedOutlet,
+)
 from common.filer import Filer
 from common.interfaces.components import Component, ComponentStatus
+from common.interfaces.guiding import GuiderTypes
 
 # from guiding import Guider
-from common.interfaces.imager import ImagerBinning, ImagerSettings, ImagerStatus
+from common.interfaces.imager import (
+    ImagerBinning,
+    ImagerSettings,
+    ImagerStatus,
+    ImagerTypes,
+)
 from common.mast_logging import DailyFileHandler, init_log
 from common.models.assignments import UnitAssignmentModel
 from common.paths import PathMaker
@@ -51,7 +62,7 @@ from covers import Covers, CoverStatus
 from focuser import Focuser, FocuserStatus
 from imagers import Imager
 from mount import Mount, MountStatus
-from phd2.phd2 import PHD2Status
+from phd2.phd2 import PHD2Connector, PHD2GuiderStatus, PHD2ImagerStatus
 from PlaneWave import pwi4_client
 from solving import Solver
 from stage import Stage, StageStatus
@@ -60,10 +71,19 @@ logger = logging.getLogger("mast.unit")
 init_log(logger)
 filer = Filer(logger)
 
-def make_imager_enum():
-    return Enum("ImagerType", {name: name for name in Imager.valid_imager_types()})
 
-ImagerTypeEnum = make_imager_enum()
+def configured_imager() -> ImagerTypes:
+    t = Config().get_unit().imager.imager_type
+    if t.startswith("ascom"):
+        t = "ascom"
+    return ImagerTypes(t)
+
+
+def get_imager_type(
+    imager_type: ImagerTypes = Query(default=configured_imager()),
+) -> ImagerTypes:
+    return imager_type or configured_imager()
+
 
 class GuideDirections(Enum):
     guide_north = 0
@@ -78,10 +98,11 @@ class UnitStatus(ComponentStatus, PowerStatus):
     autofocusing: bool = False
     power_switch: PowerSwitchStatus | None = None
     mount: MountStatus | None = None
-    imager: ImagerStatus | PHD2Status | None = None
+    imager: ImagerStatus | PHD2ImagerStatus | None = None
     covers: CoverStatus | None = None
     focuser: FocuserStatus | None = None
     stage: StageStatus | None = None
+    guider: PHD2GuiderStatus | None = None
     errors: list[str] | None = None
     autofocus: dict | None = None
     corrections: list | None = None
@@ -122,7 +143,9 @@ class Unit(Component):
 
         if isinstance(id_, int):
             if id_ > Unit.MAX_UNITS:
-                raise Exception(f"Bad unit id '{id_}', must be in [1..{Unit.MAX_UNITS}]")
+                raise Exception(
+                    f"Bad unit id '{id_}', must be in [1..{Unit.MAX_UNITS}]"
+                )
             else:
                 id_ = int(id_)
 
@@ -130,7 +153,9 @@ class Unit(Component):
         self.unit_conf = Config().get_unit()
 
         self.min_ra_correction_arcsec = self.unit_conf.guiding.min_ra_correction_arcsec
-        self.min_dec_correction_arcsec = self.unit_conf.guiding.min_dec_correction_arcsec
+        self.min_dec_correction_arcsec = (
+            self.unit_conf.guiding.min_dec_correction_arcsec
+        )
 
         self.autofocus_max_tolerance = self.unit_conf.autofocus.max_tolerance
         self.autofocus_try: int = 0
@@ -277,8 +302,14 @@ class Unit(Component):
         all_corrections: list = []
 
         if self.acquirer.latest_acquisition:
-            corrections_list = self.acquirer.latest_acquisition.corrections \
-                if (self.acquirer.latest_acquisition and self.acquirer.latest_acquisition.corrections) else []
+            corrections_list = (
+                self.acquirer.latest_acquisition.corrections
+                if (
+                    self.acquirer.latest_acquisition
+                    and self.acquirer.latest_acquisition.corrections
+                )
+                else []
+            )
 
             for phase in correction_phases:
                 if phase in corrections_list and isinstance(corrections_list, dict):
@@ -288,6 +319,18 @@ class Unit(Component):
                     else:
                         all_corrections.append(correction)
 
+        assert self.imager is not None, "Imager must be initialized"
+        assert self.guider is not None, "Guider must be initialized"
+        imager_status = (
+            PHD2Connector().status(capacity="imager")
+            if self.imager.imager_type == ImagerTypes.Phd2
+            else self.imager.status()
+        )
+        guider_status = (
+            PHD2Connector().status(capacity="guider")
+            if self.guider.guider_type == GuiderTypes.Phd2
+            else self.guider.status()
+        )
         ret = UnitStatus(
             **self.component_status().model_dump(),
             id=id(self),
@@ -295,10 +338,12 @@ class Unit(Component):
             autofocusing=self.autofocuser.is_autofocusing,
             power_switch=self.power_switch.status(),
             mount=self.mount.status(),
-            imager=self.imager.status(),
+            imager=imager_status,  # type: ignore
             covers=self.covers.status(),
             focuser=self.focuser.status(),
             stage=self.stage.status(),
+            guider=guider_status,  # type: ignore
+            # solver= self.solver.status(),
             errors=self.errors,
             autofocus=autofocus,
             corrections=all_corrections,
@@ -337,6 +382,24 @@ class Unit(Component):
 
         [component.abort() for component in self.components]
 
+    # def switch_imager(self, new_imager_type: str):
+    #     del self.imager
+    #     import gc
+
+    #     gc.collect()  # clean up the old imager
+
+    #     new_imager_type = new_imager_type.lower()
+    #     if new_imager_type == "ascom":
+    #         new_imager_type += ":ASCOM.ASICamera2.Camera"  # Blof
+
+    #     try:
+    #         self.imager = Imager(unit=self, imager_type=new_imager_type)
+    #         logger.info(f"{function_name()}: switched to imager '{new_imager_type=}'")
+    #     except Exception as e:
+    #         logger.error(
+    #             f"{function_name()}: could not switch imager to {new_imager_type}: {e}"
+    #         )
+
     def ontimer(self):
         """
         Used in order to end activities that were started elsewhere in the code.
@@ -371,23 +434,23 @@ class Unit(Component):
             elif not autofocus_status.is_running:  # type: ignore # it's done
                 logger.info("PWI4 autofocus ended, getting status.")
                 self.autofocus_result = AutofocusResult()
-                self.autofocus_result.success = autofocus_status.success # type: ignore
+                self.autofocus_result.success = autofocus_status.success  # type: ignore
                 if self.autofocus_result.success:
-                    self.autofocus_result.best_position = autofocus_status.best_position # type: ignore
-                    self.autofocus_result.tolerance = autofocus_status.tolerance # type: ignore
+                    self.autofocus_result.best_position = autofocus_status.best_position  # type: ignore
+                    self.autofocus_result.tolerance = autofocus_status.tolerance  # type: ignore
 
-                    best_position = autofocus_status.best_position # type: ignore
+                    best_position = autofocus_status.best_position  # type: ignore
                     self.unit_conf.focuser.known_as_good_position = best_position
                     try:
                         Config().set_unit(self.hostname, self.unit_conf)
                         logger.info(
                             f"autofocus: saved {best_position=} in the configuration for unit {self.hostname}."
                         )
-                        if autofocus_status.tolerance > self.autofocus_max_tolerance: # type: ignore
+                        if autofocus_status.tolerance > self.autofocus_max_tolerance:  # type: ignore
                             if self.autofocus_try < Unit.MAX_AUTOFOCUS_TRIES:
                                 self.autofocus_try += 1
                                 logger.info(
-                                    f"autofocus: latest {autofocus_status.tolerance=} greater than" # type: ignore
+                                    f"autofocus: latest {autofocus_status.tolerance=} greater than"  # type: ignore
                                     + f"{self.autofocus_max_tolerance=}, starting autofocus "
                                     + f"try #{self.autofocus_try}"
                                 )
@@ -474,7 +537,7 @@ class Unit(Component):
 
     def expose(
         self,
-        # imager: ImagerTypeEnum = Field(default=ImagerTypeEnum(Imager.configured_imager())),
+        # imager: ImagerTypes = Depends(get_imager_type),
         subfolder: str | None = None,
         exposure_seconds: float = 3,
         repeats: int = 1,
@@ -510,28 +573,49 @@ class Unit(Component):
         if ra_offsets is not None:
             if isinstance(ra_offsets, str):
                 ra_offsets = ra_offsets.split()
-            if len(ra_offsets) != 1 and len(ra_offsets) != repeats: # one element or the same number of elements as repeats
+            if (
+                len(ra_offsets) != 1 and len(ra_offsets) != repeats
+            ):  # one element or the same number of elements as repeats
                 return CanonicalResponse(
                     errors=[f"ra_offsets must have {repeats} elements"]
                 )
-            ra_offsets = [float(ra_offsets[0])] * repeats if len(ra_offsets) == 1 else [float(val) for val in ra_offsets]
+            ra_offsets = (
+                [float(ra_offsets[0])] * repeats
+                if len(ra_offsets) == 1
+                else [float(val) for val in ra_offsets]
+            )
 
         if dec_offsets is not None:
             if isinstance(dec_offsets, str):
                 dec_offsets = dec_offsets.split()
-            if len(dec_offsets) != 1 and len(dec_offsets) != repeats: # one element or the same number of elements as repeats
+            if (
+                len(dec_offsets) != 1 and len(dec_offsets) != repeats
+            ):  # one element or the same number of elements as repeats
                 return CanonicalResponse(
                     errors=[f"dec_offsets must have {repeats} elements"]
                 )
-            dec_offsets = [float(dec_offsets[0])] * repeats if len(dec_offsets) == 1 else [float(val) for val in dec_offsets]
+            dec_offsets = (
+                [float(dec_offsets[0])] * repeats
+                if len(dec_offsets) == 1
+                else [float(val) for val in dec_offsets]
+            )
 
         if fiber_x is None and fiber_y is None and width is None and height is None:
             width = self.imager.camera_x_size
             height = self.imager.camera_y_size
             if not width or not height:
-                return CanonicalResponse(errors=["cannot get width and height from the imager"])
+                return CanonicalResponse(
+                    errors=["cannot get width and height from the imager"]
+                )
             fiber_x = int(width / 2)
             fiber_y = int(height / 2)
+
+        # if imager is not None:
+        #     if imager.name == "ascom":
+        #         imager_type = f"ascom:ASCOM.ASICamera2.Camera"
+        #     else:
+        #         imager_type = imager.name
+        #     self.switch_imager(imager_type)
 
         Thread(
             name="expose-thread",
@@ -597,10 +681,15 @@ class Unit(Component):
                 tags={"roi": None},
                 save=True,
             )
+            self.imager.latest_settings = imager_settings
+
             logger.info(f"{op}: starting exposure #{repeat} (of {repeats})")
             self.imager.start_exposure(imager_settings)
 
-            if not (self.imager.latest_settings is None or self.imager.latest_settings.image_path is None):
+            if not (
+                self.imager.latest_settings is None
+                or self.imager.latest_settings.image_path is None
+            ):
                 self.imager.wait_for_image_saved()
                 filer.move_ram_to_shared(self.imager.latest_settings.image_path)
 
@@ -752,7 +841,11 @@ class Unit(Component):
             if not self.autofocuser.latest_result:
                 return  # should propagate errors as well
 
-            if assignment.task.ulid is not None and self.imager.latest_settings and self.imager.latest_settings.image_path:
+            if (
+                assignment.task.ulid is not None
+                and self.imager.latest_settings
+                and self.imager.latest_settings.image_path
+            ):
                 notify_controller_about_task_acquisition_path(
                     task_id=assignment.task.ulid,
                     link="autofocus",
@@ -767,7 +860,10 @@ class Unit(Component):
                 dec_j2000_degs=assignment.target.dec,
             )
 
-            if assignment.task.ulid is not None and self.acquirer.latest_acquisition is not None:
+            if (
+                assignment.task.ulid is not None
+                and self.acquirer.latest_acquisition is not None
+            ):
                 notify_controller_about_task_acquisition_path(
                     task_id=assignment.task.ulid,
                     link="acquisition",
@@ -837,8 +933,13 @@ class Unit(Component):
         logger.info("mount stopped moving")
 
         if self.spirals_folder is not None:
-            image_path = str(Path(self.spirals_folder) / Path("step-" + PathMaker().make_seq(self.spirals_folder) + ".fits"))
-            self.imager.latest_settings = ImagerSettings(seconds=5, save=True, image_path=image_path)
+            image_path = str(
+                Path(self.spirals_folder)
+                / Path("step-" + PathMaker().make_seq(self.spirals_folder) + ".fits")
+            )
+            self.imager.latest_settings = ImagerSettings(
+                seconds=5, save=True, image_path=image_path
+            )
             self.imager.start_exposure(self.imager.latest_settings)
             self.imager.wait_for_image_saved()
             Filer().move_ram_to_shared(image_path)
@@ -857,8 +958,13 @@ class Unit(Component):
         logger.info("mount stopped moving")
 
         if self.spirals_folder is not None:
-            image_path = str(Path(self.spirals_folder) / Path("step-" + PathMaker().make_seq(self.spirals_folder) + ".fits"))
-            self.imager.latest_settings = ImagerSettings(seconds=5, save=True, image_path=image_path)
+            image_path = str(
+                Path(self.spirals_folder)
+                / Path("step-" + PathMaker().make_seq(self.spirals_folder) + ".fits")
+            )
+            self.imager.latest_settings = ImagerSettings(
+                seconds=5, save=True, image_path=image_path
+            )
             self.imager.start_exposure(self.imager.latest_settings)
             self.imager.wait_for_image_saved()
             Filer().move_ram_to_shared(image_path)
@@ -875,7 +981,9 @@ class Unit(Component):
 
         tag = "unit"
         router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup)
-        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown)
+        router.add_api_route(
+            base_path + "/shutdown", tags=[tag], endpoint=self.shutdown
+        )
         router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort)
         router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
         router.add_api_route(
@@ -884,7 +992,9 @@ class Unit(Component):
             endpoint=self.autofocuser.start_autofocus,
         )
         router.add_api_route(
-            base_path + "/stop_autofocus", tags=[tag], endpoint=self.autofocuser.stop_autofocus
+            base_path + "/stop_autofocus",
+            tags=[tag],
+            endpoint=self.autofocuser.stop_autofocus,
         )
         router.add_api_route(
             base_path + "/stop_acquisition_and_guiding",
@@ -922,11 +1032,12 @@ class Unit(Component):
             base_path + "/spiral_next_step", tags=[tag], endpoint=self.spiral_next_step
         )
         router.add_api_route(
-            base_path + "/spiral_previous_step", tags=[tag], endpoint=self.spiral_previous_step
+            base_path + "/spiral_previous_step",
+            tags=[tag],
+            endpoint=self.spiral_previous_step,
         )
 
         return router
-
 
 
 def serialize_ip_addresses(data: Any) -> Any:
