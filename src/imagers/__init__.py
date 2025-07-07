@@ -4,29 +4,33 @@ import numpy as np
 from fastapi import APIRouter
 
 from common.canonical import CanonicalResponse
+from imagers.ascom import ASCOMImager
 
 if TYPE_CHECKING:
     from unit import Unit
 
 from common.const import Const
-from common.interfaces.imager import ImagerInterface, ImagerSettings
+from common.interfaces.imager import ImagerInterface, ImagerSettings, ImagerTypes
 
 __all__ = ["Imager"]
+
 
 class Imager(ImagerInterface):
     """
     This is the base class for all imagers.
     It provides the common interface and some common functionality.
     """
+
     _instance = None
     _initialized = False
 
     @staticmethod
     def valid_imager_types() -> list[str]:
         from common.config import Config
+
         valid_types = []
 
-        for t in  Config().get_unit().imager.valid_imager_types:
+        for t in Config().get_unit().imager.valid_imager_types:
             valid_types.append("ascom" if t.startswith("ascom") else t)
         return valid_types
 
@@ -41,14 +45,14 @@ class Imager(ImagerInterface):
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self,
-                 unit: "Unit",
-                 backend: str | None = None,
-                 params: dict | None = None):
+    def __init__(
+        self, unit: "Unit", imager_type: str | None = None, params: dict | None = None
+    ):
         """
         Initializes the backend of an Imager instance according to the unit configuration.
 
         :param unit: "Unit" instance
+        :param imager_type: The type of imager to use, e.g., "ascom:prog_id", "phd2", "zwo"
         :param imager_params: Parameters for the imager
         """
         if self._initialized:
@@ -58,19 +62,31 @@ class Imager(ImagerInterface):
         self.unit = unit
         self.conf = self.unit.unit_conf.imager
 
-        backend = backend or self.conf.imager_type.lower()
-        if not (backend.startswith("ascom") or (backend in Imager.valid_imager_types())):
-            raise ValueError(f"bad imager backend '{backend}', must be one of {Imager.valid_imager_types()}")
+        imager_type = imager_type or self.conf.imager_type.lower()
+        if not (
+            imager_type.startswith("ascom")
+            or (imager_type in Imager.valid_imager_types())
+        ):
+            raise ValueError(
+                f"bad imager type '{imager_type}', must be one of {Imager.valid_imager_types()}"
+            )
 
-        if backend.startswith("ascom:"):
+        if imager_type.startswith("ascom:"):
             from imagers.ascom import ASCOMImager
-            self._backend = ASCOMImager(unit=unit, prog_id=self.conf.imager_type[6:])
-        elif backend == "phd2":
+
+            self._prog_id = self.conf.imager_type[6:]
+            self._backend = ASCOMImager(unit=unit, prog_id=self._prog_id)
+            self.imager_type = ImagerTypes.Ascom
+        elif imager_type == "phd2":
             from phd2.phd2 import PHD2Connector
+
             self._backend = PHD2Connector(unit=unit)
-        elif backend == "zwo":
+            self.imager_type = ImagerTypes.Phd2
+        elif imager_type == "zwo":
             from zwo import ZWOImager
+
             self._backend = ZWOImager(unit=unit, imager_params=params)
+            self.imager_type = ImagerTypes.Zwo
         else:
             raise ValueError(f"Unknown imager type: {self.conf.imager_type}")
 
@@ -171,10 +187,10 @@ class Imager(ImagerInterface):
         """
         return self._backend.status()
 
-    def connect(self) -> CanonicalResponse | None: # obsoleted by connected property
+    def connect(self) -> CanonicalResponse | None:  # obsoleted by connected property
         self._backend.connected = True
 
-    def disconnect(self) -> CanonicalResponse | None: # obsoleted by connected property
+    def disconnect(self) -> CanonicalResponse | None:  # obsoleted by connected property
         self.connected = False
 
     def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse | None:
@@ -274,18 +290,42 @@ class Imager(ImagerInterface):
             self.cooler_on = False
 
         router = APIRouter()
-        router.add_api_route(base_imager_path + "/startup", tags=[tag], endpoint=self.startup)
+        router.add_api_route(
+            base_imager_path + "/startup", tags=[tag], endpoint=self.startup
+        )
         router.add_api_route(
             base_imager_path + "/shutdown", tags=[tag], endpoint=self.shutdown
         )
-        router.add_api_route(base_imager_path + "/abort", tags=[tag], endpoint=self.abort)
-        router.add_api_route(base_imager_path + "/status", tags=[tag], endpoint=self.status)
-        router.add_api_route(base_imager_path + "/connect", tags=[tag], endpoint=self.connect)
-        router.add_api_route(base_imager_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
-        router.add_api_route(base_imager_path + "/start_exposure", tags=[tag], endpoint=self.start_exposure)
-        router.add_api_route(base_imager_path + "/stop_exposure", tags=[tag], endpoint=self.stop_exposure)
-        router.add_api_route(base_imager_path + "/abort_exposure", tags=[tag], endpoint=self.abort_exposure)
-        router.add_api_route(base_imager_path + "/cooler_on", tags=[tag], endpoint=cooler_on)
-        router.add_api_route(base_imager_path + "/cooler_off", tags=[tag], endpoint=cooler_off)
+        router.add_api_route(
+            base_imager_path + "/abort", tags=[tag], endpoint=self.abort
+        )
+        router.add_api_route(
+            base_imager_path + "/status", tags=[tag], endpoint=self.status
+        )
+        router.add_api_route(
+            base_imager_path + "/connect", tags=[tag], endpoint=self.connect
+        )
+        router.add_api_route(
+            base_imager_path + "/disconnect", tags=[tag], endpoint=self.disconnect
+        )
+        router.add_api_route(
+            base_imager_path + "/start_exposure",
+            tags=[tag],
+            endpoint=self.start_exposure,
+        )
+        router.add_api_route(
+            base_imager_path + "/stop_exposure", tags=[tag], endpoint=self.stop_exposure
+        )
+        router.add_api_route(
+            base_imager_path + "/abort_exposure",
+            tags=[tag],
+            endpoint=self.abort_exposure,
+        )
+        router.add_api_route(
+            base_imager_path + "/cooler_on", tags=[tag], endpoint=cooler_on
+        )
+        router.add_api_route(
+            base_imager_path + "/cooler_off", tags=[tag], endpoint=cooler_off
+        )
 
         return router
