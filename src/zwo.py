@@ -15,164 +15,173 @@ from common.activities import ImagerActivities
 # from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.interfaces.imager import ImagerBinning, ImagerExposure, ImagerInterface, ImagerRoi, ImagerSettings, ImagerStatus
+from common.interfaces.imager import (
+    ImagerBinning,
+    ImagerExposure,
+    ImagerInterface,
+    ImagerRoi,
+    ImagerSettings,
+    ImagerStatus,
+)
 from common.mast_logging import init_log
 from common.utils import RepeatTimer, function_name, time_stamp
 
-logger = logging.Logger('mast-unit-imager-zwo')
+logger = logging.Logger("mast-unit-imager-zwo")
 init_log(logger)
 
 # if TYPE_CHECKING:
 #     from unit import Unit
 
+
 #
 # Extracted at runtime from the ZWO ASI SDK for camera model: ZWO ASI294MM Pro
 #
 class AsiControl(IntEnum):
-    Gain = 0                      # Gain,
-    Exposure = 1                  # Exposure Time(us),
-    Offset = 5                    # offset,
-    BandWidth = 6                 # The total data transfer rate percentage,
-    Flip = 9                      # Flip: 0->None 1->Horiz 2->Vert 3->Both,
-    AutoExpMaxGain = 10           # Auto exposure maximum gain value,
-    AutoExpMaxExpMS = 11          # Auto exposure maximum exposure value(unit ms),
+    Gain = 0  # Gain,
+    Exposure = 1  # Exposure Time(us),
+    Offset = 5  # offset,
+    BandWidth = 6  # The total data transfer rate percentage,
+    Flip = 9  # Flip: 0->None 1->Horiz 2->Vert 3->Both,
+    AutoExpMaxGain = 10  # Auto exposure maximum gain value,
+    AutoExpMaxExpMS = 11  # Auto exposure maximum exposure value(unit ms),
     AutoExpTargetBrightness = 12  # Auto exposure target brightness value,
-    HighSpeedMode = 14            # Is high speed mode:0->No 1->Yes,
-    Temperature = 8               # Sensor temperature(degrees Celsius),
-    CoolPowerPerc = 15            # Cooler power percent,
-    TargetTemp = 16               # Target temperature(cool camera only),
-    CoolerOn = 17                 # turn on/off cooler(cool camera only),
+    HighSpeedMode = 14  # Is high speed mode:0->No 1->Yes,
+    Temperature = 8  # Sensor temperature(degrees Celsius),
+    CoolPowerPerc = 15  # Cooler power percent,
+    TargetTemp = 16  # Target temperature(cool camera only),
+    CoolerOn = 17  # turn on/off cooler(cool camera only),
+
 
 AsiControlDict: dict[AsiControl, dict] = {
     AsiControl.Gain: {
-        'description': 'Gain',
-        'min_value': 0,
-        'max_value': 570,
-        'default': 200,
-        'is_writable': 1,
-        'is_auto_supported': 1,
-        'control_type': 0,
-        'auto': False,
+        "description": "Gain",
+        "min_value": 0,
+        "max_value": 570,
+        "default": 200,
+        "is_writable": 1,
+        "is_auto_supported": 1,
+        "control_type": 0,
+        "auto": False,
     },
     AsiControl.Exposure: {
-        'description': 'Exposure Time(us)',
-        'min_value': 32,
-        'max_value': 2000000000,
-        'default': 10000,
-        'is_writable': 1,
-        'is_auto_supported': 1,
-        'control_type': 1,
-        'auto': False,
+        "description": "Exposure Time(us)",
+        "min_value": 32,
+        "max_value": 2000000000,
+        "default": 10000,
+        "is_writable": 1,
+        "is_auto_supported": 1,
+        "control_type": 1,
+        "auto": False,
     },
     AsiControl.Offset: {
-        'description': 'offset',
-        'min_value': 0,
-        'max_value': 80,
-        'default': 8,
-        'is_writable': 1,
-        'is_auto_supported': 0,
-        'control_type': 5,
-        'auto': False,
+        "description": "offset",
+        "min_value": 0,
+        "max_value": 80,
+        "default": 8,
+        "is_writable": 1,
+        "is_auto_supported": 0,
+        "control_type": 5,
+        "auto": False,
     },
     AsiControl.BandWidth: {
-        'description': 'The total data transfer rate percentage',
-        'min_value': 40,
-        'max_value': 100,
-        'default': 50,
-        'is_writable': 1,
-        'is_auto_supported': 1,
-        'control_type': 6,
-        'auto': True,
+        "description": "The total data transfer rate percentage",
+        "min_value": 40,
+        "max_value": 100,
+        "default": 50,
+        "is_writable": 1,
+        "is_auto_supported": 1,
+        "control_type": 6,
+        "auto": True,
     },
     AsiControl.Flip: {
-        'description': 'Flip: 0->None 1->Horiz 2->Vert 3->Both',
-        'min_value': 0,
-        'max_value': 3,
-        'default': 0,
-        'is_writable': 1,
-        'is_auto_supported': 0,
-        'control_type': 9,
-        'auto': False,
+        "description": "Flip: 0->None 1->Horiz 2->Vert 3->Both",
+        "min_value": 0,
+        "max_value": 3,
+        "default": 0,
+        "is_writable": 1,
+        "is_auto_supported": 0,
+        "control_type": 9,
+        "auto": False,
     },
     AsiControl.AutoExpMaxGain: {
-        'description': 'Auto exposure maximum gain value',
-        'min_value': 0,
-        'max_value': 570,
-        'default': 285,
-        'is_writable': 1,
-        'is_auto_supported': 0,
-        'control_type': 10,
-        'auto': False,
+        "description": "Auto exposure maximum gain value",
+        "min_value": 0,
+        "max_value": 570,
+        "default": 285,
+        "is_writable": 1,
+        "is_auto_supported": 0,
+        "control_type": 10,
+        "auto": False,
     },
     AsiControl.AutoExpMaxExpMS: {
-        'description': 'Auto exposure maximum exposure value(unit ms)',
-        'min_value': 1,
-        'max_value': 60000,
-        'default': 100,
-        'is_writable': 1,
-        'is_auto_supported': 0,
-        'control_type': 11,
-        'auto': False,
+        "description": "Auto exposure maximum exposure value(unit ms)",
+        "min_value": 1,
+        "max_value": 60000,
+        "default": 100,
+        "is_writable": 1,
+        "is_auto_supported": 0,
+        "control_type": 11,
+        "auto": False,
     },
     AsiControl.AutoExpTargetBrightness: {
-        'description': 'Auto exposure target brightness value',
-        'min_value': 50,
-        'max_value': 160,
-        'default': 100,
-        'is_writable': 1,
-        'is_auto_supported': 0,
-        'control_type': 12,
-        'auto': False,
+        "description": "Auto exposure target brightness value",
+        "min_value": 50,
+        "max_value": 160,
+        "default": 100,
+        "is_writable": 1,
+        "is_auto_supported": 0,
+        "control_type": 12,
+        "auto": False,
     },
     AsiControl.HighSpeedMode: {
-        'description': 'Is high speed mode:0->No 1->Yes',
-        'min_value': 0,
-        'max_value': 1,
-        'default': 0,
-        'is_writable': 1,
-        'is_auto_supported': 0,
-        'control_type': 14,
-        'auto': False,
+        "description": "Is high speed mode:0->No 1->Yes",
+        "min_value": 0,
+        "max_value": 1,
+        "default": 0,
+        "is_writable": 1,
+        "is_auto_supported": 0,
+        "control_type": 14,
+        "auto": False,
     },
     AsiControl.Temperature: {
-        'description': 'Sensor temperature(degrees Celsius)',
-        'min_value': -500,
-        'max_value': 1000,
-        'default': 20,
-        'is_writable': 0,
-        'is_auto_supported': 0,
-        'control_type': 8,
-        'auto': False,
+        "description": "Sensor temperature(degrees Celsius)",
+        "min_value": -500,
+        "max_value": 1000,
+        "default": 20,
+        "is_writable": 0,
+        "is_auto_supported": 0,
+        "control_type": 8,
+        "auto": False,
     },
     AsiControl.CoolPowerPerc: {
-        'description': 'Cooler power percent',
-        'min_value': 0,
-        'max_value': 100,
-        'default': 0,
-        'is_writable': 0,
-        'is_auto_supported': 0,
-        'control_type': 15,
-        'auto': False,
+        "description": "Cooler power percent",
+        "min_value": 0,
+        "max_value": 100,
+        "default": 0,
+        "is_writable": 0,
+        "is_auto_supported": 0,
+        "control_type": 15,
+        "auto": False,
     },
     AsiControl.TargetTemp: {
-        'description': 'Target temperature(cool camera only)',
-        'min_value': -40,
-        'max_value': 30,
-        'default': 0,
-        'is_writable': 1,
-        'is_auto_supported': 0,
-        'control_type': 16,
-        'auto': False,
+        "description": "Target temperature(cool camera only)",
+        "min_value": -40,
+        "max_value": 30,
+        "default": 0,
+        "is_writable": 1,
+        "is_auto_supported": 0,
+        "control_type": 16,
+        "auto": False,
     },
     AsiControl.CoolerOn: {
-        'description': 'turn on/off cooler(cool camera only)',
-        'min_value': 0,
-        'max_value': 1,
-        'default': 0,
-        'is_writable': 1,
-        'is_auto_supported': 0,
-        'control_type': 17,
-        'auto': False,
+        "description": "turn on/off cooler(cool camera only)",
+        "min_value": 0,
+        "max_value": 1,
+        "default": 0,
+        "is_writable": 1,
+        "is_auto_supported": 0,
+        "control_type": 17,
+        "auto": False,
     },
 }
 
@@ -230,11 +239,13 @@ AsiControlDict: dict[AsiControl, dict] = {
 #     ASI_PATTERN_ADJUST = auto()         # currently only supported by 1600 mono camera
 #     ASI_ANTI_DEW_HEATER = auto()
 
+
 class AsiOutputFormat(IntEnum):
     RAW8 = 0
     RGB24 = 1
     RAW16 = 2
     Y8 = 3
+
 
 class ASIExposureStatus(IntEnum):
     """
@@ -249,10 +260,12 @@ class ASIExposureStatus(IntEnum):
             ASI_EXP_FAILED,     // exposure failure, need to restart exposure
         } ASI_EXPOSURE_STATUS;
     """
-    ASI_EXP_IDLE = 0            # idle, ready to start exposure
-    ASI_EXP_WORKING = auto()    # exposure in progress
-    ASI_EXP_SUCCESS = auto()    # exposure completed successfully, image can be read out
-    ASI_EXP_FAILED = auto()     #  exposure failure, need to restart exposure
+
+    ASI_EXP_IDLE = 0  # idle, ready to start exposure
+    ASI_EXP_WORKING = auto()  # exposure in progress
+    ASI_EXP_SUCCESS = auto()  # exposure completed successfully, image can be read out
+    ASI_EXP_FAILED = auto()  #  exposure failure, need to restart exposure
+
 
 class ZWOImager(ImagerInterface, SwitchedOutlet):
     """
@@ -263,13 +276,12 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     _instance = None
     _initialized = False
 
-
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, unit, imager_params: dict[str, Any] | None=None):
+    def __init__(self, unit, imager_params: dict[str, Any] | None = None):
         Component.__init__(self)
         SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name="Camera")
         self.unit = unit
@@ -316,7 +328,9 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             cap = asi.getControlCaps(self.cam_id, controlIndex=control)
             val, auto = asi.getControlValue(self.cam_id, controlType=cap.ControlType)
             line = f"{cap.Name.decode()} = {cap.ControlType}"
-            enum_lines.append(f"    {line}{' ' * (30 - len(line))}# {cap.Description.decode()}, ")
+            enum_lines.append(
+                f"    {line}{' ' * (30 - len(line))}# {cap.Description.decode()}, "
+            )
             dict_lines.append(f"    AsiControl.{cap.Name.decode()}: {{")
             dict_lines.append(f"        'description': '{cap.Description.decode()}',")
             dict_lines.append(f"        'min_value': {cap.MinValue},")
@@ -329,7 +343,9 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             dict_lines.append("    },")
         dict_lines.append("}")
 
-        print(f"#\n# Extracted at runtime from the ZWO ASI SDK for camera model: {self.model}\n#")
+        print(
+            f"#\n# Extracted at runtime from the ZWO ASI SDK for camera model: {self.model}\n#"
+        )
         for line in enum_lines:
             print(line)
         print()
@@ -339,8 +355,8 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
 
     def save_in_thread(self):
         self.start_activity(ImagerActivities.Saving)
-        assert(self.latest_settings is not None and self.latest_settings.roi is not None)
-        assert(self.image_array is not None), "self.image_array is None"
+        assert self.latest_settings is not None and self.latest_settings.roi is not None
+        assert self.image_array is not None, "self.image_array is None"
 
         header = fits.Header()
         header["SIMPLE"] = (True, "file conforms to FITS standard")
@@ -355,14 +371,20 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         header["NAXIS1"] = (self.image_array.shape[0], "length of data axis 1")
         header["NAXIS2"] = (self.image_array.shape[1], "length of data axis 2")
         header["EXTEND"] = (True, "FITS data sets may contain extensions")
-        header["DATE-OBS"] = (datetime.datetime.now(datetime.UTC).isoformat(), "Observation datetime",)
+        header["DATE-OBS"] = (
+            datetime.datetime.now(datetime.UTC).isoformat(),
+            "Observation datetime",
+        )
         if self.latest_settings.binning:
             header["XBINNING"] = (self.latest_settings.binning.x, "horizontal binning")
             header["YBINNING"] = (self.latest_settings.binning.y, "vertical binning")
         header["EXPTIME"] = (self.latest_settings.seconds, "exposure time in seconds")
         header["INSTRUME"] = (f"{socket.gethostname()}:{self.model}", "the instrument")
         if self.ccd_temp_at_mid_exposure:
-            header["CCDTEMP"] = (self.ccd_temp_at_mid_exposure, "ccd temp. at mid exposure")
+            header["CCDTEMP"] = (
+                self.ccd_temp_at_mid_exposure,
+                "ccd temp. at mid exposure",
+            )
             self.ccd_temp_at_mid_exposure = None
 
         if self.unit:
@@ -391,13 +413,18 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         try:
             hdu = fits.PrimaryHDU(data=self._image_array, header=header)
             hdu_list = fits.HDUList([hdu])
-            hdu_list.writeto(self.latest_settings.image_path, checksum=True, overwrite=True)
+            hdu_list.writeto(
+                self.latest_settings.image_path, checksum=True, overwrite=True
+            )
             self.image_saved_event.set()
             logger.info(f"image saved to '{self.latest_settings.image_path}'")
         except Exception as ex:
-            logger.error(f"failed to save fits file '{self.latest_settings.image_path}', {ex=}")
+            logger.error(
+                f"failed to save fits file '{self.latest_settings.image_path}', {ex=}"
+            )
         finally:
             self.end_activity(ImagerActivities.Saving)
+            self.end_activity(ImagerActivities.Exposing)
 
         del self._image_array
 
@@ -405,11 +432,14 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         op = function_name()
 
         if self.is_active(ImagerActivities.Exposing):
-            assert(self.latest_exposure is not None)
-            assert(self.latest_settings is not None)
-            if (datetime.datetime.now() - self.latest_exposure.start) >= \
-                    datetime.timedelta(seconds=self.latest_settings.seconds/2):
-                self.ccd_temp_at_mid_exposure, _ = asi.getControlValue(self.cam_id, AsiControl.Temperature)
+            assert self.latest_exposure is not None
+            assert self.latest_settings is not None
+            if (
+                datetime.datetime.now() - self.latest_exposure.start
+            ) >= datetime.timedelta(seconds=self.latest_settings.seconds / 2):
+                self.ccd_temp_at_mid_exposure, _ = asi.getControlValue(
+                    self.cam_id, AsiControl.Temperature
+                )
 
             try:
                 exposure_status = asi.getExpStatus(self.cam_id)
@@ -417,25 +447,38 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                 if exposure_status == ASIExposureStatus.ASI_EXP_FAILED:
                     asi.stopExposure(self.cam_id)
                     self.end_activity(ImagerActivities.Exposing)
-                    logger.error(f"exposure failed with exposure_status={ASIExposureStatus(exposure_status).name}")
+                    logger.error(
+                        f"exposure failed with exposure_status={ASIExposureStatus(exposure_status).name}"
+                    )
                 elif exposure_status == ASIExposureStatus.ASI_EXP_SUCCESS:
-                    self.end_activity(ImagerActivities.Exposing)
                     buffer_size = self.width * self.height
                     if self.output_format == AsiOutputFormat.RAW16:
                         buffer_size *= 2
 
                     self.start_activity(ImagerActivities.ReadingOut)
                     buffer = asi.getDataAfterExp(self.cam_id, bufferSize=buffer_size)
-                    assert(self.latest_settings and self.latest_settings.roi)
+                    assert self.latest_settings and self.latest_settings.roi
                     self.image_array = np.ndarray(
                         buffer=buffer,
-                        shape=(self.latest_settings.roi.height, self.latest_settings.roi.width),
-                        dtype=np.uint16 if self.output_format == AsiOutputFormat.RAW8 else np.uint8)
+                        shape=(
+                            self.latest_settings.roi.height,
+                            self.latest_settings.roi.width,
+                        ),
+                        dtype=(
+                            np.uint16
+                            if self.output_format == AsiOutputFormat.RAW8
+                            else np.uint8
+                        ),
+                    )
                     self.end_activity(ImagerActivities.ReadingOut)
                     self.image_read_event.set()
 
                     if self.latest_settings and self.latest_settings.save:
-                        Thread(name="zwo-image-saver", target=self.save_in_thread).start()
+                        Thread(
+                            name="zwo-image-saver", target=self.save_in_thread
+                        ).start()
+                    else:
+                        self.end_activity(ImagerActivities.Exposing)
 
             except Exception as ex:
                 logger.error(f"{op}: could not get exposure status, {ex=}")
@@ -471,7 +514,9 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         try:
             val, _ = asi.getControlValue(self.cam_id, AsiControl.Temperature)
         except Exception as ex:
-            self.errors.append(f"failed to get control AsiControl.Temperature ({AsiControl.Temperature}), {ex=}")
+            self.errors.append(
+                f"failed to get control AsiControl.Temperature ({AsiControl.Temperature}), {ex=}"
+            )
         return val / 10.0
 
     def cooler(self, onoff: bool):
@@ -479,8 +524,10 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         try:
             asi.setControlValue(self.cam_id, AsiControl.CoolerOn, onoff, 0)
         except Exception as ex:
-            self.errors.append(f"failed to set control AsiControl.ASI_COOLER_ON ({AsiControl.CoolerOn}), "
-                               + f"value={onoff}, {ex=}")
+            self.errors.append(
+                f"failed to set control AsiControl.ASI_COOLER_ON ({AsiControl.CoolerOn}), "
+                + f"value={onoff}, {ex=}"
+            )
 
     @property
     def cooler_power(self) -> float:
@@ -488,8 +535,10 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         try:
             val, _ = asi.getControlValue(self.cam_id, AsiControl.CoolPowerPerc)
         except Exception as ex:
-            self.errors.append("failed to get control AsiControl.ASI_COOLER_POWER_PERC "
-                               + f"({AsiControl.CoolPowerPerc}), {ex=}")
+            self.errors.append(
+                "failed to get control AsiControl.ASI_COOLER_POWER_PERC "
+                + f"({AsiControl.CoolPowerPerc}), {ex=}"
+            )
         return val / 10.0
 
     def startup(self):
@@ -538,12 +587,18 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                 self.serial = asi.getSerialNumber(self.cam_id)
                 self.pixel_size = info.PixelSize
                 if "output_format" in self.imager_params:
-                    if int(self.imager_params["output_format"]) \
-                        not in [AsiOutputFormat.RAW8, AsiOutputFormat.RAW16]:
-                        self.log_and_append(f"invalid {self.imager_params['output_format']=}, must be one of: "
-                                        + f"{[AsiOutputFormat.RAW8, AsiOutputFormat.RAW16]}")
+                    if int(self.imager_params["output_format"]) not in [
+                        AsiOutputFormat.RAW8,
+                        AsiOutputFormat.RAW16,
+                    ]:
+                        self.log_and_append(
+                            f"invalid {self.imager_params['output_format']=}, must be one of: "
+                            + f"{[AsiOutputFormat.RAW8, AsiOutputFormat.RAW16]}"
+                        )
                     else:
-                        self.output_format: AsiOutputFormat = self.imager_params['output_format']
+                        self.output_format: AsiOutputFormat = self.imager_params[
+                            "output_format"
+                        ]
                 else:
                     self.output_format = AsiOutputFormat.RAW16
 
@@ -558,11 +613,13 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                 #     base_folder='c:/temp/zwo-images'
                 # )
 
-                logger.info(f"ZWO ASI ID={self.cam_id}, SN={self.serial}, "
-                            + f"model='{self.model}', "
-                            + f"size={self.width}x{self.height}, "
-                            + f"depth={self.depth} bits, pixel-size={self.pixel_size} micron, "
-                            + f"output_format={self.output_format.name}")
+                logger.info(
+                    f"ZWO ASI ID={self.cam_id}, SN='{self.serial}', "
+                    + f"model='{self.model}', "
+                    + f"size={self.width}x{self.height}, "
+                    + f"depth={self.depth} bits, pixel-size={self.pixel_size} micron, "
+                    + f"output_format={self.output_format.name}"
+                )
             except Exception as ex:
                 self.log_and_append(f"could not connect to {self.cam_id=}, {ex=}")
         else:
@@ -580,12 +637,12 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         TODO: Should somehow use values from the Config()
         """
         return ImagerSettings(
-                    seconds=0,
-                    roi=ImagerRoi(x=0, y=0, width=self.width, height=self.height),
-                    binning=ImagerBinning(x=1, y=1),
-                    gain=85,
-                    base_folder='c:/temp/zwo-images'
-                )
+            seconds=0,
+            roi=ImagerRoi(x=0, y=0, width=self.width, height=self.height),
+            binning=ImagerBinning(x=1, y=1),
+            gain=85,
+            base_folder="c:/temp/zwo-images",
+        )
 
     def abort(self):
         if self.is_active(ImagerActivities.Exposing):
@@ -636,7 +693,9 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         if settings.binning:
             binning = settings.binning
             if binning.x != binning.y:
-                raise ValueError(f"bad binning={binning.x}x{binning.y}, horizontal and vertical must be equal")
+                raise ValueError(
+                    f"bad binning={binning.x}x{binning.y}, horizontal and vertical must be equal"
+                )
         binning = settings.binning.x if settings.binning else 1
         if settings.roi:
             x = settings.roi.x
@@ -650,29 +709,45 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         try:
             format: AsiOutputFormat = self.output_format
             if width % 8 != 0:
-                logger.warning(f"aligning roi width to 8 (subtracting {width % 8} bits)")
+                logger.warning(
+                    f"aligning roi width to 8 (subtracting {width % 8} bits)"
+                )
                 width -= width % 8
             if height % 2 != 0:
-                logger.warning(f"aligning roi height to 2 (subtracting {height % 2} bits)")
+                logger.warning(
+                    f"aligning roi height to 2 (subtracting {height % 2} bits)"
+                )
                 height -= height % 8
-            asi.setROIFormat(self.cam_id, width=width, height=height, binning=binning, imgType=format.value)
+            asi.setROIFormat(
+                self.cam_id,
+                width=width,
+                height=height,
+                binning=binning,
+                imgType=format.value,
+            )
             asi.setStartPos(self.cam_id, x, y)
-            logger.info(f"set_format(roi=({x=}, {y=}, {width=}, {height=}), {binning=}, output_format={format.name})")
+            logger.info(
+                f"set_format(roi=({x=}, {y=}, {width=}, {height=}), {binning=}, output_format={format.name})"
+            )
         except Exception as ex:
-            self.log_and_append(f"failed to set format to {x=},{y=},{width=},{height=},{binning=},{format.name=}: {ex=}")
+            self.log_and_append(
+                f"failed to set format to {x=},{y=},{width=},{height=},{binning=},{format.name=}: {ex=}"
+            )
 
     def start_exposure(self, settings: ImagerSettings):
         self.errors = []
-        self.set_control(AsiControl.Exposure, int(settings.seconds * 1000000))  # micro seconds
+        self.set_control(
+            AsiControl.Exposure, int(settings.seconds * 1000000)
+        )  # micro seconds
 
-        assert(self.default_settings is not None)
+        assert self.default_settings is not None
 
         if settings.base_folder is None:
             settings.base_folder = self.default_settings.base_folder
 
         if settings.gain is None:
             settings.gain = self.default_settings.gain
-        assert(settings.gain is not None)
+        assert settings.gain is not None
         self.set_control(AsiControl.Gain, settings.gain)
 
         if settings.roi is None:
@@ -682,12 +757,13 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         self.latest_settings = settings.model_copy()
 
         try:
-            self.start_activity(ImagerActivities.Exposing)
-            asi.startExposure(self.cam_id, isDark=False)
             self.latest_exposure = ImagerExposure(
                 file=settings.image_path,
                 seconds=settings.seconds,
-                date=datetime.datetime.now(datetime.UTC).isoformat())
+                date=datetime.datetime.now(datetime.UTC).isoformat(),
+            )
+            self.start_activity(ImagerActivities.Exposing)
+            asi.startExposure(self.cam_id, isDark=False)
             logger.info(f"started a {settings.seconds} seconds exposure")
         except Exception as ex:
             self.log_and_append(f"failed to start exposure, {ex=}")
@@ -697,7 +773,9 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             asi.setControlValue(self.cam_id, controlType=control, value=value, auto=0)
             logger.info(f"set_control('{control.name}', value={value})")
         except Exception as ex:
-            self.log_and_append(f"failed to set_control('{control.name}' ({control.value}), value={value}), {ex=}")
+            self.log_and_append(
+                f"failed to set_control('{control.name}' ({control.value}), value={value}), {ex=}"
+            )
             raise
 
     def log_and_append(self, err: str):
@@ -720,7 +798,9 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         try:
             val, _ = asi.getControlValue(self.cam_id, AsiControl.CoolerOn)
         except Exception as ex:
-            self.errors.append(f"failed to get control AsiControl.CoolerOn ({AsiControl.CoolerOn}), {ex=}")
+            self.errors.append(
+                f"failed to get control AsiControl.CoolerOn ({AsiControl.CoolerOn}), {ex=}"
+            )
         return bool(val)
 
     @cooler_on.setter
@@ -729,7 +809,9 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         try:
             asi.setControlValue(self.cam_id, AsiControl.CoolerOn, int(onoff), 0)
         except Exception as ex:
-            self.errors.append(f"failed to set control AsiControl.CoolerOn ({AsiControl.CoolerOn}, {int(onoff)}), {ex=}")
+            self.errors.append(
+                f"failed to set control AsiControl.CoolerOn ({AsiControl.CoolerOn}, {int(onoff)}), {ex=}"
+            )
 
     @property
     def image_array(self):
@@ -739,11 +821,14 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def image_array(self, value):
         self._image_array = value
 
+
 if __name__ == "__main__":
     cam = ZWOImager(unit=None)
     # cam.make_pythonian_classes()
     cam.startup()
-    cam.start_exposure(ImagerSettings.model_validate({"seconds": 5}, context={"imager": cam}))
+    cam.start_exposure(
+        ImagerSettings.model_validate({"seconds": 5}, context={"imager": cam})
+    )
     print(json.dumps(cam.status().model_dump(), indent=2))
     if cam.can_send_image_ready_event:
         cam.wait_for_image_ready()
