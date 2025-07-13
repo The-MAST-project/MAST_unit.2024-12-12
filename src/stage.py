@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from enum import Enum, IntEnum, auto
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from fastapi.routing import APIRouter
@@ -22,21 +23,26 @@ from common.utils import RepeatTimer, Timeout, function_name, time_stamp
 if TYPE_CHECKING:
     from unit import Unit
 
+logger = logging.getLogger("mast.unit." + __name__)
+init_log(logger)
+
 os.environ["XILOG"] = "C:/temp/ximc.log"  # Enables logging for ximc library.
 
-cur_dir = os.path.abspath(os.path.dirname(__file__))  # Specifies the current directory.
-ximc_dir = os.path.join(
-    cur_dir, "Standa", "ximc-2.13.6", "ximc"
-)  # dependencies for examples.
+# cur_dir = os.path.abspath(os.path.dirname(__file__))  # Specifies the current directory.
+cur_dir = Path().cwd()
+ximc_dir = cur_dir / "Standa" / "ximc-2.13.6" / "ximc"  # dependencies for examples.
 sys.path.append(
-    os.path.join(ximc_dir, "crossplatform", "wrappers", "python")
+    str(ximc_dir / "crossplatform" / "wrappers" / "python")
 )  # add pyximc.py wrapper to python path
 
 if platform.system() == "Windows":
     # Determining the directory with dependencies for windows depending on the bit depth.
     arch_dir = "win64" if "64" in platform.architecture()[0] else "win32"  #
-    lib_dir = os.path.join(ximc_dir, arch_dir)
-    os.add_dll_directory(lib_dir)  # add dll path into an environment variable
+    lib_dir = ximc_dir / arch_dir  # lib directory for ximc library
+    if not lib_dir.exists():
+        raise FileNotFoundError(f"Directory with ximc library not found: {lib_dir=}. ")
+    # logger.info(f"calling os.add_dll_directory({lib_dir=}) ...")
+    os.add_dll_directory(str(lib_dir))  # add dll path into an environment variable
 
     from pyximc import EnumerateFlags  # type: ignore[name]
     from pyximc import Result  # type: ignore[name]
@@ -52,9 +58,6 @@ if platform.system() == "Windows":
     )
     from pyximc import lib as ximclib  # type: ignore[name]
     from pyximc import status_t, string_at
-
-logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
 
 RESULT_MAP = {
     Result.Ok: "Ok",
@@ -147,11 +150,10 @@ class Stage(Component, SwitchedOutlet):
         }
 
         # This is device search and enumeration with probing. It gives more information about devices.
-        probe_flags = EnumerateFlags.ENUMERATE_PROBE | EnumerateFlags.ENUMERATE_ALL_COM
-        enum_hints = b"addr="
+        probe_flags = EnumerateFlags.ENUMERATE_PROBE
+        enum_hints = b"hint=only_usb"
         assert ximclib
         self.device = -1
-        # dev_enum = ximclib.enumerate_devices(probe_flags, enum_hints)
         try:
             with Timeout(2) as timeout:
                 dev_enum = timeout.run(
@@ -185,7 +187,7 @@ class Stage(Component, SwitchedOutlet):
         result1 = ximclib.get_edges_settings(self.device, byref(x_edges_settings))
         if result == Result.Ok and result1 == Result.Ok:
             comport = str(self.device_uri)
-            comport = comport[comport.find("COM") :]
+            comport = comport[comport.find("COM") :].removesuffix("'")
             self.min_travel = x_edges_settings.LeftBorder
             self.max_travel = x_edges_settings.RightBorder
 
@@ -205,14 +207,9 @@ class Stage(Component, SwitchedOutlet):
                 "max": self.max_travel,
             }
 
-            self.device_info = "Port: {}, Manufacturer={}, Product={}, version={}, Range={}..{}, CLOSE_ENOUGH={}".format(
-                comport,
-                self.info["controller"],
-                self.info["product"],
-                self.info["version"],
-                self.min_travel,
-                self.max_travel,
-                self.CLOSE_ENOUGH,
+            self.device_info = (
+                f"port='{comport}', manufacturer='{self.info['controller']}', product='{self.info['product']}' "
+                + f"version='{self.info['version']}', range={self.min_travel}..{self.max_travel}, close_enough={self.CLOSE_ENOUGH}"
             )
         self.stage_lock = threading.Lock()
 
@@ -236,6 +233,7 @@ class Stage(Component, SwitchedOutlet):
         self.timer.name = "stage-timer-thread"
         self.timer.start()
 
+        logger.info(f"detected: {self.device_info}")
         with self.stage_lock:
             assert ximclib
             result = ximclib.command_homezero(self.device)
@@ -243,7 +241,6 @@ class Stage(Component, SwitchedOutlet):
                 self.start_activity(StageActivities.Homing)
 
         self._initialized = True
-        logger.info(f"initialized ({self.device_info})")
 
     def __del__(self):
         logger.info(f"Closing {self.device=}")
