@@ -1,9 +1,9 @@
-import numpy as np
 import matplotlib.pyplot as plt
-from astropy.stats import SigmaClip
-from astropy.io import fits
-from photutils.background import Background2D, MedianBackground
+import numpy as np
 import scipy.ndimage as ndi
+from astropy.io import fits
+from astropy.stats import SigmaClip
+from photutils.background import Background2D, MedianBackground
 
 
 def detect_vertical_obstruction(
@@ -110,25 +110,78 @@ def plot_obstruction(image_data, umbra_mask, penumbra_mask, vmin=None, vmax=None
     plt.show()
 
 
-def main():
-    with fits.open("image.fits") as hdul:
-        image_data = hdul[0].data.astype(float)
+import numpy as np
+from astropy.convolution import Gaussian2DKernel, convolve
+from astropy.modeling.fitting import LevMarLSQFitter
+from astropy.modeling.models import Linear1D
+from astropy.stats import sigma_clipped_stats
+from photutils.segmentation import detect_sources
 
-    # 2) Detect the obstruction
-    umbra_mask, penumbra_mask = detect_vertical_obstruction(
-        image_data,
-        box_size=30,
-        col_obstruction_factor=0.7,  # Loosen or tighten as needed
-        umbra_th=0.001,
-        penumbra_th=0.01,
-    )
 
-    # 3) Plot the results
-    if umbra_mask is not None and penumbra_mask is not None:
-        plot_obstruction(image_data, umbra_mask, penumbra_mask)
-    else:
-        print("No significant obstruction detected.")
+def mask_linear_shadow(image, umbra_half_width=8, penumbra_half_width=20):
+    assert image.ndim == 2
+
+    # Step 1: Smooth the image to get background (remove stars)
+    kernel = Gaussian2DKernel(x_stddev=20)
+    smoothed = convolve(image, kernel)
+
+    # Step 2: Residual (emphasize shadow band)
+    residual = smoothed - image  # shadow becomes bright
+
+    # Step 3: Collapse residual along Y to get X profile
+    profile = np.mean(residual, axis=0)
+
+    # Step 4: Fit a line to detect the darkest region (minima in profile)
+    x = np.arange(len(profile))
+    y = profile
+
+    # Find the deepest dip (shadow center) as rough location
+    shadow_center_x = np.argmin(profile)
+
+    # Step 5: Create mask: vertical band centered at shadow_center_x
+    height, width = image.shape
+    mask = np.ones_like(image, dtype=bool)
+
+    # Penumbra band
+    penumbra_start = max(0, shadow_center_x - penumbra_half_width)
+    penumbra_end = min(width, shadow_center_x + penumbra_half_width)
+
+    # Umbra core
+    umbra_start = max(0, shadow_center_x - umbra_half_width)
+    umbra_end = min(width, shadow_center_x + umbra_half_width)
+
+    # Apply mask: set those pixels to 0
+    result = np.copy(image)
+    result[:, penumbra_start:penumbra_end] = result[:, penumbra_start:penumbra_end] // 2
+    result[:, umbra_start:umbra_end] = 0
+
+    return result
 
 
 if __name__ == "__main__":
-    main()
+    from pathlib import Path
+
+    # Load a FITS file
+    fits_path = Path("d:/temp/test.fits")  # Replace with your file
+    with fits.open(fits_path) as hdul:
+        image = hdul[0].data.astype(np.uint16)
+
+    masked = mask_linear_shadow(image)
+
+    # Plotting
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5), constrained_layout=True)
+    ax1, ax2, ax3 = axes
+
+    im1 = ax1.imshow(image, cmap="gray", origin="lower")
+    ax1.set_title("Original")
+    plt.colorbar(im1, ax=ax1, fraction=0.046)
+
+    # im2 = ax2.imshow(residual, cmap="viridis", origin="lower")
+    # ax2.set_title("Residual (smoothed - image)")
+    # plt.colorbar(im2, ax=ax2, fraction=0.046)
+
+    im3 = ax3.imshow(masked, cmap="gray", origin="lower")
+    ax3.set_title("Masked Output")
+    plt.colorbar(im3, ax=ax3, fraction=0.046)
+
+    plt.show()
