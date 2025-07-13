@@ -18,6 +18,7 @@ from common.interfaces.components import Component
 from common.interfaces.imager import (
     ImagerBinning,
     ImagerExposure,
+    ImagerExposureSeries,
     ImagerInterface,
     ImagerRoi,
     ImagerSettings,
@@ -821,11 +822,18 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def image_array(self, value):
         self._image_array = value
 
+    def start_exposure_series(self, purpose: str | None = None):
+        return super().start_exposure_series(purpose=purpose)
+
+    def end_exposure_series(self, series):
+        super().end_exposure_series(series)
+
 
 if __name__ == "__main__":
     cam = ZWOImager(unit=None)
     # cam.make_pythonian_classes()
     cam.startup()
+    series = cam.start_exposure_series(purpose="testing")
     cam.start_exposure(
         ImagerSettings.model_validate({"seconds": 5}, context={"imager": cam})
     )
@@ -837,4 +845,5 @@ if __name__ == "__main__":
     if cam.can_send_image_saved_event:
         cam.wait_for_image_saved()
         logger.info("got image saved event")
+    cam.end_exposure_series(series)
     exit(0)

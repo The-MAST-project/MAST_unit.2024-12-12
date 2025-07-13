@@ -48,6 +48,7 @@ from common.interfaces.guiding import GuiderTypes
 # from guiding import Guider
 from common.interfaces.imager import (
     ImagerBinning,
+    ImagerExposureSeries,
     ImagerSettings,
     ImagerStatus,
     ImagerTypes,
@@ -204,6 +205,7 @@ class Unit(Component):
         self.controller_api = ControllerApi()
 
         self.spirals_folder: str | None = None
+        self.spiral_exposure_series: ImagerExposureSeries | None = None
         self.latest_acquisition: Acquisition | None = None
 
         self._initialized = True
@@ -660,6 +662,7 @@ class Unit(Component):
             return CanonicalResponse(errors=[f"bad {binning=}, should be 1, 2 or 4"])
 
         self.mount.start_tracking()
+        exposure_series = self.imager.start_exposure_series(purpose="unit.do_exposure")
         for repeat in range(repeats):
             end = None
             if seconds_between_exposures != 0.0:
@@ -721,6 +724,7 @@ class Unit(Component):
                     logger.info("waiting for mount to stop moving ...")
                     time.sleep(1)
 
+        self.imager.end_exposure_series(exposure_series)
         self.mount.stop_tracking()
         return CanonicalResponse_Ok
 
@@ -765,6 +769,10 @@ class Unit(Component):
             gain = int(gain)
 
         reference_position = start_position
+
+        repeatablility_exposure_series = self.imager.start_exposure_series(
+            "unit.do_test_stage_repeatability"
+        )
 
         for position in range(start_position + step, end_position, step):
             logger.info(f"{op}: moving stage to {reference_position=}")
@@ -815,6 +823,8 @@ class Unit(Component):
                 self.imager.wait_for_image_saved()
                 logger.info(f"{op}: image at {position=} was saved")
                 filer.move_ram_to_shared(exposure_settings.image_path)
+
+        self.imager.end_exposure_series(repeatablility_exposure_series)
 
         logger.info(f"{op}: done.")
         return CanonicalResponse_Ok
@@ -899,10 +909,8 @@ class Unit(Component):
 
     def spiral_new_path(self, x_step_arcsec: float, y_step_arcsec: float):
         """
-        Defines a new spiral path
-        :param x_step_arcsec:
-        :param y_step_arcsec:
-        :return:
+        Defines a new spiral path<br>
+        **NOTE**: Remember to call `spiral_end_path()` when done with the spiral path
         """
         self.mount.pw.mount_spiral_offset_new(
             x_step_arcsec=x_step_arcsec, y_step_arcsec=y_step_arcsec
@@ -916,6 +924,9 @@ class Unit(Component):
         self.imager.latest_settings = ImagerSettings(
             seconds=5, save=True, image_path=image_path
         )
+        self.spiral_exposure_series = self.imager.start_exposure_series(
+            purpose="spiral_new_path"
+        )
         self.imager.start_exposure(self.imager.latest_settings)
         self.imager.wait_for_image_saved()
         Filer().move_ram_to_shared(image_path)
@@ -924,7 +935,6 @@ class Unit(Component):
     def spiral_next_step(self):
         """
         Takes the next step in the currently defined spiral path
-        :return:
         """
         logger.info("calling mount_spiral_offset_next() ...")
         self.mount.pw.mount_spiral_offset_next()
@@ -949,7 +959,6 @@ class Unit(Component):
     def spiral_previous_step(self):
         """
         Goes back one step in the currently defined spiral path
-        :return:
         """
         logger.info("calling mount_spiral_offset_previous() ...")
         self.mount.pw.mount_spiral_offset_previous()
@@ -969,6 +978,16 @@ class Unit(Component):
             self.imager.wait_for_image_saved()
             Filer().move_ram_to_shared(image_path)
 
+        return CanonicalResponse_Ok
+
+    def spiral_end_path(self):
+        """
+        Ends the currently defined spiral path
+        """
+        assert (
+            self.spiral_exposure_series is not None
+        ), "No spiral exposure series defined"
+        self.imager.end_exposure_series(self.spiral_exposure_series)
         return CanonicalResponse_Ok
 
     @property
@@ -1035,6 +1054,9 @@ class Unit(Component):
             base_path + "/spiral_previous_step",
             tags=[tag],
             endpoint=self.spiral_previous_step,
+        )
+        router.add_api_route(
+            base_path + "/spiral_end_path", tags=[tag], endpoint=self.spiral_end_path
         )
 
         return router

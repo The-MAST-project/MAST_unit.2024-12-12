@@ -81,7 +81,7 @@ class Autofocuser:
 
         return self.unit.is_active(UnitActivities.Autofocusing) or (
             self.unit.is_active(UnitActivities.AutofocusingPWI4)
-            and self.unit.pw.status().autofocus.is_running # type: ignore[union-attr]
+            and self.unit.pw.status().autofocus.is_running  # type: ignore[union-attr]
         )
 
     def start_autofocus(  # noqa: C901
@@ -113,7 +113,9 @@ class Autofocuser:
             ),
         ] = None,
         exposure: float | None = 5,  # seconds
-        start_position: int | None = None,  # when None, start from know-as-good position
+        start_position: (
+            int | None
+        ) = None,  # when None, start from know-as-good position
         ticks_per_step: int | None = 50,  # focuser ticks per step
         number_of_images: int | None = 5,
     ):
@@ -144,11 +146,11 @@ class Autofocuser:
             elif isinstance(ra_j2000_hours, float):
                 pass
         else:
-            if not pw_status.mount.is_connected: # type: ignore[union-attr]
+            if not pw_status.mount.is_connected:  # type: ignore[union-attr]
                 return CanonicalResponse(
                     errors=["cannot get coordinates from mount (mount not connected)"]
                 )
-            ra_j2000_hours = pw_status.mount.ra_j2000_hours # type: ignore[union-attr]
+            ra_j2000_hours = pw_status.mount.ra_j2000_hours  # type: ignore[union-attr]
 
         if dec_j2000_degs:
             if isinstance(dec_j2000_degs, str):
@@ -159,11 +161,11 @@ class Autofocuser:
             elif isinstance(dec_j2000_degs, float):
                 pass
         else:
-            if not pw_status.mount.is_connected: # type: ignore
+            if not pw_status.mount.is_connected:  # type: ignore
                 return CanonicalResponse(
                     errors=["cannot get coordinates from mount (mount not connected)"]
                 )
-            dec_j2000_degs = pw_status.mount.dec_j2000_degs # type: ignore
+            dec_j2000_degs = pw_status.mount.dec_j2000_degs  # type: ignore
 
         if number_of_images is None:
             number_of_images = self.unit.unit_conf.autofocus.images
@@ -231,7 +233,7 @@ class Autofocuser:
         self.unit.stage.move_to_preset(StagePresetPosition.Sky)
 
         pw_status = self.unit.pw.status()
-        if not pw_status.mount.is_tracking: # type: ignore[union-attr]
+        if not pw_status.mount.is_tracking:  # type: ignore[union-attr]
             logger.info(f"{op}: starting mount tracking")
             self.unit.pw.mount_tracking_on()
 
@@ -241,7 +243,9 @@ class Autofocuser:
             logger.info(f"{op}: moving mount to {target_ra=}, {target_dec=} ...")
             self.unit.mount.goto_ra_dec_j2000(target_ra, target_dec)
 
-        start_position = start_position or self.unit.unit_conf.focuser.known_as_good_position
+        start_position = (
+            start_position or self.unit.unit_conf.focuser.known_as_good_position
+        )
         focuser_position: int = int(
             start_position - ((number_of_images / 2) * ticks_per_step)
         )
@@ -281,6 +285,9 @@ class Autofocuser:
             #
             # Acquire images
             #
+            autofocus_exposure_series = self.unit.imager.start_exposure_series(
+                purpose="autofocus"
+            )
             files: list[str] = []
             for image_no in range(number_of_images):
                 autofocus_settings = ImagerSettings(
@@ -302,13 +309,17 @@ class Autofocuser:
                     f"{op}: waiting for exposure #{image_no} of {number_of_images} ..."
                 )
                 self.unit.imager.wait_for_image_saved()
-                if self.unit.imager.latest_settings and self.unit.imager.latest_settings.image_path:
+                if (
+                    self.unit.imager.latest_settings
+                    and self.unit.imager.latest_settings.image_path
+                ):
                     files.append(self.unit.imager.latest_settings.image_path)
 
                 if not self.unit.is_active(
                     UnitActivities.Autofocusing
                 ):  # have we been stopped?
                     logger.info(f"{op}: activity 'Autofocusing' was stopped")
+                    self.unit.imager.end_exposure_series(autofocus_exposure_series)
                     return
 
                 focuser_position += ticks_per_step
@@ -324,9 +335,12 @@ class Autofocuser:
                     UnitActivities.Autofocusing
                 ):  # have we been stopped?
                     logger.info(f"{op}: activity 'Autofocusing' was stopped")
+                    self.unit.imager.end_exposure_series(autofocus_exposure_series)
                     return
 
             # The files are now on the RAM disk
+
+            self.unit.imager.end_exposure_series(autofocus_exposure_series)
 
             self.unit.start_activity(UnitActivities.AutofocusAnalysis)
             ps3_client = PS3CLIClient()
@@ -403,7 +417,8 @@ class Autofocuser:
                 + f"{self.latest_result.tolerance=}"
             )
 
-            if (self.latest_result.tolerance is None
+            if (
+                self.latest_result.tolerance is None
                 or math.isnan(self.latest_result.tolerance)
                 or self.latest_result.tolerance > max_tolerance
             ):
@@ -415,7 +430,9 @@ class Autofocuser:
 
             if self.latest_result.best_focus_position is not None:
                 position: int = int(self.latest_result.best_focus_position)
-                logger.info(f"{op}: moving focuser to best focus position {position} ...")
+                logger.info(
+                    f"{op}: moving focuser to best focus position {position} ..."
+                )
                 self.unit.focuser.known_as_good_position = position
                 self.unit.focuser.position = self.unit.focuser.known_as_good_position
 
@@ -464,7 +481,7 @@ class Autofocuser:
         #     logger.error('Cannot start PlaneWave autofocus - not-connected')
         #     return
 
-        if self.unit.pw.status().autofocus.is_running: # type: ignore[union-attr]
+        if self.unit.pw.status().autofocus.is_running:  # type: ignore[union-attr]
             logger.info("pwi4 autofocus already running")
             return
 
@@ -474,7 +491,7 @@ class Autofocuser:
 
         self.unit.pw.request("/autofocus/start")
         while (
-            not self.unit.pw.status().autofocus.is_running # type: ignore[union-attr]
+            not self.unit.pw.status().autofocus.is_running  # type: ignore[union-attr]
         ):  # wait for it to actually start
             logger.debug("waiting for PlaneWave autofocus to start")
             time.sleep(1)
@@ -494,7 +511,7 @@ class Autofocuser:
         #     return
 
         if self.unit.is_active(UnitActivities.AutofocusingPWI4):
-            if not self.unit.pw.status().autofocus.is_running: # type: ignore[union-attr]
+            if not self.unit.pw.status().autofocus.is_running:  # type: ignore[union-attr]
                 logger.info("Cannot stop PWI4 autofocus, it is not running")
                 return
             self.unit.pw.request("/autofocus/stop")

@@ -31,6 +31,7 @@ DEC_REGEX = r"^([+-]?)(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
 
 class Acquirer:
     from typing import TYPE_CHECKING
+
     if TYPE_CHECKING:
         from unit import Unit
 
@@ -111,6 +112,10 @@ class Acquirer:
                 target_ra_j2000_hours, target_dec_j2000_degs
             )
 
+        acquisition_exposure_series = self.unit.imager.start_exposure_series(
+            purpose="acquisition"
+        )
+
         if not acquisition.skip_sky:
             phase = "sky"
             boxed_info(logger, [f"starting phase '{phase.upper()}'"])
@@ -124,7 +129,9 @@ class Acquirer:
                 time.sleep(0.2)
             self.unit.end_activity(UnitActivities.Positioning)
 
-            imager_binning = ImagerBinning(x=acquisition_conf.binning.x, y=acquisition_conf.binning.y)
+            imager_binning = ImagerBinning(
+                x=acquisition_conf.binning.x, y=acquisition_conf.binning.y
+            )
             sky_settings = ImagerSettings(
                 seconds=acquisition_conf.exposure,
                 base_folder=os.path.join(self.latest_acquisition.folder, phase),
@@ -139,16 +146,16 @@ class Acquirer:
             #
 
             # set up the tolerances
-            default_tolerance: Angle = Angle(1 * u.arcsecond) # type: ignore
+            default_tolerance: Angle = Angle(1 * u.arcsecond)  # type: ignore
             ra_tolerance: Angle = default_tolerance
             dec_tolerance: Angle = default_tolerance
             phase_conf = self.unit.unit_conf.acquisition
-            ra_tolerance = Angle(phase_conf.tolerance.ra_arcsec * u.arcsecond) # type: ignore
-            dec_tolerance = Angle(phase_conf.tolerance.dec_arcsec * u.arcsecond) # type: ignore
+            ra_tolerance = Angle(phase_conf.tolerance.ra_arcsec * u.arcsecond)  # type: ignore
+            dec_tolerance = Angle(phase_conf.tolerance.dec_arcsec * u.arcsecond)  # type: ignore
 
             target = Coord(
-                ra=Angle(target_ra_j2000_hours * u.hourangle), # type: ignore
-                dec=Angle(target_dec_j2000_degs * u.deg), # type: ignore
+                ra=Angle(target_ra_j2000_hours * u.hourangle),  # type: ignore
+                dec=Angle(target_dec_j2000_degs * u.deg),  # type: ignore
             )
 
             achieved_tolerances = self.unit.solver.solve_and_correct(
@@ -168,6 +175,7 @@ class Acquirer:
             if not achieved_tolerances:
                 self.unit.end_activity(UnitActivities.Acquiring)
                 self.unit.mount.stop_tracking()
+                self.unit.imager.end_exposure_series(acquisition_exposure_series)
                 return
 
         phase = "spec"
@@ -184,8 +192,8 @@ class Acquirer:
             self.unit.end_activity(UnitActivities.Positioning)
 
         phase_conf = self.unit.unit_conf.guiding
-        ra_tolerance = Angle(phase_conf.tolerance.ra_arcsec * u.arcsecond) # type: ignore
-        dec_tolerance = Angle(phase_conf.tolerance.dec_arcsec * u.arcsecond) # type: ignore
+        ra_tolerance = Angle(phase_conf.tolerance.ra_arcsec * u.arcsecond)  # type: ignore
+        dec_tolerance = Angle(phase_conf.tolerance.dec_arcsec * u.arcsecond)  # type: ignore
 
         spec_settings = self.unit.guider.make_guiding_settings(
             base_folder=os.path.join(self.latest_acquisition.folder, phase)
@@ -206,58 +214,14 @@ class Acquirer:
         if not achieved_tolerances:
             self.unit.end_activity(UnitActivities.Acquiring)
             self.unit.mount.stop_tracking()
+            self.unit.imager.end_exposure_series(acquisition_exposure_series)
             return
 
         if self.unit.imager.can_image_to_memory:
             self.unit.reference_image = self.unit.imager.image_array
 
+        self.unit.imager.end_exposure_series(acquisition_exposure_series)
         self.unit.guider.start_guiding()
-
-        # if acquisition.guiding_mode == GuidingMode.PlateSolving:
-        #     phase = "guiding"
-        #     boxed_info(logger, [f"starting phase '{phase.upper()}'"])
-
-        #     cadence = self.unit.unit_conf.guiding.cadence_seconds
-        #     end: datetime.datetime | None = None
-        #     folder = os.path.join(self.latest_acquisition.folder, phase)
-        #     guiding_settings = self.unit.guider.make_guiding_settings(folder)
-
-        #     self.unit.start_activity(UnitActivities.Guiding)
-        #     while self.unit.is_active(UnitActivities.Guiding):
-        #         start = datetime.datetime.now()
-        #         if cadence:
-        #             end = start + datetime.timedelta(seconds=cadence)
-        #         self.unit.solver.solve_and_correct(
-        #             target=target,
-        #             approach_mode=acquisition.approach_mode,
-        #             solver_id=acquisition.solver_id,
-        #             make_corrections=acquisition.make_corrections,
-        #             imager_settings=guiding_settings,
-        #             solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
-        #             parent_activity=UnitActivities.Acquiring,
-        #             phase=phase,
-        #         )
-
-        #     if self.unit.acquirer.latest_acquisition is not None:
-        #         self.unit.acquirer.latest_acquisition.save_corrections(phase)
-
-        #     if cadence and end is not None:
-        #         now = datetime.datetime.now()
-        #         if now < end:
-        #             sec = (end - now).seconds
-        #             boxed_info(
-        #                 logger,
-        #                 f"phase '[{phase.upper()}], sleeping {sec:.2f} seconds " +
-        #                 "till end-of-cadence ...",
-        #             )
-        #             time.sleep(sec)
-        #         else:
-        #             boxed_info(
-        #                 logger,
-        #                 f"phase '[{phase.upper()}], cycle was longer than {cadence=} " +
-        #                 "sec, not sleeping",
-        #             )
-        # else:
 
         while self.unit.is_active(UnitActivities.Guiding):
             time.sleep(1)
@@ -368,11 +332,11 @@ class Acquirer:
             elif isinstance(ra_j2000_hours, float):
                 pass
         else:
-            if not pw_status.mount.is_connected: # type: ignore
+            if not pw_status.mount.is_connected:  # type: ignore
                 return CanonicalResponse(
                     errors=["cannot get coordinates from mount (mount not connected)"]
                 )
-            ra_j2000_hours = pw_status.mount.ra_j2000_hours # type: ignore
+            ra_j2000_hours = pw_status.mount.ra_j2000_hours  # type: ignore
 
         if dec_j2000_degs:
             if isinstance(dec_j2000_degs, str):
@@ -383,17 +347,19 @@ class Acquirer:
             elif isinstance(dec_j2000_degs, float):
                 pass
         else:
-            if not pw_status.mount.is_connected: # type: ignore
+            if not pw_status.mount.is_connected:  # type: ignore
                 return CanonicalResponse(
                     errors=["cannot get coordinates from mount (mount not connected)"]
                 )
-            dec_j2000_degs = pw_status.mount.dec_j2000_degs # type: ignore
+            dec_j2000_degs = pw_status.mount.dec_j2000_degs  # type: ignore
 
         if seconds is not None:
             self.unit.unit_conf.acquisition.exposure = seconds
 
-        assert(self.unit.unit_conf.solving.method in self.unit.unit_conf.solving.valid_methods), \
-            "unit unit_conf.solving.method is not in allowed_methods"
+        assert (
+            self.unit.unit_conf.solving.method
+            in self.unit.unit_conf.solving.valid_methods
+        ), "unit unit_conf.solving.method is not in allowed_methods"
 
         solver_name = self.unit.unit_conf.solving.method
 
@@ -414,6 +380,8 @@ class Acquirer:
                 conf=self.unit.unit_conf.acquisition,
                 skip_sky=skip_sky,
             )
-            Thread(name="acquisition", target=self.do_acquire, args=[acquisition]).start()
+            Thread(
+                name="acquisition", target=self.do_acquire, args=[acquisition]
+            ).start()
 
             return CanonicalResponse_Ok

@@ -2,6 +2,7 @@ import copy
 import json
 import logging
 import math
+import os
 import selectors
 import socket
 import threading
@@ -20,6 +21,7 @@ from common.config import Config
 from common.interfaces.guiding import GuiderInterface
 from common.interfaces.imager import (
     ImagerBinning,
+    ImagerExposureSeries,
     ImagerInterface,
     ImagerRoi,
     ImagerSettings,
@@ -60,9 +62,9 @@ class PHD2Activities(IntFlag):
     Calibrating = auto()
     Looping = auto()
     Saving = auto()
-    Verifying = auto()
-    ExposingForVerification = auto()
-    SolvingForVerification = auto()
+    Validating = auto()
+    ExposingForValidation = auto()
+    SolvingForValidation = auto()
 
 
 class PHD2ImagerStatus(BaseModel):
@@ -285,6 +287,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.dec_accumulator = PHD2Accumulator()
         self.stats = PHD2GuideStats()
         self.settle = None
+        self.validation_interval = Config().get_unit().phd2.validation_interval
 
         default_settling = Config().get_unit().phd2.settle
         self.settling_settings: SettleModel = SettleModel(
@@ -298,7 +301,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.image_saved_event: threading.Event = threading.Event()
 
         self.guiding_verification_timer: RepeatTimer = RepeatTimer(
-            interval=30.0, function=self.verify_guiding
+            interval=self.validation_interval, function=self.validate_guiding
         )
 
         self.conf = Config().get_unit().phd2
@@ -314,6 +317,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         secs = 3
         logger.info(f"sleeping {secs} seconds to allow PHD2 to start")
         time.sleep(secs)
+
+        self._needs_to_resume_guiding = False
 
         self._connected = False
         try:
@@ -338,18 +343,23 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.watched_process.terminate()
             self.watched_process = None
 
-    def verify_guiding(self):
+    def validate_guiding(self):
         if not self.is_active(PHD2Activities.Guiding):
-            logger.info(f"{function_name()} not verifying guiding, not guiding")
+            logger.warning(f"{function_name()}: not verifying guiding: not guiding")
             return
 
-        self.start_activity(PHD2Activities.Verifying)
+        self.start_activity(PHD2Activities.Validating)
         self.call("stop_capture")  # stop guiding
         assert self.unit is not None
-        settings = self.unit.guider.make_guiding_settings()
+        assert self.unit.acquirer.latest_acquisition is not None
+        settings = self.unit.guider.make_guiding_settings(
+            base_folder=os.path.join(
+                self.unit.acquirer.latest_acquisition.folder, "guiding", "validation"
+            )
+        )
         assert settings.roi is not None
         try:
-            self.start_activity(PHD2Activities.ExposingForVerification)
+            self.start_activity(PHD2Activities.ExposingForValidation)
             self.call(
                 "capture_single_frame",
                 params={
@@ -367,9 +377,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 },
             )
         except PHD2ConnectorError as ex:
-            self.log_and_append(f"{ex=}")
-            self.end_activity(PHD2Activities.ExposingForVerification)
-            self.end_activity(PHD2Activities.Verifying)
+            self.log_and_append_error(f"{ex=}")
+            self.end_activity(PHD2Activities.ExposingForValidation)
+            self.end_activity(PHD2Activities.Validating)
             self.guide()
             return
 
@@ -386,7 +396,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         )
         tolerance = Config().get_unit().guiding.tolerance
 
-        self.start_activity(PHD2Activities.SolvingForVerification)
+        self.start_activity(PHD2Activities.SolvingForValidation)
         with ThreadPoolExecutor() as executor:
             logger.info(f"{function_name()}: starting solving for {target=}")
             future = executor.submit(self.unit.solver.solve, settings, target)
@@ -401,8 +411,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 and abs(delta_dec) <= tolerance.dec_arcsec
             )
             boxed_info(
-                info_logger=logger,
-                ll=[
+                logger=logger,
+                lines=[
                     f"{delta_ra=}, {delta_dec=}",
                     f"{tolerance=}",
                     f"within tolerance: {within_tolerance}",
@@ -411,10 +421,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
             if not within_tolerance:
                 # TBD: what to do if the target is not within tolerance?
+                logger.error("OUT OF TOLERANCE!, WHAT TO DO?")
                 pass
 
-        self.end_activity(PHD2Activities.SolvingForVerification)
-        self.end_activity(PHD2Activities.Verifying)
+        self.end_activity(PHD2Activities.SolvingForValidation)
+        self.end_activity(PHD2Activities.Validating)
 
     @staticmethod
     def _is_guiding(st):
@@ -1010,17 +1021,41 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         else:
             self.disconnect()
 
-    def log_and_append(self, err: str):
+    def log_and_append_error(self, err: str):
         self.errors.append(err)
         logger.error(err)
 
+    def start_exposure_series(self, purpose: str | None = None):
+        series_id = super().start_exposure_series(purpose=purpose)
+        if self._is_guiding(self.app_state):
+            self.stop_guiding()
+            self._needs_to_resume_guiding = True
+        else:
+            self._needs_to_resume_guiding = False
+        return series_id
+
+    def end_exposure_series(self, series: ImagerExposureSeries):
+        try:
+            super().end_exposure_series(series)
+        except ValueError as ex:
+            self.log_and_append_error(f"end_exposure_series: {series=}: {ex=}")
+            return
+
+        if self._needs_to_resume_guiding:
+            self.start_guiding()
+            self._needs_to_resume_guiding = False
+
     def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:
+        """
+        The main entry point for starting an exposure with PHD2.
+        If PHD2 is currently guiding we stop it, start an exposure and then resume guiding.
+        """
         op = function_name()
 
         self.errors = []
         if not self.connected:
             err = f"{op}: not connected"
-            self.log_and_append(err)
+            self.log_and_append_error(err)
             return CanonicalResponse(errors=[err])
 
         if not settings.image_path:
@@ -1035,7 +1070,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             try:
                 self.call("save_image", {"path": settings.image_path})
             except PHD2ConnectorError as ex:
-                self.errors.append(f"{ex=}")
+                self.log_and_append_error(f"{ex=}")
         else:
             # while not guiding we use capture_single_frame()
             assert settings.roi is not None, "start_exposure: settings.roi is None"
@@ -1060,7 +1095,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     },
                 )
             except PHD2ConnectorError as ex:
-                self.log_and_append(f"{ex=}")
+                self.log_and_append_error(f"{ex=}")
         return (
             CanonicalResponse(errors=self.errors)
             if self.errors

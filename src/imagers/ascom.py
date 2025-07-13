@@ -23,6 +23,7 @@ from common.interfaces.components import Component
 from common.interfaces.imager import (
     ImagerBinning,
     ImagerExposure,
+    ImagerExposureSeries,
     ImagerInterface,
     ImagerRoi,
     ImagerSettings,
@@ -1044,11 +1045,18 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     def can_send_image_saved_event(self) -> bool:
         return True
 
+    def start_exposure_series(self, purpose: str | None = None) -> ImagerExposureSeries:
+        return super().start_exposure_series(purpose=purpose)
+
+    def end_exposure_series(self, series: ImagerExposureSeries):
+        super().end_exposure_series(series)
+
 
 if __name__ == "__main__":
     cam = ASCOMImager(prog_id="ASCOM.ASICamera2.Camera")
     # cam.make_pythonian_classes()
     cam.startup()
+    series = cam.start_exposure_series(purpose="ASCOM test exposure series")
     cam.start_exposure(
         ImagerSettings.model_validate({"seconds": 5}, context={"imager": cam})
     )
@@ -1060,4 +1068,5 @@ if __name__ == "__main__":
     if cam.can_send_image_saved_event:
         cam.wait_for_image_saved()
         logger.info("got image saved event")
+    cam.end_exposure_series(series)
     exit(0)

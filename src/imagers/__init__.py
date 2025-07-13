@@ -4,13 +4,17 @@ import numpy as np
 from fastapi import APIRouter
 
 from common.canonical import CanonicalResponse
-from imagers.ascom import ASCOMImager
 
 if TYPE_CHECKING:
     from unit import Unit
 
 from common.const import Const
-from common.interfaces.imager import ImagerInterface, ImagerSettings, ImagerTypes
+from common.interfaces.imager import (
+    ImagerExposureSeries,
+    ImagerInterface,
+    ImagerSettings,
+    ImagerTypes,
+)
 
 __all__ = ["Imager"]
 
@@ -92,6 +96,7 @@ class Imager(ImagerInterface):
 
         self.imager_params = params
         self.latest_settings: ImagerSettings | None = None
+        self.current_exposure_series: ImagerExposureSeries | None = None
         self._initialized = True
 
     @property
@@ -192,6 +197,24 @@ class Imager(ImagerInterface):
 
     def disconnect(self) -> CanonicalResponse | None:  # obsoleted by connected property
         self.connected = False
+
+    def start_exposure_series(self, purpose: str | None = None) -> ImagerExposureSeries:
+        return self._backend.start_exposure_series(purpose)
+
+    def end_exposure_series(self, series: ImagerExposureSeries):
+        """
+        Ends the exposure series and cleans up resources.
+        :param series: The ImagerExposureSeries to end
+        """
+        assert (
+            self.current_exposure_series is not None
+        ), "No current exposure series to end"
+        if self.current_exposure_series.series_id != series.series_id:
+            raise ValueError(
+                f"Cannot end exposure series {series.series_id}, current series is {self.current_exposure_series.series_id}"
+            )
+        self._backend.end_exposure_series(series)
+        self.current_exposure_series = None
 
     def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse | None:
         """

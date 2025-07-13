@@ -13,11 +13,12 @@ from common.mast_logging import init_log
 from common.utils import Coord, boxed_info
 from solving import SolvingTolerance
 
-logger = Logger('mast-unit-solving-guider')
+logger = Logger("mast-unit-solving-guider")
 init_log(logger)
 
 if TYPE_CHECKING:
     from unit import Unit
+
 
 class SolvingGuider(GuiderInterface):
     _instance = None
@@ -36,26 +37,31 @@ class SolvingGuider(GuiderInterface):
             raise ValueError(" unit is None")
 
         self.unit = unit
+        self.guiding_exposure_series = None
         self._initialized = True
 
     def start_guiding(self):
         phase = "guiding"
         boxed_info(logger, [f"starting phase '{phase.upper()}'"])
 
-        assert(self.unit.acquirer.latest_acquisition is not None), "self.unit.acquirer.latest_acquisition is None"
+        assert (
+            self.unit.acquirer.latest_acquisition is not None
+        ), "self.unit.acquirer.latest_acquisition is None"
 
         phase_conf = self.unit.unit_conf.guiding
         cadence = phase_conf.cadence_seconds
-        ra_tolerance = Angle(phase_conf.tolerance.ra_arcsec * u.arcsecond) # type: ignore
-        dec_tolerance = Angle(phase_conf.tolerance.dec_arcsec * u.arcsecond) # type: ignore
+        ra_tolerance = Angle(phase_conf.tolerance.ra_arcsec * u.arcsecond)  # type: ignore
+        dec_tolerance = Angle(phase_conf.tolerance.dec_arcsec * u.arcsecond)  # type: ignore
 
         end: datetime.datetime | None = None
         folder = os.path.join(self.unit.acquirer.latest_acquisition.folder, phase)
         guiding_settings = self.unit.guider.make_guiding_settings(folder)
         target: Coord = Coord(
             Angle(self.unit.acquirer.latest_acquisition.target_ra, unit="hourangle"),
-            Angle(self.unit.acquirer.latest_acquisition.target_dec, unit="deg"))
+            Angle(self.unit.acquirer.latest_acquisition.target_dec, unit="deg"),
+        )
 
+        self.guiding_exposure_series = self.unit.imager.start_exposure_series()
         self.unit.start_activity(UnitActivities.Guiding)
         while self.unit.is_active(UnitActivities.Guiding):
             start = datetime.datetime.now()
@@ -79,12 +85,20 @@ class SolvingGuider(GuiderInterface):
             now = datetime.datetime.now()
             if now < end:
                 sec = (end - now).seconds
-                boxed_info(logger, f"phase '[{phase.upper()}], sleeping {sec:.2f} seconds till end-of-cadence ...")
+                boxed_info(
+                    logger,
+                    f"phase '[{phase.upper()}], sleeping {sec:.2f} seconds till end-of-cadence ...",
+                )
                 time.sleep(sec)
             else:
-                boxed_info(logger, f"phase '[{phase.upper()}], cycle was longer than {cadence=} sec, not sleeping")
+                boxed_info(
+                    logger,
+                    f"phase '[{phase.upper()}], cycle was longer than {cadence=} sec, not sleeping",
+                )
 
     def stop_guiding(self):
+        self.unit.imager.end_exposure_series(self.guiding_exposure_series)
+        self.guiding_exposure_series = None
         self.unit.end_activity(UnitActivities.Guiding)
 
     def status(self):
