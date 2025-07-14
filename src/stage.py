@@ -28,7 +28,6 @@ init_log(logger)
 
 os.environ["XILOG"] = "C:/temp/ximc.log"  # Enables logging for ximc library.
 
-# cur_dir = os.path.abspath(os.path.dirname(__file__))  # Specifies the current directory.
 cur_dir = Path().cwd()
 ximc_dir = cur_dir / "Standa" / "ximc-2.13.6" / "ximc"  # dependencies for examples.
 sys.path.append(
@@ -41,23 +40,24 @@ if platform.system() == "Windows":
     lib_dir = ximc_dir / arch_dir  # lib directory for ximc library
     if not lib_dir.exists():
         raise FileNotFoundError(f"Directory with ximc library not found: {lib_dir=}. ")
-    # logger.info(f"calling os.add_dll_directory({lib_dir=}) ...")
     os.add_dll_directory(str(lib_dir))  # add dll path into an environment variable
 
-    from pyximc import EnumerateFlags  # type: ignore[name]
-    from pyximc import Result  # type: ignore[name]
     from pyximc import (
         POINTER,
+        EnumerateFlags,  # type: ignore[name]
         MvcmdStatus,
+        Result,  # type: ignore[name]
         StateFlags,
         byref,
+        c_char_p,
         c_int,
         cast,
         device_information_t,
         edges_settings_t,
+        status_t,
+        string_at,
     )
     from pyximc import lib as ximclib  # type: ignore[name]
-    from pyximc import status_t, string_at
 
 RESULT_MAP = {
     Result.Ok: "Ok",
@@ -151,11 +151,14 @@ class Stage(Component, SwitchedOutlet):
 
         # This is device search and enumeration with probing. It gives more information about devices.
         probe_flags = EnumerateFlags.ENUMERATE_PROBE
-        enum_hints = b"hint=only_usb"
+        ports = self.find_ximc_ports()
+        hint = f"addr={ports[0]}" if ports else "addr="
+        logger.info(f"{op}: using {hint=} as enumeration hint")
+        enum_hints = c_char_p(hint.encode()) # type: ignore
         assert ximclib
         self.device = -1
         try:
-            with Timeout(2) as timeout:
+            with Timeout(10) as timeout:
                 dev_enum = timeout.run(
                     ximclib.enumerate_devices, probe_flags, enum_hints
                 )
@@ -208,8 +211,9 @@ class Stage(Component, SwitchedOutlet):
             }
 
             self.device_info = (
-                f"port='{comport}', manufacturer='{self.info['controller']}', product='{self.info['product']}' "
-                + f"version='{self.info['version']}', range={self.min_travel}..{self.max_travel}, close_enough={self.CLOSE_ENOUGH}"
+                f"port='{comport}', manufacturer='{self.info['controller']}', product='{self.info['product']}', "
+                + f"version='{self.info['version']}', range={self.min_travel}..{self.max_travel}, "
+                + f"close_enough={self.CLOSE_ENOUGH}"
             )
         self.stage_lock = threading.Lock()
 
@@ -250,6 +254,16 @@ class Stage(Component, SwitchedOutlet):
 
     def __repr__(self):
         return f"<Stage device={self.device}>"
+
+    def find_ximc_ports(self):
+        import serial.tools.list_ports
+
+        ports = serial.tools.list_ports.comports()
+        ximc_ports = []
+        for port in ports:
+            if "XIMC" in port.description:
+                ximc_ports.append(port.device)  # e.g., 'COM7'
+        return ximc_ports
 
     def position_sampler(self):
         return self.position
