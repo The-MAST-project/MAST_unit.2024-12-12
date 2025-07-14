@@ -282,9 +282,14 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, unit, imager_params: dict[str, Any] | None = None):
+    def __init__(self, unit, imager_params: dict[str, Any] | None = None, _from_imager: bool = False):
+
         Component.__init__(self)
-        SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name="Camera")
+        if not _from_imager:
+            SwitchedOutlet.group(
+                domain=OutletDomain.Unit,
+                group_name="Camera",
+                outlet_names=["Camera", "CameraUSB"]).populate(self)
         self.unit = unit
         self.imager_params = imager_params or {}
 

@@ -18,14 +18,9 @@ from pydantic import BaseModel
 from common.activities import ImagerActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
+from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
-from common.interfaces.imager import (
-    ImagerBinning,
-    ImagerExposureSeries,
-    ImagerInterface,
-    ImagerRoi,
-    ImagerSettings,
-)
+from common.interfaces.imager import ImagerBinning, ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_info, function_name
@@ -261,12 +256,18 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         unit=None,
         hostname="localhost",
         instance=1,
+        _from_imager: bool = False,
     ):
         if self._initialized:
             return  # singleton, do not re-initialize
 
         GuiderInterface.__init__(self)
         ImagerInterface.__init__(self)
+        if not _from_imager:
+            SwitchedOutlet.group(
+                domain=OutletDomain.Unit,
+                group_name="Camera",
+                outlet_names=["Camera", "CameraUSB"]).populate(self)
 
         self.unit: "Unit" | None = unit  # type: ignore
         self.hostname = hostname

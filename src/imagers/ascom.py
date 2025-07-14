@@ -98,18 +98,19 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     def ascom(self) -> win32com.client.Dispatch:  # type: ignore
         return self._ascom
 
-    def __init__(self, unit=None, prog_id: str | None = None):
-        #
-        # The Camera() is a Singleton but the initiator is called twice (for the same object ID):
-        # - once from this file, with unit as None
-        # - one from the unit, with unit as the main Unit object
-        #
-
-        self.unit = unit
-        self.prog_id = prog_id
+    def __init__(self, unit=None, prog_id: str | None = None, _from_imager: bool = False):
 
         if self._initialized:
             return
+
+        if not _from_imager:
+            SwitchedOutlet.group(
+                domain=OutletDomain.Unit,
+                group_name="Camera",
+                outlet_names=["Camera", "CameraUSB"]).populate(self)
+
+        self.unit = unit
+        self.prog_id = prog_id
 
         self.defaults = {
             "temp_check_interval": 15,
@@ -117,7 +118,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         self.conf = Config().get_unit().imager
         Component.__init__(self)
-        SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name="Camera")
 
         if not prog_id:
             prog_id = Config().get_unit().imager.imager_type.replace("ascom:", "")

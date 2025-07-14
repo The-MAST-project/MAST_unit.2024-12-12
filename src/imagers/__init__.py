@@ -9,17 +9,13 @@ if TYPE_CHECKING:
     from unit import Unit
 
 from common.const import Const
-from common.interfaces.imager import (
-    ImagerExposureSeries,
-    ImagerInterface,
-    ImagerSettings,
-    ImagerTypes,
-)
+from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerSettings, ImagerTypes
 
 __all__ = ["Imager"]
 
 
-class Imager(ImagerInterface):
+class Imager(ImagerInterface, SwitchedOutlet):
     """
     This is the base class for all imagers.
     It provides the common interface and some common functionality.
@@ -62,7 +58,12 @@ class Imager(ImagerInterface):
         if self._initialized:
             return  # already initialized, do not re-initialize
 
-        super().__init__()
+        SwitchedOutlet.group(
+            domain=OutletDomain.Unit,
+            group_name="Camera",
+            outlet_names=["Camera", "CameraUSB"]).populate(self)
+        ImagerInterface.__init__(self)
+
         self.unit = unit
         self.conf = self.unit.unit_conf.imager
 
@@ -79,17 +80,17 @@ class Imager(ImagerInterface):
             from imagers.ascom import ASCOMImager
 
             self._prog_id = self.conf.imager_type[6:]
-            self._backend = ASCOMImager(unit=unit, prog_id=self._prog_id)
+            self._backend = ASCOMImager(unit=unit, prog_id=self._prog_id, _from_imager=True)
             self.imager_type = ImagerTypes.Ascom
         elif imager_type == "phd2":
             from phd2.phd2 import PHD2Connector
 
-            self._backend = PHD2Connector(unit=unit)
+            self._backend = PHD2Connector(unit=unit, _from_imager=True)
             self.imager_type = ImagerTypes.Phd2
         elif imager_type == "zwo":
             from zwo import ZWOImager
 
-            self._backend = ZWOImager(unit=unit, imager_params=params)
+            self._backend = ZWOImager(unit=unit, imager_params=params, _from_imager=True)
             self.imager_type = ImagerTypes.Zwo
         else:
             raise ValueError(f"Unknown imager type: {self.conf.imager_type}")
