@@ -8,8 +8,8 @@ from collections.abc import Callable
 from enum import IntFlag
 from logging import Logger
 from threading import Lock, Thread
-from typing import TYPE_CHECKING
 
+# from typing import TYPE_CHECKING
 import numpy as np
 import win32com.client
 from astropy.io import fits
@@ -20,21 +20,16 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.interfaces.imager import (
-    ImagerBinning,
-    ImagerExposure,
-    ImagerExposureSeries,
-    ImagerInterface,
-    ImagerRoi,
-    ImagerSettings,
-    ImagerStatus,
-)
+from common.interfaces.imager import (ImagerBinning, ImagerExposure,
+                                      ImagerExposureSeries, ImagerInterface,
+                                      ImagerRoi, ImagerSettings, ImagerStatus)
 from common.mast_logging import init_log
 from common.paths import PathMaker
 from common.utils import RepeatTimer, function_name, time_stamp
+from imagers import Imager
 
-if TYPE_CHECKING:
-    from unit import Unit
+# if TYPE_CHECKING:
+#     from unit import Unit
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
@@ -105,7 +100,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         if not _from_imager:
             SwitchedOutlet.group(
-                domain=OutletDomain.Unit,
+                domain=OutletDomain.UnitOutlets,
                 group_name="Camera",
                 outlet_names=["Camera", "CameraUSB"]).populate(self)
 
@@ -198,6 +193,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             ),
             binning=ImagerBinning(x=1, y=1),
             base_folder="c:/temp/ascom_images",
+            dont_bump_sequence=True
         )
 
     @property
@@ -433,7 +429,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         self.start_exposure(settings)
 
-    def start_exposure(
+    def start_exposure(  # noqa: C901
         self, settings: ImagerSettings
     ) -> CanonicalResponse:  # noqa: C901
         """
@@ -1012,7 +1008,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         logger.info(f"{op}: saving image to {self.latest_settings.image_path} ...")
         hdu_list.writeto(self.latest_settings.image_path, checksum=True, overwrite=True)
 
-        self.image_was_saved = True
         self.image_saved_event.set()
         self.end_activity(ImagerActivities.Saving)
 
@@ -1041,28 +1036,27 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     def can_send_image_saved_event(self) -> bool:
         return True
 
-    def start_exposure_series(self, purpose: str | None = None) -> ImagerExposureSeries:
-        return super().start_exposure_series(purpose=purpose)
+    def start_exposure_series(self, series: ImagerExposureSeries):
+        pass
 
     def end_exposure_series(self, series: ImagerExposureSeries):
-        super().end_exposure_series(series)
+        pass
 
 
 if __name__ == "__main__":
-    cam = ASCOMImager(prog_id="ASCOM.ASICamera2.Camera")
-    # cam.make_pythonian_classes()
-    cam.startup()
-    series = cam.start_exposure_series(purpose="ASCOM test exposure series")
-    cam.start_exposure(
-        ImagerSettings.model_validate({"seconds": 5}, context={"imager": cam})
+    imager = Imager(imager_type="ascom:ASCOM.ASICamera2.Camera")
+    imager.startup()
+    series = imager.start_exposure_series(purpose="ASCOM test exposure series")
+    imager.start_exposure(
+        ImagerSettings.model_validate({"seconds": 5}, context={"imager": imager})
     )
-    print(json.dumps(cam.status().model_dump(), indent=2))
-    if cam.can_send_image_ready_event:
-        cam.wait_for_image_ready()
+    print(json.dumps(imager.status().model_dump(), indent=2))
+    if imager.can_send_image_ready_event:
+        imager.wait_for_image_ready()
         logger.info("got image ready event")
 
-    if cam.can_send_image_saved_event:
-        cam.wait_for_image_saved()
+    if imager.can_send_image_saved_event:
+        imager.wait_for_image_saved()
         logger.info("got image saved event")
-    cam.end_exposure_series(series)
+    imager.end_exposure_series(series)
     exit(0)

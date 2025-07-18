@@ -2,7 +2,6 @@ import copy
 import json
 import logging
 import math
-import os
 import selectors
 import socket
 import threading
@@ -10,17 +9,22 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import IntFlag, auto
+from pathlib import Path
+from tkinter import NO
 from typing import TYPE_CHECKING, Literal
 
 from astropy.coordinates import Angle
 from pydantic import BaseModel
 
+import ASI
 from common.activities import ImagerActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
-from common.interfaces.imager import ImagerBinning, ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
+from common.interfaces.imager import (ImagerBinning, ImagerExposureSeries,
+                                      ImagerInterface, ImagerRoi,
+                                      ImagerSettings)
 from common.mast_logging import init_log
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_info, function_name
@@ -238,6 +242,13 @@ class SingleFrameResult:
     error_message: str | None
     path: str | None
 
+    def __repr__(self):
+        path = Path(self.path) if self.path else None
+        return (
+            f"SingleFrameResult(success={self.success}, "
+            f"error_message='{self.error_message}', path={path.as_posix() if path else None})"
+        )
+
 
 class PHD2Connector(GuiderInterface, ImagerInterface):
     """The main class for interacting with PHD2 both as a guider and as an imager."""
@@ -265,11 +276,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         ImagerInterface.__init__(self)
         if not _from_imager:
             SwitchedOutlet.group(
-                domain=OutletDomain.Unit,
+                domain=OutletDomain.UnitOutlets,
                 group_name="Camera",
                 outlet_names=["Camera", "CameraUSB"]).populate(self)
 
-        self.unit: "Unit" | None = unit  # type: ignore
+        self.unit: Unit | None = unit  # type: ignore
         self.hostname = hostname
         self.instance = instance
         self.conn = None
@@ -298,7 +309,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         )
         self.errors = []
 
-        self.image_was_saved: bool = False
         self.image_saved_event: threading.Event = threading.Event()
 
         self.guiding_verification_timer: RepeatTimer = RepeatTimer(
@@ -333,6 +343,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         # threading.Thread(target=self.restarter).start()
 
         self._initialized = True
+
     def restarter(self):
         while True:
             try:
@@ -345,7 +356,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.cooler_on = True
             assert(self.worker)
             self.worker.join()
-
 
     def __enter__(self):
         return self
@@ -363,14 +373,13 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             logger.warning(f"{function_name()}: not verifying guiding: not guiding")
             return
 
-        self.start_activity(PHD2Activities.Validating)
-        self.call("stop_capture")  # stop guiding
         assert self.unit is not None
         assert self.unit.acquirer.latest_acquisition is not None
+
+        self.start_activity(PHD2Activities.Validating)
+        self.call("stop_capture")  # stop guiding
         settings = self.unit.guider.make_guiding_settings(
-            base_folder=os.path.join(
-                self.unit.acquirer.latest_acquisition.folder, "guiding", "validation"
-            )
+            base_folder=str(Path(self.unit.acquirer.latest_acquisition.folder) / "guiding" /"validation")
         )
         assert settings.roi is not None
         try:
@@ -379,7 +388,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 "capture_single_frame",
                 params={
                     "exposure": int(settings.seconds * 1000),  # convert to milliseconds
-                    "gain": settings.gain,
+                    "gain": ASI.gain_absolute_to_percent(settings.gain),
                     "binning": settings.binning.x if settings.binning else 1,
                     "subframe": [
                         settings.roi.x,
@@ -570,7 +579,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             with self.lock:
                 self.single_frame = result
             logger.info(f"event: SingleFrameComplete, {result=}")
-            self.image_was_saved = True
             self.image_saved_event.set()
             self.end_activity(ImagerActivities.Exposing)
             self.end_activity(ImagerActivities.Saving)
@@ -589,11 +597,13 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             try:
                 line = self.conn.read_line()
             except ConnectionResetError as ex:
-                logger.info(f"trying to reconnect {ex=}...")
-                time.sleep(3)
-                self.connect()
-                self.connect_equipment()
-                continue
+                # logger.info(f"trying to reconnect {ex=}...")
+                # # time.sleep(3)
+                # self.connect()
+                # self.connect_equipment()
+                # continue
+                logger.error(f"worker exiting on {ex}")
+                break
 
             # print(f"DBG: L: {line}")
             if not line:
@@ -641,7 +651,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 if self.conn:
                     self.conn.terminate()
                 # print("DBG: joining worker")
-                self.worker.join()
+                # self.worker.join()
             self.worker = None
         if self.conn is not None:
             self.conn.disconnect()
@@ -888,7 +898,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         """connect the equipment in an equipment profile"""
         res = self.call("get_profile")
         current_profile = res["result"]
-        if current_profile["name"] != self.conf.profile:
+        if not current_profile or current_profile["name"] != self.conf.profile:
             res = self.call("get_profiles")
             profiles = res["result"]
             profile_id = -1
@@ -1040,22 +1050,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.errors.append(err)
         logger.error(err)
 
-    def start_exposure_series(self, purpose: str | None = None):
-        series_id = super().start_exposure_series(purpose=purpose)
+    def start_exposure_series(self, series: ImagerExposureSeries):
         if self._is_guiding(self.app_state):
             self.stop_guiding()
             self._needs_to_resume_guiding = True
         else:
             self._needs_to_resume_guiding = False
-        return series_id
 
     def end_exposure_series(self, series: ImagerExposureSeries):
-        try:
-            super().end_exposure_series(series)
-        except ValueError as ex:
-            self.log_and_append_error(f"end_exposure_series: {series=}: {ex=}")
-            return
-
         if self._needs_to_resume_guiding:
             self.start_guiding()
             self._needs_to_resume_guiding = False
@@ -1077,8 +1079,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             raise PHD2ConnectorError("PHD2 save_image settings MUST have an image_path")
 
         logger.info(f"starting {settings.seconds} exposure")
-        self.start_activity(ImagerActivities.Exposing)
-        self.start_activity(ImagerActivities.Saving)
+        self.start_activity(ImagerActivities.Exposing, details=f"{settings.seconds} seconds")
+        self.start_activity(ImagerActivities.Saving, details=f"{Path(settings.image_path).as_posix()}")
 
         if self._is_guiding(self.app_state):
             # while guiding we use save_image()
@@ -1134,16 +1136,18 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
     def wait_for_image_saved(self):
         op = function_name()
-        if not self.image_was_saved:
-            # logger.info(f"{op}: image was not saved, waiting for image_saved_event ...")
-            self.image_saved_event.wait()
-            logger.info(f"{op}: got image_saved_event")
-            self.image_saved_event.clear()
+        self.image_saved_event.wait()
+        # logger.info(f"{op}: got image_saved_event")
+        self.image_saved_event.clear()
 
     @property
-    def temperature(self) -> float:
-        reply = self.call("get_ccd_temperature")
-        return reply["result"]["temperature"]
+    def temperature(self) -> float | None:
+        try:
+            reply = self.call("get_ccd_temperature")
+            if reply and "result" in reply and "temperature" in reply.result:
+                return reply["result"]["temperature"]
+        except Exception:
+            return None
 
     @property
     def cooler_on(self) -> bool:
@@ -1152,7 +1156,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
     @cooler_on.setter
     def cooler_on(self, onoff: bool):
-        reply = self.call("set_cooler_state", onoff)
+        self.call("set_cooler_state", onoff)
 
     @property
     def cooler_power(self) -> float | None:
@@ -1195,7 +1199,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             seconds=5,
             base_folder="c:/temp/phd2_images",
             binning=ImagerBinning(x=1, y=1),
-            gain=85,
+            gain=int(ASI.gain_absolute_to_percent(170)),
             roi=ImagerRoi(
                 x=0, y=0, width=self.camera_x_size, height=self.camera_y_size
             ),
@@ -1211,18 +1215,22 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
 
 if __name__ == "__main__":
-    cam = PHD2Connector()
-    cam.startup()
-    cam.start_exposure(
-        ImagerSettings.model_validate({"seconds": 5}, context={"imager": cam})
-    )
-    print(json.dumps(cam.status(capacity="imager").model_dump(), indent=2))
-    if cam.can_send_image_ready_event:
-        cam.wait_for_image_ready()
-        logger.info("got image ready event")
+    from imagers import Imager
 
-    if cam.can_send_image_saved_event:
-        cam.wait_for_image_saved()
-        logger.info("got image saved event")
-    print(json.dumps(cam.status(capacity="imager").model_dump(), indent=2))
+    imager = Imager(imager_type="phd2")
+    imager.startup()
+
+    max = 10
+    imager_settings = ImagerSettings.model_validate({"seconds": 5}, context={"imager": imager})
+    for i in range(max):
+        print(f"image #{i} of {max}")
+        imager.start_exposure(imager_settings)
+
+        if imager.can_send_image_ready_event:
+            imager.wait_for_image_ready()
+
+        if imager.can_send_image_saved_event:
+            imager.wait_for_image_saved()
+
+        imager_settings.make_file_name()
     exit(0)
