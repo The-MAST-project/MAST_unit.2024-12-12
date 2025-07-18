@@ -1,3 +1,4 @@
+import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -10,7 +11,12 @@ if TYPE_CHECKING:
 
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerSettings, ImagerTypes
+from common.interfaces.imager import (ImagerExposureSeries, ImagerInterface,
+                                      ImagerSettings, ImagerTypes)
+from common.mast_logging import init_log
+
+logger = logging.Logger("mast." + __name__)
+init_log(logger)
 
 __all__ = ["Imager"]
 
@@ -59,13 +65,14 @@ class Imager(ImagerInterface, SwitchedOutlet):
             return  # already initialized, do not re-initialize
 
         SwitchedOutlet.group(
-            domain=OutletDomain.Unit,
+            domain=OutletDomain.UnitOutlets,
             group_name="Camera",
             outlet_names=["Camera", "CameraUSB"]).populate(self)
         if not self.is_on():
             self.power_on()
 
         ImagerInterface.__init__(self)
+
 
         self.unit = unit
         if unit and unit.unit_conf is None:
@@ -208,7 +215,15 @@ class Imager(ImagerInterface, SwitchedOutlet):
         self.connected = False
 
     def start_exposure_series(self, purpose: str | None = None) -> ImagerExposureSeries:
-        return self._backend.start_exposure_series(purpose)
+        """
+        An exposure series allows the imager backend to perform pre/post exposure activities.
+
+        For example: the _`phd2`_ backend needs to stop/restart guiding if it was guiding when the series started
+        """
+        self.current_exposure_series = ImagerExposureSeries(purpose=purpose)
+        logger.info(f"Starting exposure series id='{self.current_exposure_series.series_id}' "
+                    + f"purpose={self.current_exposure_series.purpose}")
+        return self.current_exposure_series
 
     def end_exposure_series(self, series: ImagerExposureSeries):
         """
@@ -220,10 +235,11 @@ class Imager(ImagerInterface, SwitchedOutlet):
         ), "No current exposure series to end"
         if self.current_exposure_series.series_id != series.series_id:
             raise ValueError(
-                f"Cannot end exposure series {series.series_id}, current series is {self.current_exposure_series.series_id}"
+                f"Cannot end exposure series {series.series_id}, "
+                + f"current series is {self.current_exposure_series.series_id}"
             )
+        logger.info(f"Ending exposure series id='{series.series_id}', purpose='{series.purpose}'")
         self._backend.end_exposure_series(series)
-        self.current_exposure_series = None
 
     def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse | None:
         """
@@ -265,24 +281,24 @@ class Imager(ImagerInterface, SwitchedOutlet):
         return self._backend.image_array if self._backend.can_image_to_memory else None
 
     @property
-    def temperature(self) -> float:
+    def temperature(self) -> float | None:
         """
         Gets the current temperature of the camera.
         """
         return self._backend.temperature
 
-    def wait_for_image_ready(self) -> CanonicalResponse | None:
+    def wait_for_image_ready(self):
         """
         Waits for the image to be ready after an exposure.
         """
         if self.can_image_to_memory:
-            return self._backend.wait_for_image_ready()
+            self._backend.wait_for_image_ready()
 
-    def wait_for_image_saved(self) -> CanonicalResponse | None:
+    def wait_for_image_saved(self):
         """
         Waits for the image to be saved after an exposure.
         """
-        return self._backend.wait_for_image_saved()
+        self._backend.wait_for_image_saved()
 
     @property
     def cooler_on(self) -> bool:
