@@ -1,7 +1,6 @@
 # import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
-
 # from scipy.ndimage import shift as ndi_shift
 from skimage.registration import phase_cross_correlation
 
@@ -9,8 +8,12 @@ pixel_scale = 0.2612
 
 # Load FITS data and convert to float32
 def load_fits_float32(path):
-    with fits.open(path) as hdul:
-        return hdul[0].data.astype(np.float32)
+    assert path and path.endswith('.fits'), "Path must end with .fits"
+    data = fits.getdata(path)
+    assert(data is not None), "Failed to load data from the FITS file"
+    return data.astype(np.float32) # type: ignore
+    # with fits.open(path) as hdul:
+    #     return hdul[0].data.astype(np.float32)
 
 # Load two images
 for i in range(1, 9):
