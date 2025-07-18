@@ -1,22 +1,23 @@
+import datetime
 import json
 import logging
-import time
-
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib
-from matplotlib.patches import Patch
-import sys
-import os
-from common.mast_logging import init_log
-from common.utils import function_name, Filer
-from common.corrections import correction_phases, Corrections
-from typing import List, NamedTuple, Optional, Dict
-from astropy.coordinates import Angle
-import astropy.units as u
-import datetime
 import math
+import os
 import re
+import sys
+import time
+from typing import NamedTuple
+
+import astropy.units as u
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+from astropy.coordinates import Angle
+from matplotlib.patches import Patch
+
+from common.corrections import Corrections, correction_phases
+from common.mast_logging import init_log
+from common.utils import Filer, function_name
 
 logger = logging.Logger("mast.unit." + __name__)
 filer = Filer(logger)
@@ -41,7 +42,7 @@ class Point(NamedTuple):
 
 
 def plot_autofocus_analysis(
-    result: "PS3FocusAnalysisResult",
+    result: "PS3FocusAnalysisResult",  # noqa: F821
     folder: str | None = None,
     pixel_scale: float = 0.2612,
 ):
@@ -55,13 +56,16 @@ def plot_autofocus_analysis(
         logger.error(f"{op}: result doesn't have a solution")
         return
 
-    points: List[Point] = []
-    positions: List[int] = []
-    star_diameters: List[float] = []
+    points: list[Point] = []
+    positions: list[int] = []
+    star_diameters: list[float] = []
 
+    assert(result and result.focus_samples)
     for sample in result.focus_samples:
-        if not sample.is_valid:
+        if not (sample and sample.is_valid):
             continue
+        assert sample.focus_position
+        assert sample.star_rms_diameter_pixels
         points.append(
             Point(
                 x=int(sample.focus_position),
@@ -80,6 +84,7 @@ def plot_autofocus_analysis(
     )
 
     # Calculate the diameters for each X value using the given equation
+    assert(result.vcurve_a and result.vcurve_b and result.vcurve_c)
     star_diameter = np.sqrt(
         result.vcurve_a * x**2 + result.vcurve_b * x + result.vcurve_c
     )
@@ -117,6 +122,7 @@ def plot_autofocus_analysis(
     )
 
     # Add green lines for tolerance
+    assert(result.tolerance)
     x_left = x_min - result.tolerance
     x_right = x_min + result.tolerance
     y_max = np.max(star_diameter)
@@ -175,12 +181,12 @@ def plot_autofocus_analysis(
     plt.show()
 
 
-def plot_phase_corrections(
+def plot_phase_corrections(  # noqa: C901
     phase: str,  # one of ['sky', 'spec', 'guiding', 'acquisition']
     corrections: Corrections,
     file: str,  # .../<date>/Acquisitions/seq=<seq-number>,time=<start-time>,target=<target>
-    ends_of_phases: Optional[List[datetime.datetime]] = None,
-    tolerances: Optional[Dict] = None,
+    ends_of_phases: list[datetime.datetime] | None = None,
+    tolerances: dict | None = None,
 ):
     ra_guiding_rms: float = 0
     dec_guiding_rms: float = 0
@@ -229,8 +235,8 @@ def plot_phase_corrections(
 
     matplotlib.use("Agg")
     plt.figure(figsize=(8, 6))
-    plt.plot(t, ra_deltas, color=ra_color, label=f"Ra", marker="*")
-    plt.plot(t, dec_deltas, color=dec_color, label=f"Dec", marker="*")
+    plt.plot(t, ra_deltas, color=ra_color, label="Ra", marker="*")
+    plt.plot(t, dec_deltas, color=dec_color, label="Dec", marker="*")
 
     if corrections.tolerance_dec == corrections.tolerance_ra:
         plt.axhline(
@@ -317,7 +323,7 @@ def plot_phase_corrections(
     logger.info(f"plot saved to '{file}'")
 
 
-def plot_acquisition_corrections(acquisition_folder: str | None = None):
+def plot_acquisition_corrections(acquisition_folder: str | None = None):  # noqa: C901
     """
     Plots the existing corrections.json files underneath a given Acquisition folder
 
@@ -327,10 +333,7 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):
     op = function_name()
 
     def has_corrections(_folder: str) -> bool:
-        for _phase in correction_phases:
-            if os.path.exists(os.path.join(_folder, _phase, "corrections.json")):
-                return True
-        return False
+        return any(os.path.exists(os.path.join(_folder, _phase, "corrections.json")) for _phase in correction_phases)
 
     acquisition_top = None
     if acquisition_folder is not None:
@@ -358,7 +361,7 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):
         return
 
     combined_corrections: Corrections | None = None
-    end_of_phase: List[datetime.datetime] = []
+    end_of_phase: list[datetime.datetime] = []
     tolerances = {}
 
     for phase in ["sky", "spec", "guiding"]:
@@ -366,7 +369,6 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):
         if not os.path.isfile(file):
             continue
 
-        corrections: Corrections | None = None
         try:
             with open(file) as fp:
                 corrections: Corrections = Corrections.from_dict(json.load(fp))
@@ -395,6 +397,7 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):
         combined_corrections.sequence += sequence
         end_of_phase.append(sequence[0].time)
 
+    assert(combined_corrections is not None)
     plot_phase_corrections(
         phase="acquisition",
         corrections=combined_corrections,
@@ -460,7 +463,8 @@ class DummyResult:
 
 class Coord:
     def __init__(self, ra: float, dec: float):
-        self.ra = Angle(ra * u.hourangle, dec * u.deg)
+        self.ra = Angle(ra * u.hourangle)
+        self.dec = Angle(dec * u.deg)
 
 
 class DummyStatus:
