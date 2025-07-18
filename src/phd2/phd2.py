@@ -330,8 +330,22 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             logger.error(f"{function_name()}: Failed to connect {ex=}")
 
         self.cooler_on = True
+        # threading.Thread(target=self.restarter).start()
 
         self._initialized = True
+    def restarter(self):
+        while True:
+            try:
+                self.connect()
+                self.connect_equipment()
+            except PHD2ConnectorError as ex:
+                self.connected = False
+                logger.error(f"{function_name()}: Failed to connect {ex=}")
+
+            self.cooler_on = True
+            assert(self.worker)
+            self.worker.join()
+
 
     def __enter__(self):
         return self
