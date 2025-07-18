@@ -62,6 +62,9 @@ class Imager(ImagerInterface, SwitchedOutlet):
             domain=OutletDomain.Unit,
             group_name="Camera",
             outlet_names=["Camera", "CameraUSB"]).populate(self)
+        if not self.is_on():
+            self.power_on()
+
         ImagerInterface.__init__(self)
 
         self.unit = unit
