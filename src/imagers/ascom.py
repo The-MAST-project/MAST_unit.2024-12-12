@@ -173,7 +173,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         self._detected = False
         self.image_lock: Lock = Lock()
         self.image_was_read: bool = False
-        self.image_was_saved: bool = False
 
         self.visualizers: list[Visualizer] = []
 
@@ -489,7 +488,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             )
             self.image = None
             self.image_was_read = False
-            self.image_was_saved = False
             self.latest_settings = settings
             if not self.latest_settings.fits_cards:
                 self.latest_settings.fits_cards = {}
@@ -1023,11 +1021,9 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
     def wait_for_image_saved(self):
         op = function_name()
-        if not self.image_was_saved:
-            # logger.info(f"{op}: image was not saved, waiting for image_saved_event ...")
-            self.image_saved_event.wait()
-            logger.info(f"{op}: got image_saved_event")
-            self.image_saved_event.clear()
+        self.image_saved_event.wait()
+        logger.info(f"{op}: got image_saved_event")
+        self.image_saved_event.clear()
 
     def wait_for_image_ready(self):
         op = function_name()
