@@ -34,239 +34,6 @@ init_log(logger)
 #     from unit import Unit
 
 
-#
-# Extracted at runtime from the ZWO ASI SDK for camera model: ZWO ASI294MM Pro
-#
-class AsiControl(IntEnum):
-    Gain = 0  # Gain,
-    Exposure = 1  # Exposure Time(us),
-    Offset = 5  # offset,
-    BandWidth = 6  # The total data transfer rate percentage,
-    Flip = 9  # Flip: 0->None 1->Horiz 2->Vert 3->Both,
-    AutoExpMaxGain = 10  # Auto exposure maximum gain value,
-    AutoExpMaxExpMS = 11  # Auto exposure maximum exposure value(unit ms),
-    AutoExpTargetBrightness = 12  # Auto exposure target brightness value,
-    HighSpeedMode = 14  # Is high speed mode:0->No 1->Yes,
-    Temperature = 8  # Sensor temperature(degrees Celsius),
-    CoolPowerPerc = 15  # Cooler power percent,
-    TargetTemp = 16  # Target temperature(cool camera only),
-    CoolerOn = 17  # turn on/off cooler(cool camera only),
-
-
-AsiControlDict: dict[AsiControl, dict] = {
-    AsiControl.Gain: {
-        "description": "Gain",
-        "min_value": 0,
-        "max_value": 570,
-        "default": 200,
-        "is_writable": 1,
-        "is_auto_supported": 1,
-        "control_type": 0,
-        "auto": False,
-    },
-    AsiControl.Exposure: {
-        "description": "Exposure Time(us)",
-        "min_value": 32,
-        "max_value": 2000000000,
-        "default": 10000,
-        "is_writable": 1,
-        "is_auto_supported": 1,
-        "control_type": 1,
-        "auto": False,
-    },
-    AsiControl.Offset: {
-        "description": "offset",
-        "min_value": 0,
-        "max_value": 80,
-        "default": 8,
-        "is_writable": 1,
-        "is_auto_supported": 0,
-        "control_type": 5,
-        "auto": False,
-    },
-    AsiControl.BandWidth: {
-        "description": "The total data transfer rate percentage",
-        "min_value": 40,
-        "max_value": 100,
-        "default": 50,
-        "is_writable": 1,
-        "is_auto_supported": 1,
-        "control_type": 6,
-        "auto": True,
-    },
-    AsiControl.Flip: {
-        "description": "Flip: 0->None 1->Horiz 2->Vert 3->Both",
-        "min_value": 0,
-        "max_value": 3,
-        "default": 0,
-        "is_writable": 1,
-        "is_auto_supported": 0,
-        "control_type": 9,
-        "auto": False,
-    },
-    AsiControl.AutoExpMaxGain: {
-        "description": "Auto exposure maximum gain value",
-        "min_value": 0,
-        "max_value": 570,
-        "default": 285,
-        "is_writable": 1,
-        "is_auto_supported": 0,
-        "control_type": 10,
-        "auto": False,
-    },
-    AsiControl.AutoExpMaxExpMS: {
-        "description": "Auto exposure maximum exposure value(unit ms)",
-        "min_value": 1,
-        "max_value": 60000,
-        "default": 100,
-        "is_writable": 1,
-        "is_auto_supported": 0,
-        "control_type": 11,
-        "auto": False,
-    },
-    AsiControl.AutoExpTargetBrightness: {
-        "description": "Auto exposure target brightness value",
-        "min_value": 50,
-        "max_value": 160,
-        "default": 100,
-        "is_writable": 1,
-        "is_auto_supported": 0,
-        "control_type": 12,
-        "auto": False,
-    },
-    AsiControl.HighSpeedMode: {
-        "description": "Is high speed mode:0->No 1->Yes",
-        "min_value": 0,
-        "max_value": 1,
-        "default": 0,
-        "is_writable": 1,
-        "is_auto_supported": 0,
-        "control_type": 14,
-        "auto": False,
-    },
-    AsiControl.Temperature: {
-        "description": "Sensor temperature(degrees Celsius)",
-        "min_value": -500,
-        "max_value": 1000,
-        "default": 20,
-        "is_writable": 0,
-        "is_auto_supported": 0,
-        "control_type": 8,
-        "auto": False,
-    },
-    AsiControl.CoolPowerPerc: {
-        "description": "Cooler power percent",
-        "min_value": 0,
-        "max_value": 100,
-        "default": 0,
-        "is_writable": 0,
-        "is_auto_supported": 0,
-        "control_type": 15,
-        "auto": False,
-    },
-    AsiControl.TargetTemp: {
-        "description": "Target temperature(cool camera only)",
-        "min_value": -40,
-        "max_value": 30,
-        "default": 0,
-        "is_writable": 1,
-        "is_auto_supported": 0,
-        "control_type": 16,
-        "auto": False,
-    },
-    AsiControl.CoolerOn: {
-        "description": "turn on/off cooler(cool camera only)",
-        "min_value": 0,
-        "max_value": 1,
-        "default": 0,
-        "is_writable": 1,
-        "is_auto_supported": 0,
-        "control_type": 17,
-        "auto": False,
-    },
-}
-
-#
-# From:
-#   ASICamera2 Software Development Kit manual
-# Section 2.9:
-#   typedef enum ASI_CONTROL_TYPE
-#
-# ASI_GAIN = 0,//gain
-# ASI_EXPOSURE,//exposure time (microsecond)
-# ASI_GAMMA,//gamma with range 1 to 100 (nominally 50)
-# ASI_WB_R,//red component of white balance
-# ASI_WB_B,// blue component of white balance
-# ASI_BRIGHTNESS,//pixel value offset (a bias, not a scale factor)
-# ASI_BANDWIDTHOVERLOAD,//The total data transfer rate percentage
-# ASI_OVERCLOCK,//over clock
-# ASI_TEMPERATURE,// sensor temperature，10 times the actual temperature
-# ASI_FLIP,//image flip
-# ASI_AUTO_MAX_GAIN,//maximum gain when auto adjust
-# ASI_AUTO_MAX_EXP,//maximum exposure time when auto adjust，unit is micro seconds
-# ASI_AUTO_MAX_BRIGHTNESS,//target brightness when auto adjust
-# ASI_HARDWARE_BIN,//hardware binning of pixels
-# ASI_HIGH_SPEED_MODE,//high speed mode
-# ASI_COOLER_POWER_PERC,//cooler power percent(only cool camera)
-# ASI_TARGET_TEMP,//sensor's target temperature(only cool camera)，don't multiply by 10
-# ASI_COOLER_ON//open cooler (only cool camera)
-# ASI_MONO_BIN,//lead to a smaller grid at software bin mode for color camera
-# ASI_FAN_ON,//only cooled camera has fan
-# ASI_PATTERN_ADJUST.//currently only supported by 1600 mono camera
-# ASI_ANTI_DEW_HEATER
-# } ASI_CONTROL_TYPE;
-
-# class AsiControl(IntFlag):
-#     ASI_GAIN = 0   # gain
-#     ASI_EXPOSURE = auto()               # exposure time (microsecond)
-#     ASI_GAMMA = auto()                  # gamma with range 1 to 100 (nominally 50)
-#     ASI_WB_R = auto()                   # red component of white balance
-#     ASI_WB_B = auto()                   # blue component of white balance
-#     ASI_BRIGHTNESS = auto()             # pixel value offset (a bias, not a scale factor)
-#     ASI_BANDWIDTHOVERLOAD = auto()      # The total data transfer rate percentage
-#     ASI_OVERCLOCK = auto()              # over clock
-#     ASI_TEMPERATURE = auto()            # sensor temperature，10 times the actual temperature
-#     ASI_FLIP = auto()                   # image flip
-#     ASI_AUTO_MAX_GAIN = auto()          # maximum gain when auto adjust
-#     ASI_AUTO_MAX_EXP = auto()           # maximum exposure time when auto adjust，unit is micro seconds
-#     ASI_AUTO_MAX_BRIGHTNESS = auto()    # target brightness when auto adjust
-#     ASI_HARDWARE_BIN = auto()           # hardware binning of pixels
-#     ASI_HIGH_SPEED_MODE = auto()        # high speed mode
-#     ASI_COOLER_POWER_PERC = auto()      # cooler power percent(only cool camera)
-#     ASI_TARGET_TEMP = auto()            # sensor's target temperature(only cool camera)，don't multiply by 10
-#     ASI_COOLER_ON = auto()              # open cooler (only cool camera)
-#     ASI_MONO_BIN = auto()               # lead to a smaller grid at software bin mode for color camera
-#     ASI_FAN_ON = auto()                 # only cooled camera has fan
-#     ASI_PATTERN_ADJUST = auto()         # currently only supported by 1600 mono camera
-#     ASI_ANTI_DEW_HEATER = auto()
-
-
-class AsiOutputFormat(IntEnum):
-    RAW8 = 0
-    RGB24 = 1
-    RAW16 = 2
-    Y8 = 3
-
-
-class ASIExposureStatus(IntEnum):
-    """
-    From:
-        ASICamera2 Software Development Kit, v1.37
-
-    Section 2.11
-        typedef enum ASI_EXPOSURE_STATUS {
-            ASI_EXP_IDLE = 0,   // idle, ready to start exposure
-            ASI_EXP_WORKING,    // exposure in progress
-            ASI_EXP_SUCCESS,    // exposure completed successfully, image can be read out
-            ASI_EXP_FAILED,     // exposure failure, need to restart exposure
-        } ASI_EXPOSURE_STATUS;
-    """
-
-    ASI_EXP_IDLE = 0  # idle, ready to start exposure
-    ASI_EXP_WORKING = auto()  # exposure in progress
-    ASI_EXP_SUCCESS = auto()  # exposure completed successfully, image can be read out
-    ASI_EXP_FAILED = auto()  #  exposure failure, need to restart exposure
-
 
 class ZWOImager(ImagerInterface, SwitchedOutlet):
     """
@@ -322,42 +89,6 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def __del__(self):
         asi.closeCamera(self.cam_id)
 
-    def make_pythonian_classes(self):
-        """
-        Makes pythonian classes from ASI internals (controls, etc.)
-        """
-        n_controls = asi.getNumOfControls(self.cam_id)
-        enum_lines = ["class AsiControl(IntEnum):"]
-        dict_lines = ["AsiControlDict: dict[AsiControl, dict] = {"]
-
-        for control in range(n_controls):
-            cap = asi.getControlCaps(self.cam_id, controlIndex=control)
-            val, auto = asi.getControlValue(self.cam_id, controlType=cap.ControlType)
-            line = f"{cap.Name.decode()} = {cap.ControlType}"
-            enum_lines.append(
-                f"    {line}{' ' * (30 - len(line))}# {cap.Description.decode()}, "
-            )
-            dict_lines.append(f"    AsiControl.{cap.Name.decode()}: {{")
-            dict_lines.append(f"        'description': '{cap.Description.decode()}',")
-            dict_lines.append(f"        'min_value': {cap.MinValue},")
-            dict_lines.append(f"        'max_value': {cap.MaxValue},")
-            dict_lines.append(f"        'default': {cap.DefaultValue},")
-            dict_lines.append(f"        'is_writable': {cap.IsWritable},")
-            dict_lines.append(f"        'is_auto_supported': {cap.IsAutoSupported},")
-            dict_lines.append(f"        'control_type': {cap.ControlType},")
-            dict_lines.append(f"        'auto': {auto},")
-            dict_lines.append("    },")
-        dict_lines.append("}")
-
-        print(
-            f"#\n# Extracted at runtime from the ZWO ASI SDK for camera model: {self.model}\n#"
-        )
-        for line in enum_lines:
-            print(line)
-        print()
-        for line in dict_lines:
-            print(line)
-        print()
 
     def save_in_thread(self):
         self.start_activity(ImagerActivities.Saving)
@@ -366,7 +97,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
 
         header = fits.Header()
         header["SIMPLE"] = (True, "file conforms to FITS standard")
-        if self.output_format == AsiOutputFormat.RAW16:
+        if self.output_format == ASI.OutputFormat.RAW16:
             header["BITPIX"] = (16, "array data type")
             header["BZERO"] = 32768
         else:
@@ -444,21 +175,21 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                 datetime.datetime.now() - self.latest_exposure.start
             ) >= datetime.timedelta(seconds=self.latest_settings.seconds / 2):
                 self.ccd_temp_at_mid_exposure, _ = asi.getControlValue(
-                    self.cam_id, AsiControl.Temperature
+                    self.cam_id, ASI.Control.Temperature
                 )
 
             try:
                 exposure_status = asi.getExpStatus(self.cam_id)
                 # logger.info(f"{op}: {exposure_status=} ({ASIExposureStatus(exposure_status).name})")
-                if exposure_status == ASIExposureStatus.ASI_EXP_FAILED:
+                if exposure_status == ASI.ExposureStatus.ASI_EXP_FAILED:
                     asi.stopExposure(self.cam_id)
                     self.end_activity(ImagerActivities.Exposing)
                     logger.error(
-                        f"exposure failed with exposure_status={ASIExposureStatus(exposure_status).name}"
+                        f"exposure failed with exposure_status={ASI.ExposureStatus(exposure_status).name}"
                     )
-                elif exposure_status == ASIExposureStatus.ASI_EXP_SUCCESS:
+                elif exposure_status == ASI.ExposureStatus.ASI_EXP_SUCCESS:
                     buffer_size = self.width * self.height
-                    if self.output_format == AsiOutputFormat.RAW16:
+                    if self.output_format == ASI.OutputFormat.RAW16:
                         buffer_size *= 2
 
                     self.start_activity(ImagerActivities.ReadingOut)
@@ -472,7 +203,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                         ),
                         dtype=(
                             np.uint16
-                            if self.output_format == AsiOutputFormat.RAW8
+                            if self.output_format == ASI.OutputFormat.RAW8
                             else np.uint8
                         ),
                     )
@@ -518,20 +249,20 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def temperature(self) -> float:
         self.errors = []
         try:
-            val, _ = asi.getControlValue(self.cam_id, AsiControl.Temperature)
+            val, _ = asi.getControlValue(self.cam_id, ASI.Control.Temperature)
         except Exception as ex:
             self.errors.append(
-                f"failed to get control AsiControl.Temperature ({AsiControl.Temperature}), {ex=}"
+                f"failed to get control AsiControl.Temperature ({ASI.Control.Temperature}), {ex=}"
             )
         return val / 10.0
 
     def cooler(self, onoff: bool):
         self.errors = []
         try:
-            asi.setControlValue(self.cam_id, AsiControl.CoolerOn, onoff, 0)
+            asi.setControlValue(self.cam_id, ASI.Control.CoolerOn, onoff, 0)
         except Exception as ex:
             self.errors.append(
-                f"failed to set control AsiControl.ASI_COOLER_ON ({AsiControl.CoolerOn}), "
+                f"failed to set control AsiControl.ASI_COOLER_ON ({ASI.Control.CoolerOn}), "
                 + f"value={onoff}, {ex=}"
             )
 
@@ -539,23 +270,23 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def cooler_power(self) -> float:
         self.errors = []
         try:
-            val, _ = asi.getControlValue(self.cam_id, AsiControl.CoolPowerPerc)
+            val, _ = asi.getControlValue(self.cam_id, ASI.Control.CoolPowerPerc)
         except Exception as ex:
             self.errors.append(
                 "failed to get control AsiControl.ASI_COOLER_POWER_PERC "
-                + f"({AsiControl.CoolPowerPerc}), {ex=}"
+                + f"({ASI.Control.CoolPowerPerc}), {ex=}"
             )
         return val / 10.0
 
     def startup(self):
         # self.set_control(AsiControl.ASI_HIGH_SPEED_MODE, 1)
-        self.set_control(AsiControl.TargetTemp, -5)
-        self.set_control(AsiControl.CoolerOn, True)
+        self.set_control(ASI.Control.TargetTemp, -5)
+        self.set_control(ASI.Control.CoolerOn, True)
         return super().startup()
 
     def shutdown(self):
-        self.set_control(AsiControl.TargetTemp, 10)
-        self.set_control(AsiControl.CoolerOn, False)
+        self.set_control(ASI.Control.TargetTemp, 10)
+        self.set_control(ASI.Control.CoolerOn, False)
         del self._image_array
         return super().shutdown()
 
@@ -594,19 +325,19 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                 self.pixel_size = info.PixelSize
                 if "output_format" in self.imager_params:
                     if int(self.imager_params["output_format"]) not in [
-                        AsiOutputFormat.RAW8,
-                        AsiOutputFormat.RAW16,
+                        ASI.OutputFormat.RAW8,
+                        ASI.OutputFormat.RAW16,
                     ]:
                         self.log_and_append(
                             f"invalid {self.imager_params['output_format']=}, must be one of: "
-                            + f"{[AsiOutputFormat.RAW8, AsiOutputFormat.RAW16]}"
+                            + f"{[ASI.OutputFormat.RAW8, ASI.OutputFormat.RAW16]}"
                         )
                     else:
-                        self.output_format: AsiOutputFormat = self.imager_params[
+                        self.output_format: ASI.OutputFormat = self.imager_params[
                             "output_format"
                         ]
                 else:
-                    self.output_format = AsiOutputFormat.RAW16
+                    self.output_format = ASI.OutputFormat.RAW16
 
                 # imager_conf = Config().get_unit().imager if not self.unit else self.unit.unit_conf.imager
                 # The imager configuration in MongoDB is a bit muddy :-()
@@ -659,7 +390,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         Gets the **MAST** imager status
         """
 
-        target_temp, _ = asi.getControlValue(self.cam_id, AsiControl.TargetTemp)
+        target_temp, _ = asi.getControlValue(self.cam_id, ASI.Control.TargetTemp)
         return ImagerStatus(
             **self.power_status().model_dump(),
             **self.component_status().model_dump(),
@@ -713,7 +444,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             width = self.width
             height = self.height
         try:
-            format: AsiOutputFormat = self.output_format
+            format: ASI.OutputFormat = self.output_format
             if width % 8 != 0:
                 logger.warning(
                     f"aligning roi width to 8 (subtracting {width % 8} bits)"
@@ -743,7 +474,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def start_exposure(self, settings: ImagerSettings):
         self.errors = []
         self.set_control(
-            AsiControl.Exposure, int(settings.seconds * 1000000)
+            ASI.Control.Exposure, int(settings.seconds * 1000000)
         )  # micro seconds
 
         assert self.default_settings is not None
@@ -754,7 +485,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         if settings.gain is None:
             settings.gain = self.default_settings.gain
         assert settings.gain is not None
-        self.set_control(AsiControl.Gain, settings.gain)
+        self.set_control(ASI.Control.Gain, settings.gain)
 
         if settings.roi is None:
             settings.roi = self.default_settings.roi
@@ -774,7 +505,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         except Exception as ex:
             self.log_and_append(f"failed to start exposure, {ex=}")
 
-    def set_control(self, control: AsiControl, value: int):
+    def set_control(self, control: ASI.Control, value: int):
         try:
             asi.setControlValue(self.cam_id, controlType=control, value=value, auto=0)
             logger.info(f"set_control('{control.name}', value={value})")
@@ -802,10 +533,10 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def cooler_on(self) -> bool:
         self.errors = []
         try:
-            val, _ = asi.getControlValue(self.cam_id, AsiControl.CoolerOn)
+            val, _ = asi.getControlValue(self.cam_id, ASI.Control.CoolerOn)
         except Exception as ex:
             self.errors.append(
-                f"failed to get control AsiControl.CoolerOn ({AsiControl.CoolerOn}), {ex=}"
+                f"failed to get control AsiControl.CoolerOn ({ASI.Control.CoolerOn}), {ex=}"
             )
         return bool(val)
 
@@ -813,10 +544,10 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def cooler_on(self, onoff: bool):
         self.errors = []
         try:
-            asi.setControlValue(self.cam_id, AsiControl.CoolerOn, int(onoff), 0)
+            asi.setControlValue(self.cam_id, ASI.Control.CoolerOn, int(onoff), 0)
         except Exception as ex:
             self.errors.append(
-                f"failed to set control AsiControl.CoolerOn ({AsiControl.CoolerOn}, {int(onoff)}), {ex=}"
+                f"failed to set control AsiControl.CoolerOn ({ASI.Control.CoolerOn}, {int(onoff)}), {ex=}"
             )
 
     @property
