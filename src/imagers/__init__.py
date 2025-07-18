@@ -300,6 +300,10 @@ class Imager(ImagerInterface, SwitchedOutlet):
         return self._backend.was_shut_down
 
     @property
+    def default_settings(self):
+        return self._backend.default_settings
+
+    @property
     def api_router(self) -> APIRouter:
         """
         Returns the API router for the imager.
