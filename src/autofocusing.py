@@ -16,7 +16,8 @@ from common.extended_basemodel import ExtendedBaseModel
 from common.filer import Filer
 from common.interfaces.imager import ImagerBinning, ImagerSettings
 from common.mast_logging import init_log
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.parsers import (sexagesimal_degrees_to_decimal,
+                            sexagesimal_hours_to_decimal)
 from common.paths import PathMaker
 from common.rois import UnitRoi
 from common.utils import function_name
@@ -135,8 +136,6 @@ class Autofocuser:
         -------
 
         """
-        pw_status = self.unit.mount.pw.status()
-
         if ra_j2000_hours:
             if isinstance(ra_j2000_hours, str):
                 if ":" in ra_j2000_hours:
@@ -145,12 +144,6 @@ class Autofocuser:
                     ra_j2000_hours = float(ra_j2000_hours)
             elif isinstance(ra_j2000_hours, float):
                 pass
-        else:
-            if not pw_status.mount.is_connected:  # type: ignore[union-attr]
-                return CanonicalResponse(
-                    errors=["cannot get coordinates from mount (mount not connected)"]
-                )
-            ra_j2000_hours = pw_status.mount.ra_j2000_hours  # type: ignore[union-attr]
 
         if dec_j2000_degs:
             if isinstance(dec_j2000_degs, str):
@@ -160,12 +153,6 @@ class Autofocuser:
                     dec_j2000_degs = float(dec_j2000_degs)
             elif isinstance(dec_j2000_degs, float):
                 pass
-        else:
-            if not pw_status.mount.is_connected:  # type: ignore
-                return CanonicalResponse(
-                    errors=["cannot get coordinates from mount (mount not connected)"]
-                )
-            dec_j2000_degs = pw_status.mount.dec_j2000_degs  # type: ignore
 
         if number_of_images is None:
             number_of_images = self.unit.unit_conf.autofocus.images
@@ -278,6 +265,10 @@ class Autofocuser:
         max_tolerance: float = self.unit.unit_conf.autofocus.max_tolerance
         try_number: int = 0
 
+        autofocus_exposure_series = self.unit.imager.start_exposure_series(
+            purpose="autofocus"
+        )
+
         for try_number in range(max_tries):
 
             logger.info(f"{op}: starting autofocus try #{try_number} (of {max_tries})")
@@ -285,9 +276,6 @@ class Autofocuser:
             #
             # Acquire images
             #
-            autofocus_exposure_series = self.unit.imager.start_exposure_series(
-                purpose="autofocus"
-            )
             files: list[str] = []
             for image_no in range(number_of_images):
                 autofocus_settings = ImagerSettings(
@@ -309,11 +297,8 @@ class Autofocuser:
                     f"{op}: waiting for exposure #{image_no} of {number_of_images} ..."
                 )
                 self.unit.imager.wait_for_image_saved()
-                if (
-                    self.unit.imager.latest_settings
-                    and self.unit.imager.latest_settings.image_path
-                ):
-                    files.append(self.unit.imager.latest_settings.image_path)
+                assert(autofocus_settings.image_path)
+                files.append(autofocus_settings.image_path)
 
                 if not self.unit.is_active(
                     UnitActivities.Autofocusing
@@ -345,6 +330,7 @@ class Autofocuser:
             self.unit.start_activity(UnitActivities.AutofocusAnalysis)
             ps3_client = PS3CLIClient()
             ps3_client.connect("127.0.0.1", 8998)
+            logger.info(f"calling ps3_client.begin_analyze_focus({files})")
             ps3_client.begin_analyze_focus(files)
 
             status: PS3AutofocusStatus | None = None
@@ -357,11 +343,16 @@ class Autofocuser:
                 if d is None:
                     time.sleep(0.1)
                     continue
-                status = PS3AutofocusStatus(**d)
+                try:
+                    status = PS3AutofocusStatus(**d)
+                except Exception as ex:
+                    self.log_and_store_error(f"{op}: cannot parse focus_status() response: {d=} ({ex=})")
+                    continue
                 if not status.is_running:
                     time.sleep(0.1)
                 else:
                     break
+
             if datetime.datetime.now() >= end:
                 self.log_and_store_error(
                     f"{op}: autofocus analyser did not start within {timeout} seconds"
