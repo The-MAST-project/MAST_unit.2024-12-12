@@ -34,11 +34,12 @@
             "name": "Test phd2",
             "type": "debugpy",
             "request": "launch",
-            "program": "${file}",
+            "module": "phd2.phd2",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/src",
             "env": {
-                "PYTHONPATH": "${workspaceFolder}/src"
+                "PYTHONPATH": "${workspaceFolder}/src",
+                "PATH": "C:\\Users\\mast\\PycharmProjects\\MAST_unit.2024-12-12\\external\\libusb-1.0.29\\VS2022\\MS64\\dll;${env:PATH}"
             },
             "justMyCode": false,
         }
