@@ -188,7 +188,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             logger.info(f"at {self.position=} (close enough to {value=})")
         else:
             self.target = value
-            self.start_activity(FocuserActivities.Moving)
+            self.start_activity(FocuserActivities.Moving, details=f"from {self.position} to {self.target}")
             self.pw.focuser_goto(value)
 
     def close_enough(self, position):
