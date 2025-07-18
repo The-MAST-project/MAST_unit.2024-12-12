@@ -65,7 +65,12 @@ class Imager(ImagerInterface, SwitchedOutlet):
         ImagerInterface.__init__(self)
 
         self.unit = unit
-        self.conf = self.unit.unit_conf.imager
+        if unit and unit.unit_conf is None:
+            self.conf = unit.unit_conf.imager
+        else:
+            from common.config import Config
+
+            self.conf = Config().get_unit().imager
 
         imager_type = imager_type or self.conf.imager_type.lower()
         if not (
