@@ -65,7 +65,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             logger.exception(ex)
             raise ex
 
-        SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name="Focuser")
+        SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Focuser")
         Component.__init__(self)
 
         if not self.is_on():

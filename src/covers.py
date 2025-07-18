@@ -75,7 +75,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             logger.exception(ex)
             raise ex
 
-        SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name="Covers")
+        SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Covers")
         Component.__init__(self)
         self._connected: bool = False
 

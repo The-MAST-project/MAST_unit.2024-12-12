@@ -73,7 +73,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
 
         self.unit = unit
         self.conf = Config().get_unit().mount
-        SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name="Mount")
+        SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Mount")
         Component.__init__(self)
 
         if not self.is_on():
@@ -277,7 +277,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         if was_moving and not self.is_moving:
             self.end_activity(MountActivities.Moving)
         elif not was_moving and self.is_moving:
-            self.start_activity(MountActivities.Moving)
+            self.start_activity(MountActivities.Moving, details=f"target={self.target}")
 
         if self.is_active(MountActivities.FindingHome) and not self.is_moving:
                 self.end_activity(MountActivities.FindingHome)

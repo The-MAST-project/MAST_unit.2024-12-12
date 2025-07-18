@@ -111,7 +111,7 @@ class Stage(Component, SwitchedOutlet):
         self.unit = unit
         self.conf = Config().get_unit().stage
 
-        SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name="Stage")
+        SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Stage")
         Component.__init__(self)
 
         self.errors: list[str] = []
