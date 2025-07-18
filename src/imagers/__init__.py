@@ -223,6 +223,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         :param settings: ImagerSettings object containing the exposure settings
         :return: CanonicalResponse indicating the result of the operation
         """
+        self.latest_settings = settings
         return self._backend.start_exposure(settings)
 
     def stop_exposure(self) -> CanonicalResponse | None:
