@@ -3,29 +3,24 @@ import json
 import logging
 import socket
 from enum import IntEnum, auto
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from typing import Any
 
 import numpy as np
 import pyzwoasi as asi
 from astropy.io import fits
 
+import ASI
 from common.activities import ImagerActivities
-
 # from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.interfaces.imager import (
-    ImagerBinning,
-    ImagerExposure,
-    ImagerExposureSeries,
-    ImagerInterface,
-    ImagerRoi,
-    ImagerSettings,
-    ImagerStatus,
-)
+from common.interfaces.imager import (ImagerBinning, ImagerExposure,
+                                      ImagerExposureSeries, ImagerInterface,
+                                      ImagerRoi, ImagerSettings, ImagerStatus)
 from common.mast_logging import init_log
 from common.utils import RepeatTimer, function_name, time_stamp
+from imagers import Imager
 
 logger = logging.Logger("mast-unit-imager-zwo")
 init_log(logger)
@@ -54,7 +49,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         Component.__init__(self)
         if not _from_imager:
             SwitchedOutlet.group(
-                domain=OutletDomain.Unit,
+                domain=OutletDomain.UnitOutlets,
                 group_name="Camera",
                 outlet_names=["Camera", "CameraUSB"]).populate(self)
         self.unit = unit
@@ -76,6 +71,8 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         logger.info(f"found {n_cameras} ASI camera(s), SDK={asi.getSDKVersion()}")
         self.cam_id = None
         self._connected: bool = False
+
+        self.image_lock = Lock()
 
         if n_cameras > 0:
             self.cam_id = 0
@@ -558,28 +555,41 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def image_array(self, value):
         self._image_array = value
 
-    def start_exposure_series(self, purpose: str | None = None):
-        return super().start_exposure_series(purpose=purpose)
+    def start_exposure_series(self, series: ImagerExposureSeries):
+        pass
 
-    def end_exposure_series(self, series):
-        super().end_exposure_series(series)
+    def end_exposure_series(self, series: ImagerExposureSeries):
+        pass
 
 
 if __name__ == "__main__":
-    cam = ZWOImager(unit=None)
-    # cam.make_pythonian_classes()
-    cam.startup()
-    series = cam.start_exposure_series(purpose="testing")
-    cam.start_exposure(
-        ImagerSettings.model_validate({"seconds": 5}, context={"imager": cam})
-    )
-    print(json.dumps(cam.status().model_dump(), indent=2))
-    if cam.can_send_image_ready_event:
-        cam.wait_for_image_ready()
-        logger.info("got image ready event")
+    def test_imager():
+        imager = Imager(unit=None, imager_type="zwo", params={"output_format": ASI.OutputFormat.RAW16})
+        imager.startup()
+        series = imager.start_exposure_series(purpose="testing zwo imager")
+        imager.start_exposure(
+            ImagerSettings.model_validate({"seconds": 5}, context={"imager": imager})
+        )
+        print(json.dumps(imager.status().model_dump(), indent=2))
+        if imager.can_send_image_ready_event:
+            imager.wait_for_image_ready()
+            logger.info("got image ready event")
 
-    if cam.can_send_image_saved_event:
-        cam.wait_for_image_saved()
-        logger.info("got image saved event")
-    cam.end_exposure_series(series)
-    exit(0)
+        if imager.can_send_image_saved_event:
+            imager.wait_for_image_saved()
+            logger.info("got image saved event")
+        imager.end_exposure_series(series)
+        exit(0)
+
+    def test_gain_percent():
+        percent = ASI.gain_absolute_to_percent(170)
+        print('')
+        print(f"gain 170: {percent:2.0f}%")
+        print(f"gain {percent:2.0f}%: {ASI.gain_percent_to_absolute(percent)}")
+
+        percent = ASI.gain_absolute_to_percent(170)
+        print('')
+        print(f"gain 170: {percent:2.0f}%")
+        print(f"gain {percent:2.0f}%: {ASI.gain_percent_to_absolute(percent)}")
+
+    test_gain_percent()
