@@ -46,7 +46,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         return cls._instance
 
     def __init__(
-        self, unit: "Unit", imager_type: str | None = None, params: dict | None = None
+        self, unit = None, imager_type: str | None = None, params: dict | None = None # type: ignore
     ):
         """
         Initializes the backend of an Imager instance according to the unit configuration.
