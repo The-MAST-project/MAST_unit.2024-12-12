@@ -17,14 +17,18 @@ from astropy.coordinates import Angle
 from pydantic import BaseModel
 
 import ASI
-from common.activities import ImagerActivities
+from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
-from common.interfaces.imager import (ImagerBinning, ImagerExposureSeries,
-                                      ImagerInterface, ImagerRoi,
-                                      ImagerSettings)
+from common.interfaces.imager import (
+    ImagerBinning,
+    ImagerExposureSeries,
+    ImagerInterface,
+    ImagerRoi,
+    ImagerSettings,
+)
 from common.mast_logging import init_log
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_info, function_name
@@ -64,6 +68,8 @@ class PHD2Activities(IntFlag):
     Validating = auto()
     ExposingForValidation = auto()
     SolvingForValidation = auto()
+    EquipmentHandover = auto()
+    EquipmentTakeover = auto()
 
 
 class PHD2ImagerStatus(BaseModel):
@@ -278,7 +284,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             SwitchedOutlet.group(
                 domain=OutletDomain.UnitOutlets,
                 group_name="Camera",
-                outlet_names=["Camera", "CameraUSB"]).populate(self)
+                outlet_names=["Camera", "CameraUSB"],
+            ).populate(self)
 
         self.unit: Unit | None = unit  # type: ignore
         self.hostname = hostname
@@ -323,15 +330,15 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
         self.activities = PHD2Activities.Idle
 
-        self.watched_process = WatchedProcess(
-            command='"C:/Program Files (x86)/PHDGuiding2/phd2.exe"',
-            logger=logger,
-            shell=True,
-        )
-        self.watched_process.start()
-        secs = 3
-        logger.info(f"sleeping {secs} seconds to allow PHD2 to start")
-        time.sleep(secs)
+        # self.watched_process = WatchedProcess(
+        #     command='"C:/Program Files (x86)/PHDGuiding2/phd2.exe"',
+        #     logger=logger,
+        #     shell=True,
+        # )
+        # self.watched_process.start()
+        # secs = 3
+        # logger.info(f"sleeping {secs} seconds to allow PHD2 to start")
+        # time.sleep(secs)
 
         self._needs_to_resume_guiding = False
 
@@ -358,7 +365,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 logger.error(f"{function_name()}: Failed to connect {ex=}")
 
             self.cooler_on = True
-            assert(self.worker)
+            assert self.worker
             self.worker.join()
 
     def __enter__(self):
@@ -381,43 +388,52 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         assert self.unit.acquirer.latest_acquisition is not None
 
         self.start_activity(PHD2Activities.Validating)
-        self.call("stop_capture")  # stop guiding
-        settings = self.unit.guider.make_guiding_settings(
-            base_folder=str(Path(self.unit.acquirer.latest_acquisition.folder) / "guiding" /"validation")
+        # self.call("stop_capture")  # stop guiding
+        self.stop_guiding()
+        guiding_settings = self.unit.guider.make_guiding_settings(
+            base_folder=str(
+                Path(self.unit.acquirer.latest_acquisition.folder)
+                / "guiding"
+                / "validation"
+            )
         )
-        assert settings.roi is not None
+        assert guiding_settings.roi is not None
         try:
             self.start_activity(PHD2Activities.ExposingForValidation)
             self.call(
                 "capture_single_frame",
                 params={
-                    "exposure": int(settings.seconds * 1000),  # convert to milliseconds
-                    "gain": ASI.gain_absolute_to_percent(settings.gain),
-                    "binning": settings.binning.x if settings.binning else 1,
+                    "exposure": int(
+                        guiding_settings.seconds * 1000
+                    ),  # convert to milliseconds
+                    "gain": ASI.gain_absolute_to_percent(guiding_settings.gain),
+                    "binning": (
+                        guiding_settings.binning.x if guiding_settings.binning else 1
+                    ),
                     "subframe": [
-                        settings.roi.x,
-                        settings.roi.y,
-                        settings.roi.width,
-                        settings.roi.height,
+                        guiding_settings.roi.x,
+                        guiding_settings.roi.y,
+                        guiding_settings.roi.width,
+                        guiding_settings.roi.height,
                     ],
                     "save": True,
-                    "path": settings.image_path,
+                    "path": guiding_settings.image_path,
                 },
             )
         except PHD2ConnectorError as ex:
             self.log_and_append_error(f"{ex=}")
             self.end_activity(PHD2Activities.ExposingForValidation)
             self.end_activity(PHD2Activities.Validating)
-            self.guide()
+            self.start_guiding()
             return
 
         self.wait_for_image_saved()
 
         logger.info(f"{function_name()}: resuming guiding ...")
-        self.guide()
+        self.start_guiding()
 
         assert self.unit.acquirer.latest_acquisition is not None
-        assert settings.image_path is not None
+        assert guiding_settings.image_path is not None
         target: Coord = Coord(
             Angle(self.unit.acquirer.latest_acquisition.target_ra, unit="hours"),
             Angle(self.unit.acquirer.latest_acquisition.target_dec, unit="degrees"),
@@ -427,8 +443,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.start_activity(PHD2Activities.SolvingForValidation)
         with ThreadPoolExecutor() as executor:
             logger.info(f"{function_name()}: starting solving for {target=}")
-            future = executor.submit(self.unit.solver.solve, settings, target)
+            self.unit.start_activity(UnitActivities.Solving)
+            future = executor.submit(self.unit.solver.solve, guiding_settings, target)
             solving_result = future.result()
+            self.unit.end_activity(UnitActivities.Solving)
 
         logger.info(f"{function_name()}: solving result: {solving_result=}")
         if solving_result and solving_result.succeeded and solving_result.solution:
@@ -506,6 +524,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             with self.lock:
                 self.app_state = "Guiding"
                 self.start_activity(PHD2Activities.Guiding, existing_ok=True)
+                if self.is_active(PHD2Activities.EquipmentHandover):
+                    self.end_activity(
+                        PHD2Activities.EquipmentHandover
+                    )  # To get the timing printout
                 self.avg_dist = ev["AvgDist"]
                 if self.accumulators_active:
                     self.stats = stats
@@ -990,7 +1012,12 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.watched_process.terminate()
 
     def start_guiding(self) -> CanonicalResponse:
+        assert self.unit is not None and self.unit.imager is not None
+        if self.unit.imager.connected:
+            self.unit.imager.disconnect()
+
         if not self.connected:
+            self.start_activity(PHD2Activities.EquipmentHandover)
             try:
                 self.connect()
                 self.connect_equipment()
@@ -1006,7 +1033,12 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             return CanonicalResponse(errors=["not connected"])
 
         logger.info("stopping guiding")
-        self.stop_capture()
+        self.start_activity(PHD2Activities.EquipmentTakeover)
+        self.disconnect_equipment()  # stops the exposure as well
+        assert self.unit is not None and self.unit.imager is not None
+        self.unit.imager.connect()
+        self.end_activity(PHD2Activities.EquipmentTakeover)
+
         return CanonicalResponse_Ok
 
     @property
@@ -1083,8 +1115,12 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             raise PHD2ConnectorError("PHD2 save_image settings MUST have an image_path")
 
         logger.info(f"starting {settings.seconds} exposure")
-        self.start_activity(ImagerActivities.Exposing, details=f"{settings.seconds} seconds")
-        self.start_activity(ImagerActivities.Saving, details=f"{Path(settings.image_path).as_posix()}")
+        self.start_activity(
+            ImagerActivities.Exposing, details=f"{settings.seconds} seconds"
+        )
+        self.start_activity(
+            ImagerActivities.Saving, details=f"{Path(settings.image_path).as_posix()}"
+        )
 
         if self._is_guiding(self.app_state):
             # while guiding we use save_image()
@@ -1225,9 +1261,12 @@ if __name__ == "__main__":
     imager.startup()
 
     max = 10
-    imager_settings = ImagerSettings.model_validate({"seconds": 5}, context={"imager": imager})
-    for i in range(max):
-        print(f"image #{i} of {max}")
+    imager_settings = ImagerSettings.model_validate(
+        {"seconds": 5}, context={"imager": imager}
+    )
+    i = 0
+    while True:
+        print(f"=== image #{i} ===")
         imager.start_exposure(imager_settings)
 
         if imager.can_send_image_ready_event:
@@ -1235,6 +1274,9 @@ if __name__ == "__main__":
 
         if imager.can_send_image_saved_event:
             imager.wait_for_image_saved()
+            assert imager_settings.image_path
+            Path(imager_settings.image_path).unlink()
 
         imager_settings.make_file_name()
+        i = i + 1
     exit(0)
