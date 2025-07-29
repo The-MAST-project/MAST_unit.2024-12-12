@@ -1,4 +1,6 @@
+import ctypes
 import logging
+from ctypes import c_int
 from enum import IntEnum, auto
 
 logger = logging.Logger("ASI")
@@ -183,6 +185,40 @@ class ExposureStatus(IntEnum):
     ASI_EXP_SUCCESS = auto()  # exposure completed successfully, image can be read out
     ASI_EXP_FAILED = auto()  #  exposure failure, need to restart exposure
 
+
+ASI_MAX_CAMERA_NAME = 64
+
+
+# ASI_CAMERA_INFO structure
+class ASI_CAMERA_INFO(ctypes.Structure):
+    _fields_ = [
+        ("Name", ctypes.c_char * ASI_MAX_CAMERA_NAME),
+        ("CameraID", c_int),
+        ("MaxHeight", c_int),
+        ("MaxWidth", c_int),
+        ("IsColorCam", c_int),
+        ("BayerPattern", c_int),
+        ("SupportedBins", c_int * 16),
+        ("SupportedVideoFormat", c_int * 8),
+        ("SupportedPreviewFormat", c_int * 8),
+        ("PixelSize", ctypes.c_float),
+        ("MechanicalShutter", c_int),
+        ("ST4Port", c_int),
+        ("IsCoolerCam", c_int),
+        ("IsUSB3Host", c_int),
+        ("IsUSB3Camera", c_int),
+        ("ElecPerADU", ctypes.c_float),
+        ("BitDepth", c_int),
+        ("IsTriggerCam", c_int),
+        ("Unused", c_int * 8),
+        ("CameraSN", ctypes.c_char * 16),
+        ("PortType", c_int),
+        ("DevPath", ctypes.c_char * 32),
+        ("ProductID", c_int),
+        ("VendorID", c_int),
+    ]
+
+
 def gain_absolute_to_percent(value) -> float:
     d = ControlDict[Control.Gain]
     min = d["min_value"]
@@ -191,11 +227,12 @@ def gain_absolute_to_percent(value) -> float:
     # print(f"{max=}, {min=}, {value=}, {ret=}")
     return ret
 
+
 def gain_percent_to_absolute(percent: float) -> int:
     d = ControlDict[Control.Gain]
     min = d["min_value"]
     max = d["max_value"]
-    ret = int(min + (max - min) * (percent/100))
+    ret = int(min + (max - min) * (percent / 100))
     # print(f"{max=}, {min=}, {percent=:2.0f}%, {ret=}")
     return ret
 
@@ -251,5 +288,25 @@ def make_pythonian_classes():
         print(line)
     print()
 
+
+def list_cameras():
+    import pyzwoasi as asi
+
+    sdk_version = asi.getSDKVersion()
+
+    n_cameras = asi.getNumOfConnectedCameras()
+    print()
+    print(f"found {n_cameras} ASI camera(s), SDK='{asi.getSDKVersion()}'")
+
+    # for id in range(n_cameras):
+    #     info = asi.getCameraProperty(id)
+
+    #     supported = asi.cameraCheck(info.VendorID, info.ProductID)
+    #     print(
+    #         f"{id=:2}: model={info.Name.decode()}, width={info.MaxWidth}, height={info.MaxHeight}, depth={info.BitDepth}, {supported=}"
+    #     )
+
+
 if __name__ == "__main__":
-    make_pythonian_classes()
+    # make_pythonian_classes()
+    list_cameras()
