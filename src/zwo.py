@@ -12,12 +12,19 @@ from astropy.io import fits
 
 import ASI
 from common.activities import ImagerActivities
+
 # from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.interfaces.imager import (ImagerBinning, ImagerExposure,
-                                      ImagerExposureSeries, ImagerInterface,
-                                      ImagerRoi, ImagerSettings, ImagerStatus)
+from common.interfaces.imager import (
+    ImagerBinning,
+    ImagerExposure,
+    ImagerExposureSeries,
+    ImagerInterface,
+    ImagerRoi,
+    ImagerSettings,
+    ImagerStatus,
+)
 from common.mast_logging import init_log
 from common.utils import RepeatTimer, function_name, time_stamp
 from imagers import Imager
@@ -27,7 +34,6 @@ init_log(logger)
 
 # if TYPE_CHECKING:
 #     from unit import Unit
-
 
 
 class ZWOImager(ImagerInterface, SwitchedOutlet):
@@ -44,14 +50,20 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, unit, imager_params: dict[str, Any] | None = None, _from_imager: bool = False):
+    def __init__(
+        self,
+        unit,
+        imager_params: dict[str, Any] | None = None,
+        _from_imager: bool = False,
+    ):
 
         Component.__init__(self)
         if not _from_imager:
             SwitchedOutlet.group(
                 domain=OutletDomain.UnitOutlets,
                 group_name="Camera",
-                outlet_names=["Camera", "CameraUSB"]).populate(self)
+                outlet_names=["Camera", "CameraUSB"],
+            ).populate(self)
         self.unit = unit
         self.imager_params = imager_params or {}
 
@@ -86,7 +98,6 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def __del__(self):
         asi.closeCamera(self.cam_id)
 
-
     def save_in_thread(self):
         self.start_activity(ImagerActivities.Saving)
         assert self.latest_settings is not None and self.latest_settings.roi is not None
@@ -113,36 +124,22 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             header["XBINNING"] = (self.latest_settings.binning.x, "horizontal binning")
             header["YBINNING"] = (self.latest_settings.binning.y, "vertical binning")
         header["EXPTIME"] = (self.latest_settings.seconds, "exposure time in seconds")
+        header["IMAGETYP"] = ("LIGHT", "image type: either LIGHT or DARK")
         header["INSTRUME"] = (f"{socket.gethostname()}:{self.model}", "the instrument")
         if self.ccd_temp_at_mid_exposure:
             header["CCDTEMP"] = (
                 self.ccd_temp_at_mid_exposure,
-                "ccd temp. at mid exposure",
+                "ccd temperature at mid exposure",
             )
             self.ccd_temp_at_mid_exposure = None
 
         if self.unit:
-            header["FOCUSPOS"] = self.unit.focuser.position
-            header.comments["FOCUSPOS"] = "focuser position"
-            header["STAGEPOS"] = self.unit.stage.position
-            header.comments["STAGEPOS"] = "FIFA stage position"
+            header["FOCUSPOS"] = (self.unit.focuser.position, "focuser position")
+            header["STAGEPOS"] = (self.unit.stage.position, "FCU stage position")
 
         if self.latest_settings and self.latest_settings.fits_cards:
             for k, v in self.latest_settings.fits_cards.items():
                 header[k] = v
-
-        # header["NAXIS"] = 2
-        # header["NAXIS1"] = self.latest_settings.roi.width
-        # header["NAXIS2"] = self.latest_settings.roi.height
-        # header['BITPIX'] = 16 if self.output_format == AsiOutputFormat.RAW16 else 8 # 16-bit unsigned integer (for RAW16)
-        # header['BZERO'] = 0
-        # header['BSCALE'] = 1
-        # header['IMAGETYP'] = 'LIGHT'
-        # header['INSTRUME'] = self.model
-        # header['EXPTIME'] = self.latest_settings.seconds
-        # if self.latest_settings.binning:
-        #     header['XBINNING'] = self.latest_settings.binning.x
-        #     header['YBINNING'] = self.latest_settings.binning.y
 
         try:
             hdu = fits.PrimaryHDU(data=self._image_array, header=header)
@@ -563,8 +560,13 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
 
 
 if __name__ == "__main__":
+
     def test_imager():
-        imager = Imager(unit=None, imager_type="zwo", params={"output_format": ASI.OutputFormat.RAW16})
+        imager = Imager(
+            unit=None,
+            imager_type="zwo",
+            params={"output_format": ASI.OutputFormat.RAW16},
+        )
         imager.startup()
         series = imager.start_exposure_series(purpose="testing zwo imager")
         imager.start_exposure(
@@ -583,12 +585,12 @@ if __name__ == "__main__":
 
     def test_gain_percent():
         percent = ASI.gain_absolute_to_percent(170)
-        print('')
+        print("")
         print(f"gain 170: {percent:2.0f}%")
         print(f"gain {percent:2.0f}%: {ASI.gain_percent_to_absolute(percent)}")
 
         percent = ASI.gain_absolute_to_percent(170)
-        print('')
+        print("")
         print(f"gain 170: {percent:2.0f}%")
         print(f"gain {percent:2.0f}%: {ASI.gain_percent_to_absolute(percent)}")
 
