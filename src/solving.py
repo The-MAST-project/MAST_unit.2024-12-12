@@ -12,7 +12,13 @@ from astropy.coordinates import Angle
 
 from acquisition import Acquisition
 from common.activities import UnitActivities
-from common.config import AcquisitionConfig, Config, ImagerBinningConfig, SkyRoiConfig, ToleranceConfig
+from common.config import (
+    AcquisitionConfig,
+    Config,
+    ImagerBinningConfig,
+    SkyRoiConfig,
+    ToleranceConfig,
+)
 from common.corrections import Correction, Corrections
 from common.filer import Filer
 from common.interfaces.imager import ImagerSettings
@@ -53,7 +59,9 @@ class Solver(SolverInterface):
         method = Config().get_unit().solving.method
         valid_methods = Config().get_unit().solving.method
         if method not in valid_methods:
-            raise ValueError(f"invalid solving method '{method}' in configuration, must be one of {valid_methods}")
+            raise ValueError(
+                f"invalid solving method '{method}' in configuration, must be one of {valid_methods}"
+            )
 
         if method == "AstrometryDotNet":
             self._backend = AstrometryDotNet()
@@ -70,11 +78,16 @@ class Solver(SolverInterface):
         logger.error(message)
         self.unit.errors.append(message)
 
-    def solve(self, imager_settings: ImagerSettings, target: Coord) -> SolvingResult | None:
+    def solve(
+        self, imager_settings: ImagerSettings, target: Coord
+    ) -> SolvingResult | None:
         op = function_name()
 
-        assert(self._backend is not None), "solve: self._backend is None"
-        if imager_settings.binning is not None and imager_settings.binning.x != imager_settings.binning.y:
+        assert self._backend is not None, "solve: self._backend is None"
+        if (
+            imager_settings.binning is not None
+            and imager_settings.binning.x != imager_settings.binning.y
+        ):
             raise Exception(
                 "cannot deal with non-equal horizontal and vertical binning "
                 + f"({imager_settings.binning.x=}, {imager_settings.binning.y=}"
@@ -89,18 +102,23 @@ class Solver(SolverInterface):
             #
             # Start exposure
             #
-            logger.info(f"{op}: starting {imager_settings.seconds=} acquisition exposure")
+            logger.info(
+                f"{op}: starting {imager_settings.seconds=} acquisition exposure"
+            )
             response = self.unit.imager.start_exposure(imager_settings)
             if response and response.failed:
                 self.log_and_store_error(
                     f"{op}: could not start acquisition exposure: {response=}"
                 )
 
-                ret = SolvingResult(succeeded=False)
-                ret.errors = [f"could not start exposure ({[response.errors]})"]
-                return ret
+                return SolvingResult(
+                    succeeded=False,
+                    errors=[f"could not start exposure ({[response.errors]})"],
+                )
 
-            return self._backend.solve(unit=self.unit, settings=imager_settings, target=target)
+            return self._backend.solve(
+                unit=self.unit, settings=imager_settings, target=target
+            )
 
     def solve_and_correct(  # noqa: C901
         self,
@@ -151,24 +169,29 @@ class Solver(SolverInterface):
         if not self.unit.acquirer.latest_acquisition:
             # when not part of an acquisition sequence
             tolerance = ToleranceConfig(
-                ra_arcsec=float(solving_tolerance.ra.arcsecond), # type: ignore
-                dec_arcsec=float(solving_tolerance.dec.arcsecond)) # type: ignore
+                ra_arcsec=float(solving_tolerance.ra.arcsecond),  # type: ignore
+                dec_arcsec=float(solving_tolerance.dec.arcsecond),  # type: ignore
+            )  # type: ignore
 
             if imager_settings.roi:
                 sky_roi_config = SkyRoiConfig(
                     sky_x=imager_settings.roi.x,
                     sky_y=imager_settings.roi.y,
                     width=imager_settings.roi.width,
-                    height=imager_settings.roi.height)
+                    height=imager_settings.roi.height,
+                )
             else:
                 sky_roi_config = SkyRoiConfig(
                     sky_x=self.unit.imager.full_frame.x,
                     sky_y=self.unit.imager.full_frame.y,
                     width=self.unit.imager.full_frame.width,
-                    height=self.unit.imager.full_frame.height)
+                    height=self.unit.imager.full_frame.height,
+                )
 
             if imager_settings.binning is not None:
-                imager_binning_config = ImagerBinningConfig(x=imager_settings.binning.x, y=imager_settings.binning.y)
+                imager_binning_config = ImagerBinningConfig(
+                    x=imager_settings.binning.x, y=imager_settings.binning.y
+                )
             else:
                 imager_binning_config = ImagerBinningConfig(x=1, y=1)
 
@@ -179,7 +202,7 @@ class Solver(SolverInterface):
                 gain=imager_settings.gain or 100,
                 tries=self.unit.unit_conf.acquisition.tries,
                 tolerance=tolerance,
-                )
+            )
             if self.unit.acquirer is None:
                 raise Exception(
                     f"{op}: unit.acquirer is None, cannot create latest_acquisition"
@@ -189,8 +212,8 @@ class Solver(SolverInterface):
                 approach_mode=approach_mode,
                 solver_id=solver_id,
                 make_corrections=make_corrections,
-                target_ra=target.ra.arcsecond, # type: ignore
-                target_dec=target.dec.arcsecond, # type: ignore
+                target_ra=target.ra.arcsecond,  # type: ignore
+                target_dec=target.dec.arcsecond,  # type: ignore
                 conf=conf,
             )
 
@@ -200,10 +223,10 @@ class Solver(SolverInterface):
             # in case there were no corrections yet for this phase
             self.unit.acquirer.latest_acquisition.corrections[phase] = Corrections(
                 phase=phase,
-                target_ra=target.ra.hour, # type: ignore
-                target_dec=target.dec.deg, #type: ignore
-                tolerance_ra=solving_tolerance.ra.arcsecond, #type: ignore
-                tolerance_dec=solving_tolerance.dec.arcsecond, #type: ignore
+                target_ra=target.ra.hour,  # type: ignore
+                target_dec=target.dec.deg,  # type: ignore
+                tolerance_ra=solving_tolerance.ra.arcsecond,  # type: ignore
+                tolerance_dec=solving_tolerance.dec.arcsecond,  # type: ignore
             )
         latest_corrections = self.unit.acquirer.latest_acquisition.corrections[phase]
 
@@ -276,21 +299,25 @@ class Solver(SolverInterface):
                     logger,
                     f"phase: {phase.upper()}, plate solver found a match, YEY, YEPEEE, HURRAY !!!",
                 )
-                dec_avg_rad = math.radians((target.dec.arcsecond + Angle(result.solution.dec_rads * u.radian).arcsecond) / 2) # type: ignore
-                delta_ra_arcsec = \
-                    (target.ra.arcsecond - Angle(result.solution.ra_rads * u.radian).arcsecond) * math.cos(dec_avg_rad) # type: ignore
-                delta_dec_arcsec = target.dec.arcsecond - Angle(result.solution.dec_rads * u.radian).arcsecond # type: ignore
+                dec_avg_rad = math.radians((target.dec.arcsecond + Angle(result.solution.dec_rads * u.radian).arcsecond) / 2)  # type: ignore
+                delta_ra_arcsec = (
+                    target.ra.arcsecond
+                    - Angle(result.solution.ra_rads * u.radian).arcsecond  # type: ignore
+                ) * math.cos(
+                    dec_avg_rad
+                )  # type: ignore
+                delta_dec_arcsec = target.dec.arcsecond - Angle(result.solution.dec_rads * u.radian).arcsecond  # type: ignore
 
                 abs_delta_ra_arcsec = abs(delta_ra_arcsec)
                 abs_delta_dec_arcsec = abs(delta_dec_arcsec)
 
                 coord_solved = Coord(
-                    ra=Angle(result.solution.ra_rads * u.radian), # type: ignore
-                    dec=Angle(result.solution.dec_rads * u.radian), # type: ignore
+                    ra=Angle(result.solution.ra_rads * u.radian),  # type: ignore
+                    dec=Angle(result.solution.dec_rads * u.radian),  # type: ignore
                 )
                 coord_delta = Coord(
-                    ra=Angle(delta_ra_arcsec * u.arcsecond), # type: ignore
-                    dec=Angle(delta_dec_arcsec * u.arcsecond), # type: ignore
+                    ra=Angle(delta_ra_arcsec * u.arcsecond),  # type: ignore
+                    dec=Angle(delta_dec_arcsec * u.arcsecond),  # type: ignore
                 )
                 coord_tolerance = Coord(
                     ra=solving_tolerance.ra, dec=solving_tolerance.dec
@@ -304,7 +331,7 @@ class Solver(SolverInterface):
 
                 if (
                     abs_delta_ra_arcsec <= solving_tolerance.ra.arcsecond  # type: ignore
-                    and abs_delta_dec_arcsec <= solving_tolerance.dec.arcsecond # type: ignore
+                    and abs_delta_dec_arcsec <= solving_tolerance.dec.arcsecond  # type: ignore
                 ):
                     #
                     # Within tolerance, no correction is needed
@@ -321,12 +348,14 @@ class Solver(SolverInterface):
 
                     latest_corrections.last_delta = Correction(
                         time=datetime.datetime.now(datetime.UTC),
-                        ra_arcsec=delta_ra_arcsec, # type: ignore
-                        dec_arcsec=delta_dec_arcsec, # type: ignore
+                        ra_arcsec=delta_ra_arcsec,  # type: ignore
+                        dec_arcsec=delta_dec_arcsec,  # type: ignore
                     )
 
                     if not imager_settings.folder:
-                        raise Exception(f"{function_name()}: empty imager_settings.folder")
+                        raise Exception(
+                            f"{function_name()}: empty imager_settings.folder"
+                        )
                     file_name = str(Path(imager_settings.folder) / "corrections.json")
                     with open(file_name, "w") as f:
                         json.dump(latest_corrections.to_dict(), f, indent=2)
@@ -344,8 +373,8 @@ class Solver(SolverInterface):
                     latest_corrections.sequence.append(
                         Correction(
                             time=datetime.datetime.now(datetime.UTC),
-                            ra_arcsec=delta_ra_arcsec, # type: ignore
-                            dec_arcsec=delta_dec_arcsec, # type: ignore
+                            ra_arcsec=delta_ra_arcsec,  # type: ignore
+                            dec_arcsec=delta_dec_arcsec,  # type: ignore
                         )
                     )
 
@@ -478,8 +507,8 @@ class Solver(SolverInterface):
                         dec_progress = 0
                         while ra_progress < 1 or dec_progress < 1:
                             st = self.unit.pw.status()
-                            ra_progress = st.mount.offsets.axis0_arcsec.gradual_offset_progress # type: ignore
-                            dec_progress = st.mount.offsets.axis1_arcsec.gradual_offset_progress # type: ignore
+                            ra_progress = st.mount.offsets.axis0_arcsec.gradual_offset_progress  # type: ignore
+                            dec_progress = st.mount.offsets.axis1_arcsec.gradual_offset_progress  # type: ignore
                             logger.info(f"{op}: {ra_progress=}, {dec_progress=}")
                             time.sleep(1)
 
