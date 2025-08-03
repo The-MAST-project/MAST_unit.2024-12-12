@@ -95,17 +95,17 @@ class Imager(ImagerInterface, SwitchedOutlet):
 
             self._prog_id = self.conf.imager_type[6:]
             self._backend = ASCOMImager(parent_imager=self, prog_id=self._prog_id, _from_imager=True)
-            self.imager_type = ImagerTypes.Ascom
+            self.backend_type = ImagerTypes.Ascom
         elif imager_type == "phd2":
             from phd2 import phd2
 
             self._backend = phd2.PHD2Connector(parent_imager=self, _from_imager=True)
-            self.imager_type = ImagerTypes.Phd2
+            self.backend_type = ImagerTypes.Phd2
         elif imager_type == "zwo":
             from zwo import ZWOImager
 
             self._backend = ZWOImager(parent_imager=self, imager_params=params, _from_imager=True)
-            self.imager_type = ImagerTypes.Zwo
+            self.backend_type = ImagerTypes.Zwo
         else:
             raise ValueError(f"Unknown imager type: {self.conf.imager_type}")
 
@@ -208,6 +208,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         return {
             "activities": self.activities,
             "activities_verbal": self.activities.__repr__(),
+            "backend_type": self.backend_type,
             "backend": self._backend.status().model_dump(),
         }
 
