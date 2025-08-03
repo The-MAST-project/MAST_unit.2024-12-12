@@ -12,7 +12,7 @@ from astropy.coordinates import Angle
 from common.filer import Filer
 from common.interfaces.solving import SolverInterface, SolvingResult, SolvingSolution
 from common.mast_logging import init_log
-from common.utils import Coord, function_name, generate_random_string
+from common.utils import Coord, boxed_info, function_name, generate_random_string
 from imagers import ImagerSettings
 
 logger = logging.Logger("astrometry_dot_net")
@@ -142,8 +142,12 @@ def _parse_solver_output(lines: list[str]) -> SolvingResult:  # noqa: C901
 
 class AstrometryDotNet(SolverInterface):
 
+    def __init__(self):
+        self.unit = None
+
     def solve(self, unit, settings: ImagerSettings, target: Coord) -> SolvingResult:  # type: ignore[name]
 
+        self.unit = unit
         filer = Filer(logger)
         unix_emulator = "cygwin"
         tmp_dir = generate_random_string(prefix="tmp_")
@@ -205,12 +209,12 @@ class AstrometryDotNet(SolverInterface):
             args += ["--new-fits", win_to_wsl(new_fits_path)]
             args += [win_to_wsl(fits_path)]
 
-        # logger.info(f"cmd: {cmd}, args: {args}")
 
         start = datetime.datetime.now()
-        completed_process = subprocess.run(
-            " ".join([cmd] + args), capture_output=True, shell=True
-        )
+        command = " ".join([cmd] + args)
+        # logger.info(f"AstrometryDotNet.solve: {command=}")
+
+        completed_process = subprocess.run(command, capture_output=True, shell=True)
         stdout_lines = completed_process.stdout.decode().strip().splitlines()
         stderr_lines = completed_process.stderr.decode().strip().splitlines()
         elapsed = datetime.datetime.now() - start
