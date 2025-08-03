@@ -99,63 +99,11 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         asi.closeCamera(self.cam_id)
 
     def save_in_thread(self):
-        self.start_activity(ImagerActivities.Saving)
-        assert self.latest_settings is not None and self.latest_settings.roi is not None
-        assert self.image_array is not None, "self.image_array is None"
+        from imagers.ascom import save_to_fits_file
 
-        header = fits.Header()
-        header["SIMPLE"] = (True, "file conforms to FITS standard")
-        if self.output_format == ASI.OutputFormat.RAW16:
-            header["BITPIX"] = (16, "array data type")
-            header["BZERO"] = 32768
-        else:
-            header["BITPIX"] = 8
-            header["BZERO"] = 0
-        header["BSCALE"] = 1
-        header["NAXIS"] = (2, "number of array dimensions")
-        header["NAXIS1"] = (self.image_array.shape[0], "length of data axis 1")
-        header["NAXIS2"] = (self.image_array.shape[1], "length of data axis 2")
-        header["EXTEND"] = (True, "FITS data sets may contain extensions")
-        header["DATE-OBS"] = (
-            datetime.datetime.now(datetime.UTC).isoformat(),
-            "Observation datetime",
-        )
-        if self.latest_settings.binning:
-            header["XBINNING"] = (self.latest_settings.binning.x, "horizontal binning")
-            header["YBINNING"] = (self.latest_settings.binning.y, "vertical binning")
-        header["EXPTIME"] = (self.latest_settings.seconds, "exposure time in seconds")
-        header["IMAGETYP"] = ("LIGHT", "image type: either LIGHT or DARK")
-        header["INSTRUME"] = (f"{socket.gethostname()}:{self.model}", "the instrument")
-        if self.ccd_temp_at_mid_exposure:
-            header["CCDTEMP"] = (
-                self.ccd_temp_at_mid_exposure,
-                "ccd temperature at mid exposure",
-            )
-            self.ccd_temp_at_mid_exposure = None
-
-        if self.unit:
-            header["FOCUSPOS"] = (self.unit.focuser.position, "focuser position")
-            header["STAGEPOS"] = (self.unit.stage.position, "FCU stage position")
-
-        if self.latest_settings and self.latest_settings.fits_cards:
-            for k, v in self.latest_settings.fits_cards.items():
-                header[k] = v
-
-        try:
-            hdu = fits.PrimaryHDU(data=self._image_array, header=header)
-            hdu_list = fits.HDUList([hdu])
-            hdu_list.writeto(
-                self.latest_settings.image_path, checksum=True, overwrite=True
-            )
-            self.image_saved_event.set()
-            logger.info(f"image saved to '{self.latest_settings.image_path}'")
-        except Exception as ex:
-            logger.error(
-                f"failed to save fits file '{self.latest_settings.image_path}', {ex=}"
-            )
-        finally:
-            self.end_activity(ImagerActivities.Saving)
-            self.end_activity(ImagerActivities.Exposing)
+        save_to_fits_file(self)
+        self.image_was_saved = True
+        self.image_read_event.set()
 
         del self._image_array
 
