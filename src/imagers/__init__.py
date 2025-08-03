@@ -222,7 +222,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         """
         self.current_exposure_series = ImagerExposureSeries(purpose=purpose)
         logger.info(f"Starting exposure series id='{self.current_exposure_series.series_id}' "
-                    + f"purpose={self.current_exposure_series.purpose}")
+                    + f"purpose='{self.current_exposure_series.purpose}'")
         return self.current_exposure_series
 
     def end_exposure_series(self, series: ImagerExposureSeries):
