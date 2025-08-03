@@ -1,30 +1,20 @@
 import datetime
 import json
 import logging
-import socket
-from enum import IntEnum, auto
 from threading import Event, Lock, Thread
 from typing import Any
 
 import numpy as np
 import pyzwoasi as asi
-from astropy.io import fits
 
 import ASI
 from common.activities import ImagerActivities
-
-# from common.config import Config
+from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.interfaces.components import Component
-from common.interfaces.imager import (
-    ImagerBinning,
-    ImagerExposure,
-    ImagerExposureSeries,
-    ImagerInterface,
-    ImagerRoi,
-    ImagerSettings,
-    ImagerStatus,
-)
+from common.interfaces.imager import (ImagerBinning, ImagerExposure,
+                                      ImagerExposureSeries, ImagerInterface,
+                                      ImagerRoi, ImagerSettings, ImagerStatus,
+                                      ImagerTypes)
 from common.mast_logging import init_log
 from common.utils import RepeatTimer, function_name, time_stamp
 from imagers import Imager
@@ -57,24 +47,21 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         _from_imager: bool = False,
     ):
 
-        Component.__init__(self)
-        if not _from_imager:
-            SwitchedOutlet.group(
-                domain=OutletDomain.UnitOutlets,
-                group_name="Camera",
-                outlet_names=["Camera", "CameraUSB"],
-            ).populate(self)
+        ImagerInterface.__init__(self)
+        SwitchedOutlet.group(
+            domain=OutletDomain.UnitOutlets,
+            group_name="Camera",
+            outlet_names=["Camera", "CameraUSB"],
+        ).transfer_attributes(self)
         self.unit = unit
         self.imager_params = imager_params or {}
 
         self.errors: list[str] = []
         self.latest_settings: ImagerSettings | None = None
         self.latest_exposure: ImagerExposure | None = None
-        # self.default_settings: ImagerSettings = ImagerSettings(seconds=0, base_folder='c:/temp')
         self._image_array: np.ndarray | None = None
         self.image_read_event: Event = Event()
         self.image_saved_event: Event = Event()
-        self.ccd_temp_at_mid_exposure: float | None = None
 
         if not self.is_on():
             self.power_on()
@@ -92,6 +79,9 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             if self.connected:  # did we succeed to connect?
                 self.timer = RepeatTimer(interval=1, function=self.on_timer)
                 self.timer.start()
+
+        self.image_was_read: bool = False
+        self.image_was_saved = False
 
         self._initialized = True
 
@@ -132,8 +122,11 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                     )
                 elif exposure_status == ASI.ExposureStatus.ASI_EXP_SUCCESS:
                     buffer_size = self.width * self.height
-                    if self.output_format == ASI.OutputFormat.RAW16:
+                    if self.latest_settings.format == "raw16":
                         buffer_size *= 2
+                        dtype = np.uint16
+                    else:
+                        dtype = np.uint8
 
                     self.start_activity(ImagerActivities.ReadingOut)
                     buffer = asi.getDataAfterExp(self.cam_id, bufferSize=buffer_size)
@@ -144,11 +137,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                             self.latest_settings.roi.height,
                             self.latest_settings.roi.width,
                         ),
-                        dtype=(
-                            np.uint16
-                            if self.output_format == ASI.OutputFormat.RAW8
-                            else np.uint8
-                        ),
+                        dtype=dtype,
                     )
                     self.end_activity(ImagerActivities.ReadingOut)
                     self.image_was_read = True
@@ -267,21 +256,6 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                 self._connected = True
                 self.serial = asi.getSerialNumber(self.cam_id)
                 self.pixel_size = info.PixelSize
-                if "output_format" in self.imager_params:
-                    if int(self.imager_params["output_format"]) not in [
-                        ASI.OutputFormat.RAW8,
-                        ASI.OutputFormat.RAW16,
-                    ]:
-                        self.log_and_append(
-                            f"invalid {self.imager_params['output_format']=}, must be one of: "
-                            + f"{[ASI.OutputFormat.RAW8, ASI.OutputFormat.RAW16]}"
-                        )
-                    else:
-                        self.output_format: ASI.OutputFormat = self.imager_params[
-                            "output_format"
-                        ]
-                else:
-                    self.output_format = ASI.OutputFormat.RAW16
 
                 # imager_conf = Config().get_unit().imager if not self.unit else self.unit.unit_conf.imager
                 # The imager configuration in MongoDB is a bit muddy :-()
@@ -298,8 +272,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                     f"ZWO ASI ID={self.cam_id}, SN='{self.serial}', "
                     + f"model='{self.model}', "
                     + f"size={self.width}x{self.height}, "
-                    + f"depth={self.depth} bits, pixel-size={self.pixel_size} micron, "
-                    + f"output_format={self.output_format.name}"
+                    + f"depth={self.depth} bits, pixel-size={self.pixel_size} micron"
                 )
             except Exception as ex:
                 self.log_and_append(f"could not connect to {self.cam_id=}, {ex=}")
@@ -314,15 +287,16 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def default_settings(self) -> ImagerSettings:
         """
         Produces default ImagerSettings for the "zwo" imager.
-
-        TODO: Should somehow use values from the Config()
         """
+
+        imager_conf = Config().get_unit().imager
         return ImagerSettings(
             seconds=0,
             roi=ImagerRoi(x=0, y=0, width=self.width, height=self.height),
             binning=ImagerBinning(x=1, y=1),
-            gain=85,
             base_folder="c:/temp/zwo-images",
+            format=imager_conf.format,
+            gain=imager_conf.gain,
         )
 
     def abort(self):
@@ -338,11 +312,15 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         return ImagerStatus(
             **self.power_status().model_dump(),
             **self.component_status().model_dump(),
+            type=ImagerTypes.Zwo,
+            model=self.model,
+            camera_x_size=self.width,
+            camera_y_size=self.height,
             set_point=target_temp,
             temperature=self.temperature,
             cooler=self.cooler_on,
             cooler_power=self.cooler_power,
-            latest_exposure=self.latest_exposure,
+            latest_settings=self.latest_settings,
             date=time_stamp(),
         )
 
@@ -388,7 +366,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             width = self.width
             height = self.height
         try:
-            format: ASI.OutputFormat = self.output_format
+            format: ASI.OutputFormat = ASI.OutputFormat.from_string(settings.format)
             if width % 8 != 0:
                 logger.warning(
                     f"aligning roi width to 8 (subtracting {width % 8} bits)"
@@ -417,6 +395,9 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
 
     def start_exposure(self, settings: ImagerSettings):
         self.errors = []
+        self.image_was_read = False
+        self.image_was_saved = False
+
         self.set_control(
             ASI.Control.Exposure, int(settings.seconds * 1000000)
         )  # micro seconds
@@ -470,8 +451,9 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         asi.stopExposure(self.cam_id)
 
     def wait_for_image_ready(self):
-        self.image_read_event.wait()
-        self.image_read_event.clear()
+        if not self.image_was_read:
+            self.image_read_event.wait()
+            self.image_read_event.clear()
 
     @property
     def cooler_on(self) -> bool:
@@ -515,14 +497,14 @@ if __name__ == "__main__":
         imager = Imager(
             unit=None,
             imager_type="zwo",
-            params={"output_format": ASI.OutputFormat.RAW16},
         )
         imager.startup()
         series = imager.start_exposure_series(purpose="testing zwo imager")
         imager.start_exposure(
             ImagerSettings.model_validate({"seconds": 5}, context={"imager": imager})
         )
-        print(json.dumps(imager.status().model_dump(), indent=2))
+        d = imager.status().model_dump()
+        print(json.dumps(d, indent=2))
         if imager.can_send_image_ready_event:
             imager.wait_for_image_ready()
             logger.info("got image ready event")
@@ -544,4 +526,12 @@ if __name__ == "__main__":
         print(f"gain 170: {percent:2.0f}%")
         print(f"gain {percent:2.0f}%: {ASI.gain_percent_to_absolute(percent)}")
 
-    test_gain_percent()
+    def test_gain_absolute(percent):
+        print(f"gain {percent:2.0f}%: {ASI.gain_percent_to_absolute(percent)}")
+
+        percent = ASI.gain_absolute_to_percent(170)
+        print("")
+        print(f"gain 170: {percent:2.0f}%")
+        print(f"gain {percent:2.0f}%: {ASI.gain_percent_to_absolute(percent)}")
+
+    test_imager()
