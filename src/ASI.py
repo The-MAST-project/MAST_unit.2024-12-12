@@ -2,6 +2,7 @@ import ctypes
 import logging
 from ctypes import c_int
 from enum import IntEnum, auto
+from typing import Literal, get_args
 
 logger = logging.Logger("ASI")
 
@@ -165,6 +166,21 @@ class OutputFormat(IntEnum):
     RAW16 = 2
     Y8 = 3
 
+    @staticmethod
+    def from_string(s: str):
+        s = s.lower()
+        if s in get_args(ValidOutputFormats):
+            if s == "raw8":
+                return OutputFormat.RAW8
+            elif s == "raw16":
+                return OutputFormat.RAW16
+            else:
+                raise ValueError(f"OutputFormat.from_string: '{s}' not in {get_args(ValidOutputFormats)}")
+        else:
+            raise ValueError(f"OutputFormat.from_string: '{s}' not in {get_args(ValidOutputFormats)}")
+
+ValidOutputFormats = Literal["raw8", "raw16"]
+
 
 class ExposureStatus(IntEnum):
     """
@@ -190,7 +206,7 @@ ASI_MAX_CAMERA_NAME = 64
 
 
 # ASI_CAMERA_INFO structure
-class ASI_CAMERA_INFO(ctypes.Structure):
+class ASI_CAMERA_INFO(ctypes.Structure):  # noqa: N801
     _fields_ = [
         ("Name", ctypes.c_char * ASI_MAX_CAMERA_NAME),
         ("CameraID", c_int),
@@ -292,8 +308,6 @@ def make_pythonian_classes():
 def list_cameras():
     import pyzwoasi as asi
 
-    sdk_version = asi.getSDKVersion()
-
     n_cameras = asi.getNumOfConnectedCameras()
     print()
     print(f"found {n_cameras} ASI camera(s), SDK='{asi.getSDKVersion()}'")
@@ -303,7 +317,8 @@ def list_cameras():
 
     #     supported = asi.cameraCheck(info.VendorID, info.ProductID)
     #     print(
-    #         f"{id=:2}: model={info.Name.decode()}, width={info.MaxWidth}, height={info.MaxHeight}, depth={info.BitDepth}, {supported=}"
+    #         f"{id=:2}: model={info.Name.decode()}, width={info.MaxWidth}, "
+    #           + f"height={info.MaxHeight}, depth={info.BitDepth}, {supported=}"
     #     )
 
 
