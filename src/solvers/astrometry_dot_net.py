@@ -72,6 +72,7 @@ def _parse_solver_output(lines: list[str]) -> SolvingResult:  # noqa: C901
     ret.solution = SolvingSolution()
     ret.native_result = AstrometryDotNetSolverResult()
     pattern_float = r"[-+]?\d+(\.\d+)?"
+    pattern_int = r"\b\d+\b"
 
     try:
         for line in lines:
