@@ -21,7 +21,6 @@ from common.parsers import (sexagesimal_degrees_to_decimal,
                             sexagesimal_hours_to_decimal)
 from common.paths import PathMaker
 from common.rois import UnitRoi
-from common.utils import function_name
 from PlaneWave.ps3cli_client import PS3CLIClient
 from plotting import plot_autofocus_analysis
 from stage import StagePresetPosition
@@ -212,7 +211,7 @@ class Autofocuser:
         ticks_per_step      - Focuser steps between exposures
         number_of_images    - How many images to take
         """
-        op = function_name()
+        op = "do_start_autofocus"
         self.unit.errors = []
         self.latest_result = None
 
