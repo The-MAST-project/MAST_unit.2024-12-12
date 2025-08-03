@@ -528,7 +528,6 @@ class Stage(Component, SwitchedOutlet):
         self.ticks_at_start = self.position
         self.target = position
         self.motion_start_time = datetime.datetime.now()
-        logger.info(f"{op}: move: from {self.position=} to {self.target=}")
         self.start_activity(StageActivities.Moving, details=f"from {self.position} to {self.target}")
 
         return CanonicalResponse_Ok
@@ -558,7 +557,7 @@ class Stage(Component, SwitchedOutlet):
         amount *= 1 if direction == StageDirection.Up else -1
         try:
             self.target = current_position + amount
-            self.start_activity(StageActivities.Moving)
+            self.start_activity(StageActivities.Moving, details=f"from {self.position} to {self.target}")
             with self.stage_lock:
                 assert ximclib
                 response = ximclib.command_movr(self.device, amount, 0)
