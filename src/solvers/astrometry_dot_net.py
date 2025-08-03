@@ -125,6 +125,15 @@ def _parse_solver_output(lines: list[str]) -> SolvingResult:  # noqa: C901
                     # logger.info(f"{ret.solution.pixel_scale=}")
                 else:
                     logger.error("bad match for ret.solution.pixel_scale")
+
+            elif line.startswith("simplexy:"):
+                # simplexy: found 3 sources.
+                match = re.match(
+                    r"^.*found" + pattern_int + r"sources", line
+                )
+                if match:
+                    ret.solution.matched_stars = int(match.group(1))
+
     except Exception as e:
         logger.error(f"{op}: exception: {e}")
 
@@ -224,6 +233,9 @@ class AstrometryDotNet(SolverInterface):
 
         if completed_process.returncode == 0:
             ret = _parse_solver_output(stdout_lines)
+            if ret.solution is not None:
+                boxed_info(logger=logger, lines=["future image quality check",
+                                                 f"solver found {ret.solution.matched_stars} stars"], center=True)
         else:
             ret = SolvingResult(
                 succeeded=False,
