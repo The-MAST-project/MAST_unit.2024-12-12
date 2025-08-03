@@ -330,6 +330,7 @@ class Autofocuser:
             self.unit.start_activity(UnitActivities.AutofocusAnalysis)
             ps3_client = PS3CLIClient()
             ps3_client.connect("127.0.0.1", 8998)
+            files = [Path(file).as_posix() for file in files]
             logger.info(f"calling ps3_client.begin_analyze_focus({files})")
             ps3_client.begin_analyze_focus(files)
 
