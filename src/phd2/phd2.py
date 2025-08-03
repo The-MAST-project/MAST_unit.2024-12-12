@@ -10,7 +10,6 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import IntFlag, auto
 from pathlib import Path
-from tkinter import NO
 from typing import TYPE_CHECKING, Literal
 
 from astropy.coordinates import Angle
@@ -22,16 +21,11 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
-from common.interfaces.imager import (
-    ImagerBinning,
-    ImagerExposureSeries,
-    ImagerInterface,
-    ImagerRoi,
-    ImagerSettings,
-)
+from common.interfaces.imager import ImagerBinning, ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_info, function_name
+from imagers import Imager
 
 if TYPE_CHECKING:
     from unit import Unit  # type: ignore[name-defined]
@@ -270,7 +264,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
     def __init__(
         self,
-        unit=None,
+        parent_imager: Imager,
         hostname="localhost",
         instance=1,
         _from_imager: bool = False,
@@ -280,14 +274,13 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
         GuiderInterface.__init__(self)
         ImagerInterface.__init__(self)
-        if not _from_imager:
-            SwitchedOutlet.group(
-                domain=OutletDomain.UnitOutlets,
-                group_name="Camera",
-                outlet_names=["Camera", "CameraUSB"],
-            ).populate(self)
+        SwitchedOutlet.group(
+            domain=OutletDomain.UnitOutlets,
+            group_name="Camera",
+            outlet_names=["Camera", "CameraUSB"],
+        ).transfer_attributes(self)
 
-        self.unit: Unit | None = unit  # type: ignore
+        self.parent_imager: Imager = parent_imager
         self.hostname = hostname
         self.instance = instance
         self.conn = None
@@ -306,9 +299,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.dec_accumulator = PHD2Accumulator()
         self.stats = PHD2GuideStats()
         self.settle = None
-        self.validation_interval = Config().get_unit().phd2.validation_interval
 
-        default_settling = Config().get_unit().phd2.settle
+        self.conf = Config().get_unit().phd2
+        self.validation_interval = self.conf.validation_interval
+
+        default_settling = self.conf.settle
         self.settling_settings: SettleModel = SettleModel(
             pixels=default_settling.pixels,
             time=default_settling.time,
@@ -316,29 +311,29 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         )
         self.errors = []
 
+        self.image_was_saved: bool = False
         self.image_saved_event: threading.Event = threading.Event()
 
         if self.validation_interval != 0:
-            logger.info(f"Guiding validation ({self.validation_interval=} seconds)")
+            logger.info(f"guiding validation every {self.validation_interval} seconds")
             self.guiding_verification_timer: RepeatTimer = RepeatTimer(
                 interval=self.validation_interval, function=self.validate_guiding
             )
         else:
-            logger.info(f"No guiding validation ({self.validation_interval=})")
+            logger.info(f"no guiding validation ({self.validation_interval=})")
 
-        self.conf = Config().get_unit().phd2
 
         self.activities = PHD2Activities.Idle
 
-        # self.watched_process = WatchedProcess(
-        #     command='"C:/Program Files (x86)/PHDGuiding2/phd2.exe"',
-        #     logger=logger,
-        #     shell=True,
-        # )
-        # self.watched_process.start()
-        # secs = 3
-        # logger.info(f"sleeping {secs} seconds to allow PHD2 to start")
-        # time.sleep(secs)
+        self.watched_process = WatchedProcess(
+            command='"C:/Program Files (x86)/PHDGuiding2/phd2.exe"',
+            logger=logger,
+            shell=True,
+        )
+        self.watched_process.start()
+        secs = 3
+        logger.info(f"sleeping {secs} seconds to allow PHD2 to start")
+        time.sleep(secs)
 
         self._needs_to_resume_guiding = False
 
@@ -384,15 +379,15 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             logger.warning(f"{function_name()}: not verifying guiding: not guiding")
             return
 
-        assert self.unit is not None
-        assert self.unit.acquirer.latest_acquisition is not None
+        assert self.parent_imager is not None and self.parent_imager.unit is not None
+        assert self.parent_imager.unit.acquirer.latest_acquisition is not None
 
         self.start_activity(PHD2Activities.Validating)
         # self.call("stop_capture")  # stop guiding
         self.stop_guiding()
-        guiding_settings = self.unit.guider.make_guiding_settings(
+        guiding_settings = self.parent_imager.unit.guider.make_guiding_settings(
             base_folder=str(
-                Path(self.unit.acquirer.latest_acquisition.folder)
+                Path(self.parent_imager.unit.acquirer.latest_acquisition.folder)
                 / "guiding"
                 / "validation"
             )
@@ -432,21 +427,22 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         logger.info(f"{function_name()}: resuming guiding ...")
         self.start_guiding()
 
-        assert self.unit.acquirer.latest_acquisition is not None
+        assert(self.parent_imager.unit is not None)
+        assert self.parent_imager.unit.acquirer.latest_acquisition is not None
         assert guiding_settings.image_path is not None
         target: Coord = Coord(
-            Angle(self.unit.acquirer.latest_acquisition.target_ra, unit="hours"),
-            Angle(self.unit.acquirer.latest_acquisition.target_dec, unit="degrees"),
+            Angle(self.parent_imager.unit.acquirer.latest_acquisition.target_ra, unit="hours"),
+            Angle(self.parent_imager.unit.acquirer.latest_acquisition.target_dec, unit="degrees"),
         )
         tolerance = Config().get_unit().guiding.tolerance
 
         self.start_activity(PHD2Activities.SolvingForValidation)
         with ThreadPoolExecutor() as executor:
             logger.info(f"{function_name()}: starting solving for {target=}")
-            self.unit.start_activity(UnitActivities.Solving)
-            future = executor.submit(self.unit.solver.solve, guiding_settings, target)
+            self.parent_imager.start_activity(UnitActivities.Solving)
+            future = executor.submit(self.parent_imager.unit.solver.solve, guiding_settings, target)
             solving_result = future.result()
-            self.unit.end_activity(UnitActivities.Solving)
+            self.parent_imager.end_activity(UnitActivities.Solving)
 
         logger.info(f"{function_name()}: solving result: {solving_result=}")
         if solving_result and solving_result.succeeded and solving_result.solution:
@@ -605,9 +601,12 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             with self.lock:
                 self.single_frame = result
             logger.info(f"event: SingleFrameComplete, {result=}")
+            self.image_was_saved = True
             self.image_saved_event.set()
-            self.end_activity(ImagerActivities.Exposing)
-            self.end_activity(ImagerActivities.Saving)
+            if self.parent_imager is not None:
+                self.parent_imager.end_activity(ImagerActivities.Saving)
+                self.parent_imager.end_activity(ImagerActivities.Exposing)
+
         elif e == "ConfigurationChange":
             # logger.debug(f"event: {e}")
             pass
@@ -1012,9 +1011,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.watched_process.terminate()
 
     def start_guiding(self) -> CanonicalResponse:
-        assert self.unit is not None and self.unit.imager is not None
-        if self.unit.imager.connected:
-            self.unit.imager.disconnect()
+        assert self.parent_imager is not None
+        if self.parent_imager.connected:
+            self.parent_imager.disconnect()
 
         if not self.connected:
             self.start_activity(PHD2Activities.EquipmentHandover)
@@ -1035,8 +1034,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         logger.info("stopping guiding")
         self.start_activity(PHD2Activities.EquipmentTakeover)
         self.disconnect_equipment()  # stops the exposure as well
-        assert self.unit is not None and self.unit.imager is not None
-        self.unit.imager.connect()
+        assert self.parent_imager is not None
+        self.parent_imager.connect()
         self.end_activity(PHD2Activities.EquipmentTakeover)
 
         return CanonicalResponse_Ok
@@ -1079,7 +1078,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def connected(self, value: bool):
         if value:
             self.connect()
+            self.connect_equipment()
         else:
+            self.disconnect_equipment()
             self.disconnect()
 
     def log_and_append_error(self, err: str):
@@ -1115,12 +1116,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             raise PHD2ConnectorError("PHD2 save_image settings MUST have an image_path")
 
         logger.info(f"starting {settings.seconds} exposure")
-        self.start_activity(
-            ImagerActivities.Exposing, details=f"{settings.seconds} seconds"
-        )
-        self.start_activity(
-            ImagerActivities.Saving, details=f"{Path(settings.image_path).as_posix()}"
-        )
+        self.image_was_saved = False
+        if self.parent_imager is not None:
+            self.parent_imager.start_activity(
+                ImagerActivities.Exposing, details=f"{settings.seconds} seconds"
+            )
+            self.parent_imager.start_activity(
+                ImagerActivities.Saving, details=f"{Path(settings.image_path).as_posix()}"
+            )
 
         if self._is_guiding(self.app_state):
             # while guiding we use save_image()
@@ -1162,23 +1165,25 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def stop_exposure(self) -> CanonicalResponse:
         logger.info("stopping exposure")
         self.call("stop_capture")
-        self.end_activity(ImagerActivities.Exposing)
+        if self.parent_imager is not None:
+            self.parent_imager.end_activity(ImagerActivities.Exposing)
         return CanonicalResponse_Ok
 
     def abort_exposure(self) -> CanonicalResponse:
         logger.info("aborting exposure")
         self.call("stop_capture")
-        self.end_activity(ImagerActivities.Exposing)
+        if self.parent_imager is not None:
+            self.parent_imager.end_activity(ImagerActivities.Exposing)
         return CanonicalResponse_Ok
 
     def wait_for_image_ready(self):
         return
 
     def wait_for_image_saved(self):
-        op = function_name()
-        self.image_saved_event.wait()
-        # logger.info(f"{op}: got image_saved_event")
-        self.image_saved_event.clear()
+        if not self.image_was_saved:
+            self.image_saved_event.wait()
+            # logger.info(f"{op}: got image_saved_event")
+            self.image_saved_event.clear()
 
     @property
     def temperature(self) -> float | None:
@@ -1235,14 +1240,17 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     @property
     def default_settings(self) -> ImagerSettings:
         self.check_connected()
+
+        imager_conf = Config().get_unit().imager
         return ImagerSettings(
             seconds=5,
             base_folder="c:/temp/phd2_images",
             binning=ImagerBinning(x=1, y=1),
-            gain=int(ASI.gain_absolute_to_percent(170)),
+            gain=int(ASI.gain_absolute_to_percent(imager_conf.gain)),
             roi=ImagerRoi(
                 x=0, y=0, width=self.camera_x_size, height=self.camera_y_size
             ),
+            format=imager_conf.format,
         )
 
     @property

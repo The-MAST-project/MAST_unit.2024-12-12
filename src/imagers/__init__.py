@@ -11,8 +11,7 @@ if TYPE_CHECKING:
 
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.interfaces.imager import (ImagerExposureSeries, ImagerInterface,
-                                      ImagerSettings, ImagerTypes)
+from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerSettings, ImagerTypes
 from common.mast_logging import init_log
 
 logger = logging.Logger("mast." + __name__)
@@ -95,17 +94,17 @@ class Imager(ImagerInterface, SwitchedOutlet):
             from imagers.ascom import ASCOMImager
 
             self._prog_id = self.conf.imager_type[6:]
-            self._backend = ASCOMImager(unit=unit, prog_id=self._prog_id, _from_imager=True)
+            self._backend = ASCOMImager(parent_imager=self, prog_id=self._prog_id, _from_imager=True)
             self.imager_type = ImagerTypes.Ascom
         elif imager_type == "phd2":
-            from phd2.phd2 import PHD2Connector
+            from phd2 import phd2
 
-            self._backend = PHD2Connector(unit=unit, _from_imager=True)
+            self._backend = phd2.PHD2Connector(parent_imager=self, _from_imager=True)
             self.imager_type = ImagerTypes.Phd2
         elif imager_type == "zwo":
             from zwo import ZWOImager
 
-            self._backend = ZWOImager(unit=unit, imager_params=params, _from_imager=True)
+            self._backend = ZWOImager(parent_imager=self, imager_params=params, _from_imager=True)
             self.imager_type = ImagerTypes.Zwo
         else:
             raise ValueError(f"Unknown imager type: {self.conf.imager_type}")
@@ -206,7 +205,11 @@ class Imager(ImagerInterface, SwitchedOutlet):
         Returns the imager's current status.
         :return: ImagerStatus object containing the status information
         """
-        return self._backend.status()
+        return {
+            "activities": self.activities,
+            "activities_verbal": self.activities.__repr__(),
+            "backend": self._backend.status().model_dump(),
+        }
 
     def connect(self) -> CanonicalResponse | None:  # obsoleted by connected property
         self._backend.connected = True

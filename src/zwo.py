@@ -42,7 +42,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
 
     def __init__(
         self,
-        unit,
+        parent_imager: Imager,
         imager_params: dict[str, Any] | None = None,
         _from_imager: bool = False,
     ):
@@ -53,7 +53,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             group_name="Camera",
             outlet_names=["Camera", "CameraUSB"],
         ).transfer_attributes(self)
-        self.unit = unit
+        self.parent_imager = parent_imager
         self.imager_params = imager_params or {}
 
         self.errors: list[str] = []
@@ -100,7 +100,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def on_timer(self):
         op = function_name()
 
-        if self.is_active(ImagerActivities.Exposing):
+        if self.parent_imager.is_active(ImagerActivities.Exposing):
             assert self.latest_exposure is not None
             assert self.latest_settings is not None
             if (
@@ -116,7 +116,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                 # logger.info(f"{op}: {exposure_status=} ({ASIExposureStatus(exposure_status).name})")
                 if exposure_status == ASI.ExposureStatus.ASI_EXP_FAILED:
                     asi.stopExposure(self.cam_id)
-                    self.end_activity(ImagerActivities.Exposing)
+                    self.parent_imager.end_activity(ImagerActivities.Exposing)
                     logger.error(
                         f"exposure failed with exposure_status={ASI.ExposureStatus(exposure_status).name}"
                     )
@@ -128,7 +128,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                     else:
                         dtype = np.uint8
 
-                    self.start_activity(ImagerActivities.ReadingOut)
+                    self.parent_imager.start_activity(ImagerActivities.ReadingOut)
                     buffer = asi.getDataAfterExp(self.cam_id, bufferSize=buffer_size)
                     assert self.latest_settings and self.latest_settings.roi
                     self.image_array = np.ndarray(
@@ -139,7 +139,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                         ),
                         dtype=dtype,
                     )
-                    self.end_activity(ImagerActivities.ReadingOut)
+                    self.parent_imager.end_activity(ImagerActivities.ReadingOut)
                     self.image_was_read = True
                     self.image_read_event.set()
 
@@ -148,7 +148,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                             name="zwo-image-saver", target=self.save_in_thread
                         ).start()
                     else:
-                        self.end_activity(ImagerActivities.Exposing)
+                        self.parent_imager.end_activity(ImagerActivities.Exposing)
 
             except Exception as ex:
                 logger.error(f"{op}: could not get exposure status, {ex=}")
@@ -257,17 +257,6 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                 self.serial = asi.getSerialNumber(self.cam_id)
                 self.pixel_size = info.PixelSize
 
-                # imager_conf = Config().get_unit().imager if not self.unit else self.unit.unit_conf.imager
-                # The imager configuration in MongoDB is a bit muddy :-()
-
-                # self.default_settings = ImagerSettings(
-                #     seconds=0,
-                #     roi=ImagerRoi(x=0, y=0, width=self.width, height=self.height),
-                #     binning=ImagerBinning(x=1, y=1),
-                #     gain=85,
-                #     base_folder='c:/temp/zwo-images'
-                # )
-
                 logger.info(
                     f"ZWO ASI ID={self.cam_id}, SN='{self.serial}', "
                     + f"model='{self.model}', "
@@ -300,7 +289,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         )
 
     def abort(self):
-        if self.is_active(ImagerActivities.Exposing):
+        if self.parent_imager.is_active(ImagerActivities.Exposing):
             asi.stopExposure(self.cam_id)
 
     def status(self) -> ImagerStatus:
@@ -424,7 +413,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                 seconds=settings.seconds,
                 date=datetime.datetime.now(datetime.UTC).isoformat(),
             )
-            self.start_activity(ImagerActivities.Exposing)
+            self.parent_imager.start_activity(ImagerActivities.Exposing)
             asi.startExposure(self.cam_id, isDark=False)
             logger.info(f"started a {settings.seconds} seconds exposure")
         except Exception as ex:
@@ -494,16 +483,13 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
 if __name__ == "__main__":
 
     def test_imager():
-        imager = Imager(
-            unit=None,
-            imager_type="zwo",
-        )
+        imager = Imager(imager_type="zwo")
         imager.startup()
         series = imager.start_exposure_series(purpose="testing zwo imager")
         imager.start_exposure(
             ImagerSettings.model_validate({"seconds": 5}, context={"imager": imager})
         )
-        d = imager.status().model_dump()
+        d = imager.status()
         print(json.dumps(d, indent=2))
         if imager.can_send_image_ready_event:
             imager.wait_for_image_ready()

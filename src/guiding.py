@@ -55,7 +55,7 @@ class Guider(GuiderInterface):
 
         Activities.__init__(self)
         if guider_type == "phd2":
-            self._backend = PHD2Connector()
+            self._backend = PHD2Connector(parent_imager=self.unit.imager)
             self.guider_type = GuiderTypes.Phd2
         elif guider_type == "solving":
             self._backend = SolvingGuider(self.unit)

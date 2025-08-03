@@ -24,7 +24,8 @@ from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
 from common.interfaces.imager import (ImagerBinning, ImagerExposureSeries,
                                       ImagerInterface, ImagerRoi,
-                                      ImagerSettings, ImagerStatus)
+                                      ImagerSettings, ImagerStatus,
+                                      ImagerTypes)
 from common.mast_logging import init_log
 from common.paths import PathMaker
 from common.utils import RepeatTimer, function_name, time_stamp
@@ -95,7 +96,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     def ascom(self) -> win32com.client.Dispatch:  # type: ignore
         return self._ascom
 
-    def __init__(self, unit=None, prog_id: str | None = None, _from_imager: bool = False):
+    def __init__(self, parent_imager: Imager, prog_id: str | None = None, _from_imager: bool = False):
 
         if self._initialized:
             return
@@ -107,7 +108,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             group_name="Camera",
             outlet_names=["Camera", "CameraUSB"]).transfer_attributes(self)
 
-        self.unit = unit
+        self.parent_imager = parent_imager
         self.prog_id = prog_id
 
         self.defaults = {
@@ -463,7 +464,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             return CanonicalResponse(errors=self.errors)
 
         self.image_was_saved = False
-        if self.is_active(ImagerActivities.Exposing):
+        if self.parent_imager.is_active(ImagerActivities.Exposing):
             logger.info(f"{op}: already exposing")
             return CanonicalResponse(errors=["already exposing"])
 
@@ -491,7 +492,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         response = ascom_run(self, f"StartExposure({settings.seconds}, True)")
         if response.value is None:
-            self.start_activity(ImagerActivities.Exposing)
+            self.parent_imager.start_activity(ImagerActivities.Exposing)
             self.expected_mid_exposure = datetime.datetime.now() + datetime.timedelta(
                 seconds=settings.seconds / 2
             )
@@ -505,14 +506,14 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 "UT start of exposure",
             )
 
-            if settings.save:
+            if settings.save and not self.image_was_saved:
                 self.image_saved_event.wait()
                 self.image_saved_event.clear()
-            else:
+            elif not self.image_was_read:
                 self.image_ready_event.wait()
                 self.image_ready_event.clear()
 
-            self.end_activity(ImagerActivities.Exposing)
+            self.parent_imager.end_activity(ImagerActivities.Exposing)
         else:
             if response.errors:
                 self.errors.extend(response.errors)
@@ -531,7 +532,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if not self.connected:
             self.errors.append("not connected")
             return
-        if not self.is_active(ImagerActivities.Exposing):
+        if not self.parent_imager.is_active(ImagerActivities.Exposing):
             self.errors.append("not exposing")
 
         response = ascom_run(self, "CanAbortExposure")
@@ -539,7 +540,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             response = ascom_run(self, "AbortExposure()")
             if response.failed:
                 self.errors.append(f"failed to abort (failure='{response.failure}')")
-        self.end_activity(ImagerActivities.Exposing)
+        self.parent_imager.end_activity(ImagerActivities.Exposing)
         return (
             CanonicalResponse(errors=self.errors)
             if self.errors
@@ -555,7 +556,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             self.errors.append("not connected")
             return CanonicalResponse(errors=["not connected"])
 
-        if not self.is_active(ImagerActivities.Exposing):
+        if not self.parent_imager.is_active(ImagerActivities.Exposing):
             self.errors.append("not exposing")
             return CanonicalResponse(errors=["not connected"])
 
@@ -564,7 +565,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             self.errors.append(
                 f"could not StopExposure(), (failure='{response.failure}')"
             )
-        self.end_activity(ImagerActivities.Exposing)
+        self.parent_imager.end_activity(ImagerActivities.Exposing)
 
         return (
             CanonicalResponse(errors=self.errors)
@@ -577,6 +578,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         Gets the **ASCOM** imager status
         """
 
+        ascom_status = self.ascom_status()
         return ImagerStatus(
             **self.power_status().model_dump(),
             **self.ascom_status().model_dump(),
@@ -587,6 +589,10 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             cooler_power=self._ascom.CoolerPower,
             latest_settings=self.latest_settings,
             date=time_stamp(),
+            camera_x_size=self.camera_x_size,
+            camera_y_size=self.camera_y_size,
+            model=ascom_status.ascom.name,
+            type=ImagerTypes.Ascom,
         )
 
     @property
@@ -640,7 +646,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         response = ascom_run(self, "CanSetCCDTemperature")
         if response.succeeded and response.value:
-            self.start_activity(ImagerActivities.CoolingDown)
+            self.parent_imager.start_activity(ImagerActivities.CoolingDown)
             response = ascom_run(self, "CanSetCCDTemperature")
             if response.succeeded:
                 logger.info(
@@ -695,7 +701,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         response = ascom_run(self, "CanSetCCDTemperature")
         if response.succeeded and response.value:
-            self.start_activity(ImagerActivities.WarmingUp)
+            self.parent_imager.start_activity(ImagerActivities.WarmingUp)
             current_temp = self.temperature
             if current_temp is None:
                 logger.error(
@@ -780,10 +786,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 self.expected_mid_exposure = None
 
         # logger.info(f"is_active(CameraActivities.Exposing)={self.is_active(CameraActivities.Exposing)}, {current_state=}")
-        if (
-            self.is_active(ImagerActivities.Exposing)
-            and current_state == AscomCameraState.Idle
-        ) and (
+        if self.parent_imager.is_active(ImagerActivities.Exposing) and current_state == AscomCameraState.Idle and (
             not self.image_lock.locked()
         ):  # it could be already locked by a previous occurrence of onTimer()
             with self.image_lock:
@@ -800,16 +803,15 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 #   - We save the image (CameraActivities.Saving)
                 #   - We inform others that the image is available (in memory) by setting the image_saved_event
                 #
-                if self.image is None and not self.is_active(
-                    ImagerActivities.ReadingOut
-                ):
+                if not self.parent_imager.is_active(ImagerActivities.ReadingOut):
                     #
                     # The timer may hit more than once while the image is being read.
                     #  self.image becomes not None only after ALL the data was downloaded from the camera
                     #
                     response = ascom_run(self, "ImageReady")
                     if response.succeeded and response.value:
-                        self.start_activity(ImagerActivities.ReadingOut)
+                        self.parent_imager.start_activity(ImagerActivities.ReadingOut)
+
                         # download the image from the camera
                         response = ascom_run(self, "ImageArray")
                         assert(self.latest_settings is not None)
@@ -817,7 +819,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                         self.image = (
                             np.array(response.value, dtype=dtype) if response.succeeded else None
                         )
-                        self.end_activity(ImagerActivities.ReadingOut)
+                        self.parent_imager.end_activity(ImagerActivities.ReadingOut)
                         self.image_was_read = True
                         if (
                             self.latest_settings
@@ -991,7 +993,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
     def wait_for_image_ready(self):
         op = function_name()
-        if not self.is_active(ImagerActivities.Exposing):
+        if not self.parent_imager.is_active(ImagerActivities.Exposing):
             return
 
         if not self.image_was_read:
@@ -1014,14 +1016,14 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     def end_exposure_series(self, series: ImagerExposureSeries):
         pass
 
-def save_to_fits_file(imager):
+def save_to_fits_file(imager_backend):
     op = function_name()
 
-    settings = imager.latest_settings
+    settings = imager_backend.latest_settings
     assert(settings is not None and settings.roi is not None
            and settings.binning is not None and settings.image_path is not None)
 
-    imager.start_activity(ImagerActivities.Saving)
+    imager_backend.parent_imager.start_activity(ImagerActivities.Saving)
 
     header = fits.Header()
     header["SIMPLE"] = (True, "file conforms to FITS standard")
@@ -1043,25 +1045,25 @@ def save_to_fits_file(imager):
     header["YBINNING"] = (settings.binning.y, "vertical binning")
     header["EXPTIME"] = (settings.seconds, "exposure time in seconds")
     header["INSTRUME"] = (socket.gethostname(), "the instrument")
-    if imager.ccd_temp_at_mid_exposure:
+    if imager_backend.ccd_temp_at_mid_exposure:
         header["CCDTEMP"] = (
-            imager.ccd_temp_at_mid_exposure,
+            imager_backend.ccd_temp_at_mid_exposure,
             "ccd temp. at mid exposure",
         )
-        imager.ccd_temp_at_mid_exposure = None
+        imager_backend.ccd_temp_at_mid_exposure = None
 
-    if imager.unit:
-        header["FOCUSPOS"] = imager.unit.focuser.position
+    if imager_backend.parent_imager.unit:
+        header["FOCUSPOS"] = imager_backend.parent_imager.unit.focuser.position
         header.comments["FOCUSPOS"] = "focuser position"
-        header["STAGEPOS"] = imager.unit.stage.position
+        header["STAGEPOS"] = imager_backend.unit.stage.position
         header.comments["STAGEPOS"] = "FCU stage position"
 
     if settings.fits_cards:
         for k, v in settings.fits_cards.items():
             header[k] = v
 
-    assert(imager.image_array is not None)
-    hdu = fits.PrimaryHDU(data=imager.image_array, header=header)
+    assert(imager_backend.image_array is not None)
+    hdu = fits.PrimaryHDU(data=imager_backend.image_array, header=header)
     hdu.header.update(header)
     hdu_list = fits.HDUList([hdu])
     logger.info(f"{op}: saving image to {Path(settings.image_path).as_posix()} ...")
@@ -1070,7 +1072,7 @@ def save_to_fits_file(imager):
     except Exception as ex:
         logger.error(f"failed to save to '{settings.image_path}', {ex=}")
 
-    imager.end_activity(ImagerActivities.Saving)
+    imager_backend.parent_imager.end_activity(ImagerActivities.Saving)
 
 def set_ASICamera2_ASCOM_profile_image_type():  # noqa: N802
     """
@@ -1102,10 +1104,16 @@ if __name__ == "__main__":
     imager.start_exposure(
         ImagerSettings.model_validate({"seconds": 5}, context={"imager": imager})
     )
-    print(json.dumps(imager.status().model_dump(), indent=2))
+    print(json.dumps(imager.status(), indent=2))
     if imager.can_send_image_ready_event:
         imager.wait_for_image_ready()
         logger.info("got image ready event")
+
+    if imager.can_send_image_saved_event:
+        imager.wait_for_image_saved()
+        logger.info("got image saved event")
+    imager.end_exposure_series(series)
+    exit(0)
 
     if imager.can_send_image_saved_event:
         imager.wait_for_image_saved()
