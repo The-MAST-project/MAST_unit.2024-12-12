@@ -151,6 +151,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                         ),
                     )
                     self.end_activity(ImagerActivities.ReadingOut)
+                    self.image_was_read = True
                     self.image_read_event.set()
 
                     if self.latest_settings and self.latest_settings.save:
@@ -184,7 +185,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             self.image_read_event.wait()
 
     def wait_for_image_saved(self):
-        if self.image_saved_event is not None:
+        if not self.image_was_saved and self.image_saved_event is not None:
             self.image_saved_event.wait()
             self.image_saved_event.clear()
 
