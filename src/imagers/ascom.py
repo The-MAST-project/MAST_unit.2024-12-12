@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from enum import IntFlag
 from logging import Logger
+from pathlib import Path
 from threading import Lock, Thread
 
 # from typing import TYPE_CHECKING
@@ -14,15 +15,16 @@ import numpy as np
 import win32com.client
 from astropy.io import fits
 
+import ASI
 from common.activities import ImagerActivities
 from common.ascom import AscomDispatcher, AscomStatus, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.interfaces.imager import (ImagerBinning, ImagerExposure,
-                                      ImagerExposureSeries, ImagerInterface,
-                                      ImagerRoi, ImagerSettings, ImagerStatus)
+from common.interfaces.imager import (ImagerBinning, ImagerExposureSeries,
+                                      ImagerInterface, ImagerRoi,
+                                      ImagerSettings, ImagerStatus)
 from common.mast_logging import init_log
 from common.paths import PathMaker
 from common.utils import RepeatTimer, function_name, time_stamp
@@ -98,11 +100,12 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if self._initialized:
             return
 
-        if not _from_imager:
-            SwitchedOutlet.group(
-                domain=OutletDomain.UnitOutlets,
-                group_name="Camera",
-                outlet_names=["Camera", "CameraUSB"]).populate(self)
+        ImagerInterface.__init__(self)
+
+        SwitchedOutlet.group(
+            domain=OutletDomain.UnitOutlets,
+            group_name="Camera",
+            outlet_names=["Camera", "CameraUSB"]).transfer_attributes(self)
 
         self.unit = unit
         self.prog_id = prog_id
@@ -121,6 +124,9 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 "ASCOMImager: no ASCOM driver specified either as parameter or in the configuration"
             )
         self.prog_id = prog_id
+
+        if self.prog_id == "ASCOM.ASICamera2.Camera":
+            set_ASICamera2_ASCOM_profile_image_type()
 
         try:
             if not self.is_on():
@@ -154,7 +160,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         self.last_state: AscomCameraState = AscomCameraState.Idle
         self.errors: list[str] = []
         self.expected_mid_exposure: datetime.datetime | None = None
-        self.ccd_temp_at_mid_exposure: float | None = None
         self._binning: ImagerBinning = ImagerBinning(x=1, y=1)
         self._roi: ImagerRoi | None = None
         self._gain: int | None = None
@@ -173,6 +178,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         self.image_ready_event: threading.Event = threading.Event()
         self.image_saved_event: threading.Event = threading.Event()
+        self.image_was_saved: bool = False
 
         self.guiding_roi_width: int | None = None
         self.guiding_roi_height: int | None = None
@@ -186,6 +192,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             self.camera_x_size is not None and self.camera_y_size is not None
         ), "don't have camera_x_size or camera_y_size yet!"
 
+        imager_conf = Config().get_unit().imager
         return ImagerSettings(
             seconds=5,
             roi=ImagerRoi(
@@ -193,7 +200,9 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             ),
             binning=ImagerBinning(x=1, y=1),
             base_folder="c:/temp/ascom_images",
-            dont_bump_sequence=True
+            dont_bump_sequence=True,
+            format=imager_conf.format,
+            gain=imager_conf.gain,
         )
 
     @property
@@ -453,6 +462,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if len(self.errors) > 0:
             return CanonicalResponse(errors=self.errors)
 
+        self.image_was_saved = False
         if self.is_active(ImagerActivities.Exposing):
             logger.info(f"{op}: already exposing")
             return CanonicalResponse(errors=["already exposing"])
@@ -475,6 +485,9 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if len(self.errors) > 0:
             logger.error(f"{op}: {self.errors=}")
             return CanonicalResponse(errors=self.errors)
+
+
+        self.latest_settings = settings
 
         response = ascom_run(self, f"StartExposure({settings.seconds}, True)")
         if response.value is None:
@@ -561,7 +574,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
     def status(self) -> ImagerStatus:
         """
-        Gets the **MAST** imager status
+        Gets the **ASCOM** imager status
         """
 
         return ImagerStatus(
@@ -572,15 +585,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             temperature=self.temperature,
             cooler=self._ascom.CoolerOn,
             cooler_power=self._ascom.CoolerPower,
-            latest_exposure=(
-                ImagerExposure(
-                    file=self.latest_settings.base_folder,
-                    seconds=self.latest_settings.seconds,
-                    date=self.latest_settings.start.isoformat(),
-                )
-                if self.latest_settings
-                else None
-            ),
+            latest_settings=self.latest_settings,
             date=time_stamp(),
         )
 
@@ -807,8 +812,10 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                         self.start_activity(ImagerActivities.ReadingOut)
                         # download the image from the camera
                         response = ascom_run(self, "ImageArray")
+                        assert(self.latest_settings is not None)
+                        dtype = np.uint8 if self.latest_settings.format == "raw8" else np.uint16
                         self.image = (
-                            np.array(response.value) if response.succeeded else None
+                            np.array(response.value, dtype=dtype) if response.succeeded else None
                         )
                         self.end_activity(ImagerActivities.ReadingOut)
                         self.image_was_read = True
@@ -821,10 +828,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                             self.latest_settings
                             and self.latest_settings.fits_cards is not None
                         ):
-                            self.latest_settings.fits_cards["CCD-TEMP"] = (
-                                self.ccd_temp_at_mid_exposure,
-                                "CCD temperature at mid-exposure",
-                            )
                             self.latest_settings.fits_cards["UT-END"] = (
                                 datetime.datetime.now(datetime.UTC).isoformat(),
                                 "UT end of exposure",
@@ -959,7 +962,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         Thread(name="image-saver-thread", target=self.do_save_to_file).start()
 
     def do_save_to_file(self):
-        op = function_name()
+        op = "do_save_to_file"
 
         if self.image is None:
             logger.error(f"{op}: image is None")
@@ -969,59 +972,28 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             logger.error(f"{op}: no image_path in latest_settings")
             return
 
-        self.start_activity(ImagerActivities.Saving)
-
-        header = fits.Header()
-        header["SIMPLE"] = (True, "file conforms to FITS standard")
-        header["BITPIX"] = (32, "array data type")
-        header["NAXIS"] = (2, "number of array dimensions")
-        header["NAXIS1"] = (self.image.shape[0], "length of data axis 1")
-        header["NAXIS2"] = (self.image.shape[1], "length of data axis 2")
-        header["EXTEND"] = (True, "FITS data sets may contain extensions")
-        header["DATE-OBS"] = (
-            datetime.datetime.now(datetime.UTC).isoformat(),
-            "Observation datetime",
-        )
-        header["XBINNING"] = (self.binning.x, "horizontal binning")
-        header["YBINNING"] = (self.binning.y, "vertical binning")
-        header["EXPTIME"] = (self.latest_settings.seconds, "exposure time in seconds")
-        header["INSTRUME"] = (socket.gethostname(), "the instrument")
-        if self.ccd_temp_at_mid_exposure:
-            header["CCDTEMP"] = (
-                self.ccd_temp_at_mid_exposure,
-                "ccd temp. at mid exposure",
-            )
-            self.ccd_temp_at_mid_exposure = None
-
-        if self.unit:
-            header["FOCUSPOS"] = self.unit.focuser.position
-            header.comments["FOCUSPOS"] = "focuser position"
-            header["STAGEPOS"] = self.unit.stage.position
-            header.comments["STAGEPOS"] = "FIFA stage position"
-
-        if self.latest_settings and self.latest_settings.fits_cards:
-            for k, v in self.latest_settings.fits_cards.items():
-                header[k] = v
-
-        hdu = fits.PrimaryHDU(data=np.transpose(self.image), header=fits.Header(header))
-        hdu_list = fits.HDUList([hdu])
-        logger.info(f"{op}: saving image to {self.latest_settings.image_path} ...")
-        hdu_list.writeto(self.latest_settings.image_path, checksum=True, overwrite=True)
-
+        save_to_fits_file(self)
+        self.image_was_saved = True
         self.image_saved_event.set()
-        self.end_activity(ImagerActivities.Saving)
 
     def register_visualizer(self, name: str, visualizer: Callable):
         self.visualizers.append(Visualizer(name=name, func=visualizer))
 
     def wait_for_image_saved(self):
         op = function_name()
-        self.image_saved_event.wait()
-        logger.info(f"{op}: got image_saved_event")
-        self.image_saved_event.clear()
+        if not self.is_active(ImagerActivities.Exposing):
+            return
+
+        if not self.image_was_saved:
+            self.image_saved_event.wait()
+            logger.info(f"{op}: got image_saved_event")
+            self.image_saved_event.clear()
 
     def wait_for_image_ready(self):
         op = function_name()
+        if not self.is_active(ImagerActivities.Exposing):
+            return
+
         if not self.image_was_read:
             # logger.info(f"{op}: image was not read, waiting for image_ready_event ...")
             self.image_ready_event.wait()
@@ -1042,6 +1014,86 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     def end_exposure_series(self, series: ImagerExposureSeries):
         pass
 
+def save_to_fits_file(imager):
+    op = function_name()
+
+    settings = imager.latest_settings
+    assert(settings is not None and settings.roi is not None
+           and settings.binning is not None and settings.image_path is not None)
+
+    imager.start_activity(ImagerActivities.Saving)
+
+    header = fits.Header()
+    header["SIMPLE"] = (True, "file conforms to FITS standard")
+    if settings.format == "raw8":
+        header["BITPIX"] = (8, "uint8 array data type")
+    elif settings.format == "raw16":
+        header["BITPIX"] = (16, "int16 array data type")
+        header["BZERO"] = (32768,)
+        header["BSCALE"] = (1,)
+    header["NAXIS"] = (2, "number of array dimensions")
+    header["NAXIS1"] = (settings.roi.width, "length of data axis 1")
+    header["NAXIS2"] = (settings.roi.height, "length of data axis 2")
+    header["EXTEND"] = (True, "FITS data sets may contain extensions")
+    header["DATE-OBS"] = (
+        datetime.datetime.now(datetime.UTC).isoformat(),
+        "observation datetime",
+    )
+    header["XBINNING"] = (settings.binning.x, "horizontal binning")
+    header["YBINNING"] = (settings.binning.y, "vertical binning")
+    header["EXPTIME"] = (settings.seconds, "exposure time in seconds")
+    header["INSTRUME"] = (socket.gethostname(), "the instrument")
+    if imager.ccd_temp_at_mid_exposure:
+        header["CCDTEMP"] = (
+            imager.ccd_temp_at_mid_exposure,
+            "ccd temp. at mid exposure",
+        )
+        imager.ccd_temp_at_mid_exposure = None
+
+    if imager.unit:
+        header["FOCUSPOS"] = imager.unit.focuser.position
+        header.comments["FOCUSPOS"] = "focuser position"
+        header["STAGEPOS"] = imager.unit.stage.position
+        header.comments["STAGEPOS"] = "FCU stage position"
+
+    if settings.fits_cards:
+        for k, v in settings.fits_cards.items():
+            header[k] = v
+
+    assert(imager.image_array is not None)
+    hdu = fits.PrimaryHDU(data=imager.image_array, header=header)
+    hdu.header.update(header)
+    hdu_list = fits.HDUList([hdu])
+    logger.info(f"{op}: saving image to {Path(settings.image_path).as_posix()} ...")
+    try:
+        hdu_list.writeto(settings.image_path, checksum=True, overwrite=True)
+    except Exception as ex:
+        logger.error(f"failed to save to '{settings.image_path}', {ex=}")
+
+    imager.end_activity(ImagerActivities.Saving)
+
+def set_ASICamera2_ASCOM_profile_image_type():  # noqa: N802
+    """
+    The ASCOM ASICamera2 ASCOM profile value for ImageType (0: raw8, 2: raw16) is used:
+    - By the generic ascom imager
+    - By the phd2 imager
+
+    The value is NOT settable via the ASCOM API.  It is kept in the ASCOM Profile and loaded when the device
+    is attached.
+
+    We use the configuration from our Config database and in order to enforce it
+    we write the relevant value in the ASCOM Profile PRIOR to accessing the ASCOM driver
+    """
+
+    prog_id = "ASCOM.ASICamera2.Camera"
+
+    profile = win32com.client.Dispatch("ASCOM.Utilities.Profile")
+    profile.DeviceType = "Camera"
+    profile_image_format = profile.GetValue(prog_id, "ImageType", "", str(ASI.OutputFormat.RAW16))
+    configured_image_format = str(ASI.OutputFormat.from_string(Config().get_unit().imager.format))
+
+    if int(profile_image_format) != configured_image_format:
+        profile.WriteValue(prog_id, "ImageType", configured_image_format, "")
 
 if __name__ == "__main__":
     imager = Imager(imager_type="ascom:ASCOM.ASICamera2.Camera")
@@ -1054,6 +1106,30 @@ if __name__ == "__main__":
     if imager.can_send_image_ready_event:
         imager.wait_for_image_ready()
         logger.info("got image ready event")
+
+    if imager.can_send_image_saved_event:
+        imager.wait_for_image_saved()
+        logger.info("got image saved event")
+    imager.end_exposure_series(series)
+    exit(0)
+
+    if imager.can_send_image_saved_event:
+        imager.wait_for_image_saved()
+        logger.info("got image saved event")
+    imager.end_exposure_series(series)
+    exit(0)
+
+    if imager.can_send_image_saved_event:
+        imager.wait_for_image_saved()
+        logger.info("got image saved event")
+    imager.end_exposure_series(series)
+    exit(0)
+
+    if imager.can_send_image_saved_event:
+        imager.wait_for_image_saved()
+        logger.info("got image saved event")
+    imager.end_exposure_series(series)
+    exit(0)
 
     if imager.can_send_image_saved_event:
         imager.wait_for_image_saved()
