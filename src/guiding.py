@@ -7,7 +7,6 @@ from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import ImagerBinningConfig
 from common.utils import function_name
-
 # from phd2.phd2 import PHD2Connector
 from solving_guider import SolvingGuider
 
@@ -77,8 +76,8 @@ class Guider(GuiderInterface):
 
     def make_guiding_settings(self, base_folder: str | None = None) -> ImagerSettings:
         """
-        The 'guiding' camera exposure settings are used:
-        -In the second acquisition phase (stage at 'spec' position)
+        The 'guiding' camera exposure settings are used
+        - In the second acquisition phase (stage at 'spec' position)
         - While guiding
 
         :param base_folder:
@@ -114,8 +113,8 @@ class Guider(GuiderInterface):
 
         if guiding_conf.roi:
             imager_roi = ImagerRoi(
-                x=guiding_conf.roi.fiber_x,
-                y=guiding_conf.roi.fiber_y,
+                x=guiding_conf.roi.fiber_x - half_width,
+                y=guiding_conf.roi.fiber_y - half_height,
                 width=guiding_conf.roi.width,
                 height=guiding_conf.roi.height,
             )
