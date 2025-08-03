@@ -76,7 +76,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         self.image_saved_event: Event = Event()
         self.ccd_temp_at_mid_exposure: float | None = None
 
-        if not self.is_on:
+        if not self.is_on():
             self.power_on()
 
         n_cameras = asi.getNumOfConnectedCameras()
