@@ -116,6 +116,7 @@ class Solver(SolverInterface):
                     errors=[f"could not start exposure ({[response.errors]})"],
                 )
 
+            self.unit.imager.wait_for_image_saved()
             return self._backend.solve(
                 unit=self.unit, settings=imager_settings, target=target
             )
