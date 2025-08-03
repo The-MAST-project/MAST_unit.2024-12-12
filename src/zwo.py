@@ -119,6 +119,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                 self.ccd_temp_at_mid_exposure, _ = asi.getControlValue(
                     self.cam_id, ASI.Control.Temperature
                 )
+                self.ccd_temp_at_mid_exposure /= 10
 
             try:
                 exposure_status = asi.getExpStatus(self.cam_id)
