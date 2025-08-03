@@ -67,7 +67,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         SwitchedOutlet.group(
             domain=OutletDomain.UnitOutlets,
             group_name="Camera",
-            outlet_names=["Camera", "CameraUSB"]).populate(self)
+            outlet_names=["Camera", "CameraUSB"]).transfer_attributes(self)
         if not self.is_on():
             self.power_on()
 
