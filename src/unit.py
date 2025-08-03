@@ -35,24 +35,13 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.const import Const
 from common.corrections import correction_phases
-from common.dlipowerswitch import (
-    PowerStatus,
-    PowerSwitchFactory,
-    PowerSwitchStatus,
-    SwitchedOutlet,
-)
+from common.dlipowerswitch import PowerStatus, PowerSwitchFactory, PowerSwitchStatus, SwitchedOutlet
 from common.filer import Filer
 from common.interfaces.components import Component, ComponentStatus
 from common.interfaces.guiding import GuiderTypes
 
 # from guiding import Guider
-from common.interfaces.imager import (
-    ImagerBinning,
-    ImagerExposureSeries,
-    ImagerSettings,
-    ImagerStatus,
-    ImagerTypes,
-)
+from common.interfaces.imager import ImagerBinning, ImagerExposureSeries, ImagerSettings, ImagerStatus, ImagerTypes
 from common.mast_logging import DailyFileHandler, init_log
 from common.models.assignments import UnitAssignmentModel
 from common.paths import PathMaker
@@ -324,12 +313,12 @@ class Unit(Component):
         assert self.imager is not None, "Imager must be initialized"
         assert self.guider is not None, "Guider must be initialized"
         imager_status = (
-            PHD2Connector().status(capacity="imager")
-            if self.imager.imager_type == ImagerTypes.Phd2
+            PHD2Connector(parent_imager=self.imager).status(capacity="imager")
+            if self.imager.backend_type == ImagerTypes.Phd2
             else self.imager.status()
         )
         guider_status = (
-            PHD2Connector().status(capacity="guider")
+            PHD2Connector(parent_imager=self.imager).status(capacity="guider")
             if self.guider.guider_type == GuiderTypes.Phd2
             else self.guider.status()
         )
