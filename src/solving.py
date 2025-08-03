@@ -207,6 +207,15 @@ class Solver(SolverInterface):
                 raise Exception(
                     f"{op}: unit.acquirer is None, cannot create latest_acquisition"
                 )
+
+            if target is None:
+                mount_status = self.unit.mount.status
+                target = Coord(
+                    ra=Angle(mount_status.ra_j2000_hours, unit="hourangle",
+                    dec=Angle(mount_status.dec_j2000_degs, unit="deg")
+                    )
+                )
+
             self.unit.acquirer.latest_acquisition = Acquisition(
                 unit=self.unit,
                 approach_mode=approach_mode,
