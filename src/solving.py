@@ -12,13 +12,11 @@ from astropy.coordinates import Angle
 
 from acquisition import Acquisition
 from common.activities import UnitActivities
-from common.config import (AcquisitionConfig, Config, ImagerBinningConfig,
-                           SkyRoiConfig, ToleranceConfig)
+from common.config import AcquisitionConfig, Config, ImagerBinningConfig, SkyRoiConfig, ToleranceConfig
 from common.corrections import Correction, Corrections
 from common.filer import Filer
 from common.interfaces.imager import ImagerSettings
-from common.interfaces.solving import (SolverInterface, SolvingResult,
-                                       SolvingTolerance)
+from common.interfaces.solving import SolverInterface, SolvingResult, SolvingTolerance
 from common.mast_logging import init_log
 from common.solving import SolverId
 from common.utils import Coord, boxed_info, function_name
