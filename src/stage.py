@@ -42,12 +42,22 @@ if platform.system() == "Windows":
         raise FileNotFoundError(f"Directory with ximc library not found: {lib_dir=}. ")
     os.add_dll_directory(str(lib_dir))  # add dll path into an environment variable
 
-    from pyximc import EnumerateFlags  # type: ignore[name]
-    from pyximc import Result  # type: ignore[name]
-    from pyximc import (POINTER, MvcmdStatus, StateFlags, byref, c_char_p,
-                        c_int, cast, device_information_t, edges_settings_t)
+    from pyximc import (
+        POINTER,
+        EnumerateFlags,  # type: ignore[name]
+        MvcmdStatus,
+        Result,  # type: ignore[name]
+        StateFlags,
+        byref,
+        c_char_p,
+        c_int,
+        cast,
+        device_information_t,
+        edges_settings_t,
+        status_t,
+        string_at,
+    )
     from pyximc import lib as ximclib  # type: ignore[name]
-    from pyximc import status_t, string_at
 
 RESULT_MAP = {
     Result.Ok: "Ok",
@@ -242,6 +252,9 @@ class Stage(Component, SwitchedOutlet):
         assert self.device
         ximclib.close_device(byref(cast(self.device, POINTER(c_int))))
 
+        assert(self.timer is not None)
+        self.timer.cancel()
+
     def __repr__(self):
         return f"<Stage device={self.device}>"
 
@@ -412,7 +425,6 @@ class Stage(Component, SwitchedOutlet):
             assert ximclib
             result = ximclib.get_status(self.device, byref(hw_status))
         if result != Result.Ok:
-            # result_name = Result(result).name
             logger.error(f"could not get_status(), {result=} ({RESULT_MAP[result]})")
             return
 
