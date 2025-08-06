@@ -11,10 +11,16 @@ import ASI
 from common.activities import ImagerActivities
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.interfaces.imager import (ImagerBinning, ImagerExposure,
-                                      ImagerExposureSeries, ImagerInterface,
-                                      ImagerRoi, ImagerSettings, ImagerStatus,
-                                      ImagerTypes)
+from common.interfaces.imager import (
+    ImagerBinning,
+    ImagerExposure,
+    ImagerExposureSeries,
+    ImagerInterface,
+    ImagerRoi,
+    ImagerSettings,
+    ImagerStatus,
+    ImagerTypes,
+)
 from common.mast_logging import init_log
 from common.utils import RepeatTimer, function_name, time_stamp
 from imagers import Imager
@@ -93,9 +99,9 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
 
         save_to_fits_file(self)
         self.image_was_saved = True
-        self.image_read_event.set()
+        self.image_saved_event.set()
 
-        del self._image_array
+        # del self._image_array
 
     def ontimer(self):
         op = function_name()
@@ -179,7 +185,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             self.image_read_event.wait()
 
     def wait_for_image_saved(self):
-        if not self.image_was_saved and self.image_saved_event is not None:
+        if not self.image_was_saved:
             self.image_saved_event.wait()
             self.image_saved_event.clear()
 
@@ -225,7 +231,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def shutdown(self):
         self.set_control(ASI.Control.TargetTemp, 10)
         self.set_control(ASI.Control.CoolerOn, False)
-        del self._image_array
+        # del self._image_array
         return super().shutdown()
 
     @property
