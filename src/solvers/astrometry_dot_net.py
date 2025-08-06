@@ -10,9 +10,11 @@ import sys
 from astropy.coordinates import Angle
 
 from common.filer import Filer
-from common.interfaces.solving import SolverInterface, SolvingResult, SolvingSolution
+from common.interfaces.solving import (SolverInterface, SolvingResult,
+                                       SolvingSolution)
 from common.mast_logging import init_log
-from common.utils import Coord, boxed_info, function_name, generate_random_string
+from common.utils import (Coord, boxed_info, function_name,
+                          generate_random_string)
 from imagers import ImagerSettings
 
 logger = logging.Logger("astrometry_dot_net")
@@ -72,7 +74,6 @@ def _parse_solver_output(lines: list[str]) -> SolvingResult:  # noqa: C901
     ret.solution = SolvingSolution()
     ret.native_result = AstrometryDotNetSolverResult()
     pattern_float = r"[-+]?\d+(\.\d+)?"
-    pattern_int = r"\b\d+\b"
 
     try:
         for line in lines:
@@ -148,8 +149,10 @@ class AstrometryDotNet(SolverInterface):
 
     def __init__(self):
         self.unit = None
+        self.latest_target: Coord | None = None
+        self.latest_index_file: str | None = None
 
-    def solve(self, unit, settings: ImagerSettings, target: Coord) -> SolvingResult:  # type: ignore[name]
+    def solve(self, unit: "Unit", settings: ImagerSettings, target: Coord) -> SolvingResult:  # type: ignore[name]  # noqa: F821
 
         self.unit = unit
         filer = Filer(logger)
@@ -160,7 +163,14 @@ class AstrometryDotNet(SolverInterface):
         index_dir = r"D:/Astrometry.net/indexes"
         solver_name = "AstrometryDotNet"
 
-        index_file = None
+        if self.latest_target is None or self.latest_target != target:
+            self.latest_target = target
+            self.latest_index_file = None
+        else:
+            # we solve for the same target as before
+            # if we have an index_file from previous instances, we'll use it
+            pass
+
         os.environ["PATH"] = (
             "C:/cygwin64/bin;/usr/lib/lapack;C:/Users/mast/PycharmProjects/MAST_unit/venv/Scripts;C:/Windows/system32;"
             + "C:/Windows;C:/Windows/System32/Wbem;C:/Windows/System32/WindowsPowerShell/v1.0/;C:/Windows/System32/OpenSSH/;"
@@ -188,8 +198,6 @@ class AstrometryDotNet(SolverInterface):
         args += ["--crpix-x", str(int(settings.roi.width / 2))]
         args += ["--crpix-y", str(int(settings.roi.height / 2))]
 
-        if index_file:
-            args += ["--index-file", index_file]
         fits_path = settings.image_path
         new_fits_path = fits_path.replace(".fits", f",solver={solver_name}.fits")
 
@@ -200,8 +208,11 @@ class AstrometryDotNet(SolverInterface):
             cmd = r"C:/cygwin64/usr/local/astrometry/bin/solve-field"
             args += ["--dir", tmp_path]
             args += ["--temp-dir", tmp_path]
-            # args += ['--index-dir', '/cygdrive/d/Astrometry.net/indexes']
-            args += ["--index-dir", "/usr/local/astrometry/indexes-full"]
+
+            if self.latest_index_file is not None:
+                args += ["--index-file", "/usr/local/astrometry/indexes-full/" + self.latest_index_file]
+            else:
+                args += ["--index-dir", "/usr/local/astrometry/indexes-full"]
             args += ["--new-fits", win_to_cygwin(new_fits_path)]
             args += [win_to_cygwin(fits_path)]
 
@@ -244,7 +255,9 @@ class AstrometryDotNet(SolverInterface):
             ret = _parse_solver_output(stdout_lines)
             if ret.solution is not None:
                 boxed_info(logger=logger, lines=["future image quality check",
-                                                 f"solver found {ret.solution.matched_stars} stars"], center=True)
+                            f"#sources {ret.solution.sources}", f"#matched {ret.solution.matched_stars}"], center=True)
+                if ret.solution.index_file:
+                    self.latest_index_file = ret.solution.index_file
         else:
             ret = SolvingResult(
                 succeeded=False,
