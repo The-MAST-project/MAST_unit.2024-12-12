@@ -816,9 +816,11 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                         response = ascom_run(self, "ImageArray")
                         assert(self.latest_settings is not None)
                         dtype = np.uint8 if self.latest_settings.format == "raw8" else np.uint16
-                        self.image = (
-                            np.array(response.value, dtype=dtype) if response.succeeded else None
-                        )
+                        assert(self.latest_settings.roi)
+                        self.image = None if not response.succeeded else np.flipud(
+                            np.frombuffer(response.value, dtype=dtype). # type: ignore
+                                    reshape(self.latest_settings.roi.height, self.latest_settings.roi.width))
+
                         self.parent_imager.end_activity(ImagerActivities.ReadingOut)
                         self.image_was_read = True
                         if (
