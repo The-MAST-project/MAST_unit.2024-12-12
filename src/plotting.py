@@ -364,7 +364,8 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):  # noqa
     end_of_phase: list[datetime.datetime] = []
     tolerances = {}
 
-    for phase in ["sky", "spec", "guiding"]:
+    # for phase in ["sky", "spec", "guiding"]:
+    for phase in ["sky", "spec"]:
         file = os.path.join(acquisition_top, phase, "corrections.json")
         if not os.path.isfile(file):
             continue
