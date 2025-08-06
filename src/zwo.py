@@ -121,7 +121,9 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                         f"exposure failed with exposure_status={ASI.ExposureStatus(exposure_status).name}"
                     )
                 elif exposure_status == ASI.ExposureStatus.ASI_EXP_SUCCESS:
-                    buffer_size = self.width * self.height
+
+                    assert(self.latest_settings.roi is not None)
+                    buffer_size = self.latest_settings.roi.width * self.latest_settings.roi.height
                     if self.latest_settings.format == "raw16":
                         buffer_size *= 2
                         dtype = np.uint16
@@ -131,14 +133,10 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                     self.parent_imager.start_activity(ImagerActivities.ReadingOut)
                     buffer = asi.getDataAfterExp(self.cam_id, bufferSize=buffer_size)
                     assert self.latest_settings and self.latest_settings.roi
-                    self.image_array = np.ndarray(
-                        buffer=buffer,
-                        shape=(
-                            self.latest_settings.roi.height,
-                            self.latest_settings.roi.width,
-                        ),
-                        dtype=dtype,
-                    )
+                    self.image_array = np.flipud(np.frombuffer(
+                            buffer=buffer,
+                            dtype=dtype
+                        ).reshape(self.latest_settings.roi.height, self.latest_settings.roi.width))
                     self.parent_imager.end_activity(ImagerActivities.ReadingOut)
                     self.image_was_read = True
                     self.image_read_event.set()
