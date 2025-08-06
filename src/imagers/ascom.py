@@ -745,6 +745,12 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         """
         Called by timer, checks if any ongoing activities have changed state
         """
+
+        if self.parent_imager.unit and self.parent_imager.unit.unit_shutdown_event.is_set():
+            assert(self.timer is not None)
+            self.timer.cancel()
+            return
+
         if not self.connected:
             return
 
