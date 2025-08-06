@@ -396,6 +396,14 @@ class Stage(Component, SwitchedOutlet):
         return abs(self._position - target) <= self.CLOSE_ENOUGH
 
     def ontimer(self):  # noqa: C901
+        if self.unit.unit_shutdown_event.is_set():
+            if self.timer:
+                self.timer.cancel()
+            return
+
+        if not self.connected:
+            return
+
         if not self.detected or not self.stage_lock:
             return
 

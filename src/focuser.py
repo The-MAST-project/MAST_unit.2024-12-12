@@ -274,6 +274,12 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         return CanonicalResponse_Ok
 
     def ontimer(self):
+        if self.unit.unit_shutdown_event.is_set():
+            self.timer.cancel()
+            return
+
+        if not self.connected:
+            return
 
         if self.is_active(FocuserActivities.Moving) and self.close_enough(self.target):
             self.end_activity(FocuserActivities.Moving)

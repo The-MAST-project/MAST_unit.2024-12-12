@@ -4,6 +4,7 @@ import ipaddress
 import logging
 import os
 import socket
+import threading
 import time
 from enum import Enum
 from itertools import chain
@@ -14,6 +15,7 @@ from typing import Annotated, Any, Literal
 import numpy as np
 from fastapi import Depends, Query
 from fastapi.routing import APIRouter
+from h11 import Event
 from PIL import Image
 
 # from pydantic import Field
@@ -197,6 +199,8 @@ class Unit(Component):
         self.spiral_exposure_series: ImagerExposureSeries | None = None
         self.latest_acquisition: Acquisition | None = None
 
+        self.unit_shutdown_event: threading.Event = threading.Event()
+
         self._initialized = True
         logger.info("unit: initialized")
 
@@ -219,6 +223,8 @@ class Unit(Component):
         self.start_activity(UnitActivities.ShuttingDown)
         [comp.shutdown() for comp in self.components]
         self._was_shut_down = True
+        self.timer.cancel()
+        self.unit_shutdown_event.set()
 
     def shutdown(self):
         """
@@ -373,25 +379,11 @@ class Unit(Component):
 
         [component.abort() for component in self.components]
 
-    # def switch_imager(self, new_imager_type: str):
-    #     del self.imager
-    #     import gc
+    def ontimer(self):  # noqa: C901
+        if self.unit_shutdown_event.is_set():
+            self.timer.cancel()
+            return
 
-    #     gc.collect()  # clean up the old imager
-
-    #     new_imager_type = new_imager_type.lower()
-    #     if new_imager_type == "ascom":
-    #         new_imager_type += ":ASCOM.ASICamera2.Camera"  # Blof
-
-    #     try:
-    #         self.imager = Imager(unit=self, imager_type=new_imager_type)
-    #         logger.info(f"{function_name()}: switched to imager '{new_imager_type=}'")
-    #     except Exception as e:
-    #         logger.error(
-    #             f"{function_name()}: could not switch imager to {new_imager_type}: {e}"
-    #         )
-
-    def ontimer(self):
         """
         Used in order to end activities that were started elsewhere in the code.
         """

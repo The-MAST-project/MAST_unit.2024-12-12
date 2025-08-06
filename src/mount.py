@@ -264,6 +264,10 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         return CanonicalResponse_Ok
 
     def ontimer(self):
+        if self.unit.unit_shutdown_event.is_set():
+            self.timer.cancel()
+            return
+
         if not self.connected:
             return
 
