@@ -173,3 +173,17 @@ class Guider(GuiderInterface):
         if self._backend:
             return self._backend.is_guiding
         return False
+
+
+if __name__ == "__main__":
+    import atexit
+    import traceback
+
+    def on_shutdown():
+        print("Interpreter is shutting down.")
+        traceback.print_stack()
+
+    atexit.register(on_shutdown)
+
+    guider = Guider(unit=None)
+    guider.start_guiding()
