@@ -403,6 +403,19 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
 
         if settings.roi is None:
             settings.roi = self.default_settings.roi
+
+        assert(settings.roi is not None)
+        if settings.roi.width % 8 != 0:
+            logger.warning(
+                f"start_exposure: aligning roi width to 8 (subtracting {settings.roi.width % 8} bits)"
+            )
+            settings.roi.width -= settings.roi.width % 8
+        if settings.roi.height % 2 != 0:
+            logger.warning(
+                f"start_exposure: aligning roi height to 2 (subtracting {settings.roi.height % 2} bits)"
+            )
+            settings.roi.height -= settings.roi.height % 8
+
         self.set_format(settings)
 
         self.latest_settings = settings.model_copy()
