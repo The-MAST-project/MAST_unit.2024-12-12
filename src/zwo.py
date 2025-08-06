@@ -77,7 +77,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             self.cam_id = 0
             self.connected = True
             if self.connected:  # did we succeed to connect?
-                self.timer = RepeatTimer(interval=1, function=self.on_timer)
+                self.timer = RepeatTimer(interval=1, function=self.ontimer)
                 self.timer.start()
 
         self.image_was_read: bool = False
@@ -97,7 +97,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
 
         del self._image_array
 
-    def on_timer(self):
+    def ontimer(self):
         op = function_name()
 
         if self.parent_imager.is_active(ImagerActivities.Exposing):
