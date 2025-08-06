@@ -100,6 +100,13 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def ontimer(self):
         op = function_name()
 
+        if self.parent_imager.unit and self.parent_imager.unit.unit_shutdown_event.is_set():
+            self.timer.cancel()
+            return
+
+        if not self.connected:
+            return
+
         if self.parent_imager.is_active(ImagerActivities.Exposing):
             assert self.latest_exposure is not None
             assert self.latest_settings is not None
