@@ -93,7 +93,8 @@ class Imager(ImagerInterface, SwitchedOutlet):
         if imager_type.startswith("ascom:"):
             from imagers.ascom import ASCOMImager
 
-            self._prog_id = self.conf.imager_type[6:]
+
+            self._prog_id = imager_type[6:]
             self._backend = ASCOMImager(parent_imager=self, prog_id=self._prog_id, _from_imager=True)
             self.backend_type = ImagerTypes.Ascom
         elif imager_type == "phd2":
