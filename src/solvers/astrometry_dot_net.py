@@ -129,11 +129,15 @@ def _parse_solver_output(lines: list[str]) -> SolvingResult:  # noqa: C901
 
             elif line.startswith("simplexy:"):
                 # simplexy: found 3 sources.
-                match = re.match(
-                    r"^.*found" + pattern_int + r"sources", line
-                )
+                match = re.match(r"^.*found (\d+) sources.", line)
                 if match:
-                    ret.solution.matched_stars = int(match.group(1))
+                    ret.solution.sources = int(match.group(1))
+
+            elif "solved with index" in line:
+                # Field 1: solved with index index-5200-31.fits.
+                match = re.match(r".*solved with index (\w).", line)
+                if match:
+                    ret.solution.index_file = match.group(1)
 
     except Exception as e:
         logger.error(f"{op}: exception: {e}")
