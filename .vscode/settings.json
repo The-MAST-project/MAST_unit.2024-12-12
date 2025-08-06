@@ -12,6 +12,12 @@
   // Optional: isort to sort imports on save
   "editor.codeActionsOnSave": {
     "source.organizeImports": "always",
+    "source.fixAll": "always",
+  },
+  "ruff.enable": true,
+  "ruff.organizeImports": true,
+  "[python]": {
+    "editor.defaultFormatter": null
   },
   "editor.accessibilitySupport": "off",
   "terminal.integrated.accessibilitySupport": false,
