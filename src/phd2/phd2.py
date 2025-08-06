@@ -21,14 +21,16 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
-from common.interfaces.imager import ImagerBinning, ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
+from common.interfaces.imager import (ImagerBinning, ImagerExposureSeries,
+                                      ImagerInterface, ImagerRoi,
+                                      ImagerSettings)
 from common.mast_logging import init_log
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_info, function_name
 from imagers import Imager
 
 if TYPE_CHECKING:
-    from unit import Unit  # type: ignore[name-defined]
+    pass  # type: ignore[name-defined]
 
 logger = logging.Logger("mast.unit." + __name__)
 init_log(logger)
@@ -203,9 +205,10 @@ class PHD2Connection:
             try:
                 s = self.sock.recv(4096)
                 # print(f"DBG: recvd: {len(s)}: {s}")
-            except ConnectionResetError as ex:
-                logger.error(f"connection reset: {ex=}")
-                raise
+            except ConnectionResetError:
+                # logger.error(f"connection reset: {ex=}")
+                # raise
+                return
             i0 = 0
             i = i0
             while i < len(s):
@@ -264,7 +267,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
     def __init__(
         self,
-        parent_imager: Imager,
+        parent_imager: Imager | None = None,
         hostname="localhost",
         instance=1,
         _from_imager: bool = False,
@@ -280,7 +283,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             outlet_names=["Camera", "CameraUSB"],
         ).transfer_attributes(self)
 
-        self.parent_imager: Imager = parent_imager
+        self.parent_imager: Imager | None = parent_imager
         self.hostname = hostname
         self.instance = instance
         self.conn = None
@@ -324,11 +327,13 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
 
         self.activities = PHD2Activities.Idle
+        self.restart_event: threading.Event = threading.Event()
 
         self.watched_process = WatchedProcess(
             command='"C:/Program Files (x86)/PHDGuiding2/phd2.exe"',
             logger=logger,
             shell=True,
+            restart_event=self.restart_event,
         )
         self.watched_process.start()
         secs = 3
@@ -346,22 +351,26 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             logger.error(f"{function_name()}: Failed to connect {ex=}")
 
         self.cooler_on = True
-        # threading.Thread(target=self.restarter).start()
+        # threading.Thread(name="phd2-reconnector", target=self.reconnect).start()
 
         self._initialized = True
 
-    def restarter(self):
-        while True:
+    def reconnect(self):
+        while not self._terminate:
+            self.restart_event.wait()
+            self.restart_event.clear()
+
             try:
+                logger.info("reconnect: got the restart event, connecting ...")
                 self.connect()
-                self.connect_equipment()
+                # self.connect_equipment()
             except PHD2ConnectorError as ex:
                 self.connected = False
                 logger.error(f"{function_name()}: Failed to connect {ex=}")
+            except Exception as ex:
+                logger.error(f"reconnect: caught {ex=}")
 
-            self.cooler_on = True
-            assert self.worker
-            self.worker.join()
+            # self.cooler_on = True
 
     def __enter__(self):
         return self
@@ -621,14 +630,17 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         while not self._terminate:
             try:
                 line = self.conn.read_line()
-            except ConnectionResetError as ex:
+            except ConnectionResetError:
                 # logger.info(f"trying to reconnect {ex=}...")
                 # # time.sleep(3)
                 # self.connect()
                 # self.connect_equipment()
                 # continue
-                logger.error(f"worker exiting on {ex}")
-                break
+
+                # logger.error(f"worker exiting on {ex}")
+                # break
+                self._terminate = True
+                return
 
             # print(f"DBG: L: {line}")
             if not line:
@@ -659,13 +671,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.conn = PHD2Connection()
             self.conn.connect(self.hostname, 4400 + self.instance - 1)
             self._terminate = False
-            self.worker = threading.Thread(target=self._worker)
+            self.worker = threading.Thread(name="phd2-worker", target=self._worker)
             self.worker.start()
             self._connected = True
             # print("DBG: connect done")
-        except Exception:
-            self.disconnect()
-            raise
+        except Exception as ex:
+            logger.error(f"connect: {ex=}")
+            # self.disconnect()
+            # raise
 
     def disconnect(self):
         """disconnect from PHD2"""
@@ -675,8 +688,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 self._terminate = True
                 if self.conn:
                     self.conn.terminate()
-                # print("DBG: joining worker")
-                # self.worker.join()
+                print("DBG: joining worker")
+                self.worker.join()
             self.worker = None
         if self.conn is not None:
             self.conn.disconnect()
@@ -1011,8 +1024,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.watched_process.terminate()
 
     def start_guiding(self) -> CanonicalResponse:
-        assert self.parent_imager is not None
-        if self.parent_imager.connected:
+        if self.parent_imager and self.parent_imager.connected:
             self.parent_imager.disconnect()
 
         if not self.connected:
@@ -1034,8 +1046,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         logger.info("stopping guiding")
         self.start_activity(PHD2Activities.EquipmentTakeover)
         self.disconnect_equipment()  # stops the exposure as well
-        assert self.parent_imager is not None
-        self.parent_imager.connect()
+        if self.parent_imager is not None:
+            self.parent_imager.connect()
         self.end_activity(PHD2Activities.EquipmentTakeover)
 
         return CanonicalResponse_Ok
@@ -1286,5 +1298,5 @@ if __name__ == "__main__":
             Path(imager_settings.image_path).unlink()
 
         imager_settings.make_file_name()
-        i = i + 1
+        i += 1
     exit(0)
