@@ -62,7 +62,12 @@ class Guider(GuiderInterface):
             self.guider_type = GuiderTypes.Solving
 
     def status(self):
-        return self._backend.status() if self._backend else None
+        return {
+            "type": self.guider_type,
+            "activities": self.activities,
+            "activities_verbal": self.activities.__repr__(),
+            "backend": self._backend.status() if self._backend else None
+        }
 
     def start_guiding(self):
         if self._backend:
