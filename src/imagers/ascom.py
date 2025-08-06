@@ -1063,7 +1063,7 @@ def save_to_fits_file(imager_backend):
     if imager_backend.parent_imager.unit:
         header["FOCUSPOS"] = imager_backend.parent_imager.unit.focuser.position
         header.comments["FOCUSPOS"] = "focuser position"
-        header["STAGEPOS"] = imager_backend.unit.stage.position
+        header["STAGEPOS"] = imager_backend.parent_imager.unit.stage.position
         header.comments["STAGEPOS"] = "FCU stage position"
 
     if settings.fits_cards:
