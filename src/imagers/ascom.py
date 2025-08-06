@@ -22,10 +22,15 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.interfaces.imager import (ImagerBinning, ImagerExposureSeries,
-                                      ImagerInterface, ImagerRoi,
-                                      ImagerSettings, ImagerStatus,
-                                      ImagerTypes)
+from common.interfaces.imager import (
+    ImagerBinning,
+    ImagerExposureSeries,
+    ImagerInterface,
+    ImagerRoi,
+    ImagerSettings,
+    ImagerStatus,
+    ImagerTypes,
+)
 from common.mast_logging import init_log
 from common.paths import PathMaker
 from common.utils import RepeatTimer, function_name, time_stamp
@@ -829,19 +834,14 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
                         self.parent_imager.end_activity(ImagerActivities.ReadingOut)
                         self.image_was_read = True
-                        if (
-                            self.latest_settings
-                            and self.latest_settings.fits_cards is None
-                        ):
+
+                        if self.latest_settings.fits_cards is None:
                             self.latest_settings.fits_cards = {}
-                        if (
-                            self.latest_settings
-                            and self.latest_settings.fits_cards is not None
-                        ):
-                            self.latest_settings.fits_cards["UT-END"] = (
-                                datetime.datetime.now(datetime.UTC).isoformat(),
-                                "UT end of exposure",
-                            )
+                        self.latest_settings.fits_cards["UT-END"] = (
+                            datetime.datetime.now(datetime.UTC).isoformat(),
+                            "UT end of exposure",
+                        )
+
                         self.image_ready_event.set()  # tell everybody the image is available (in memory)
 
                         for visualizer in self.visualizers:
