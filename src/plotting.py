@@ -42,7 +42,7 @@ class Point(NamedTuple):
 
 
 def plot_autofocus_analysis(
-    result: "PS3FocusAnalysisResult",  # noqa: F821
+    result: "PS3FocusAnalysisResult",  # noqa: F821 # type: ignore
     folder: str | None = None,
     pixel_scale: float = 0.2612,
 ):
@@ -464,8 +464,8 @@ class DummyResult:
 
 class Coord:
     def __init__(self, ra: float, dec: float):
-        self.ra = Angle(ra * u.hourangle)
-        self.dec = Angle(dec * u.deg)
+        self.ra = Angle(ra * u.hourangle) # type: ignore
+        self.dec = Angle(dec * u.deg) # type: ignore
 
 
 class DummyStatus:
