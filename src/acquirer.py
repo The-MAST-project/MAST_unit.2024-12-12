@@ -221,7 +221,10 @@ class Acquirer:
             self.unit.reference_image = self.unit.imager.image_array
 
         self.unit.imager.end_exposure_series(acquisition_exposure_series)
-        self.unit.guider.start_guiding()
+
+        # self.unit.guider.start_guiding()
+        boxed_info(logger, ["acquisition completed", "telescope is tracking", "start manual PHD2 guiding"])
+        self.unit.start_activity(UnitActivities.Guiding)
 
         while self.unit.is_active(UnitActivities.Guiding):
             time.sleep(1)
