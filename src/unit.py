@@ -13,9 +13,8 @@ from threading import Thread
 from typing import Annotated, Any, Literal
 
 import numpy as np
-from fastapi import Depends, Query
+from fastapi import Query
 from fastapi.routing import APIRouter
-from h11 import Event
 from PIL import Image
 
 # from pydantic import Field
@@ -110,6 +109,7 @@ class Unit(Component):
 
     _instance = None
     _initialized = False
+    unit_shutdown_event: threading.Event = threading.Event()
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -198,8 +198,6 @@ class Unit(Component):
         self.spirals_folder: str | None = None
         self.spiral_exposure_series: ImagerExposureSeries | None = None
         self.latest_acquisition: Acquisition | None = None
-
-        self.unit_shutdown_event: threading.Event = threading.Event()
 
         self._initialized = True
         logger.info("unit: initialized")
