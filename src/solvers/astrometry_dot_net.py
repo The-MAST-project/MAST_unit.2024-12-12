@@ -51,104 +51,10 @@ def win_to_wsl(path: str) -> str:
     return path.replace("\\", "/")
 
 
-def _parse_solver_output(lines: list[str]) -> SolvingResult:  # noqa: C901
-    op = function_name()
-
-    #
-    # Sample astrometry.net output:
-    #   log-odds ratio 119.57 (8.48588e+51), 17 match, 0 conflict, 0 distractors, 103 index.    # (4)
-    #   RA,Dec = (28.7753,20.9374), pixel scale 0.262399 arcsec/pix.
-    #   Hit/miss:   Hit/miss: +++++++++++++++++(best)++++
-    # Field 1: solved with index index-5202-00.fits.                                            # (3)
-    # Field: /cygdrive/d/MAST/2024-12-05/Acquisitions/seq=0026,time=18-40-10_655,target=1.91073447044923,
-    #   20.8072722891371/sky/seq=0001,time=18-40-12_083,seconds=5,binning=1x1,gain=170,
-    #   roi=x=5200,y=1900,w=3000,h=3000.fits
-    # Field center: (RA,Dec) = (28.775317, 20.937344) deg.                                      # (5)
-    # Field center: (RA H:M:S, Dec D:M:S) = (01:55:06.076, +20:56:14.439).                      # (2)
-    # Field size: 13.1336 x 13.1196 arcminutes
-    # Field rotation angle: up is 116.172 degrees E of N                                        # (1)
-
-    ret = SolvingResult(succeeded=False)
-    ret.solution = SolvingSolution()
-    ret.native_result = AstrometryDotNetSolverResult()
-    pattern_float = r"[-+]?\d+(\.\d+)?"
-
-    try:
-        for line in lines:
-            if line.startswith("Field rotation angle"):  # (1)
-                match = re.match(r"^.* is (" + pattern_float + r") degrees", line)
-                if match:
-                    ret.solution.rotation_angle_degs = float(match.group(1))
-                    # logger.info(f"{ret.solution.rotation_angle_degs=}")
-                else:
-                    logger.error("bad match for ret.solution.rotation_angle_degs")
-
-            elif line.startswith("Field center: (RA,Dec) ="):  # (2)
-                match = re.match(
-                    r".*[(](" + pattern_float + r"), (" + pattern_float + r")[)].*",
-                    line,
-                )
-                if match:
-                    ra_degs = float(match.group(1))
-                    dec_degs = float(match.group(3))
-                    # logger.info(f"{ra_degs=}, {dec_degs=}")
-                    ret.solution.ra_rads = float(Angle(ra_degs, unit="deg").radian) # type: ignore[assignment]
-                    ret.solution.dec_rads = float(Angle(dec_degs, unit="deg").radian) # type: ignore[assignment]
-                    ret.solution.ra_hours = Angle(ra_degs, unit="deg").hour # type: ignore[assignment]
-                    ret.solution.dec_degs = dec_degs
-                else:
-                    logger.error("bad match for ra_degs, dec_degs")
-
-            elif line.startswith("Field 1: solved with index"):  # (3)
-                ret.succeeded = True
-                match = re.match(r"^.*solved with index (.*)\.$", line)
-                if match:
-                    ret.native_result.index_file = match.group(1)
-                    # logger.info(f"{ret.native_result.index_file=}")
-                else:
-                    logger.error("bad match for ret.native_result.index_file")
-
-            elif line.startswith("  log-odds ratio"):  # (4)
-                match = re.match(r"^.*[)], (\d+) match,", line)
-                if match:
-                    ret.solution.matched_stars = int(match.group(1))
-                    # logger.info(f"{ret.solution.matched_stars=}")
-                else:
-                    logger.error("bad match for ret.solution.matched_stars")
-
-            elif line.startswith("  RA,Dec = "):  # (5)
-                match = re.match(
-                    r"^.*pixel scale (" + pattern_float + r") arcsec", line
-                )
-                if match:
-                    ret.solution.pixel_scale = float(match.group(1))
-                    # logger.info(f"{ret.solution.pixel_scale=}")
-                else:
-                    logger.error("bad match for ret.solution.pixel_scale")
-
-            elif line.startswith("simplexy:"):
-                # simplexy: found 3 sources.
-                match = re.match(r"^.*found (\d+) sources.", line)
-                if match:
-                    ret.solution.sources = int(match.group(1))
-
-            elif "solved with index" in line:
-                # Field 1: solved with index index-5200-31.fits.
-                match = re.match(r".*solved with index (\w).", line)
-                if match:
-                    ret.solution.index_file = match.group(1)
-
-    except Exception as e:
-        logger.error(f"{op}: exception: {e}")
-
-    return ret
-
 class AstrometryDotNet(SolverInterface):
 
     def __init__(self):
         self.unit = None
-        self.latest_target: Coord | None = None
-        self.latest_index_file: str | None = None
 
     def solve(self, unit: "Unit", settings: ImagerSettings, target: Coord) -> SolvingResult:  # type: ignore[name]  # noqa: F821
 
@@ -161,13 +67,9 @@ class AstrometryDotNet(SolverInterface):
         index_dir = r"D:/Astrometry.net/indexes"
         solver_name = "AstrometryDotNet"
 
-        if self.latest_target is None or self.latest_target != target:
-            self.latest_target = target
-            self.latest_index_file = None
-        else:
-            # we solve for the same target as before
-            # if we have an index_file from previous instances, we'll use it
-            pass
+        latest_index_file = None
+        if self.unit and self.unit.acquirer.latest_acquisition.solver_data is not None:
+            latest_index_file = self.unit.acquirer.latest_acquisition.solver_data
 
         os.environ["PATH"] = (
             "C:/cygwin64/bin;/usr/lib/lapack;C:/Users/mast/PycharmProjects/MAST_unit/venv/Scripts;C:/Windows/system32;"
@@ -207,8 +109,8 @@ class AstrometryDotNet(SolverInterface):
             args += ["--dir", tmp_path]
             args += ["--temp-dir", tmp_path]
 
-            if self.latest_index_file is not None:
-                args += ["--index-file", "/usr/local/astrometry/indexes-full/" + self.latest_index_file]
+            if latest_index_file is not None:
+                args += ["--index-file", "/usr/local/astrometry/indexes-full/" + latest_index_file]
             else:
                 args += ["--index-dir", "/usr/local/astrometry/indexes-full"]
             args += ["--new-fits", win_to_cygwin(new_fits_path)]
@@ -250,12 +152,12 @@ class AstrometryDotNet(SolverInterface):
         filer.move_ram_to_shared([result_file, fits_path, cygwin_to_win(new_fits_path)])
 
         if completed_process.returncode == 0:
-            ret = _parse_solver_output(stdout_lines)
+            ret = self._parse_solver_output(stdout_lines)
             if ret.solution is not None:
                 boxed_info(logger=logger, lines=["FUTURE: image quality check",
                             f"#sources {ret.solution.sources}", f"#matched {ret.solution.matched_stars}"], center=True)
                 if ret.solution.index_file:
-                    self.latest_index_file = ret.solution.index_file
+                    self.unit.acquirer.latest_acquisition.solver_data = ret.solution.index_file
         else:
             ret = SolvingResult(
                 succeeded=False,
@@ -268,6 +170,99 @@ class AstrometryDotNet(SolverInterface):
 
     def solve_and_correct(self):
         pass
+
+    def _parse_solver_output(self, lines: list[str]) -> SolvingResult:  # noqa: C901
+        op = function_name()
+
+        #
+        # Sample astrometry.net output:
+        #   log-odds ratio 119.57 (8.48588e+51), 17 match, 0 conflict, 0 distractors, 103 index.    # (4)
+        #   RA,Dec = (28.7753,20.9374), pixel scale 0.262399 arcsec/pix.
+        #   Hit/miss:   Hit/miss: +++++++++++++++++(best)++++
+        # Field 1: solved with index index-5202-00.fits.                                            # (3)
+        # Field: /cygdrive/d/MAST/2024-12-05/Acquisitions/seq=0026,time=18-40-10_655,target=1.91073447044923,
+        #   20.8072722891371/sky/seq=0001,time=18-40-12_083,seconds=5,binning=1x1,gain=170,
+        #   roi=x=5200,y=1900,w=3000,h=3000.fits
+        # Field center: (RA,Dec) = (28.775317, 20.937344) deg.                                      # (5)
+        # Field center: (RA H:M:S, Dec D:M:S) = (01:55:06.076, +20:56:14.439).                      # (2)
+        # Field size: 13.1336 x 13.1196 arcminutes
+        # Field rotation angle: up is 116.172 degrees E of N                                        # (1)
+
+        ret = SolvingResult(succeeded=False)
+        ret.solution = SolvingSolution()
+        ret.native_result = AstrometryDotNetSolverResult()
+        pattern_float = r"[-+]?\d+(\.\d+)?"
+
+        try:
+            for line in lines:
+                if line.startswith("Field rotation angle"):  # (1)
+                    match = re.match(r"^.* is (" + pattern_float + r") degrees", line)
+                    if match:
+                        ret.solution.rotation_angle_degs = float(match.group(1))
+                        # logger.info(f"{ret.solution.rotation_angle_degs=}")
+                    else:
+                        logger.error("bad match for ret.solution.rotation_angle_degs")
+
+                elif line.startswith("Field center: (RA,Dec) ="):  # (2)
+                    match = re.match(
+                        r".*[(](" + pattern_float + r"), (" + pattern_float + r")[)].*",
+                        line,
+                    )
+                    if match:
+                        ra_degs = float(match.group(1))
+                        dec_degs = float(match.group(3))
+                        # logger.info(f"{ra_degs=}, {dec_degs=}")
+                        ret.solution.ra_rads = float(Angle(ra_degs, unit="deg").radian) # type: ignore[assignment]
+                        ret.solution.dec_rads = float(Angle(dec_degs, unit="deg").radian) # type: ignore[assignment]
+                        ret.solution.ra_hours = Angle(ra_degs, unit="deg").hour # type: ignore[assignment]
+                        ret.solution.dec_degs = dec_degs
+                    else:
+                        logger.error("bad match for ra_degs, dec_degs")
+
+                elif line.startswith("Field 1: solved with index"):  # (3)
+                    ret.succeeded = True
+                    match = re.match(r"^.*solved with index (.*)\.$", line)
+                    if match:
+                        ret.native_result.index_file = match.group(1)
+                        # logger.info(f"{ret.native_result.index_file=}")
+                    else:
+                        logger.error("bad match for ret.native_result.index_file")
+
+                elif line.startswith("  log-odds ratio"):  # (4)
+                    match = re.match(r"^.*[)], (\d+) match,", line)
+                    if match:
+                        ret.solution.matched_stars = int(match.group(1))
+                        # logger.info(f"{ret.solution.matched_stars=}")
+                    else:
+                        logger.error("bad match for ret.solution.matched_stars")
+
+                elif line.startswith("  RA,Dec = "):  # (5)
+                    match = re.match(
+                        r"^.*pixel scale (" + pattern_float + r") arcsec", line
+                    )
+                    if match:
+                        ret.solution.pixel_scale = float(match.group(1))
+                        # logger.info(f"{ret.solution.pixel_scale=}")
+                    else:
+                        logger.error("bad match for ret.solution.pixel_scale")
+
+                elif line.startswith("simplexy:"):
+                    # simplexy: found 3 sources.
+                    match = re.match(r"^.*found (\d+) sources.", line)
+                    if match:
+                        ret.solution.sources = int(match.group(1))
+
+                elif "solved with index" in line:
+                    # Field 1: solved with index index-5200-31.fits.
+                    match = re.match(r".*solved with index (\w).", line)
+                    if match:
+                        ret.solution.index_file = match.group(1)
+
+        except Exception as e:
+            logger.error(f"{op}: exception: {e}")
+
+        return ret
+
 
 if __name__ == "__main__":
     imager_settings: ImagerSettings = ImagerSettings(
