@@ -1,4 +1,5 @@
 import logging
+from collections import deque
 from enum import IntEnum, auto
 from typing import TYPE_CHECKING
 
@@ -13,11 +14,11 @@ from common.const import Const
 from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
 from common.interfaces.components import Component, ComponentStatus
 from common.mast_logging import init_log
-from common.utils import RepeatTimer, time_stamp
+from common.utils import RepeatTimer, boxed_info, time_stamp
 from PlaneWave import pwi4_client
 
 if TYPE_CHECKING:
-    from unit import Unit
+    pass
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
@@ -43,6 +44,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
     _instance = None
     _initialized = False
+    CLOSE_ENOUGH = 2
 
     @property
     def ascom(self) -> win32com.client.Dispatch:  # type: ignore
@@ -53,7 +55,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, unit: "Unit"):  # type: ignore[name]
+    def __init__(self, unit = None):
         if self._initialized:
             return
 
@@ -87,6 +89,8 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"focuser: known_as_good_position: {self.known_as_good_position}")
 
         self._was_shut_down = False
+
+        self.latest_positions = deque(maxlen=3)
         self.timer: RepeatTimer = RepeatTimer(2, function=self.ontimer)
         self.timer.name = "focuser-timer-thread"
         self.timer.start()
@@ -192,7 +196,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             self.pw.focuser_goto(value)
 
     def close_enough(self, position):
-        return abs(self.position - position) <= 2
+        return abs(self.position - position) <= self.CLOSE_ENOUGH
 
     def set_position(self, position: int | str):
         """
@@ -273,17 +277,32 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             self.end_activity(FocuserActivities.StartingUp)
         return CanonicalResponse_Ok
 
+    @property
+    def is_stationary(self) -> bool:
+        return self.latest_positions.count == self.latest_positions.maxlen and \
+            all(self.latest_positions[0] == pos for pos in self.latest_positions)
+
     def ontimer(self):
-        if self.unit.unit_shutdown_event.is_set():
+        if self.unit and self.unit.unit_shutdown_event.is_set():
             self.timer.cancel()
             return
 
         if not self.connected:
             return
 
-        if self.is_active(FocuserActivities.Moving) and self.close_enough(self.target):
-            self.end_activity(FocuserActivities.Moving)
-            self.target = None
+        if self.is_active(FocuserActivities.Moving):
+            if self.is_stationary and not self.close_enough(self.target):
+                boxed_info(logger, [
+                    "Focuser is stationary but not close_enough to target",
+                    f"{self.target=}, {self.position=}, {self.CLOSE_ENOUGH=}",
+                    f"Moving it to {self.target} again"
+                    ], center=True)
+                assert(self.target is not None)
+                self.position = self.target
+
+            elif self.close_enough(self.target):
+                self.end_activity(FocuserActivities.Moving)
+                self.target = None
 
     def status(self) -> FocuserStatus:
         """
@@ -398,3 +417,17 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         )
 
         return router
+
+if __name__ == "__main__":
+    import time
+
+    focuser = Focuser(unit=None)
+    pos = focuser.position
+    focuser.position = pos + 2000
+    while focuser.is_active(FocuserActivities.Moving):
+        time.sleep(1)
+    pos = focuser.position
+    focuser.position = pos - 1000
+    while focuser.is_active(FocuserActivities.Moving):
+        time.sleep(1)
+    exit(0)

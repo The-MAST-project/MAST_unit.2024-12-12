@@ -5,6 +5,7 @@ import platform
 import sys
 import threading
 import time
+from collections import deque
 from enum import Enum, IntEnum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -18,7 +19,7 @@ from common.const import Const
 from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
 from common.interfaces.components import Component, ComponentStatus
 from common.mast_logging import init_log
-from common.utils import RepeatTimer, Timeout, function_name, time_stamp
+from common.utils import RepeatTimer, Timeout, boxed_info, function_name, time_stamp
 
 if TYPE_CHECKING:
     from unit import Unit
@@ -233,6 +234,8 @@ class Stage(Component, SwitchedOutlet):
             self._position = hw_status.CurPosition
             self.is_moving = hw_status.MvCmdSts & MvcmdStatus.MVCMD_RUNNING
 
+        self.latest_positions = deque(maxlen=3)
+
         self.timer = RepeatTimer(2, function=self.ontimer)
         self.timer.name = "stage-timer-thread"
         self.timer.start()
@@ -408,8 +411,17 @@ class Stage(Component, SwitchedOutlet):
         # logger.info(f"{self._position=}, {target=}")
         return abs(self._position - target) <= self.CLOSE_ENOUGH
 
+    @property
+    def is_stationary(self) -> bool:
+        """
+        Returns True if the stage was at the same position for the last
+          self.latest_positions.maxlen readings (every 2 seconds by ontimer).
+        """
+        return self.latest_positions.count == self.latest_positions.maxlen and \
+               all(pos == self.latest_positions[0] for pos in self.latest_positions)
+
     def ontimer(self):  # noqa: C901
-        if self.unit.unit_shutdown_event.is_set():
+        if self.unit and self.unit.unit_shutdown_event.is_set():
             if self.timer:
                 self.timer.cancel()
             return
@@ -429,6 +441,7 @@ class Stage(Component, SwitchedOutlet):
             return
 
         self._position = hw_status.CurPosition
+        self.latest_positions.append(self._position)
 
         error_bits = (
             StateFlags.STATE_ERRC | StateFlags.STATE_ERRV | StateFlags.STATE_ERRD
@@ -455,7 +468,23 @@ class Stage(Component, SwitchedOutlet):
 
         if not self.is_moving:
             if self.is_active(StageActivities.Moving):
-                if self.close_enough(self.target):
+                if self.is_stationary and not self.close_enough(self.target):
+                    #
+                    # The stage has been at the same position for a while,
+                    # but it is not close enough to the target position.
+                    # Try to nudge it to the target position.
+                    #
+                    boxed_info(logger, [
+                        "Stage is stationary, but not close enough to target: ",
+                        f"{self.position} != {self.target} (CLOSE_ENOUGH={self.CLOSE_ENOUGH})",
+                        f"Moving to {self.target} again",
+                        ],
+                        center=True
+                    )
+                    assert(self.target is not None)
+                    self.move_absolute(self.target)
+
+                elif self.close_enough(self.target):
                     self.target = None
                     self.end_activity(StageActivities.Moving)
                 elif hw_status.MvCmdSts & MvcmdStatus.MVCMD_ERROR:
@@ -712,3 +741,25 @@ class Stage(Component, SwitchedOutlet):
         )
 
         return router
+
+if __name__ == "__main__":
+    # For testing purposes only
+    stage = Stage(unit=None)  # type: ignore
+
+    for _ in range(5):
+        # print(f"{stage.position}", end = None, flush=True)
+        stage.move_to_preset(StagePresetPosition.Sky)
+        time.sleep(.5)
+        while stage.is_active(StageActivities.Moving):
+            # print('.', end = None, flush=True)
+            time.sleep(1)
+        # print("Sky", end = None, flush=True)
+
+        time.sleep(5)
+
+        stage.move_to_preset(StagePresetPosition.Spec)
+        time.sleep(.5)
+        while stage.is_active(StageActivities.Moving):
+            # print('.', end = None, flush=True)
+            time.sleep(1)
+        # print("Spec", end = None, flush=True)
