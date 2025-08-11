@@ -10,11 +10,9 @@ import sys
 from astropy.coordinates import Angle
 
 from common.filer import Filer
-from common.interfaces.solving import (SolverInterface, SolvingResult,
-                                       SolvingSolution)
+from common.interfaces.solving import SolverInterface, SolvingResult, SolvingSolution
 from common.mast_logging import init_log
-from common.utils import (Coord, boxed_info, function_name,
-                          generate_random_string)
+from common.utils import Coord, boxed_info, function_name, generate_random_string
 from imagers import ImagerSettings
 
 logger = logging.Logger("astrometry_dot_net")
@@ -254,7 +252,7 @@ class AstrometryDotNet(SolverInterface):
         if completed_process.returncode == 0:
             ret = _parse_solver_output(stdout_lines)
             if ret.solution is not None:
-                boxed_info(logger=logger, lines=["future image quality check",
+                boxed_info(logger=logger, lines=["FUTURE: image quality check",
                             f"#sources {ret.solution.sources}", f"#matched {ret.solution.matched_stars}"], center=True)
                 if ret.solution.index_file:
                     self.latest_index_file = ret.solution.index_file
