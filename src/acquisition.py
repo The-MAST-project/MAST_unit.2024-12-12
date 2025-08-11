@@ -71,6 +71,7 @@ class Acquisition:
             }
         )
         self.skip_sky = skip_sky
+        self.solver_data = None  # May be set by the solver, to remember something
 
     def save_corrections(self, phase: str):
         if phase in self.corrections:

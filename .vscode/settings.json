@@ -11,8 +11,8 @@
   "editor.formatOnSave": true,
   // Optional: isort to sort imports on save
   "editor.codeActionsOnSave": {
-    "source.organizeImports": "always",
-    "source.fixAll": "always",
+    "source.organizeImports": "explicit",
+    "source.fixAll": "always"
   },
   "ruff.enable": true,
   "ruff.organizeImports": true,
