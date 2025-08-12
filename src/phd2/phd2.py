@@ -15,15 +15,13 @@ from typing import TYPE_CHECKING, Literal
 from astropy.coordinates import Angle
 from pydantic import BaseModel
 
-import ASI
+import common.ASI as ASI
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
-from common.interfaces.imager import (ImagerBinning, ImagerExposureSeries,
-                                      ImagerInterface, ImagerRoi,
-                                      ImagerSettings)
+from common.interfaces.imager import ImagerBinning, ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_info, function_name

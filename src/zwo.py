@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import pyzwoasi as asi
 
-import ASI
+import common.ASI as ASI
 from common.activities import ImagerActivities
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
@@ -223,7 +223,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         return val / 10.0
 
     def startup(self):
-        # self.set_control(AsiControl.ASI_HIGH_SPEED_MODE, 1)
+        # self.set_control(ASI.Control.ASI_HIGH_SPEED_MODE, 1)
         self.set_control(ASI.Control.TargetTemp, -5)
         self.set_control(ASI.Control.CoolerOn, True)
         return super().startup()
