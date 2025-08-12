@@ -211,8 +211,8 @@ class Stage(Component, SwitchedOutlet):
                 "max": self.max_travel,
             }
 
-            if self.unit is not None:
-                self.unit.fcu_version = 1 if self.max_travel == 380000 else 2  # TODO: anything more inteligent?
+            if self.max_travel is not None and self.unit is not None:
+                self.unit.fcu_version = 1 if self.max_travel >= 380000 else 2  # TODO: anything more inteligent?
 
             self.device_info = (
                 f"port='{comport}', manufacturer='{self.info['controller']}', product='{self.info['product']}', "
