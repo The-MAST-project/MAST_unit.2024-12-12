@@ -55,6 +55,7 @@ if platform.system() == "Windows":
         cast,
         device_information_t,
         edges_settings_t,
+        stage_name_t,
         status_t,
         string_at,
     )
@@ -137,6 +138,7 @@ class Stage(Component, SwitchedOutlet):
         self.target: int | None = None
         self.min_travel: int | None = None
         self.max_travel: int | None = None
+        self.positioner_name: str | None = None
 
         self.info = {}
         self._was_shut_down = False
@@ -210,6 +212,22 @@ class Stage(Component, SwitchedOutlet):
                 "min": self.min_travel,
                 "max": self.max_travel,
             }
+
+            sn = stage_name_t()
+            result = ximclib.get_stage_name(self.device, byref(sn))
+            if result == Result.Ok:
+                self.positioner_name = string_at(sn.PositionerName).decode()
+                if self.unit is not None:
+                    if self.positioner_name == "8MT167-25LS-MEn1":
+                        self.unit.fcu_version = 1
+                    elif self.positioner_name.startswith("8MT173-20DCE2"):
+                        self.fcu_version = 2
+                    else:
+                        logger.warning(
+                            f"Unknown positioner name: {self.positioner_name}, "
+                            + "assuming FCU version 1"
+                        )
+                        self.unit.fcu_version = 1
 
             self.device_info = (
                 f"port='{comport}', manufacturer='{self.info['controller']}', product='{self.info['product']}', "
