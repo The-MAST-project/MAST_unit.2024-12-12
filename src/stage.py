@@ -53,6 +53,7 @@ if platform.system() == "Windows":
         c_char_p,
         c_int,
         cast,
+        controller_name_t,
         device_information_t,
         edges_settings_t,
         status_t,
@@ -181,6 +182,13 @@ class Stage(Component, SwitchedOutlet):
             logger.error(f"{op}: no device detected ({self.device=}")
             return
 
+        self.model = None
+        x_controller_name = controller_name_t()
+        result = ximclib.get_controller_name(self.device, byref(x_controller_name))
+        if result == Result.Ok:
+            self.model = repr(string_at(x_controller_name.ControllerName).decode()).replace("'", "")
+            logger.info(f"{op}: {self.model=}")
+
         x_device_information = device_information_t()
         assert ximclib
         result = ximclib.get_device_information(
@@ -211,13 +219,19 @@ class Stage(Component, SwitchedOutlet):
                 "max": self.max_travel,
             }
 
-            if self.max_travel is not None and self.unit is not None:
-                self.unit.fcu_version = 1 if self.max_travel >= 380000 else 2  # TODO: anything more inteligent?
+            if self.model is None:
+                logger.warning("{op}: could not determine stage model")
+            elif self.unit is not None:
+                if self.model == "8MT167-25LS-MEn1":
+                    self.unit.fcu_version = 1
+                elif self.model.startswith("8MT167-20DC"):
+                    self.unit.fcu_version = 2
 
             self.device_info = (
                 f"port='{comport}', manufacturer='{self.info['controller']}', product='{self.info['product']}', "
-                + f"version='{self.info['version']}', range={self.min_travel}..{self.max_travel}, "
-                + f"close_enough={self.CLOSE_ENOUGH}"
+                + f"version='{self.info['version']}', model='{self.model}', "
+                + f"fcu_version={self.unit.fcu_version if self.unit else None}, "
+                + f"range={self.min_travel}..{self.max_travel}, close_enough={self.CLOSE_ENOUGH}"
             )
         self.stage_lock = threading.Lock()
 
