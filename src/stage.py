@@ -115,7 +115,7 @@ class Stage(Component, SwitchedOutlet):
 
     _positioning_precision: int = 100
 
-    def __init__(self, unit: "Unit"):  # type: ignore
+    def __init__(self, unit: "Unit"):  # type: ignore  # noqa: C901
         if self._initialized:
             return
 
@@ -182,12 +182,11 @@ class Stage(Component, SwitchedOutlet):
             logger.error(f"{op}: no device detected ({self.device=}")
             return
 
-        self.model = None
+        self.stage_model = None
         x_controller_name = controller_name_t()
         result = ximclib.get_controller_name(self.device, byref(x_controller_name))
         if result == Result.Ok:
-            self.model = repr(string_at(x_controller_name.ControllerName).decode()).replace("'", "")
-            logger.info(f"{op}: {self.model=}")
+            self.stage_model = repr(string_at(x_controller_name.ControllerName).decode()).replace("'", "")
 
         x_device_information = device_information_t()
         assert ximclib
@@ -219,17 +218,17 @@ class Stage(Component, SwitchedOutlet):
                 "max": self.max_travel,
             }
 
-            if self.model is None:
+            if self.stage_model is None:
                 logger.warning("{op}: could not determine stage model")
             elif self.unit is not None:
-                if self.model == "8MT167-25LS-MEn1":
+                if self.stage_model == "8MT167-25LS-MEn1":
                     self.unit.fcu_version = 1
-                elif self.model.startswith("8MT167-20DC"):
+                elif self.stage_model.startswith("8MT173-20DCE2"):
                     self.unit.fcu_version = 2
 
             self.device_info = (
                 f"port='{comport}', manufacturer='{self.info['controller']}', product='{self.info['product']}', "
-                + f"version='{self.info['version']}', model='{self.model}', "
+                + f"version='{self.info['version']}', model='{self.stage_model}', "
                 + f"fcu_version={self.unit.fcu_version if self.unit else None}, "
                 + f"range={self.min_travel}..{self.max_travel}, close_enough={self.CLOSE_ENOUGH}"
             )
@@ -760,23 +759,20 @@ class Stage(Component, SwitchedOutlet):
         return router
 
 if __name__ == "__main__":
-    # For testing purposes only
+
     stage = Stage(unit=None)  # type: ignore
 
-    for _ in range(5):
-        # print(f"{stage.position}", end = None, flush=True)
-        stage.move_to_preset(StagePresetPosition.Sky)
-        time.sleep(.5)
-        while stage.is_active(StageActivities.Moving):
-            # print('.', end = None, flush=True)
-            time.sleep(1)
-        # print("Sky", end = None, flush=True)
+    def move_between_presets():
 
-        time.sleep(5)
+        def move_and_wait(preset: StagePresetPosition):
+            stage.move_to_preset(preset)
+            time.sleep(.5)
+            while stage.is_active(StageActivities.Moving):
+                time.sleep(1)
 
-        stage.move_to_preset(StagePresetPosition.Spec)
-        time.sleep(.5)
-        while stage.is_active(StageActivities.Moving):
-            # print('.', end = None, flush=True)
-            time.sleep(1)
-        # print("Spec", end = None, flush=True)
+        for _ in range(3):
+            move_and_wait(StagePresetPosition.Sky)
+            time.sleep(5)
+            move_and_wait(StagePresetPosition.Spec)
+
+    move_between_presets()
