@@ -301,13 +301,16 @@ class Solver(SolverInterface):
                     logger,
                     f"phase: {phase.upper()}, plate solver found a match, YEY, YEPEEE, HURRAY !!!",
                 )
-                dec_avg_rad = math.radians((target.dec.arcsecond + Angle(result.solution.dec_rads * u.radian).arcsecond) / 2)  # type: ignore
+                # dec_avg_rad = math.radians((target.dec.arcsecond + Angle(result.solution.dec_rads * u.radian).arcsecond) / 2)  # type: ignore
+                dec_avg_rad = float(target.dec.radian + result.solution.dec_rads) / 2  # type: ignore
+                assert result.solution is not None, f"{op}: result.solution is None"
                 delta_ra_arcsec = (
-                    target.ra.arcsecond
-                    - Angle(result.solution.ra_rads * u.radian).arcsecond  # type: ignore
-                ) * math.cos(
-                    dec_avg_rad
+                    target.ra.arcsecond - result.solution.ra_hours * 15 * 3600
                 )  # type: ignore
+                # - Angle(result.solution.ra_rads * u.radian).arcsecond  # type: ignore
+                # ) * math.cos(
+                #     dec_avg_rad
+                # )  # type: ignore
                 delta_dec_arcsec = target.dec.arcsecond - Angle(result.solution.dec_rads * u.radian).arcsecond  # type: ignore
 
                 abs_delta_ra_arcsec = abs(delta_ra_arcsec)
