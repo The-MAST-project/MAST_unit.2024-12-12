@@ -106,7 +106,10 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def ontimer(self):
         op = function_name()
 
-        if self.parent_imager.unit and self.parent_imager.unit.unit_shutdown_event.is_set():
+        if (
+            self.parent_imager.unit
+            and self.parent_imager.unit.unit_shutdown_event.is_set()
+        ):
             self.timer.cancel()
             return
 
@@ -135,8 +138,10 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                     )
                 elif exposure_status == ASI.ExposureStatus.ASI_EXP_SUCCESS:
 
-                    assert(self.latest_settings.roi is not None)
-                    buffer_size = self.latest_settings.roi.width * self.latest_settings.roi.height
+                    assert self.latest_settings.roi is not None
+                    buffer_size = (
+                        self.latest_settings.roi.width * self.latest_settings.roi.height
+                    )
                     if self.latest_settings.format == "raw16":
                         buffer_size *= 2
                         dtype = np.uint16
@@ -146,10 +151,12 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                     self.parent_imager.start_activity(ImagerActivities.ReadingOut)
                     buffer = asi.getDataAfterExp(self.cam_id, bufferSize=buffer_size)
                     assert self.latest_settings and self.latest_settings.roi
-                    self.image_array = np.flipud(np.frombuffer(
-                            buffer=buffer,
-                            dtype=dtype
-                        ).reshape(self.latest_settings.roi.height, self.latest_settings.roi.width))
+                    self.image_array = np.flipud(
+                        np.frombuffer(buffer=buffer, dtype=dtype).reshape(
+                            self.latest_settings.roi.height,
+                            self.latest_settings.roi.width,
+                        )
+                    )
                     self.parent_imager.end_activity(ImagerActivities.ReadingOut)
                     self.image_was_read = True
                     self.image_read_event.set()
@@ -349,6 +356,10 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         return self.height
 
     def set_format(self, settings: ImagerSettings):
+        """
+        NOTES:
+        - The width and height of the ROI must be divisible by 8 and 2 respectively.
+        - The binning must be equal in both dimensions."""
         if settings.binning:
             binning = settings.binning
             if binning.x != binning.y:
