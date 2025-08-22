@@ -12,7 +12,13 @@ from astropy.coordinates import Angle
 
 from acquisition import Acquisition
 from common.activities import UnitActivities
-from common.config import AcquisitionConfig, Config, ImagerBinningConfig, SkyRoiConfig, ToleranceConfig
+from common.config import (
+    AcquisitionConfig,
+    Config,
+    ImagerBinningConfig,
+    SkyRoiConfig,
+    ToleranceConfig,
+)
 from common.corrections import Correction, Corrections
 from common.filer import Filer
 from common.interfaces.imager import ImagerSettings
@@ -204,8 +210,10 @@ class Solver(SolverInterface):
             if target is None:
                 mount_status = self.unit.mount.status
                 target = Coord(
-                    ra=Angle(mount_status.ra_j2000_hours, unit="hourangle",
-                    dec=Angle(mount_status.dec_j2000_degs, unit="deg")
+                    ra=Angle(
+                        mount_status.ra_j2000_hours,
+                        unit="hourangle",
+                        dec=Angle(mount_status.dec_j2000_degs, unit="deg"),
                     )
                 )
 
