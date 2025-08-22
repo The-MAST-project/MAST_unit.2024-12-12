@@ -21,9 +21,13 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
-from common.interfaces.imager import (ImagerBinning, ImagerExposureSeries,
-                                      ImagerInterface, ImagerRoi,
-                                      ImagerSettings)
+from common.interfaces.imager import (
+    ImagerBinning,
+    ImagerExposureSeries,
+    ImagerInterface,
+    ImagerRoi,
+    ImagerSettings,
+)
 from common.mast_logging import init_log
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_info, function_name
@@ -325,7 +329,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         else:
             logger.info(f"no guiding validation ({self.validation_interval=})")
 
-
         self.activities = PHD2Activities.Idle
         self.restart_event: threading.Event = threading.Event()
 
@@ -436,12 +439,18 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         logger.info(f"{function_name()}: resuming guiding ...")
         self.start_guiding()
 
-        assert(self.parent_imager.unit is not None)
+        assert self.parent_imager.unit is not None
         assert self.parent_imager.unit.acquirer.latest_acquisition is not None
         assert guiding_settings.image_path is not None
         target: Coord = Coord(
-            Angle(self.parent_imager.unit.acquirer.latest_acquisition.target_ra, unit="hours"),
-            Angle(self.parent_imager.unit.acquirer.latest_acquisition.target_dec, unit="degrees"),
+            Angle(
+                self.parent_imager.unit.acquirer.latest_acquisition.target_ra,
+                unit="hours",
+            ),
+            Angle(
+                self.parent_imager.unit.acquirer.latest_acquisition.target_dec,
+                unit="degrees",
+            ),
         )
         tolerance = Config().get_unit().guiding.tolerance
 
@@ -449,7 +458,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         with ThreadPoolExecutor() as executor:
             logger.info(f"{function_name()}: starting solving for {target=}")
             self.parent_imager.start_activity(UnitActivities.Solving)
-            future = executor.submit(self.parent_imager.unit.solver.solve, guiding_settings, target)
+            future = executor.submit(
+                self.parent_imager.unit.solver.solve, guiding_settings, target
+            )
             solving_result = future.result()
             self.parent_imager.end_activity(UnitActivities.Solving)
 
@@ -509,7 +520,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 logger.debug(f"event: {e}, {self.version=}, {self.sub_version=}")
         elif e == "StartGuiding":
             self.start_activity(PHD2Activities.Guiding)
-            self.guiding_verification_timer.start()
+            if self.guiding_verification_timer is not None:
+                self.guiding_verification_timer.start()
             self.accumulators_active = True
             self.ra_accumulator.reset()
             self.dec_accumulator.reset()
@@ -592,7 +604,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             )
             self.end_activity(activity)
             if activity == PHD2Activities.Guiding:
-                self.guiding_verification_timer.cancel()
+                if self.guiding_verification_timer is not None:
+                    logger.info("stopping guiding verification timer")
+                    self.guiding_verification_timer.cancel()
             with self.lock:
                 self.app_state = "Stopped"
 
@@ -1134,7 +1148,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 ImagerActivities.Exposing, details=f"{settings.seconds} seconds"
             )
             self.parent_imager.start_activity(
-                ImagerActivities.Saving, details=f"{Path(settings.image_path).as_posix()}"
+                ImagerActivities.Saving,
+                details=f"{Path(settings.image_path).as_posix()}",
             )
 
         if self._is_guiding(self.app_state):
