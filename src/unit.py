@@ -36,15 +36,27 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.const import Const
 from common.corrections import correction_phases
-from common.dlipowerswitch import PowerStatus, PowerSwitchFactory, PowerSwitchStatus, SwitchedOutlet
+from common.dlipowerswitch import (
+    PowerStatus,
+    PowerSwitchFactory,
+    PowerSwitchStatus,
+    SwitchedOutlet,
+)
 from common.filer import Filer
 from common.interfaces.components import Component, ComponentStatus
 from common.interfaces.guiding import GuiderTypes
 
 # from guiding import Guider
-from common.interfaces.imager import ImagerBinning, ImagerExposureSeries, ImagerSettings, ImagerStatus, ImagerTypes
+from common.interfaces.imager import (
+    ImagerBinning,
+    ImagerExposureSeries,
+    ImagerSettings,
+    ImagerStatus,
+    ImagerTypes,
+)
 from common.mast_logging import DailyFileHandler, init_log
 from common.models.assignments import UnitAssignmentModel
+from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
 from common.rois import UnitRoi
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
@@ -57,6 +69,9 @@ from phd2.phd2 import PHD2Connector, PHD2GuiderStatus, PHD2ImagerStatus
 from PlaneWave import pwi4_client
 from solving import Solver
 from stage import Stage, StageStatus
+
+RA_REGEX = r"^(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
+DEC_REGEX = r"^([+-]?)(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
 
 logger = logging.getLogger("mast.unit")
 init_log(logger)
@@ -518,7 +533,32 @@ class Unit(Component):
 
     def expose(
         self,
-        # imager: ImagerTypes = Depends(get_imager_type),
+        ra_j2000_hours: Annotated[
+            str | float | None,
+            Query(
+                regex=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
+                description=(
+                    "### Right Ascension (J2000) in either:\n"
+                    "- decimal hours (e.g., `12.5`) or\n"
+                    "- sexagesimal format (e.g., `12:30:45.123`). \n"
+                    "- Decimal range: `0 <= RA < 24`.\n"
+                    "If not supplied, taken from telescope"
+                ),
+            ),
+        ] = None,
+        dec_j2000_degs: Annotated[
+            str | float | None,
+            Query(
+                regex=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
+                description=(
+                    "### Declination (J2000) in either:\n"
+                    "- decimal degrees (e.g., `-45.5`) or\n"
+                    "- sexagesimal format (e.g., `-45:30:00.123`). \n"
+                    "- Decimal range: `-90 <= DEC <= 90`.\n"
+                    "If not supplied, taken from telescope"
+                ),
+            ),
+        ] = None,
         subfolder: str | None = None,
         exposure_seconds: float = 3,
         repeats: int = 1,
@@ -550,6 +590,33 @@ class Unit(Component):
             ),
         ] = None,
     ) -> CanonicalResponse:
+
+        if ra_j2000_hours:
+            if isinstance(ra_j2000_hours, str):
+                if ":" in ra_j2000_hours:
+                    ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
+                else:
+                    ra_j2000_hours = float(ra_j2000_hours)
+            elif isinstance(ra_j2000_hours, float):
+                pass
+
+        if dec_j2000_degs:
+            if isinstance(dec_j2000_degs, str):
+                if ":" in dec_j2000_degs:
+                    dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
+                else:
+                    dec_j2000_degs = float(dec_j2000_degs)
+            elif isinstance(dec_j2000_degs, float):
+                pass
+
+        if (ra_j2000_hours is not None and isinstance(ra_j2000_hours, float)) and (
+            dec_j2000_degs is not None and isinstance(dec_j2000_degs, float)
+        ):
+            logger.info(f"slewing mount to ra={ra_j2000_hours}, dec={dec_j2000_degs}")
+            self.mount.goto_ra_dec_j2000(ra=ra_j2000_hours, dec=dec_j2000_degs)
+            while self.mount.is_moving:
+                logger.info("waiting for mount to stop moving ...")
+                time.sleep(1)
 
         if ra_offsets is not None:
             if isinstance(ra_offsets, str):
@@ -590,13 +657,6 @@ class Unit(Component):
                 )
             fiber_x = int(width / 2)
             fiber_y = int(height / 2)
-
-        # if imager is not None:
-        #     if imager.name == "ascom":
-        #         imager_type = f"ascom:ASCOM.ASICamera2.Camera"
-        #     else:
-        #         imager_type = imager.name
-        #     self.switch_imager(imager_type)
 
         Thread(
             name="expose-thread",
