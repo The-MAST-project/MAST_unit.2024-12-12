@@ -191,7 +191,7 @@ class AstrometryDotNet(SolverInterface):
         ret = SolvingResult(succeeded=False)
         ret.solution = SolvingSolution()
         ret.native_result = AstrometryDotNetSolverResult()
-        pattern_float = r"[-+]?\d+(\.\d+)?"
+        pattern_float = r"([+-]?(?:\d+(?:\.\d*)?|\.\d+))"
 
         try:
             for line in lines:
