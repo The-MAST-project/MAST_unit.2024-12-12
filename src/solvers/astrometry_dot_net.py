@@ -21,6 +21,7 @@ init_log(logger)
 # if TYPE_CHECKING:
 #     from unit import Unit  # type: ignore[import-untyped]
 
+
 class AstrometryDotNetSolverResult:
     index_file: str = ""
 
@@ -81,9 +82,10 @@ class AstrometryDotNet(SolverInterface):
             + "C:/Users/mast/PycharmProjects/MAST_unit/src/Standa/ximc-2.13.6/ximc/win64;"
         )
 
-        assert(settings.roi is not None), f"{function_name()}: settings.roi is None"
-        assert(settings.image_path is not None), (f"{function_name()}: settings.image_path is None")
-
+        assert settings.roi is not None, f"{function_name()}: settings.roi is None"
+        assert (
+            settings.image_path is not None
+        ), f"{function_name()}: settings.image_path is None"
 
         cmd = ""
         args = []
@@ -110,7 +112,10 @@ class AstrometryDotNet(SolverInterface):
             args += ["--temp-dir", tmp_path]
 
             if latest_index_file is not None:
-                args += ["--index-file", "/usr/local/astrometry/indexes-full/" + latest_index_file]
+                args += [
+                    "--index-file",
+                    "/usr/local/astrometry/indexes-full/" + latest_index_file,
+                ]
             else:
                 args += ["--index-dir", "/usr/local/astrometry/indexes-full"]
             args += ["--new-fits", win_to_cygwin(new_fits_path)]
@@ -123,7 +128,6 @@ class AstrometryDotNet(SolverInterface):
             args += ["--index-dir", win_to_wsl(index_dir)]
             args += ["--new-fits", win_to_wsl(new_fits_path)]
             args += [win_to_wsl(fits_path)]
-
 
         start = datetime.datetime.now()
         command = " ".join([cmd] + args)
@@ -154,14 +158,26 @@ class AstrometryDotNet(SolverInterface):
         if completed_process.returncode == 0:
             ret = self._parse_solver_output(stdout_lines)
             if ret.solution is not None:
-                boxed_info(logger=logger, lines=["FUTURE: image quality check",
-                            f"#sources {ret.solution.sources}", f"#matched {ret.solution.matched_stars}"], center=True)
+                boxed_info(
+                    logger=logger,
+                    lines=[
+                        "FUTURE: image quality check",
+                        f"#sources {ret.solution.sources}",
+                        f"#matched {ret.solution.matched_stars}",
+                    ],
+                    center=True,
+                )
                 if ret.solution.index_file:
-                    self.unit.acquirer.latest_acquisition.solver_data = ret.solution.index_file
+                    self.unit.acquirer.latest_acquisition.solver_data = (
+                        ret.solution.index_file
+                    )
         else:
             ret = SolvingResult(
                 succeeded=False,
-                errors=[f"Exit status: {completed_process.returncode}", ', '.join(stderr_lines)],
+                errors=[
+                    f"Exit status: {completed_process.returncode}",
+                    ", ".join(stderr_lines),
+                ],
             )
 
         shutil.rmtree(win_tmp_dir, ignore_errors=True)
@@ -211,10 +227,12 @@ class AstrometryDotNet(SolverInterface):
                     if match:
                         ra_degs = float(match.group(1))
                         dec_degs = float(match.group(3))
-                        # logger.info(f"{ra_degs=}, {dec_degs=}")
-                        ret.solution.ra_rads = float(Angle(ra_degs, unit="deg").radian) # type: ignore[assignment]
-                        ret.solution.dec_rads = float(Angle(dec_degs, unit="deg").radian) # type: ignore[assignment]
-                        ret.solution.ra_hours = Angle(ra_degs, unit="deg").hour # type: ignore[assignment]
+                        logger.info(
+                            f"'{match.group(1)=}', {ra_degs=}, {match.group(3)=}', {dec_degs=}"
+                        )
+                        ret.solution.ra_rads = float(Angle(ra_degs, unit="deg").radian)  # type: ignore[assignment]
+                        ret.solution.dec_rads = float(Angle(dec_degs, unit="deg").radian)  # type: ignore[assignment]
+                        ret.solution.ra_hours = Angle(ra_degs, unit="deg").hour  # type: ignore[assignment]
                         ret.solution.dec_degs = dec_degs
                     else:
                         logger.error("bad match for ra_degs, dec_degs")
