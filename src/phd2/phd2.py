@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Literal
 from astropy.coordinates import Angle
 from pydantic import BaseModel
 
-import ASI
+import common.ASI as ASI
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config

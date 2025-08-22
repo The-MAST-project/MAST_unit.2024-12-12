@@ -15,7 +15,7 @@ import numpy as np
 import win32com.client
 from astropy.io import fits
 
-import ASI
+import common.ASI as ASI
 from common.activities import ImagerActivities
 from common.ascom import AscomDispatcher, AscomStatus, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok

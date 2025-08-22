@@ -208,6 +208,8 @@ class Unit(Component):
 
         self.errors: list[str] = []
 
+        self.fcu_version: int | None = None
+
         self.controller_api = ControllerApi()
 
         self.spirals_folder: str | None = None
