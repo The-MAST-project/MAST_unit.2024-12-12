@@ -1154,7 +1154,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                         "exposure": int(
                             settings.seconds * 1000
                         ),  # convert to milliseconds
-                        "gain": settings.gain,
+                        "gain": int(ASI.gain_absolute_to_percent(settings.gain)),
                         "binning": settings.binning.x if settings.binning else 1,
                         "subframe": [
                             settings.roi.x,
