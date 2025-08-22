@@ -493,6 +493,27 @@ class Stage(Component, SwitchedOutlet):
                         f"move command 0x{hw_status.MvCmdSts & MvcmdStatus.MVCMD_NAME_BITS:08X} "
                         + "ended with MVCMD_ERROR"
                     )
+                    with self.stage_lock:
+                        for i in range(3):
+                            logger.error(
+                                f"attempt #{i} (of 3): attempting to clear MVCMD_ERROR by calling command_stop()"
+                            )
+                            ximclib.command_stop(self.device)
+                            time.sleep(0.2)
+                            result = ximclib.get_status(self.device, byref(hw_status))
+                            if result != Result.Ok:
+                                logger.error(
+                                    f"attempt #{i} (of 3): could not get_status(), {result=} ({RESULT_MAP[result]})"
+                                )
+                                break
+                            logger.error(
+                                f"attempt #{i} (of 3): status after command_stop(): MvCmdSts=0x{hw_status.MvCmdSts:08X}"
+                            )
+                            if not (hw_status.MvCmdSts & MvcmdStatus.MVCMD_ERROR):
+                                logger.error(
+                                    f"attempt #{i} (of 3): successfully cleared MVCMD_ERROR"
+                                )
+                                break
 
             if self.is_active(StageActivities.StartingUp) and self.close_enough(
                 self.presets[StagePresetPosition.StartUp]
