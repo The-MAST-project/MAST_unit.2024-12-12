@@ -367,16 +367,6 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             height = self.height
         try:
             format: ASI.OutputFormat = ASI.OutputFormat.from_string(settings.format)
-            if width % 8 != 0:
-                logger.warning(
-                    f"aligning roi width to 8 (subtracting {width % 8} bits)"
-                )
-                width -= width % 8
-            if height % 2 != 0:
-                logger.warning(
-                    f"aligning roi height to 2 (subtracting {height % 2} bits)"
-                )
-                height -= height % 8
             asi.setROIFormat(
                 self.cam_id,
                 width=width,
@@ -415,19 +405,13 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         if settings.roi is None:
             settings.roi = self.default_settings.roi
 
-        assert(settings.roi is not None)
-        if settings.roi.width % 8 != 0:
-            logger.warning(
-                f"start_exposure: aligning roi width to 8 (subtracting {settings.roi.width % 8} bits)"
-            )
-            settings.roi.width -= settings.roi.width % 8
-        if settings.roi.height % 2 != 0:
-            logger.warning(
-                f"start_exposure: aligning roi height to 2 (subtracting {settings.roi.height % 2} bits)"
-            )
-            settings.roi.height -= settings.roi.height % 8
-
-        self.set_format(settings)
+        zwo_settings = settings.model_copy()
+        assert zwo_settings.roi is not None and zwo_settings.binning is not None
+        zwo_settings.roi.width //= zwo_settings.binning.x
+        zwo_settings.roi.height //= zwo_settings.binning.y
+        zwo_settings.roi.width //= 8
+        zwo_settings.roi.height //= 2
+        self.set_format(zwo_settings)
 
         self.latest_settings = settings.model_copy()
 
