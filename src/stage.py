@@ -43,11 +43,11 @@ if platform.system() == "Windows":
         raise FileNotFoundError(f"Directory with ximc library not found: {lib_dir=}. ")
     os.add_dll_directory(str(lib_dir))  # add dll path into an environment variable
 
+    from pyximc import EnumerateFlags  # type: ignore[name]
+    from pyximc import Result  # type: ignore[name]
     from pyximc import (
         POINTER,
-        EnumerateFlags,  # type: ignore[name]
         MvcmdStatus,
-        Result,  # type: ignore[name]
         StateFlags,
         byref,
         c_char_p,
@@ -55,10 +55,9 @@ if platform.system() == "Windows":
         cast,
         device_information_t,
         edges_settings_t,
-        status_t,
-        string_at,
     )
     from pyximc import lib as ximclib  # type: ignore[name]
+    from pyximc import status_t, string_at
 
 RESULT_MAP = {
     Result.Ok: "Ok",
@@ -155,7 +154,7 @@ class Stage(Component, SwitchedOutlet):
         ports = self.find_ximc_ports()
         hint = f"addr={ports[0]}" if ports else "addr="
         logger.info(f"{op}: using {hint=} as enumeration hint")
-        enum_hints = c_char_p(hint.encode()) # type: ignore
+        enum_hints = c_char_p(hint.encode())  # type: ignore
         assert ximclib
         self.device = -1
         try:
@@ -255,16 +254,16 @@ class Stage(Component, SwitchedOutlet):
         assert self.device
         ximclib.close_device(byref(cast(self.device, POINTER(c_int))))
 
-        assert(self.timer is not None)
+        assert self.timer is not None
         self.timer.cancel()
 
     def __repr__(self):
         return f"<Stage device={self.device}>"
 
     def find_ximc_ports(self):
-        import serial.tools.list_ports
+        from serial.tools import list_ports
 
-        ports = serial.tools.list_ports.comports()
+        ports = list_ports.comports()
         ximc_ports = []
         for port in ports:
             if "XIMC" in port.description:
@@ -417,8 +416,9 @@ class Stage(Component, SwitchedOutlet):
         Returns True if the stage was at the same position for the last
           self.latest_positions.maxlen readings (every 2 seconds by ontimer).
         """
-        return self.latest_positions.count == self.latest_positions.maxlen and \
-               all(pos == self.latest_positions[0] for pos in self.latest_positions)
+        return self.latest_positions.count == self.latest_positions.maxlen and all(
+            pos == self.latest_positions[0] for pos in self.latest_positions
+        )
 
     def ontimer(self):  # noqa: C901
         if self.unit and self.unit.unit_shutdown_event.is_set():
@@ -474,14 +474,16 @@ class Stage(Component, SwitchedOutlet):
                     # but it is not close enough to the target position.
                     # Try to nudge it to the target position.
                     #
-                    boxed_info(logger, [
-                        "Stage is stationary, but not close enough to target: ",
-                        f"{self.position} != {self.target} (CLOSE_ENOUGH={self.CLOSE_ENOUGH})",
-                        f"Moving to {self.target} again",
+                    boxed_info(
+                        logger,
+                        [
+                            "Stage is stationary, but not close enough to target: ",
+                            f"{self.position} != {self.target} (CLOSE_ENOUGH={self.CLOSE_ENOUGH})",
+                            f"Moving to {self.target} again",
                         ],
-                        center=True
+                        center=True,
                     )
-                    assert(self.target is not None)
+                    assert self.target is not None
                     self.move_absolute(self.target)
 
                 elif self.close_enough(self.target):
@@ -598,7 +600,9 @@ class Stage(Component, SwitchedOutlet):
         self.ticks_at_start = self.position
         self.target = position
         self.motion_start_time = datetime.datetime.now()
-        self.start_activity(StageActivities.Moving, details=f"from {self.position} to {self.target}")
+        self.start_activity(
+            StageActivities.Moving, details=f"from {self.position} to {self.target}"
+        )
 
         return CanonicalResponse_Ok
 
@@ -627,7 +631,9 @@ class Stage(Component, SwitchedOutlet):
         amount *= 1 if direction == StageDirection.Up else -1
         try:
             self.target = current_position + amount
-            self.start_activity(StageActivities.Moving, details=f"from {self.position} to {self.target}")
+            self.start_activity(
+                StageActivities.Moving, details=f"from {self.position} to {self.target}"
+            )
             with self.stage_lock:
                 assert ximclib
                 response = ximclib.command_movr(self.device, amount, 0)
@@ -763,6 +769,7 @@ class Stage(Component, SwitchedOutlet):
 
         return router
 
+
 if __name__ == "__main__":
     # For testing purposes only
     stage = Stage(unit=None)  # type: ignore
@@ -770,7 +777,7 @@ if __name__ == "__main__":
     for _ in range(5):
         # print(f"{stage.position}", end = None, flush=True)
         stage.move_to_preset(StagePresetPosition.Sky)
-        time.sleep(.5)
+        time.sleep(0.5)
         while stage.is_active(StageActivities.Moving):
             # print('.', end = None, flush=True)
             time.sleep(1)
@@ -779,7 +786,7 @@ if __name__ == "__main__":
         time.sleep(5)
 
         stage.move_to_preset(StagePresetPosition.Spec)
-        time.sleep(.5)
+        time.sleep(0.5)
         while stage.is_active(StageActivities.Moving):
             # print('.', end = None, flush=True)
             time.sleep(1)
