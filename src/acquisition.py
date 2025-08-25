@@ -33,6 +33,7 @@ class Acquisition:
         target_dec: float | None = None,
         conf: AcquisitionConfig | None = None,
         skip_sky: bool = False,
+        handover_automatically_to_guider: bool = False,
     ):
         if not conf:
             raise Exception("Acquisition: conf == None")
@@ -40,6 +41,7 @@ class Acquisition:
         self.approach_mode = approach_mode
         self.solver_id = solver_id
         self.make_corrections = make_corrections
+        self.handover_automatically_to_guider = handover_automatically_to_guider
         self.unit = unit
         self.slew_to_target = False
         if target_ra is not None and target_dec is not None:
