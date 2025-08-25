@@ -319,7 +319,6 @@ class Acquirer:
             ),
         ] = None,
         approach_mode: int = 2,
-        # solver_name: SolverIdNames = "AstrometryDotNet",
         make_corrections: bool = True,
         skip_sky: bool = False,
         handover_automatically_to_guider: bool = False,
