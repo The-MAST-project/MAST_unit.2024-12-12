@@ -101,7 +101,12 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     def ascom(self) -> win32com.client.Dispatch:  # type: ignore
         return self._ascom
 
-    def __init__(self, parent_imager: Imager, prog_id: str | None = None, _from_imager: bool = False):
+    def __init__(
+        self,
+        parent_imager: Imager,
+        prog_id: str | None = None,
+        _from_imager: bool = False,
+    ):
 
         if self._initialized:
             return
@@ -111,7 +116,8 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         SwitchedOutlet.group(
             domain=OutletDomain.UnitOutlets,
             group_name="Camera",
-            outlet_names=["Camera", "CameraUSB"]).transfer_attributes(self)
+            outlet_names=["Camera", "CameraUSB"],
+        ).transfer_attributes(self)
 
         self.parent_imager = parent_imager
         self.prog_id = prog_id
@@ -460,22 +466,21 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         self.errors = []
 
         if not self._ascom:
-            self.errors.append(f"{op}: no ASCOM handle")
+            return CanonicalResponse(errors=[f"{op}: no ASCOM handle"])
 
         if not self.connected:
-            self.errors.append(f"{op}: not connected")
+            self.connect()
+            if not self.detected:
+                return CanonicalResponse(errors=[f"{op}: could not connect"])
 
-        if len(self.errors) > 0:
-            return CanonicalResponse(errors=self.errors)
-
-        self.image_was_saved = False
         if self.parent_imager.is_active(ImagerActivities.Exposing):
             logger.info(f"{op}: already exposing")
             return CanonicalResponse(errors=["already exposing"])
 
-        self.errors = []
+        self.image_was_saved = False
 
         try:
+            # enforce settings
             if settings.gain:
                 self.gain = settings.gain
 
@@ -491,7 +496,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if len(self.errors) > 0:
             logger.error(f"{op}: {self.errors=}")
             return CanonicalResponse(errors=self.errors)
-
 
         self.latest_settings = settings
 
@@ -751,8 +755,11 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         Called by timer, checks if any ongoing activities have changed state
         """
 
-        if self.parent_imager.unit and self.parent_imager.unit.unit_shutdown_event.is_set():
-            assert(self.timer is not None)
+        if (
+            self.parent_imager.unit
+            and self.parent_imager.unit.unit_shutdown_event.is_set()
+        ):
+            assert self.timer is not None
             self.timer.cancel()
             return
 
@@ -797,8 +804,10 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 self.expected_mid_exposure = None
 
         # logger.info(f"is_active(CameraActivities.Exposing)={self.is_active(CameraActivities.Exposing)}, {current_state=}")
-        if self.parent_imager.is_active(ImagerActivities.Exposing) and current_state == AscomCameraState.Idle and (
-            not self.image_lock.locked()
+        if (
+            self.parent_imager.is_active(ImagerActivities.Exposing)
+            and current_state == AscomCameraState.Idle
+            and (not self.image_lock.locked())
         ):  # it could be already locked by a previous occurrence of onTimer()
             with self.image_lock:
                 #
@@ -825,12 +834,23 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
                         # download the image from the camera
                         response = ascom_run(self, "ImageArray")
-                        assert(self.latest_settings is not None)
-                        dtype = np.uint8 if self.latest_settings.format == "raw8" else np.uint16
-                        assert(self.latest_settings.roi)
-                        self.image = None if not response.succeeded else np.flipud(
-                            np.frombuffer(response.value, dtype=dtype). # type: ignore
-                                    reshape(self.latest_settings.roi.height, self.latest_settings.roi.width))
+                        assert self.latest_settings is not None
+                        dtype = (
+                            np.uint8
+                            if self.latest_settings.format == "raw8"
+                            else np.uint16
+                        )
+                        assert self.latest_settings.roi
+                        if not response.succeeded:
+                            self.image = None
+                        else:
+                            assert response.value is not None
+                            h = self.latest_settings.roi.height
+                            w = self.latest_settings.roi.width
+                            img = np.frombuffer(response.value, dtype=dtype)
+                            img = img.reshape((h, w))
+                            img = np.flipud(img)
+                            self.image = img
 
                         self.parent_imager.end_activity(ImagerActivities.ReadingOut)
                         self.image_was_read = True
@@ -1024,12 +1044,17 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     def end_exposure_series(self, series: ImagerExposureSeries):
         pass
 
+
 def save_to_fits_file(imager_backend):
     op = function_name()
 
     settings = imager_backend.latest_settings
-    assert(settings is not None and settings.roi is not None
-           and settings.binning is not None and settings.image_path is not None)
+    assert (
+        settings is not None
+        and settings.roi is not None
+        and settings.binning is not None
+        and settings.image_path is not None
+    )
 
     imager_backend.parent_imager.start_activity(ImagerActivities.Saving)
 
@@ -1070,7 +1095,7 @@ def save_to_fits_file(imager_backend):
         for k, v in settings.fits_cards.items():
             header[k] = v
 
-    assert(imager_backend.image_array is not None)
+    assert imager_backend.image_array is not None
     hdu = fits.PrimaryHDU(data=imager_backend.image_array, header=header)
     hdu.header.update(header)
     hdu_list = fits.HDUList([hdu])
@@ -1081,6 +1106,7 @@ def save_to_fits_file(imager_backend):
         logger.error(f"failed to save to '{settings.image_path}', {ex=}")
 
     imager_backend.parent_imager.end_activity(ImagerActivities.Saving)
+
 
 def set_ASICamera2_ASCOM_profile_image_type():  # noqa: N802
     """
@@ -1099,11 +1125,16 @@ def set_ASICamera2_ASCOM_profile_image_type():  # noqa: N802
 
     profile = win32com.client.Dispatch("ASCOM.Utilities.Profile")
     profile.DeviceType = "Camera"
-    profile_image_format = profile.GetValue(prog_id, "ImageType", "", str(ASI.OutputFormat.RAW16))
-    configured_image_format = str(ASI.OutputFormat.from_string(Config().get_unit().imager.format))
+    profile_image_format = profile.GetValue(
+        prog_id, "ImageType", "", str(ASI.OutputFormat.RAW16)
+    )
+    configured_image_format = str(
+        ASI.OutputFormat.from_string(Config().get_unit().imager.format)
+    )
 
     if int(profile_image_format) != configured_image_format:
         profile.WriteValue(prog_id, "ImageType", configured_image_format, "")
+
 
 if __name__ == "__main__":
     imager = Imager(imager_type="ascom:ASCOM.ASICamera2.Camera")

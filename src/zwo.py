@@ -2,6 +2,7 @@ import datetime
 import json
 import logging
 from threading import Event, Lock, Thread
+from turtle import heading
 from typing import Any
 
 import numpy as np
@@ -151,12 +152,19 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                     self.parent_imager.start_activity(ImagerActivities.ReadingOut)
                     buffer = asi.getDataAfterExp(self.cam_id, bufferSize=buffer_size)
                     assert self.latest_settings and self.latest_settings.roi
-                    self.image_array = np.flipud(
-                        np.frombuffer(buffer=buffer, dtype=dtype).reshape(
-                            self.latest_settings.roi.height,
-                            self.latest_settings.roi.width,
-                        )
-                    )
+                    # self.image_array = np.flipud(
+                    #     np.frombuffer(buffer=buffer, dtype=dtype).reshape(
+                    #         self.latest_settings.roi.height,
+                    #         self.latest_settings.roi.width,
+                    #     )
+                    # )
+                    h = self.latest_settings.roi.height
+                    w = self.latest_settings.roi.width
+                    img = np.frombuffer(buffer=buffer, dtype=dtype)
+                    img = img.reshape((h, w))
+                    img = np.flipud(img)
+                    self.image_array = img
+
                     self.parent_imager.end_activity(ImagerActivities.ReadingOut)
                     self.image_was_read = True
                     self.image_read_event.set()
@@ -432,6 +440,10 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                 seconds=settings.seconds,
                 date=datetime.datetime.now(datetime.UTC).isoformat(),
             )
+
+            if not self.parent_imager.connected:
+                self.parent_imager.connect()
+
             self.parent_imager.start_activity(ImagerActivities.Exposing)
             asi.startExposure(self.cam_id, isDark=False)
             logger.info(f"started a {settings.seconds} seconds exposure")
