@@ -2,9 +2,10 @@ import datetime
 import logging
 import os
 import re
-import shutil
 import subprocess
 import sys
+
+import astropy.io.fits
 
 # from typing import TYPE_CHECKING
 from astropy.coordinates import Angle
@@ -14,6 +15,8 @@ from common.interfaces.solving import SolverInterface, SolvingResult, SolvingSol
 from common.mast_logging import init_log
 from common.utils import Coord, boxed_info, function_name, generate_random_string
 from imagers import ImagerSettings
+
+# from unit import Unit  # type: ignore[import-untyped]
 
 logger = logging.Logger("astrometry_dot_net")
 init_log(logger)
@@ -54,23 +57,58 @@ def win_to_wsl(path: str) -> str:
 
 class AstrometryDotNet(SolverInterface):
 
-    def __init__(self):
-        self.unit = None
-
-    def solve(self, unit: "Unit", settings: ImagerSettings, target: Coord) -> SolvingResult:  # type: ignore[name]  # noqa: F821
+    def solve(
+        self,
+        unit,
+        settings: ImagerSettings | None = None,
+        image_path: str | None = None,
+        index_file: str | None = None,
+        target: Coord | None = None,
+    ) -> SolvingResult:
 
         self.unit = unit
         filer = Filer(logger)
         unix_emulator = "cygwin"
         tmp_dir = generate_random_string(prefix="tmp_")
-        win_tmp_dir = r"D:/MAST/tmp/" + tmp_dir
-        os.makedirs(win_tmp_dir, exist_ok=True)
-        index_dir = r"D:/Astrometry.net/indexes"
+        # win_tmp_dir = r"D:/MAST/tmp/" + tmp_dir
+        # os.makedirs(win_tmp_dir, exist_ok=True)
         solver_name = "AstrometryDotNet"
 
-        latest_index_file = None
-        if self.unit and self.unit.acquirer.latest_acquisition.solver_data is not None:
-            latest_index_file = self.unit.acquirer.latest_acquisition.solver_data
+        if index_file is None:
+            assert self.unit is not None, f"{function_name()}: self.unit is None"
+            assert (
+                self.unit.acquirer is not None
+            ), f"{function_name()}: self.unit.acquirer is None"
+            assert (
+                self.unit.acquirer.latest_acquisition is not None
+            ), f"{function_name()}: self.unit.acquirer.latest_acquisition is None"
+
+            if (
+                all(
+                    [
+                        x is not None
+                        for x in [
+                            self.unit,
+                            self.unit.acquirer,
+                            self.unit.acquirer.latest_acquisition,
+                            self.unit.acquirer.latest_acquisition.solver_data,
+                        ]
+                    ]
+                )
+                and isinstance(self.unit.acquirer.latest_acquisition.solver_data, dict)
+                and "index_file" in self.unit.acquirer.latest_acquisition.solver_data
+            ):
+                index_file = self.unit.acquirer.latest_acquisition.solver_data[
+                    "index_file"
+                ]
+
+        if index_file is not None and not (
+            index_file.startswith("index-") and index_file.endswith(".fits")
+        ):
+            logger.error(
+                f"bad '{index_file=}', should start with 'index-' and end with '.fits'"
+            )
+            index_file = None
 
         os.environ["PATH"] = (
             "C:/cygwin64/bin;/usr/lib/lapack;C:/Users/mast/PycharmProjects/MAST_unit/venv/Scripts;C:/Windows/system32;"
@@ -82,26 +120,49 @@ class AstrometryDotNet(SolverInterface):
             + "C:/Users/mast/PycharmProjects/MAST_unit/src/Standa/ximc-2.13.6/ximc/win64;"
         )
 
-        assert settings.roi is not None, f"{function_name()}: settings.roi is None"
-        assert (
-            settings.image_path is not None
-        ), f"{function_name()}: settings.image_path is None"
+        if image_path is None:
+            if settings is not None:
+                assert (
+                    settings.roi is not None
+                ), f"{function_name()}: settings.roi is None"
+                assert (
+                    settings.image_path is not None
+                ), f"{function_name()}: settings.image_path is None"
 
         cmd = ""
         args = []
         args += ["--scale-units", "arcsecperpix"]
         args += ["--scale-low", "0.25"]
         args += ["--scale-high", "0.27"]
-        args += ["--ra", f"{target.ra.deg}"]
-        args += ["--dec", f"{target.dec.value}"]
+        if target is not None:
+            args += ["--ra", f"{target.ra.deg}"]
+            args += ["--dec", f"{target.dec.value}"]
         args += ["--radius", f"{1}"]
         args += ["--no-plots", "--overwrite", "--solved", "none"]
         args += ["--match", "none", "--rdls", "none", "--corr", "none"]
-        args += ["--crpix-x", str(int(settings.roi.width / 2))]
-        args += ["--crpix-y", str(int(settings.roi.height / 2))]
 
-        fits_path = settings.image_path
-        new_fits_path = fits_path.replace(".fits", f",solver={solver_name}.fits")
+        input_fits_path = (
+            settings.image_path if settings else image_path if image_path else None
+        )
+        assert input_fits_path is not None, f"{function_name()}: fits_path is None"
+
+        if settings is not None and settings.roi is not None:
+            args += ["--crpix-x", str(int(settings.roi.width / 2))]
+            args += ["--crpix-y", str(int(settings.roi.height / 2))]
+            logger.info("using center pixel from settings.roi")
+        else:
+            with astropy.io.fits.open(input_fits_path) as hdul:
+                header = hdul[0].header  # type: ignore
+                if "CRPIX1" in header and "CRPIX2" in header:
+                    args += ["--crpix-x", header["CRPIX1"]]
+                    args += ["--crpix-y", header["CRPIX2"]]
+                    logger.info(
+                        f"using center pixel from '{input_fits_path}' FITS header"
+                    )
+                else:
+                    logger.warning("no center pixel")
+
+        new_fits_path = input_fits_path.replace(".fits", f",solver={solver_name}.fits")
 
         if unix_emulator == "cygwin":
             tmp_path = r"/cygdrive/d/MAST/tmp/" + tmp_dir
@@ -111,23 +172,26 @@ class AstrometryDotNet(SolverInterface):
             args += ["--dir", tmp_path]
             args += ["--temp-dir", tmp_path]
 
-            if latest_index_file is not None:
+            if index_file is not None:
                 args += [
                     "--index-file",
-                    "/usr/local/astrometry/indexes-full/" + latest_index_file,
+                    "/usr/local/astrometry/data/" + index_file,
                 ]
-            else:
-                args += ["--index-dir", "/usr/local/astrometry/indexes-full"]
+
             args += ["--new-fits", win_to_cygwin(new_fits_path)]
-            args += [win_to_cygwin(fits_path)]
+            args += [win_to_cygwin(input_fits_path)]
 
         elif unix_emulator == "wsl":
             cmd = r"//wsl$/usr/local/astrometry/bin/solve-field"
             args += ["--dir", win_to_wsl(tmp_dir)]
+            if index_file is not None:
+                args += [
+                    "--index-file",
+                    r"//wsl$/usr/local/astrometry/data/" + index_file,
+                ]
             args += ["--temp-dir", win_to_wsl(tmp_dir)]
-            args += ["--index-dir", win_to_wsl(index_dir)]
             args += ["--new-fits", win_to_wsl(new_fits_path)]
-            args += [win_to_wsl(fits_path)]
+            args += [win_to_wsl(input_fits_path)]
 
         start = datetime.datetime.now()
         command = " ".join([cmd] + args)
@@ -152,8 +216,12 @@ class AstrometryDotNet(SolverInterface):
             file.write("\n--- stderr ---\n")
             for line in stderr_lines:
                 file.writelines(line + "\n")
+            file.write("\n--- timing ---\n")
+            file.writelines(f"elapsed: {elapsed.total_seconds():.2f} seconds\n")
 
-        filer.move_ram_to_shared([result_file, fits_path, cygwin_to_win(new_fits_path)])
+        filer.move_ram_to_shared(
+            [result_file, input_fits_path, cygwin_to_win(new_fits_path)]
+        )
 
         if completed_process.returncode == 0:
             ret = self._parse_solver_output(stdout_lines)
@@ -167,10 +235,13 @@ class AstrometryDotNet(SolverInterface):
                     ],
                     center=True,
                 )
-                if ret.solution.index_file:
-                    self.unit.acquirer.latest_acquisition.solver_data = (
-                        ret.solution.index_file
-                    )
+                if (
+                    ret.solution.index_file
+                    and self.unit.acquirer.latest_acquisition is not None
+                ):
+                    self.unit.acquirer.latest_acquisition.solver_data = {
+                        "index_file": ret.solution.index_file
+                    }
         else:
             ret = SolvingResult(
                 succeeded=False,
@@ -180,7 +251,7 @@ class AstrometryDotNet(SolverInterface):
                 ],
             )
 
-        shutil.rmtree(win_tmp_dir, ignore_errors=True)
+        # shutil.rmtree(win_tmp_dir, ignore_errors=True)
 
         return ret
 
@@ -241,8 +312,8 @@ class AstrometryDotNet(SolverInterface):
                     ret.succeeded = True
                     match = re.match(r"^.*solved with index (.*)\.$", line)
                     if match:
-                        ret.native_result.index_file = match.group(1)
-                        # logger.info(f"{ret.native_result.index_file=}")
+                        ret.solution.index_file = match.group(1)
+                        # logger.info(f"{ret.solution.index_file=}")
                     else:
                         logger.error("bad match for ret.native_result.index_file")
 
@@ -270,12 +341,6 @@ class AstrometryDotNet(SolverInterface):
                     if match:
                         ret.solution.sources = int(match.group(1))
 
-                elif "solved with index" in line:
-                    # Field 1: solved with index index-5200-31.fits.
-                    match = re.match(r".*solved with index (\w).", line)
-                    if match:
-                        ret.solution.index_file = match.group(1)
-
         except Exception as e:
             logger.error(f"{op}: exception: {e}")
 
@@ -283,16 +348,31 @@ class AstrometryDotNet(SolverInterface):
 
 
 if __name__ == "__main__":
-    imager_settings: ImagerSettings = ImagerSettings(
-        seconds=5,
-        image_path="/cygdrive/d/MAST/tmp/2024-12-05/Acquisitions/seq=0025,time=18-13-03_987,"
-        + "target=1.42677311977099,23.5115091209584/guiding/seq=0001,time=18-22-25_715,seconds=5.0,"
-        + "binning=1x1,gain=170.0,roi=x=300,y=1476,w=7402,h=3968.fits",
-    )
-    target = Coord(
-        ra=Angle(1.42677311977099, unit="hour"), dec=Angle(23.5115091209584, unit="deg")
-    )
-    solver = AstrometryDotNet()
-    result = solver.solve(unit=None, settings=imager_settings, target=target)
-    # print(json.dumps(result.to_dict(), indent=2))
+    import json
+
+    def test_solver():
+        target = Coord(
+            ra=Angle(20.370853562216, unit="hour"),
+            dec=Angle(40.2566511405156, unit="deg"),
+        )
+        solver = AstrometryDotNet()
+        result = solver.solve(
+            unit=None,
+            image_path="Z:/MAST/mast00/2025-08-21/Acquisitions/seq=0004,time=22-01-41_209,target=20.370853562216,40.2566511405156/spec/seq=0001,time=22-01-59_706,seconds=5.0,binning=1x1,gain=170,roi=1000,340,7500,3000.fits",
+            target=target,
+            index_file="index-5202-13.fits",
+        )
+        print(json.dumps(result.to_dict(), indent=2))
+
+    def test_result_parser():
+        solver = AstrometryDotNet()
+        with open(
+            "Z:/MAST/mast00/2025-08-21/Acquisitions/seq=0004,time=22-01-41_209,target=20.370853562216,40.2566511405156/spec/seq=0001,time=22-01-59_706,seconds=5.0,binning=1x1,gain=170,roi=1000,340,7500,3000,solver=AstrometryDotNet-result.txt",
+            "r",
+        ) as file:
+            lines = file.readlines()
+        result = solver._parse_solver_output(lines)
+        print(json.dumps(result.to_dict(), indent=2))
+
+    test_solver()
     sys.exit(0)
