@@ -18,7 +18,7 @@ from common.tasks.models import UnitAssignmentModel
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
 from common.utils import Coord, boxed_info, function_name
 
-# from phd2.phd2 import PHD2Connector
+from phd2.phd2 import PHD2Connector
 from solving import SolverId, SolvingTolerance
 from stage import StagePresetPosition
 
@@ -222,9 +222,22 @@ class Acquirer:
 
         self.unit.imager.end_exposure_series(acquisition_exposure_series)
 
-        # self.unit.guider.start_guiding()
-        boxed_info(logger, ["acquisition completed", "telescope is tracking", "start manual PHD2 guiding"])
-        self.unit.start_activity(UnitActivities.Guiding)
+        lines = ["acquisition completed", "telescope is tracking"]
+        if self.latest_acquisition.handover_automatically_to_guider:
+            lines.append("starting PHD2 guiding")
+            boxed_info(logger, lines)
+            self.unit.start_activity(UnitActivities.Guiding)
+            self.unit.guider.start_guiding()
+        else:
+            if (
+                not isinstance(self.unit.imager, PHD2Connector)
+                and self.unit.imager.connected
+            ):
+                lines.append("imager camera disconnected")
+                self.unit.imager.disconnect()
+            lines.append("start manual PHD2 guiding")
+            boxed_info(logger, lines)
+            self.unit.start_activity(UnitActivities.Guiding)
 
         while self.unit.is_active(UnitActivities.Guiding):
             time.sleep(1)
@@ -309,6 +322,7 @@ class Acquirer:
         # solver_name: SolverIdNames = "AstrometryDotNet",
         make_corrections: bool = True,
         skip_sky: bool = False,
+        handover_automatically_to_guider: bool = False,
     ):
         """
         Starts an acquisition
@@ -320,7 +334,7 @@ class Acquirer:
         :param ra_j2000_hours: The target's RA
         :param dec_j2000_degs: The target's Dec
         :param skip_sky: Skip the 'sky' phase
-        :param guiding_mode:
+        :param handover_automatically_to_guider: After acquisition, start PHD2 guiding automatically
         :return: The folder path on the MAST-SHARE with the acquisition's products
         """
 
@@ -382,6 +396,7 @@ class Acquirer:
                 target_dec=float(dec_j2000_degs),
                 conf=self.unit.unit_conf.acquisition,
                 skip_sky=skip_sky,
+                handover_automatically_to_guider=handover_automatically_to_guider,
             )
             Thread(
                 name="acquisition", target=self.do_acquire, args=[acquisition]
