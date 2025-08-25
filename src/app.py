@@ -83,7 +83,11 @@ ensure_process_is_running(
 
 ensure_process_is_running(
     name="ps3cli.exe",
-    cwd=str(Path("C:\\Program Files (x86)\\PlaneWave Instruments\\ps3cli\\ps3cli-2024-09-10").as_posix()),
+    cwd=str(
+        Path(
+            "C:\\Program Files (x86)\\PlaneWave Instruments\\ps3cli\\ps3cli-2024-09-10"
+        ).as_posix()
+    ),
     cmd="ps3cli.exe --server --port=8998",
     logger=logger,
     shell=True,
@@ -104,14 +108,17 @@ ensure_process_is_running(
 @asynccontextmanager
 async def lifespan(fast_app: FastAPI):
     from unit import unit
+
     if unit:
         unit.start_lifespan()
         yield
         unit.end_lifespan()
 
+
 async def websocket_disconnect_handler(websocket: WebSocket, exc: WebSocketDisconnect):
     logger.info(f"websocket disconnected: {exc.code}")
     await websocket.close()
+
 
 app = FastAPI(
     docs_url="/docs",
@@ -123,9 +130,11 @@ app = FastAPI(
     # exception_handlers={WebSocketDisconnect: websocket_disconnect_handler},
 )
 
+
 @app.get("/favicon.ico")
 def read_favicon():
     return RedirectResponse(url="/static/favicon.ico")
+
 
 @app.exception_handler(Exception)
 async def generic_exception_handler(request, exc: Exception):
@@ -135,6 +144,7 @@ async def generic_exception_handler(request, exc: Exception):
         status_code=500,
         content={"message": f"{function_name()}: Exception occurred: {exc}"},
     )
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -158,8 +168,6 @@ if __name__ == "__main__":
     if not unit:
         logger.error("Unit is not initialized, exiting ...")
         app_quit(reason="unit not initialized")
-
-
 
     if unit:
         app.include_router(unit.api_router)
