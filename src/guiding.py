@@ -7,6 +7,7 @@ from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config, ImagerBinningConfig
 from common.utils import function_name
+
 # from phd2.phd2 import PHD2Connector
 from solving_guider import SolvingGuider
 
@@ -57,7 +58,9 @@ class Guider(GuiderInterface):
 
         Activities.__init__(self)
         if guider_type == "phd2":
-            self._backend = PHD2Connector(parent_imager=self.unit.imager if self.unit else None)
+            self._backend = PHD2Connector(
+                parent_imager=self.unit.imager if self.unit else None
+            )
             self.guider_type = GuiderTypes.Phd2
         elif guider_type == "solving":
             self._backend = SolvingGuider(self.unit)
@@ -68,7 +71,7 @@ class Guider(GuiderInterface):
             "type": self.guider_type,
             "activities": self.activities,
             "activities_verbal": self.activities.__repr__(),
-            "backend": self._backend.status() if self._backend else None
+            "backend": self._backend.status() if self._backend else None,
         }
 
     def start_guiding(self):
@@ -104,7 +107,7 @@ class Guider(GuiderInterface):
                     f"Cannot make guiding settings - camera {camera_x_size=}, {camera_y_size=}"
                 )
         else:
-            camera_x_size = 8828    # YUCK, YUCK, YUCK
+            camera_x_size = 8828  # YUCK, YUCK, YUCK
             camera_y_size = 5644
             guiding_conf = Config().get_unit().guiding
 
@@ -184,14 +187,27 @@ class Guider(GuiderInterface):
 
 
 if __name__ == "__main__":
-    import atexit
-    import traceback
+    import sys
 
-    def on_shutdown():
-        print("Interpreter is shutting down.")
-        traceback.print_stack()
+    def test_atexit():
+        import atexit
+        import traceback
 
-    atexit.register(on_shutdown)
+        def on_shutdown():
+            print("Interpreter is shutting down.")
+            traceback.print_stack()
 
-    guider = Guider(unit=None)
-    guider.start_guiding()
+        atexit.register(on_shutdown)
+
+        guider = Guider(unit=None)
+        guider.start_guiding()
+
+    def test_make_guiding_settings():
+        import json
+
+        guider = Guider(unit=None)
+        settings = guider.make_guiding_settings(base_folder="c:/mast/test")
+        json.dumps(settings.model_dump(), indent=2)
+
+    test_make_guiding_settings()
+    sys.exit(0)
