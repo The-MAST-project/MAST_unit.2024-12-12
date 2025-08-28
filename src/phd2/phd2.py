@@ -321,6 +321,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.image_was_saved: bool = False
         self.image_saved_event: threading.Event = threading.Event()
 
+        self.guiding_verification_timer: RepeatTimer | None = None
         if self.validation_interval != 0:
             logger.info(f"guiding validation every {self.validation_interval} seconds")
             self.guiding_verification_timer: RepeatTimer = RepeatTimer(
