@@ -96,7 +96,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         asi.closeCamera(self.cam_id)
 
     def save_in_thread(self):
-        from imagers.ascom import save_to_fits_file
+        from imagers.saving import save_to_fits_file
 
         save_to_fits_file(self)
         self.image_was_saved = True
