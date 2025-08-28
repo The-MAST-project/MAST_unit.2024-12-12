@@ -283,7 +283,9 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         elif not was_moving and self.is_moving:
             self.start_activity(
                 MountActivities.Moving,
-                details=f"target={self.target}" if self.target else None,
+                details=(
+                    f"target={self.target}" if self.target else "unsolicited movement"
+                ),
             )
 
         if self.is_active(MountActivities.FindingHome) and not self.is_moving:
