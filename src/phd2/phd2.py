@@ -324,7 +324,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.guiding_verification_timer: RepeatTimer | None = None
         if self.validation_interval != 0:
             logger.info(f"guiding validation every {self.validation_interval} seconds")
-            self.guiding_verification_timer: RepeatTimer = RepeatTimer(
+            self.guiding_verification_timer = RepeatTimer(
                 interval=self.validation_interval, function=self.validate_guiding
             )
         else:
