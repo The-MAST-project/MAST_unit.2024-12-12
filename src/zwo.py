@@ -431,8 +431,8 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         assert zwo_settings.roi is not None and zwo_settings.binning is not None
         zwo_settings.roi.width //= zwo_settings.binning.x
         zwo_settings.roi.height //= zwo_settings.binning.y
-        zwo_settings.roi.width //= 8
-        zwo_settings.roi.height //= 2
+        zwo_settings.roi.width -= zwo_settings.roi.width % 8
+        zwo_settings.roi.height -= zwo_settings.roi.height % 2
         self.set_format(zwo_settings)
 
         self.latest_settings = settings.model_copy()
