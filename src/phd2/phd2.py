@@ -532,6 +532,28 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             with self.lock:
                 self.stats = stats
         elif e == "GuideStep":
+            # | Attribute | Type | Description |
+            # |:----------|:-----|:------------|
+            # |Frame      |number|The frame number; starts at 1 each time guiding starts|
+            # |Time       |number| the time in seconds, including fractional seconds, since guiding started|
+            # |Mount      |string|the name of the mount|
+            # |dx         |number|the X-offset in pixels|
+            # |dy         |number|the Y-offset in pixels|
+            # |RADistanceRaw|number|the RA distance in pixels of the guide offset vector|
+            # |DECDistanceRaw|number|the Dec distance in pixels of the guide offset vector|
+            # |RADistanceGuide|number|the guide algorithm-modified RA distance in pixels of the guide offset vector|
+            # |DECDistanceGuide|number|the guide algorithm-modified Dec distance in pixels of the guide offset vector|
+            # |RADuration |number|the RA guide pulse duration in milliseconds|
+            # |RADirection|string|"East" or "West"   |
+            # |DECDuration|number|the Dec guide pulse duration in milliseconds|
+            # |DECDirection|string|"South" or "North"   |
+            # |StarMass   |number|the Star Mass value of the guide star|
+            # |SNR        |number|the computed Signal-to-noise ratio of the guide star|
+            # |HFD        |number|the guide star half-flux diameter (HFD) in pixels|
+            # |AvgDist    |number|a smoothed average of the guide distance in pixels (equivalent to value returned by socket server MSG\_REQDIST)|
+            # |RALimited  |boolean|true if step was limited by the Max RA setting (attribute omitted if step was not limited)|
+            # |DecLimited |boolean|true if step was limited by the Max Dec setting (attribute omitted if step was not limited)|
+            # |ErrorCode  |number|the star finder error code, 1=saturated, 2=low SNR, 3=low mass, 4=low HFD, 5=High HFD, 6=edge of frame, 7=mass change, 8=unexpected|
             stats = None
             if self.accumulators_active:
                 self.ra_accumulator.add(ev["RADistanceRaw"])
@@ -549,6 +571,20 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 self.avg_dist = ev["AvgDist"]
                 if self.accumulators_active:
                     self.stats = stats
+            lines = []
+            if "Time" in ev:
+                lines.append(f'Seconds since guiding="{ev["Time"]:.1f}s"')
+            if "StarMass" in ev:
+                lines.append(f"StarMass={ev['StarMass']}")
+            if "SNR" in ev:
+                lines.append(f"SNR={ev['SNR']:.1f}")
+            if "HFD" in ev:
+                lines.append(f"HFD={ev['HFD']:.1f}")
+            if "ErrorCode" in ev:
+                lines.append(f"ErrorCode={ev['ErrorCode']}")
+            if lines:
+                boxed_info(logger=logger, lines=lines)
+
         elif e == "SettleBegin":
             self.start_activity(PHD2Activities.Settling)
             self.accumulators_active = (
@@ -590,13 +626,18 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         elif e == "CalibrationComplete":
             if "Mount" in ev:
                 logger.debug(f"event: {e}, Mount='{ev["Mount"]}'")
+
         elif e == "LoopingExposures":
+            # | Attribute | Type | Description |
+            # |:----------|:-----|:------------|
+            # | Frame     | number | the exposure frame number; starts at 1 each time looping starts |
             if self.is_active(PHD2Activities.Calibrating):
                 self.end_activity(PHD2Activities.Calibrating)
             # self.start_activity(PHD2Activities.Looping)
-            logger.info("event: LoopingExposures")
+            logger.info(f"event: LoopingExposures frame# {ev['Frame']}")
             with self.lock:
                 self.app_state = "Looping"
+
         elif e == "LoopingExposuresStopped" or e == "GuidingStopped":
             activity = (
                 PHD2Activities.Looping
@@ -611,10 +652,47 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             with self.lock:
                 self.app_state = "Stopped"
 
+        elif e == "StarSelected":
+            # | Attribute | Type | Description |
+            # |:----------|:-----|:------------|
+            # | X         | number | lock position X-coordinate |
+            # | Y         | number | lock position Y-coordinate |
+            lines = [f'event: StarSelected at x="{ev["X"]}" y="{ev["Y"]}"']
+            boxed_info(logger=logger, lines=lines)
+
+        elif e == "LockPositionSet":
+            # | Attribute | Type | Description |
+            # |:----------|:-----|:------------|
+            # | X         | number | lock position X-coordinate |
+            # | Y         | number | lock position Y-coordinate |
+            lines = [f'event: LockPositionSet at x="{ev["X"]}" y="{ev["Y"]}"']
+            boxed_info(logger=logger, lines=lines)
+
         elif e == "StarLost":
             with self.lock:
                 self.app_state = "LostLock"
                 self.avg_dist = ev["AvgDist"]
+            # | Attribute | Type | Description |
+            # |:----------|:-----|:------------|
+            # | Frame     | number | frame number |
+            # | Time      | number | time since guiding started, seconds |
+            # | StarMass  | number | star mass value |
+            # | SNR       | number | star SNR value |
+            # | AvgDist   | number |a smoothed average of the guide distance in pixels (equivalent to value returned by socket server MSG\_REQDIST)|
+            # | ErrorCode | number | error code  |
+            # | Status    | string | error message |
+            lines = ["event: Star Lost!"]
+            if "Time" in ev:
+                lines.append(f'Seconds since guiding="{ev["Time"]:.1f}s"')
+            if "StarMass" in ev:
+                lines.append(f"StarMass={ev['StarMass']}")
+            if "SNR" in ev:
+                lines.append(f"SNR={ev['SNR']:.1f}")
+            if "ErrorCode" in ev:
+                lines.append(f"ErrorCode={ev['ErrorCode']}")
+            if "Status" in ev:
+                lines.append(f'Status="{ev["Status"]}"')
+            boxed_info(logger=logger, lines=lines)
 
         elif e == "SingleFrameComplete":
             result = SingleFrameResult(
