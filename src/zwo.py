@@ -323,7 +323,10 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         Gets the **MAST** imager status
         """
 
-        target_temp, _ = asi.getControlValue(self.cam_id, ASI.Control.TargetTemp)
+        target_temp = None
+        if self.connected:
+            target_temp, _ = asi.getControlValue(self.cam_id, ASI.Control.TargetTemp)
+
         return ImagerStatus(
             **self.power_status().model_dump(),
             **self.component_status().model_dump(),
@@ -332,9 +335,9 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             camera_x_size=self.width,
             camera_y_size=self.height,
             set_point=target_temp,
-            temperature=self.temperature,
-            cooler=self.cooler_on,
-            cooler_power=self.cooler_power,
+            temperature=self.temperature if self.connected else None,
+            cooler=self.cooler_on if self.connected else None,
+            cooler_power=self.cooler_power if self.connected else None,
             latest_settings=self.latest_settings,
             date=time_stamp(),
         )
