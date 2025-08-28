@@ -152,17 +152,11 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                     self.parent_imager.start_activity(ImagerActivities.ReadingOut)
                     buffer = asi.getDataAfterExp(self.cam_id, bufferSize=buffer_size)
                     assert self.latest_settings and self.latest_settings.roi
-                    # self.image_array = np.flipud(
-                    #     np.frombuffer(buffer=buffer, dtype=dtype).reshape(
-                    #         self.latest_settings.roi.height,
-                    #         self.latest_settings.roi.width,
-                    #     )
-                    # )
+
                     h = self.latest_settings.roi.height
                     w = self.latest_settings.roi.width
                     img = np.frombuffer(buffer=buffer, dtype=dtype)
                     img = img.reshape((h, w))
-                    img = np.flipud(img)
                     self.image_array = img
 
                     self.parent_imager.end_activity(ImagerActivities.ReadingOut)
