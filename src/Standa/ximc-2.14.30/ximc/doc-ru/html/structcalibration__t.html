@@ -1,0 +1,132 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/xhtml;charset=UTF-8"/>
+<meta http-equiv="X-UA-Compatible" content="IE=9"/>
+<title>libximc: Структура calibration_t</title>
+<link href="tabs.css" rel="stylesheet" type="text/css"/>
+<script type="text/javascript" src="jquery.js"></script>
+<script type="text/javascript" src="dynsections.js"></script>
+<link href="doxygen.css" rel="stylesheet" type="text/css" />
+</head>
+<body>
+<div id="top"><!-- do not remove this div, it is closed by doxygen! -->
+<div id="titlearea">
+<table cellspacing="0" cellpadding="0">
+ <tbody>
+ <tr style="height: 56px;">
+  <td style="padding-left: 0.5em;">
+   <div id="projectname">libximc
+   &#160;<span id="projectnumber">2.14.30</span>
+   </div>
+  </td>
+ </tr>
+ </tbody>
+</table>
+</div>
+<!-- end header part -->
+<!-- Создано системой Doxygen 1.8.1.2 -->
+  <div id="navrow1" class="tabs">
+    <ul class="tablist">
+      <li><a href="index.html"><span>Титульная&#160;страница</span></a></li>
+      <li><a href="pages.html"><span>Описания</span></a></li>
+      <li class="current"><a href="annotated.html"><span>Структуры&#160;данных</span></a></li>
+      <li><a href="files.html"><span>Файлы</span></a></li>
+    </ul>
+  </div>
+  <div id="navrow2" class="tabs2">
+    <ul class="tablist">
+      <li><a href="annotated.html"><span>Структуры&#160;данных</span></a></li>
+      <li><a href="functions.html"><span>Поля&#160;структур</span></a></li>
+    </ul>
+  </div>
+</div><!-- top -->
+<div class="header">
+  <div class="summary">
+<a href="#pub-attribs">Поля данных</a>  </div>
+  <div class="headertitle">
+<div class="title">Структура calibration_t</div>  </div>
+</div><!--header-->
+<div class="contents">
+
+<p>Структура калибровок  
+ <a href="structcalibration__t.html#details">Подробнее...</a></p>
+<table class="memberdecls">
+<tr class="heading"><td colspan="2"><h2><a name="pub-attribs"></a>
+Поля данных</h2></td></tr>
+<tr class="memitem:a2941385b1be5280d3b1f546356f7ec99"><td class="memItemLeft" align="right" valign="top">double&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="structcalibration__t.html#a2941385b1be5280d3b1f546356f7ec99">A</a></td></tr>
+<tr class="memdesc:a2941385b1be5280d3b1f546356f7ec99"><td class="mdescLeft">&#160;</td><td class="mdescRight">Коэффициент преобразования, равный количеству миллиметров (или других пользовательских единиц) на один шаг.  <a href="#a2941385b1be5280d3b1f546356f7ec99"></a><br/></td></tr>
+<tr class="memitem:ab26d86039771c21675d6bceb74c0c2fe"><td class="memItemLeft" align="right" valign="top">unsigned int&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="structcalibration__t.html#ab26d86039771c21675d6bceb74c0c2fe">MicrostepMode</a></td></tr>
+<tr class="memdesc:ab26d86039771c21675d6bceb74c0c2fe"><td class="mdescLeft">&#160;</td><td class="mdescRight">Настройка контроллера, определяющая режим пошагового деления.  <a href="#ab26d86039771c21675d6bceb74c0c2fe"></a><br/></td></tr>
+</table>
+<a name="details" id="details"></a><h2>Подробное описание</h2>
+<div class="textblock"><p>Структура калибровок </p>
+<p>Где найти все значения для расчета?</p>
+<ul>
+<li>XILab (не забудьте загрузить профиль для вашего позиционера. Профиль должен соответствовать полному названию вашего позиционера. Например: 8MT173-25-MEn1.cfg):<ul>
+<li>В настройках XILab перейдите во вкладку user units. Разделите второе число на первое — это и будет коэффициент A</li>
+<li>В настройках XILab, перейдите во вкладку DC motor/BLDC motor/Stepper motor (зависит от используемого типа двигателя). Подставьте значение из поля Encoder counts per turn в формулу подсчета B коэффициента</li>
+</ul>
+</li>
+<li>Профиль (откройте профиль любым текстовым редактором. Профиль должен соответствовать полному названию вашего позиционера. Например: 8MT173-25-MEn1.cfg):<ul>
+<li>Найдите в файле профиля поля Step_multiplier= и Unit_multiplier=. Разделите второе число на первое — это и будет коэффициент A</li>
+<li>Найдите в файле профиля поле Encoder_CPT=. Подставьте значение из этого поля в формулу подсчета B коэффициента вместо ENCODER_COUNTS_PER_TURN</li>
+</ul>
+</li>
+</ul>
+<p>Как посчитать Speed, Accel, Decel и AntiplaySpeed в пользовательских единицах при использовании шагового двигателя с энкодером или DC/BLDC двигателей?</p>
+<ol type="1">
+<li>Используя XILab, загрузите профиль для вашего позиционера. Профиль должен соответствовать полному названию вашего позиционера. Например: 8MT173-25-MEn1.cfg</li>
+<li>Включите режим Feedback encoder, если он не был включен ранее</li>
+<li>Вводите скорость в пользовательских единицах в поле Working speed</li>
+<li>Во вкладке User units выключите флаг User units. Это позволит видеть значение в поле Working speed в RPM</li>
+<li>Умножьте значение из поля Working speed (в RPM) на коэффициент B. Например: 480 * 0.0000009375 = 0.00045. Значение 0.00045 для позиционера 8MT173-25-MEn1 в режиме Encoder будет равно скорости 2 мм/сек</li>
+</ol>
+<p>Ускорение, замедление и скорость в режиме антилюфта считаются аналогично </p>
+</div><h2>Поля</h2>
+<a class="anchor" id="a2941385b1be5280d3b1f546356f7ec99"></a>
+<div class="memitem">
+<div class="memproto">
+      <table class="memname">
+        <tr>
+          <td class="memname">double A</td>
+        </tr>
+      </table>
+</div><div class="memdoc">
+
+<p>Коэффициент преобразования, равный количеству миллиметров (или других пользовательских единиц) на один шаг. </p>
+<p>Должен быть отличным от нуля и положительным. Используется для пересчёта положений и перемещений.</p>
+<ul>
+<li>Для шагового двигателя без энкодера используется только один коэффициент A. Формула пересчёта: [user_unit/steps]. Пример: 800 шагов = 1 мм, тогда A = 1/800 = 0.00125</li>
+<li>При использовании шагового двигателя с энкодером или двигателей DC/BLDC позиция задаётся в counts, но скорость, ускорение/замедление и скорость в режиме антилюфта задаются в RPM, поэтому требуются два коэффициента:<ul>
+<li>A. Формула пересчёта для позиции: [user_unit/counts]. Пример: 16000 counts = 1 мм, тогда A = 1/16000 = 0.0000625</li>
+<li>B. Формула пересчёта для скорости, ускорения/замедления и скорости в режиме антилюфта: [60/ENCODER_COUNTS_PER_TURN * A]. Пример: 60 / 4000 * 0.0000625 = 0.0000009375 </li>
+</ul>
+</li>
+</ul>
+
+</div>
+</div>
+<a class="anchor" id="ab26d86039771c21675d6bceb74c0c2fe"></a>
+<div class="memitem">
+<div class="memproto">
+      <table class="memname">
+        <tr>
+          <td class="memname">unsigned int MicrostepMode</td>
+        </tr>
+      </table>
+</div><div class="memdoc">
+
+<p>Настройка контроллера, определяющая режим пошагового деления. </p>
+
+</div>
+</div>
+</div><!-- contents -->
+<!-- start footer part -->
+<hr class="footer"/><address class="footer"><small>
+Документация по libximc. Последние изменения: Вт 24 Июн 2025 16:36:02. Создано системой &#160;<a href="http://www.doxygen.org/index.html">
+<img class="footer" src="doxygen.png" alt="doxygen"/>
+</a> 1.8.1.2
+</small></address>
+</body>
+</html>
