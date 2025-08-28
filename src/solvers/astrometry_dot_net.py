@@ -149,7 +149,6 @@ class AstrometryDotNet(SolverInterface):
         if settings is not None and settings.roi is not None:
             args += ["--crpix-x", str(int(settings.roi.width / 2))]
             args += ["--crpix-y", str(int(settings.roi.height / 2))]
-            logger.info("using center pixel from settings.roi")
         else:
             with astropy.io.fits.open(input_fits_path) as hdul:
                 header = hdul[0].header  # type: ignore
