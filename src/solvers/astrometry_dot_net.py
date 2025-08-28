@@ -298,9 +298,9 @@ class AstrometryDotNet(SolverInterface):
                     if match:
                         ra_degs = float(match.group(1))
                         dec_degs = float(match.group(3))
-                        logger.info(
-                            f"'{match.group(1)=}', {ra_degs=}, {match.group(3)=}', {dec_degs=}"
-                        )
+                        # logger.info(
+                        #     f"'{match.group(1)=}', {ra_degs=}, {match.group(3)=}', {dec_degs=}"
+                        # )
                         ret.solution.ra_rads = float(Angle(ra_degs, unit="deg").radian)  # type: ignore[assignment]
                         ret.solution.dec_rads = float(Angle(dec_degs, unit="deg").radian)  # type: ignore[assignment]
                         ret.solution.ra_hours = Angle(ra_degs, unit="deg").hour  # type: ignore[assignment]
