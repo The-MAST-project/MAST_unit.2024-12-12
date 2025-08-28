@@ -117,7 +117,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         if not self.connected:
             return
 
-        if self.parent_imager.is_active(ImagerActivities.Exposing):
+        if self.connected and self.parent_imager.is_active(ImagerActivities.Exposing):
             assert self.latest_exposure is not None
             assert self.latest_settings is not None
             if (
