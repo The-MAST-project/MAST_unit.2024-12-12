@@ -12,3 +12,11 @@ src/Standa/
 src/dlipower/
 external/
 charts/
+src/test.out
+src/test.out1
+src/test.out2
+*/cb_compiled-*/
+*/compiled-*/
+*.pyc
+*.pyo
+*.pyd
