@@ -849,7 +849,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                             w = self.latest_settings.roi.width
                             img = np.frombuffer(response.value, dtype=dtype)
                             img = img.reshape((h, w))
-                            img = np.flipud(img)
+                            # img = np.flipud(img)
                             self.image = img
 
                         self.parent_imager.end_activity(ImagerActivities.ReadingOut)
