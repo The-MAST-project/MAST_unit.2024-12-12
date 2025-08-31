@@ -94,17 +94,36 @@ class Guider(GuiderInterface):
         :param base_folder:
         :return: camera settings for guiding exposures
         """
-
-        h_margin = 1000  # 300  # right and left
-        v_margin = 200  # top and bottom
-
+        #
+        #   +---- FRAME -----------------------------+
+        #   |.................^......................|
+        #   |.................|-.margin_vertical.....|
+        #   |.................v......................|
+        #   |...+-- ROI -------------------------+...|
+        #   |...|             ^                  |...|
+        #   |...|             |                  |...|
+        #   |...|             |                  |./--- margin_horizontal
+        #   |...|             v                  |.v.|
+        #   |<->|<----------->.<---------------->|<->|
+        #   |...|    (fiber_x, fiber_y)          |...|
+        #   |...|             ^                  |...|
+        #   |...|             |                  |...|
+        #   |...|             |                  |...|
+        #   |...|             |                  |...|
+        #   |...|             v                  |...|
+        #   +...+--------------------------------+...|
+        #   |.................^......................|
+        #   |.................|-.margin_vertical.....|
+        #   |.................v......................|
+        #   +----------------------------------------+
+        #
         if self.unit:
             guiding_conf = self.unit.unit_conf.guiding
             camera_x_size = self.unit.imager.camera_x_size
             camera_y_size = self.unit.imager.camera_y_size
             if camera_x_size is None or camera_y_size is None:
                 raise Exception(
-                    f"Cannot make guiding settings - camera {camera_x_size=}, {camera_y_size=}"
+                    f"Cannot make guiding settings - bad camera size(s) {camera_x_size=}, {camera_y_size=}"
                 )
         else:
             camera_x_size = 8828  # YUCK, YUCK, YUCK
@@ -112,28 +131,26 @@ class Guider(GuiderInterface):
             guiding_conf = Config().get_unit().guiding
 
         half_width = (
-            min(guiding_conf.roi.fiber_x, camera_x_size - guiding_conf.roi.fiber_x)
-            - h_margin
+            min(
+                guiding_conf.roi.fiber_x,
+                camera_x_size - guiding_conf.roi.fiber_x,
+            )
+            - guiding_conf.roi.margin_horizontal
         )
         half_height = (
-            min(guiding_conf.roi.fiber_y, camera_y_size - guiding_conf.roi.fiber_y)
-            - v_margin
+            min(
+                guiding_conf.roi.fiber_y,
+                camera_y_size - guiding_conf.roi.fiber_y,
+            )
+            - guiding_conf.roi.margin_vertical
         )
 
-        if guiding_conf.roi:
-            imager_roi = ImagerRoi(
-                x=guiding_conf.roi.fiber_x - half_width,
-                y=guiding_conf.roi.fiber_y - half_height,
-                width=guiding_conf.roi.width,
-                height=guiding_conf.roi.height,
-            )
-        else:
-            imager_roi = ImagerRoi(
-                x=guiding_conf.roi.fiber_x - half_width,
-                y=guiding_conf.roi.fiber_y - half_height,
-                width=half_width * 2,
-                height=half_height * 2,
-            )
+        imager_roi = ImagerRoi(
+            x=guiding_conf.roi.margin_horizontal,
+            y=guiding_conf.roi.margin_vertical,
+            width=half_width * 2,
+            height=half_height * 2,
+        )
 
         guiding_binning: ImagerBinningConfig = guiding_conf.binning
         imager_binning = ImagerBinning(
@@ -207,7 +224,7 @@ if __name__ == "__main__":
 
         guider = Guider(unit=None)
         settings = guider.make_guiding_settings(base_folder="c:/mast/test")
-        json.dumps(settings.model_dump(), indent=2)
+        print(json.dumps(settings.model_dump(), indent=2))
 
     test_make_guiding_settings()
     sys.exit(0)
