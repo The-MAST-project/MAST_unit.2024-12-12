@@ -4,7 +4,6 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
-    
         {
             "name": "Python Debugger: Current File",
             "type": "debugpy",
@@ -49,6 +48,45 @@
             "type": "debugpy",
             "request": "launch",
             "module": "guiding",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/src",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src",
+                "PATH": "C:\\Users\\mast\\PycharmProjects\\MAST_unit.2024-12-12\\external\\libusb-1.0.29\\VS2022\\MS64\\dll;${env:PATH}"
+            },
+            "justMyCode": false,
+        },
+        {
+            "name": "Test stage",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "stage",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/src",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src",
+                "PATH": "C:\\Users\\mast\\PycharmProjects\\MAST_unit.2024-12-12\\external\\libusb-1.0.29\\VS2022\\MS64\\dll;${env:PATH}"
+            },
+            "justMyCode": false,
+        },
+        {
+            "name": "Test astrometry result parse",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "solvers.astrometry_dot_net",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/src",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src",
+                "PATH": "C:\\Users\\mast\\PycharmProjects\\MAST_unit.2024-12-12\\external\\libusb-1.0.29\\VS2022\\MS64\\dll;${env:PATH}"
+            },
+            "justMyCode": false,
+        },
+        {
+            "name": "Test safety",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "common.safety",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/src",
             "env": {
