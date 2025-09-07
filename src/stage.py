@@ -507,7 +507,7 @@ class Stage(Component, SwitchedOutlet):
                 elif self.close_enough(self.target):
                     self.target = None
                     self.end_activity(StageActivities.Moving)
-                elif hw_status.MvCmdSts & MvcmdStatus.MVCMD_ERROR:
+                elif (hw_status.MvCmdSts & MvcmdStatus.MVCMD_ERROR) != 0:
                     self.end_activity(StageActivities.Moving)
                     logger.error(
                         f"move command 0x{hw_status.MvCmdSts & MvcmdStatus.MVCMD_NAME_BITS:08X} "
@@ -529,7 +529,7 @@ class Stage(Component, SwitchedOutlet):
                             logger.error(
                                 f"attempt #{i} (of 3): status after command_stop(): MvCmdSts=0x{hw_status.MvCmdSts:08X}"
                             )
-                            if not (hw_status.MvCmdSts & MvcmdStatus.MVCMD_ERROR):
+                            if (hw_status.MvCmdSts & MvcmdStatus.MVCMD_ERROR) != 0:
                                 logger.error(
                                     f"attempt #{i} (of 3): successfully cleared MVCMD_ERROR"
                                 )
