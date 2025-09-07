@@ -1372,25 +1372,28 @@ if __name__ == "__main__":
     from imagers import Imager
 
     imager = Imager(imager_type="phd2")
-    imager.startup()
+    imager.connect()
 
-    max = 10
-    imager_settings = ImagerSettings.model_validate(
-        {"seconds": 5}, context={"imager": imager}
-    )
-    i = 0
-    while True:
-        print(f"=== image #{i} ===")
-        imager.start_exposure(imager_settings)
+    def test_exposures(max: int = 1, binning_x: int = 1, binning_y: int = 1):
+        imager_settings = ImagerSettings.model_validate(
+            {"seconds": 5, "binning": {"x": binning_x, "y": binning_y}},
+            context={"imager": imager},
+        )
+        i = 0
+        for i in range(max):
+            print(f"=== image #{i} ===")
+            imager.start_exposure(imager_settings)
 
-        if imager.can_send_image_ready_event:
-            imager.wait_for_image_ready()
+            if imager.can_send_image_ready_event:
+                imager.wait_for_image_ready()
 
-        if imager.can_send_image_saved_event:
-            imager.wait_for_image_saved()
-            assert imager_settings.image_path
-            Path(imager_settings.image_path).unlink()
+            if imager.can_send_image_saved_event:
+                imager.wait_for_image_saved()
+                assert imager_settings.image_path
+                Path(imager_settings.image_path).unlink()
 
-        imager_settings.make_file_name()
-        i += 1
+            imager_settings.make_file_name()
+            i += 1
+
+    test_exposures(max=1, binning_x=2, binning_y=2)
     exit(0)
