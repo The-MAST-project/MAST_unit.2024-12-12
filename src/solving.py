@@ -24,6 +24,7 @@ from common.filer import Filer
 from common.interfaces.imager import ImagerSettings
 from common.interfaces.solving import SolverInterface, SolvingResult, SolvingTolerance
 from common.mast_logging import init_log
+from common.safety import safety_get_sensor
 from common.solving import SolverId
 from common.utils import Coord, boxed_info, function_name
 
@@ -100,9 +101,21 @@ class Solver(SolverInterface):
             #
             # Start exposure
             #
-            logger.info(
-                f"{op}: starting {imager_settings.seconds=} acquisition exposure"
+
+            #
+            # Try to fetch wind-speed from safety system
+            #
+            result = safety_get_sensor(
+                "wind-speed", timeout=0.5, max_age=datetime.timedelta(minutes=1)
             )
+            if result is not None:
+                wind_speed, safe, reasons_for_not_safe = result
+
+            msg = f"{op}: starting {imager_settings.seconds=} acquisition exposure"
+            if wind_speed is not None:
+                msg += f" (wind_speed={wind_speed} Km/h, {safe=}, reasons={reasons_for_not_safe})"
+            logger.info(msg)
+
             response = self.unit.imager.start_exposure(imager_settings)
             if response and response.failed:
                 self.log_and_store_error(
