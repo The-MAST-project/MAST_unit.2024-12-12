@@ -1,7 +1,7 @@
+import asyncio
 import datetime
 import json
 import logging
-import math
 import os.path
 import time
 from pathlib import Path
@@ -12,9 +12,9 @@ from astropy.coordinates import Angle
 
 from acquisition import Acquisition
 from common.activities import UnitActivities
-from common.config import (
+from common.config import Config
+from common.config.unit import (
     AcquisitionConfig,
-    Config,
     ImagerBinningConfig,
     SkyRoiConfig,
     ToleranceConfig,
@@ -57,8 +57,10 @@ class Solver(SolverInterface):
         from solvers.planewave_shm import PlaneWaveShm
 
         self._backend: SolverInterface | None = None
-        method = Config().get_unit().solving.method
-        valid_methods = Config().get_unit().solving.method
+
+        solving_config = Config().get_unit().solving
+        method = solving_config.method
+        valid_methods = solving_config.valid_methods
         if method not in valid_methods:
             raise ValueError(
                 f"invalid solving method '{method}' in configuration, must be one of {valid_methods}"
