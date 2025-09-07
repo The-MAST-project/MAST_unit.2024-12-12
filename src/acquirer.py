@@ -17,7 +17,6 @@ from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_
 from common.tasks.models import UnitAssignmentModel
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
 from common.utils import Coord, boxed_info, function_name
-
 from phd2.phd2 import PHD2Connector
 from solving import SolverId, SolvingTolerance
 from stage import StagePresetPosition
@@ -223,18 +222,22 @@ class Acquirer:
         self.unit.imager.end_exposure_series(acquisition_exposure_series)
 
         lines = ["acquisition completed", "telescope is tracking"]
+        if (
+            (not isinstance(self.unit.imager, PHD2Connector))
+            and isinstance(self.unit.guider, PHD2Connector)
+            and self.unit.imager.connected
+        ):
+            lines.append(
+                f"imager camera disconnected {type(self.unit.imager)=}, {type(self.unit.guider)=}"
+            )
+            self.unit.imager.disconnect()
+
         if self.latest_acquisition.handover_automatically_to_guider:
             lines.append("starting PHD2 guiding")
             boxed_info(logger, lines)
             self.unit.start_activity(UnitActivities.Guiding)
             self.unit.guider.start_guiding()
         else:
-            if (
-                not isinstance(self.unit.imager, PHD2Connector)
-                and self.unit.imager.connected
-            ):
-                lines.append("imager camera disconnected")
-                self.unit.imager.disconnect()
             lines.append("start manual PHD2 guiding")
             boxed_info(logger, lines)
             self.unit.start_activity(UnitActivities.Guiding)
