@@ -189,6 +189,8 @@ class Stage(Component, SwitchedOutlet):
                 string_at(x_controller_name.ControllerName).decode()
             ).replace("'", "")
 
+        # self.set_profile()  # FUTURE: set motion profile parameters for known stage models
+
         x_device_information = device_information_t()
         assert ximclib
         result = ximclib.get_device_information(
@@ -287,6 +289,29 @@ class Stage(Component, SwitchedOutlet):
             if "XIMC" in port.description:
                 ximc_ports.append(port.device)  # e.g., 'COM7'
         return ximc_ports
+
+    def set_profile(self):
+        # Add STANDA profiles directory to sys.path
+        sys.path.append(
+            os.path.abspath("./Standa/ximc-2.13.6/ximc/python-profiles/STANDA")
+        )
+
+        # Now you can import
+        import importlib
+
+        setter = None
+        if self.stage_model == "8MT167-25LS-MEn1":
+            profile_module = importlib.import_module("8MT167-25LS-MEn1")
+            setter = profile_module.set_profile_8MT167_25LS_MEn1
+        elif self.stage_model == "8MT173-20DCE2":
+            profile_module = importlib.import_module("8MT173-20DCE2")
+            setter = profile_module.set_profile_8MT173_20DCE2
+
+        if setter:
+            logger.info(f"setting profile for {self.stage_model}")
+            setter(ximclib, self.device)
+        else:
+            logger.warning(f"no profile setter for {self.stage_model}")
 
     def position_sampler(self):
         return self.position
