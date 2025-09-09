@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from astropy.coordinates import Angle
+from networkx import is_attracting_component
 from pydantic import BaseModel
 
 import common.ASI as ASI
@@ -334,10 +335,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.restart_event: threading.Event = threading.Event()
 
         self.watched_process = WatchedProcess(
-            command='"C:/Program Files (x86)/PHDGuiding2/phd2.exe"',
+            command='"C:/Program Files/PHDGuiding2/phd2.exe"',
             logger=logger,
             shell=True,
             restart_event=self.restart_event,
+            no_restart=True,
         )
         self.watched_process.start()
         secs = 3
@@ -1369,12 +1371,13 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
 
 if __name__ == "__main__":
-    from imagers import Imager
-
-    imager = Imager(imager_type="phd2")
-    imager.connect()
 
     def test_exposures(max: int = 1, binning_x: int = 1, binning_y: int = 1):
+        from imagers import Imager
+
+        imager = Imager(imager_type="phd2")
+        imager.connect()
+
         imager_settings = ImagerSettings.model_validate(
             {"seconds": 5, "binning": {"x": binning_x, "y": binning_y}},
             context={"imager": imager},
@@ -1395,5 +1398,18 @@ if __name__ == "__main__":
             imager_settings.make_file_name()
             i += 1
 
-    test_exposures(max=1, binning_x=2, binning_y=2)
+    def test_guiding():
+        guider = PHD2Connector()
+        guider.start_guiding()
+        while True:
+            status = guider.get_status()
+            if status:
+                print(f"{status=}")
+                # if status[0] == "Stopped":
+                #     guider.abort()
+                #     break
+            time.sleep(1)
+
+    # test_exposures(max=1, binning_x=2, binning_y=2)
+    test_guiding()
     exit(0)
