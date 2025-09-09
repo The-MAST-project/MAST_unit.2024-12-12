@@ -5,7 +5,8 @@ from typing import TYPE_CHECKING
 
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config import Config, ImagerBinningConfig
+from common.config import Config
+from common.config.imager import ImagerBinningConfig
 from common.utils import function_name
 
 # from phd2.phd2 import PHD2Connector
