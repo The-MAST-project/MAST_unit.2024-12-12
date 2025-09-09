@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from astropy.coordinates import Angle
-from networkx import is_attracting_component
 from pydantic import BaseModel
 
 import common.ASI as ASI
