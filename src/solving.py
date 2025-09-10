@@ -106,6 +106,7 @@ class Solver(SolverInterface):
             #
             # Try to fetch wind-speed from safety system
             #
+            wind_speed = safe = reasons_for_not_safe = None
             result = safety_get_sensor(
                 "wind-speed", timeout=0.5, max_age=datetime.timedelta(minutes=1)
             )
