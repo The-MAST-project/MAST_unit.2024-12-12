@@ -212,7 +212,7 @@ class Acquirer:
             approach_mode=acquisition.approach_mode,
             solver_id=acquisition.solver_id,
             make_corrections=acquisition.make_corrections,
-            imager_settings=spec_settings,
+            imager_settings=spec_imager_settings,
             solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
             parent_activity=UnitActivities.Acquiring,
             phase=phase,
@@ -233,11 +233,11 @@ class Acquirer:
 
         lines = ["acquisition completed", "telescope is tracking"]
         lines.append(f"{isinstance(self.unit.imager._backend, PHD2Connector)=}")
+        lines.append(f"{isinstance(self.unit.guider._backend, PHD2Connector)=}")
+        lines.append(f"{self.unit.imager.connected=}")
+        if (
             (not isinstance(self.unit.imager._backend, PHD2Connector))
             and isinstance(self.unit.guider._backend, PHD2Connector)
-        if (
-            (not isinstance(self.unit.imager, PHD2Connector))
-            and isinstance(self.unit.guider, PHD2Connector)
             and self.unit.imager.connected
         ):
             lines.append(
