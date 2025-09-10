@@ -232,6 +232,9 @@ class Acquirer:
         self.unit.imager.end_exposure_series(acquisition_exposure_series)
 
         lines = ["acquisition completed", "telescope is tracking"]
+        lines.append(f"{isinstance(self.unit.imager._backend, PHD2Connector)=}")
+            (not isinstance(self.unit.imager._backend, PHD2Connector))
+            and isinstance(self.unit.guider._backend, PHD2Connector)
         if (
             (not isinstance(self.unit.imager, PHD2Connector))
             and isinstance(self.unit.guider, PHD2Connector)
