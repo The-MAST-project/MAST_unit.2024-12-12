@@ -194,9 +194,19 @@ class Acquirer:
         ra_tolerance = Angle(phase_conf.tolerance.ra_arcsec * u.arcsecond)  # type: ignore
         dec_tolerance = Angle(phase_conf.tolerance.dec_arcsec * u.arcsecond)  # type: ignore
 
-        spec_settings = self.unit.guider.make_guiding_settings(
+        # make default guiding settings
+        spec_imager_settings = self.unit.guider.make_guiding_settings(
             base_folder=os.path.join(self.latest_acquisition.folder, phase)
         )
+        # override with acquisition settings
+        spec_imager_settings.seconds = acquisition.conf.exposure
+        if acquisition_conf.binning is not None:
+            spec_imager_settings.binning = ImagerBinning(
+                x=acquisition_conf.binning.x, y=acquisition_conf.binning.y
+            )
+        if acquisition_conf.gain is not None:
+            spec_imager_settings.gain = acquisition_conf.gain
+
         achieved_tolerances = self.unit.solver.solve_and_correct(
             target=target,
             approach_mode=acquisition.approach_mode,
