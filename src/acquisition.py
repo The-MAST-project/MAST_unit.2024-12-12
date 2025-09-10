@@ -5,7 +5,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Any
 
-from common.config import AcquisitionConfig
+from common.config.unit import AcquisitionConfig
 from common.corrections import Corrections
 from common.filer import Filer
 from common.mast_logging import init_log
