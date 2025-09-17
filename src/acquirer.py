@@ -232,16 +232,13 @@ class Acquirer:
         self.unit.imager.end_exposure_series(acquisition_exposure_series)
 
         lines = ["acquisition completed", "telescope is tracking"]
-        lines.append(f"{isinstance(self.unit.imager._backend, PHD2Connector)=}")
-        lines.append(f"{isinstance(self.unit.guider._backend, PHD2Connector)=}")
-        lines.append(f"{self.unit.imager.connected=}")
         if (
             (not isinstance(self.unit.imager._backend, PHD2Connector))
             and isinstance(self.unit.guider._backend, PHD2Connector)
             and self.unit.imager.connected
         ):
             lines.append(
-                f"imager camera disconnected {type(self.unit.imager)=}, {type(self.unit.guider)=}"
+                f"camera disconnected imager={type(self.unit.imager._backend)}, guider={type(self.unit.guider._backend)}"
             )
             self.unit.imager.disconnect()
 
