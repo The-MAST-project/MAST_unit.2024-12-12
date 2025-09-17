@@ -398,14 +398,14 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):  # noqa
         combined_corrections.sequence += sequence
         end_of_phase.append(sequence[0].time)
 
-    assert(combined_corrections is not None)
-    plot_phase_corrections(
-        phase="acquisition",
-        corrections=combined_corrections,
-        file=os.path.join(acquisition_top, "corrections.json"),
-        ends_of_phases=end_of_phase,
-        tolerances=tolerances,
-    )
+    if combined_corrections is not None:
+        plot_phase_corrections(
+            phase="acquisition",
+            corrections=combined_corrections,
+            file=os.path.join(acquisition_top, "corrections.json"),
+            ends_of_phases=end_of_phase,
+            tolerances=tolerances,
+        )
 
 
 #
