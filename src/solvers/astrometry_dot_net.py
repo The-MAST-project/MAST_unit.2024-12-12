@@ -367,7 +367,6 @@ if __name__ == "__main__":
         solver = AstrometryDotNet()
         with open(
             "Z:/MAST/mast00/2025-08-21/Acquisitions/seq=0004,time=22-01-41_209,target=20.370853562216,40.2566511405156/spec/seq=0001,time=22-01-59_706,seconds=5.0,binning=1x1,gain=170,roi=1000,340,7500,3000,solver=AstrometryDotNet-result.txt",
-            "r",
         ) as file:
             lines = file.readlines()
         result = solver._parse_solver_output(lines)
