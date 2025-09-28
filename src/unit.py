@@ -355,7 +355,7 @@ class Unit(Component):
             autofocusing=self.autofocuser.is_autofocusing,
             power_switch=self.power_switch.status(),
             mount=self.mount.status(),
-            imager=imager_status,  # type: ignore
+            imager=self.imager.status() if self.imager else None,  # type: ignore
             covers=self.covers.status(),
             focuser=self.focuser.status(),
             stage=self.stage.status(),
@@ -366,7 +366,7 @@ class Unit(Component):
             corrections=all_corrections,
             type="full",
             date=time_stamp(),
-        ).model_dump()
+        )
 
         return CanonicalResponse(value=serialize_ip_addresses(ret))
 
