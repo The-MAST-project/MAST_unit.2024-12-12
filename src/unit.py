@@ -243,6 +243,8 @@ class Unit(Component):
     def do_shutdown(self):
         self.start_activity(UnitActivities.ShuttingDown)
         [comp.shutdown() for comp in self.components]
+        self.guider.abort()
+
         self._was_shut_down = True
         self.timer.cancel()
         self.unit_shutdown_event.set()
@@ -384,10 +386,6 @@ class Unit(Component):
         """
         Aborts any in-progress activities
         """
-        if self.is_active(UnitActivities.Guiding):
-            self.guider.stop_acquisition_and_guiding()
-            while self.is_active(UnitActivities.Guiding):
-                time.sleep(0.2)
 
         if self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(
             UnitActivities.Autofocusing
