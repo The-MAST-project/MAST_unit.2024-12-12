@@ -2,7 +2,6 @@ import datetime
 import json
 import logging
 from threading import Event, Lock, Thread
-from turtle import heading
 from typing import Any
 
 import numpy as np
@@ -19,7 +18,6 @@ from common.interfaces.imager import (
     ImagerRoi,
     ImagerSettings,
     ImagerStatus,
-    ImagerTypes,
 )
 from common.mast_logging import init_log
 from common.utils import RepeatTimer, function_name, time_stamp
@@ -324,8 +322,6 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         return ImagerStatus(
             **self.power_status().model_dump(),
             **self.component_status().model_dump(),
-            type=ImagerTypes.Zwo,
-            model=self.model,
             camera_x_size=self.width,
             camera_y_size=self.height,
             set_point=self._setpoint,
