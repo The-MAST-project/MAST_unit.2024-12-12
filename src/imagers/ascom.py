@@ -1,19 +1,16 @@
 import datetime
 import json
 import logging
-import socket
 import threading
 import time
 from collections.abc import Callable
 from enum import IntFlag
 from logging import Logger
-from pathlib import Path
 from threading import Lock, Thread
 
 # from typing import TYPE_CHECKING
 import numpy as np
 import win32com.client
-from astropy.io import fits
 
 import common.ASI as ASI
 from common.activities import ImagerActivities
@@ -22,15 +19,7 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.interfaces.imager import (
-    ImagerBinning,
-    ImagerExposureSeries,
-    ImagerInterface,
-    ImagerRoi,
-    ImagerSettings,
-    ImagerStatus,
-    ImagerTypes,
-)
+from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings, ImagerStatus
 from common.mast_logging import init_log
 from common.paths import PathMaker
 from common.utils import RepeatTimer, function_name, time_stamp
@@ -173,7 +162,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         self.last_state: AscomCameraState = AscomCameraState.Idle
         self.errors: list[str] = []
         self.expected_mid_exposure: datetime.datetime | None = None
-        self._binning: ImagerBinning = ImagerBinning(x=1, y=1)
+        self._binning: int = 1
         self._roi: ImagerRoi | None = None
         self._gain: int | None = None
 
@@ -211,7 +200,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             roi=ImagerRoi(
                 x=0, y=0, width=self.camera_x_size, height=self.camera_y_size
             ),
-            binning=ImagerBinning(x=1, y=1),
+            binning=1,
             base_folder="c:/temp/ascom_images",
             dont_bump_sequence=True,
             format=imager_conf.format,
@@ -232,18 +221,16 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         return self._binning
 
     @binning.setter
-    def binning(self, value: ImagerBinning):
-        if self.maxBinX and (1 > value.x > self.maxBinX):
-            raise Exception(f"bad {value.x=}, must be > 1 and < {self.maxBinX=}")
-        if self.maxBinY and (1 > value.y > self.maxBinY):
-            raise Exception(f"bad {value.y=}, must be > 1 and < {self.maxBinY=}")
+    def binning(self, value: ASI.ASI_294MM_SUPPORTED_BINNINGS_LITERAL):
+        if self.maxBinX and (1 > value > self.maxBinX):
+            raise Exception(f"bad {value=}, must be > 1 and < {self.maxBinX=}")
 
         current_binning = self._binning
-        response_x = ascom_run(self, f"BinX = {value.x}")
-        response_y = ascom_run(self, f"BinY = {value.y}")
+        response_x = ascom_run(self, f"BinX = {value}")
+        response_y = ascom_run(self, f"BinY = {value}")
         if response_x.failed or response_y.failed:
-            ascom_run(self, f"BinX = {current_binning.x}")
-            ascom_run(self, f"BinY = {current_binning.y}")
+            ascom_run(self, f"BinX = {current_binning}")
+            ascom_run(self, f"BinY = {current_binning}")
             raise Exception(f"failures: {response_x.failure=}, {response_y.failure=}")
         self._binning = value
 
@@ -415,7 +402,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         self,
         seconds: float | None = 5,
         gain: int | None = 170,
-        binning: int | None = 1,
+        binning: ASI.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
         center_x: int | None = None,
         center_y: int | None = None,
         width: int | None = None,
@@ -437,13 +424,12 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             width=width,
             height=height,
         )
-        binning = binning if isinstance(binning, int) else 1
 
         settings = ImagerSettings(
             seconds=seconds if isinstance(seconds, int | float) else 5,
             base_folder=PathMaker().make_exposures_folder(),
             gain=gain,
-            binning=ImagerBinning(x=binning, y=binning),
+            binning=binning,
             roi=roi,
             tags=None,
             save=True,
@@ -588,21 +574,19 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         Gets the **ASCOM** imager status
         """
 
-        ascom_status = self.ascom_status()
         return ImagerStatus(
+            identifier=self.prog_id,
             **self.power_status().model_dump(),
             **self.ascom_status().model_dump(),
             **self.component_status().model_dump(),
             set_point=self.operational_set_point,
             temperature=self.temperature,
-            cooler=self._ascom.CoolerOn,
+            cooler_on=self._ascom.CoolerOn,
             cooler_power=self._ascom.CoolerPower,
             latest_settings=self.latest_settings,
             date=time_stamp(),
             camera_x_size=self.camera_x_size,
             camera_y_size=self.camera_y_size,
-            model=ascom_status.ascom.name,
-            type=ImagerTypes.Ascom,
         )
 
     @property
@@ -905,6 +889,10 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         #         self.end_activity(CameraActivities.ShuttingDown)
         #         logger.info(f'warm-up done (temperature={ccd_temp:.1f}, set-point={self.warm_set_point})')
         #         self.power_off()
+
+    @property
+    def set_point(self):
+        return self.operational_set_point
 
     @property
     def temperature(self) -> float:
