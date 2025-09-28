@@ -1,17 +1,17 @@
 import logging
-from typing import TYPE_CHECKING
 
 import numpy as np
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 from common.canonical import CanonicalResponse
 
-if TYPE_CHECKING:
-    from unit import Unit
-
+# from typing import TYPE_CHECKING
+# if TYPE_CHECKING:
+#     from unit import Unit
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerSettings, ImagerTypes
+from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerSettings, ImagerStatus, ImagerTypes
 from common.mast_logging import init_log
 
 logger = logging.Logger("mast." + __name__)
@@ -100,7 +100,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         elif imager_type == "phd2":
             from phd2 import phd2
 
-            self._backend = phd2.PHD2Connector(parent_imager=self, _from_imager=True)
+            self._backend = phd2.PHD2Connector(parent=self, _from_imager=True)
             self.backend_type = ImagerTypes.Phd2
         elif imager_type == "zwo":
             from zwo import ZWOImager
@@ -114,6 +114,9 @@ class Imager(ImagerInterface, SwitchedOutlet):
         self.latest_settings: ImagerSettings | None = None
         self.current_exposure_series: ImagerExposureSeries | None = None
         self._initialized = True
+
+    def __repr__(self):
+        return f"Imager(_backend='{self._backend.__repr__()}')"
 
     @property
     def can_send_image_ready_event(self) -> bool:
@@ -320,7 +323,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         self._backend.wait_for_image_saved()
 
     @property
-    def cooler_on(self) -> bool:
+    def cooler_on(self) -> bool | None:
         """
         Checks if the camera cooler is currently on.
         """
