@@ -34,6 +34,7 @@ from common.activities import (
 from common.api import ControllerApi
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
+from common.config.rois import FcuVersion
 from common.const import Const
 from common.corrections import correction_phases
 from common.dlipowerswitch import (
