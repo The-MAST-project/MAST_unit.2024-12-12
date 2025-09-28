@@ -3,21 +3,22 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from common.activities import ImagerActivities, UnitActivities
-from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config import Config
-from common.config.imager import ImagerBinningConfig
-from common.utils import function_name
+from pydantic import BaseModel
 
-# from phd2.phd2 import PHD2Connector
+from common.activities import ImagerActivities, UnitActivities
+from common.canonical import CanonicalResponse_Ok
+from common.config import Config
+from common.utils import function_name
+from phd2.phd2 import PHD2Connector, PHD2GuiderStatus
 from solving_guider import SolvingGuider
 
 if TYPE_CHECKING:
     from unit import Unit
 
 from common.activities import Activities
+from common.config.rois import FcuVersion, SpecRoiConfig
 from common.interfaces.guiding import GuiderInterface, GuiderTypes
-from common.interfaces.imager import ImagerBinning, ImagerRoi, ImagerSettings
+from common.interfaces.imager import ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
 
 logger = logging.Logger("mast.unit." + __name__)
@@ -64,12 +65,15 @@ class Guider(GuiderInterface):
         Activities.__init__(self)
         if guider_type == "phd2":
             self._backend = PHD2Connector(
-                parent_imager=self.unit.imager if self.unit else None
+                parent=self.unit.imager if self.unit else None,
             )
             self.guider_type = GuiderTypes.Phd2
         elif guider_type == "solving":
             self._backend = SolvingGuider(self.unit)
             self.guider_type = GuiderTypes.Solving
+
+    def __repr__(self):
+        return f"Guider(_backend={self._backend.__repr__()})"
 
     def status(self):
         return GuiderStatus(
@@ -82,6 +86,10 @@ class Guider(GuiderInterface):
         if self._backend:
             self._backend.start_guiding()
 
+    def start_looping(self):
+        if isinstance(self._backend, PHD2Connector):
+            self._backend.loop()
+
     def stop_guiding(self):
         if self._backend:
             self._backend.stop_guiding()
@@ -89,7 +97,7 @@ class Guider(GuiderInterface):
             self.unit.end_activity(UnitActivities.Guiding)
         logger.info("guiding ended")
 
-    def make_guiding_settings(self, base_folder: str | None = None) -> ImagerSettings:
+    def make_guiding_settings(self, base_folder: str | None = None, save: bool = True) -> ImagerSettings:
         """
         The 'guiding' camera exposure settings are used
         - In the second acquisition phase (stage at 'spec' position)
@@ -123,6 +131,7 @@ class Guider(GuiderInterface):
         #
         if self.unit:
             guiding_conf = self.unit.unit_conf.guiding
+            fcu_version = self.unit.fcu_version
             camera_x_size = self.unit.imager.camera_x_size
             camera_y_size = self.unit.imager.camera_y_size
             if camera_x_size is None or camera_y_size is None:
@@ -130,45 +139,52 @@ class Guider(GuiderInterface):
                     f"Cannot make guiding settings - bad camera size(s) {camera_x_size=}, {camera_y_size=}"
                 )
         else:
-            camera_x_size = 8828  # YUCK, YUCK, YUCK
-            camera_y_size = 5644
+            import common.ASI as ASI
+
+            camera_x_size = ASI.ASI_294MM_WIDTH
+            camera_y_size = ASI.ASI_294MM_HEIGHT
             guiding_conf = Config().get_unit().guiding
+            fcu_version = FcuVersion("fcu_v1")
+
+        cfg = guiding_conf.rois[fcu_version]
+        if not  isinstance(cfg, SpecRoiConfig):
+            raise ValueError(f"cannot make a guiding ROI from {type(cfg)}")
+
+        guiding_roi = SpecRoiConfig(
+            margin_horizontal=cfg.margin_horizontal,
+            margin_vertical=cfg.margin_vertical,
+            fiber_x=cfg.fiber_x,
+            fiber_y=cfg.fiber_y)
 
         half_width = (
             min(
-                guiding_conf.roi.fiber_x,
-                camera_x_size - guiding_conf.roi.fiber_x,
+                guiding_roi.fiber_x,
+                camera_x_size - guiding_roi.fiber_x,
             )
-            - guiding_conf.roi.margin_horizontal
+            - guiding_roi.margin_horizontal
         )
         half_height = (
             min(
-                guiding_conf.roi.fiber_y,
-                camera_y_size - guiding_conf.roi.fiber_y,
+                guiding_roi.fiber_y,
+                camera_y_size - guiding_roi.fiber_y,
             )
-            - guiding_conf.roi.margin_vertical
+            - guiding_roi.margin_vertical
         )
 
         imager_roi = ImagerRoi(
-            x=guiding_conf.roi.margin_horizontal,
-            y=guiding_conf.roi.margin_vertical,
+            x=guiding_roi.margin_horizontal,
+            y=guiding_roi.margin_vertical,
             width=half_width * 2,
             height=half_height * 2,
-        )
-
-        guiding_binning: ImagerBinningConfig = guiding_conf.binning
-        imager_binning = ImagerBinning(
-            x=guiding_binning.x if guiding_binning.x is not None else 1,
-            y=guiding_binning.y if guiding_binning.y is not None else 1,
         )
 
         return ImagerSettings(
             seconds=guiding_conf.exposure,
             base_folder=base_folder,
             gain=guiding_conf.gain,
-            binning=imager_binning,
+            binning=guiding_conf.binning,
             roi=imager_roi,
-            save=True,
+            save=save,
         )
 
     def stop_acquisition_and_guiding(self):
@@ -180,12 +196,12 @@ class Guider(GuiderInterface):
         #     return
 
         if self.unit is not None:
-            if not self.unit.is_active(
-                UnitActivities.Acquiring
-            ) and not self.unit.is_active(UnitActivities.Guiding):
-                error = "not acquiring or guiding"
-                logger.error(error)
-                return CanonicalResponse(errors=[error])
+            # if not self.unit.is_active(
+            #     UnitActivities.Acquiring
+            # ) and not self.unit.is_active(UnitActivities.Guiding):
+            #     error = "not acquiring or guiding"
+            #     logger.error(error)
+            #     return CanonicalResponse(errors=[error])
 
             self.unit.end_activity(UnitActivities.Acquiring)
             self.unit.end_activity(UnitActivities.Guiding)
@@ -198,11 +214,14 @@ class Guider(GuiderInterface):
                 self.unit.mount.stop_tracking()
                 logger.info("stopped tracking")
 
-            if self.unit.guider and self.unit.guider.is_guiding:
+            if self.unit.guider:
                 self.unit.guider.stop_guiding()
                 logger.info("stopped guiding")
 
         return CanonicalResponse_Ok
+
+    def abort(self):
+        self.stop_guiding()
 
     @property
     def is_guiding(self) -> bool:
@@ -210,6 +229,13 @@ class Guider(GuiderInterface):
             return self._backend.is_guiding
         return False
 
+    def connect(self):
+        if isinstance(self._backend, PHD2Connector):
+            self._backend.connect_equipment()
+
+    def disconnect(self):
+        if isinstance(self._backend, PHD2Connector):
+            self._backend.disconnect_equipment()
 
 if __name__ == "__main__":
     import sys
