@@ -12,6 +12,7 @@ from pathlib import Path
 from threading import Thread
 from typing import Annotated, Any, Literal
 
+import humanfriendly
 import numpy as np
 from fastapi import Query
 from fastapi.routing import APIRouter
@@ -20,6 +21,7 @@ from PIL import Image
 # from pydantic import Field
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+import common.ASI as ASI
 from acquirer import Acquirer
 from acquisition import Acquisition
 from autofocusing import Autofocuser, AutofocusResult
@@ -37,15 +39,9 @@ from common.config import Config
 from common.config.rois import FcuVersion
 from common.const import Const
 from common.corrections import correction_phases
-from common.dlipowerswitch import (
-    PowerStatus,
-    PowerSwitchFactory,
-    PowerSwitchStatus,
-    SwitchedOutlet,
-)
+from common.dlipowerswitch import PowerStatus, PowerSwitchFactory, PowerSwitchStatus, SwitchedOutlet
 from common.filer import Filer
 from common.interfaces.components import Component, ComponentStatus
-from common.interfaces.guiding import GuiderTypes
 
 # from guiding import Guider
 from common.interfaces.imager import (
@@ -68,7 +64,7 @@ from focuser import Focuser, FocuserStatus
 from guiding import GuiderStatus
 from imagers import Imager
 from mount import Mount, MountStatus
-from phd2.phd2 import PHD2Connector, PHD2GuiderStatus, PHD2ImagerStatus
+from phd2.phd2 import PHD2Connector, PHD2ImagerStatus
 from PlaneWave import pwi4_client
 from solving import Solver
 from stage import Stage, StageStatus
@@ -339,22 +335,10 @@ class Unit(Component):
                     else:
                         all_corrections.append(correction)
 
-        assert self.imager is not None, "Imager must be initialized"
-        assert self.guider is not None, "Guider must be initialized"
-        imager_status = (
-            PHD2Connector(parent_imager=self.imager).status(capacity="imager")
-            if self.imager.backend_type == ImagerTypes.Phd2
-            else self.imager.status()
-        )
-        guider_status = (
-            PHD2Connector(parent_imager=self.imager).status(capacity="guider")
-            if self.guider.guider_type == GuiderTypes.Phd2
-            else self.guider.status()
-        )
         ret = UnitStatus(
             **self.component_status().model_dump(),
             id=id(self),
-            guiding=self.guider.is_guiding,
+            guiding=self.guider.is_guiding if self.guider else False,
             autofocusing=self.autofocuser.is_autofocusing,
             power_switch=self.power_switch.status(),
             mount=self.mount.status(),
