@@ -48,7 +48,6 @@ from common.interfaces.guiding import GuiderTypes
 
 # from guiding import Guider
 from common.interfaces.imager import (
-    ImagerBinning,
     ImagerExposureSeries,
     ImagerSettings,
     ImagerStatus,
@@ -694,15 +693,12 @@ class Unit(Component):
         fiber_y: int = 2500,
         width: int = 1500,
         height: int = 1300,
-        binning: int = 1,
+        binning: ASI.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
         gain: int = 170,
     ) -> CanonicalResponse:
 
         op = function_name()
         seconds = exposure_seconds
-
-        if binning not in [1, 2, 4]:
-            return CanonicalResponse(errors=[f"bad {binning=}, should be 1, 2 or 4"])
 
         self.mount.start_tracking()
         exposure_series = self.imager.start_exposure_series(purpose="unit.do_exposure")
@@ -713,7 +709,6 @@ class Unit(Component):
                 end = start + datetime.timedelta(seconds=seconds_between_exposures)
 
             unit_roi = UnitRoi(fiber_x, fiber_y, width, height)
-            imager_binning: ImagerBinning = ImagerBinning(x=binning, y=binning)
             default_folder = PathMaker().make_exposures_folder()
             base_folder = (
                 os.path.join(default_folder, subfolder) if subfolder else default_folder
@@ -722,8 +717,9 @@ class Unit(Component):
                 seconds=seconds,
                 base_folder=base_folder,
                 gain=gain,
-                binning=imager_binning,
-                roi=unit_roi.to_imager_roi(binning=imager_binning),
+                binning=binning,
+                # roi=unit_roi.to_imager_roi(binning=imager_binning),
+                roi=ImagerRoi.from_other(roi=unit_roi).binned(binning),
                 tags={"roi": None},
                 save=True,
             )
@@ -793,7 +789,7 @@ class Unit(Component):
         end_position: int | str = 300000,
         step: int | str = 25000,
         exposure_seconds: int | str = 5,
-        binning: int | str = 1,
+        binning: ASI.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
         gain: int | str = 170,
     ) -> CanonicalResponse:
         op = function_name()
@@ -806,8 +802,6 @@ class Unit(Component):
             step = int(step)
         if isinstance(exposure_seconds, str):
             exposure_seconds = int(exposure_seconds)
-        if isinstance(binning, str):
-            binning = int(binning)
         if isinstance(gain, str):
             gain = int(gain)
 
@@ -828,7 +822,7 @@ class Unit(Component):
                 seconds=exposure_seconds,
                 base_folder=PathMaker().make_exposures_folder(),
                 gain=gain,
-                binning=ImagerBinning(x=binning, y=binning),
+                binning=binning,
                 roi=None,
                 tags={
                     "stage-repeatability": None,
@@ -853,7 +847,7 @@ class Unit(Component):
                 seconds=exposure_seconds,
                 base_folder=PathMaker().make_exposures_folder(),
                 gain=gain,
-                binning=ImagerBinning(x=binning, y=binning),
+                binning=binning,
                 roi=None,
                 tags={
                     "stage-repeatability": None,
@@ -939,12 +933,14 @@ class Unit(Component):
         sky_x: int, sky_y: int, spec_x: int, spec_y: int
     ):
 
-        cfg = Config().get_unit()
+    #     cfg = Config().get_unit()
+    #     assert self.fcu_version is not None
+    #     roi_cfg = cfg.acquisition.rois[FcuVersion(self.fcu_version)]
 
-        cfg.acquisition.roi.sky_x = sky_x
-        cfg.acquisition.roi.sky_y = sky_y
-        cfg.guiding.roi.fiber_x = spec_x
-        cfg.guiding.roi.fiber_y = spec_y
+    #     roi_cfg.sky_x = sky_x
+    #     roi_cfg.sky_y = sky_y
+    #     cfg.guiding.rois.fiber_x = spec_x
+    #     cfg.guiding.rois.fiber_y = spec_y
 
         Config().set_unit(unit_name=cfg.name, unit_conf=cfg)
 
@@ -965,7 +961,7 @@ class Unit(Component):
             "step-" + PathMaker().make_seq(self.spirals_folder) + ".fits",
         )
         self.imager.latest_settings = ImagerSettings(
-            seconds=5, save=True, image_path=image_path
+            seconds=5, save=True, image_path=image_path, binning=1
         )
         self.spiral_exposure_series = self.imager.start_exposure_series(
             purpose="spiral_new_path"
@@ -991,7 +987,7 @@ class Unit(Component):
                 / Path("step-" + PathMaker().make_seq(self.spirals_folder) + ".fits")
             )
             self.imager.latest_settings = ImagerSettings(
-                seconds=5, save=True, image_path=image_path
+                seconds=5, save=True, image_path=image_path, binning=1
             )
             self.imager.start_exposure(self.imager.latest_settings)
             self.imager.wait_for_image_saved()
@@ -1015,7 +1011,7 @@ class Unit(Component):
                 / Path("step-" + PathMaker().make_seq(self.spirals_folder) + ".fits")
             )
             self.imager.latest_settings = ImagerSettings(
-                seconds=5, save=True, image_path=image_path
+                seconds=5, save=True, image_path=image_path, binning=1
             )
             self.imager.start_exposure(self.imager.latest_settings)
             self.imager.wait_for_image_saved()
