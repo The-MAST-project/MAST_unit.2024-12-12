@@ -201,17 +201,31 @@ class Imager(ImagerInterface, SwitchedOutlet):
         """
         return self._backend.abort()
 
-    def status(self):
+    def status(self) -> ImagerStatus:
         """
         Returns the imager's current status.
         :return: ImagerStatus object containing the status information
         """
-        return {
-            "activities": self.activities,
-            "activities_verbal": self.activities.__repr__(),
-            "backend_type": self.backend_type,
-            "backend": self._backend.status().model_dump(),
-        }
+        backend_status = self._backend.status(capacity="imager") # type: ignore
+
+        ret = ImagerStatus(
+            detected=self.detected,
+            connected=self.connected,
+            operational=self.operational,
+            why_not_operational=self.why_not_operational,
+            camera_x_size=self.camera_x_size,
+            camera_y_size=self.camera_y_size,
+            temperature=self.temperature,
+            powered=self.is_on(),
+            cooler_on=self.cooler_on,
+            cooler_power=self.cooler_power,
+            set_point=self._backend.set_point,
+            latest_settings=self.latest_settings,
+            activities=self.activities,
+            activities_verbal=self.activities.__repr__(),
+            backend=backend_status if isinstance(backend_status, BaseModel) else backend_status.__dict__
+        )
+        return ret
 
     def connect(self) -> CanonicalResponse | None:  # obsoleted by connected property
         self._backend.connected = True
