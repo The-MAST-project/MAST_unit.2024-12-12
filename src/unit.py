@@ -1000,10 +1000,9 @@ class Unit(Component):
 
         return CanonicalResponse_Ok
 
-    @staticmethod
-    async def set_sky_and_spec_pixel_values(
-        sky_x: int, sky_y: int, spec_x: int, spec_y: int
-    ):
+    # async def set_sky_and_spec_pixel_values(self,
+    #     sky_x: int, sky_y: int, spec_x: int, spec_y: int
+    # ):
 
     #     cfg = Config().get_unit()
     #     assert self.fcu_version is not None
@@ -1014,9 +1013,9 @@ class Unit(Component):
     #     cfg.guiding.rois.fiber_x = spec_x
     #     cfg.guiding.rois.fiber_y = spec_y
 
-        Config().set_unit(unit_name=cfg.name, unit_conf=cfg)
+    #     Config().set_unit(unit_name=cfg.name, unit_conf=cfg)
 
-        return CanonicalResponse_Ok
+    #     return CanonicalResponse_Ok
 
     def spiral_new_path(self, x_step_arcsec: float, y_step_arcsec: float):
         """
@@ -1157,11 +1156,11 @@ class Unit(Component):
             tags=[tag],
             endpoint=self.execute_assignment,
         )
-        router.add_api_route(
-            base_path + "/calculate_sky_pixel",
-            tags=[tag],
-            endpoint=self.set_sky_and_spec_pixel_values,
-        )
+        # router.add_api_route(
+        #     base_path + "/calculate_sky_pixel",
+        #     tags=[tag],
+        #     endpoint=self.set_sky_and_spec_pixel_values,
+        # )
 
         tag = "PlaneWave mount - spiral path"
         router.add_api_route(
