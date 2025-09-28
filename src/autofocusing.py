@@ -13,12 +13,12 @@ from acquirer import DEC_REGEX, RA_REGEX
 from common.activities import FocuserActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
+from common.config.rois import SkyRoiConfig
 from common.extended_basemodel import ExtendedBaseModel
 from common.filer import Filer
-from common.interfaces.imager import ImagerBinning, ImagerSettings
+from common.interfaces.imager import ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
-from common.parsers import (sexagesimal_degrees_to_decimal,
-                            sexagesimal_hours_to_decimal)
+from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
 from common.rois import UnitRoi
 from PlaneWave.ps3cli_client import PS3CLIClient
@@ -253,13 +253,16 @@ class Autofocuser:
             return
 
         acquisition_conf = self.unit.unit_conf.acquisition
+        roi_conf = acquisition_conf.rois[self.unit.fcu_version]
+        assert isinstance(roi_conf, SkyRoiConfig)
+
         unit_roi = UnitRoi(
-            acquisition_conf.roi.sky_x,
-            acquisition_conf.roi.sky_y,
-            acquisition_conf.roi.width,
-            acquisition_conf.roi.height,
+            roi_conf.sky_x,
+            roi_conf.sky_y,
+            roi_conf.width,
+            roi_conf.height,
         )
-        _binning = ImagerBinning(x=1, y=1)
+        _binning = 1
 
         max_tries: int = self.unit.unit_conf.autofocus.max_tries
         max_tolerance: float = self.unit.unit_conf.autofocus.max_tolerance
@@ -281,7 +284,8 @@ class Autofocuser:
                 autofocus_settings = ImagerSettings(
                     seconds=exposure,
                     binning=_binning,
-                    roi=unit_roi.to_imager_roi(binning=_binning),
+                    # roi=unit_roi.to_imager_roi(binning=_binning),
+                    roi=ImagerRoi.from_other(roi=unit_roi).binned(_binning),
                     gain=acquisition_conf.gain,
                     image_path=os.path.join(
                         autofocus_folder, f"FOCUS{int(focuser_position):05}.fits"
