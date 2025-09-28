@@ -377,7 +377,7 @@ class Unit(Component):
 
     def abort(self):
         """
-        Aborts any in-progress mount activity
+        Aborts any in-progress activities
         """
         if self.is_active(UnitActivities.Guiding):
             self.guider.stop_acquisition_and_guiding()
@@ -393,7 +393,8 @@ class Unit(Component):
             ):
                 time.sleep(0.2)
 
-        [component.abort() for component in self.components]
+        self.guider.abort()
+        [comp.abort() for comp in self.components]
 
     def ontimer(self):  # noqa: C901
         if self.unit_shutdown_event.is_set():
