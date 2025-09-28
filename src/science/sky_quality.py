@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import datetime
 import math
 import statistics
 from enum import Enum
-from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
+
+from common.utils import isoformat_zulu
 
 # ---------- helpers ----------
 
 
-def median_absolute_deviation(values: List[float]) -> float:
+def median_absolute_deviation(values: list[float]) -> float:
     """Robust spread estimate (MAD) scaled to ~std for normal data."""
     if not values:
         return 0.0
@@ -49,7 +51,7 @@ class SeeingQualityWhilePHD2GuidingConfig(BaseModel):
     threshold_fair: float = 40.0
     warmup_min_samples: int = Field(default=20, ge=5)
     hysteresis_margin: float = Field(default=3.0, ge=0)
-    plate_scale_arcsec_per_pixel: Optional[float] = Field(
+    plate_scale_arcsec_per_pixel: float | None = Field(
         default=0.262578, description="Arcseconds per guide-camera pixel (e.g., 0.253)."
     )
 
@@ -62,25 +64,26 @@ class SeeingQualityWhilePHD2GuidingState(BaseModel):
     # Relative score/state
     score_0_to_100: float = 0.0
     quality_state: QualityState = QualityState.Unknown
-    ewma_zscore: Optional[float] = None
+    ewma_zscore: float | None = None
 
     # Rolling histories (pixels)
-    snr_history: List[float] = Field(default_factory=list)
-    hfd_history_pixels: List[float] = Field(default_factory=list)
+    snr_history: list[float] = Field(default_factory=list)
+    hfd_history_pixels: list[float] = Field(default_factory=list)
 
     # Absolute seeing (arcsec), computed only if plate_scale is set
-    last_hfd_arcsec: Optional[float] = None
-    median_hfd_arcsec: Optional[float] = None
+    last_hfd_arcsec: float | None = None
+    median_hfd_arcsec: float | None = None
 
     @field_validator("snr_history", "hfd_history_pixels")
     @classmethod
-    def _force_floats(cls, values: List[float]) -> List[float]:
+    def _force_floats(cls, values: list[float]) -> list[float]:
         return [float(x) for x in values]
 
 
 class SeeingQualityWhilePHD2Guiding(BaseModel):
     config: SeeingQualityWhilePHD2GuidingConfig = SeeingQualityWhilePHD2GuidingConfig()
     state: SeeingQualityWhilePHD2GuidingState = SeeingQualityWhilePHD2GuidingState()
+    latest_update: str | None = None
 
     def update(self, frame: FrameMetrics) -> SeeingQualityWhilePHD2GuidingState:
         """Update the seeing quality estimate from one PHD2 frame."""
@@ -147,6 +150,9 @@ class SeeingQualityWhilePHD2Guiding(BaseModel):
         state.quality_state = self._compute_next_state(
             previous_state=state.quality_state, score=state.score_0_to_100
         )
+
+        self.latest_update = isoformat_zulu(datetime.datetime.now(datetime.UTC))
+
         return state
 
     # ---------- internals ----------
@@ -157,7 +163,7 @@ class SeeingQualityWhilePHD2Guiding(BaseModel):
         if len(self.state.hfd_history_pixels) > maxlen:
             del self.state.hfd_history_pixels[:-maxlen]
 
-    def _compute_next_state(
+    def _compute_next_state(  # noqa: C901
         self, previous_state: QualityState, score: float
     ) -> QualityState:
         config = self.config
