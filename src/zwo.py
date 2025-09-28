@@ -13,7 +13,6 @@ from common.activities import ImagerActivities
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.imager import (
-    ImagerBinning,
     ImagerExposure,
     ImagerExposureSeries,
     ImagerInterface,
@@ -303,7 +302,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         return ImagerSettings(
             seconds=0,
             roi=ImagerRoi(x=0, y=0, width=self.width, height=self.height),
-            binning=ImagerBinning(x=1, y=1),
+            binning=1,
             base_folder="c:/temp/zwo-images",
             format=imager_conf.format,
             gain=imager_conf.gain,
@@ -370,13 +369,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         NOTES:
         - The width and height of the ROI must be divisible by 8 and 2 respectively.
         - The binning must be equal in both dimensions."""
-        if settings.binning:
-            binning = settings.binning
-            if binning.x != binning.y:
-                raise ValueError(
-                    f"bad binning={binning.x}x{binning.y}, horizontal and vertical must be equal"
-                )
-        binning = settings.binning.x if settings.binning else 1
+        binning = settings.binning or 1
         if settings.roi:
             x = settings.roi.x
             y = settings.roi.y
@@ -428,8 +421,8 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
 
         zwo_settings = settings.model_copy()
         assert zwo_settings.roi is not None and zwo_settings.binning is not None
-        zwo_settings.roi.width //= zwo_settings.binning.x
-        zwo_settings.roi.height //= zwo_settings.binning.y
+        zwo_settings.roi.width //= zwo_settings.binning
+        zwo_settings.roi.height //= zwo_settings.binning
         zwo_settings.roi.width -= zwo_settings.roi.width % 8
         zwo_settings.roi.height -= zwo_settings.roi.height % 2
         self.set_format(zwo_settings)
@@ -520,7 +513,7 @@ if __name__ == "__main__":
         imager.startup()
         series = imager.start_exposure_series(purpose="testing zwo imager")
         imager.start_exposure(
-            ImagerSettings.model_validate({"seconds": 5}, context={"imager": imager})
+            ImagerSettings.model_validate({"seconds": 5, "binning": 2}, context={"imager": imager})
         )
         d = imager.status()
         print(json.dumps(d, indent=2))
