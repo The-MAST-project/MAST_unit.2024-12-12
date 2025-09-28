@@ -54,6 +54,8 @@ def save_to_fits_file(imager_backend):
         )
         imager_backend.ccd_temp_at_mid_exposure = None
 
+    header["IMAGER"] = (imager_backend.name, "the imager backend")
+
     if imager_backend.parent_imager.unit:
         header["FOCUSPOS"] = imager_backend.parent_imager.unit.focuser.position
         header.comments["FOCUSPOS"] = "focuser position"
