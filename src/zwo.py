@@ -330,7 +330,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             camera_y_size=self.height,
             set_point=self._setpoint,
             temperature=self.temperature if self.connected else None,
-            cooler=self.cooler_on if self.connected else None,
+            cooler_on=self.cooler_on if self.connected else None,
             cooler_power=self.cooler_power if self.connected else None,
             latest_settings=self.latest_settings,
             date=time_stamp(),
