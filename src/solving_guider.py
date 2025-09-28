@@ -17,7 +17,7 @@ logger = Logger("mast-unit-solving-guider")
 init_log(logger)
 
 if TYPE_CHECKING:
-    from unit import Unit
+    pass
 
 
 class SolvingGuider(GuiderInterface):
