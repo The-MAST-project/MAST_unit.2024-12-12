@@ -219,19 +219,20 @@ class Stage(Component, SwitchedOutlet):
                 "max": self.max_travel,
             }
 
+            self.fcu_version = None
             if self.stage_model is None:
                 logger.warning("{op}: could not determine stage model")
             elif self.unit is not None:
                 if self.stage_model == "8MT167-25LS-MEn1":
-                    self.unit.fcu_version = 1
+                    self.fcu_version = "fcu_v1"
                 elif self.stage_model.startswith("8MT173-20DCE2"):
-                    self.unit.fcu_version = 2
+                    self.fcu_version = "fcu_v2"
 
             self.device_info = (
                 f"port='{comport}', manufacturer='{self.info['controller']}', product='{self.info['product']}', "
                 + f"version='{self.info['version']}', model='{self.stage_model}', "
-                + f"fcu_version={self.unit.fcu_version if self.unit else None}, "
-                + f"range={self.min_travel}..{self.max_travel}, close_enough={self.CLOSE_ENOUGH}"
+                + f"fcu_version='{self.fcu_version if self.unit else None}', "
+                + f"range={self.min_travel}..{self.max_travel}, close_enough={self.conf.close_enough}"
             )
         self.stage_lock = threading.Lock()
 
