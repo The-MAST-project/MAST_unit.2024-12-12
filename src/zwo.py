@@ -89,6 +89,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
 
         self.image_was_read: bool = False
         self.image_was_saved = False
+        self._setpoint = None
 
         self._initialized = True
 
@@ -317,9 +318,9 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         Gets the **MAST** imager status
         """
 
-        target_temp = None
+        self._setpoint = None
         if self.connected:
-            target_temp, _ = asi.getControlValue(self.cam_id, ASI.Control.TargetTemp)
+            self._setpoint, _ = asi.getControlValue(self.cam_id, ASI.Control.TargetTemp)
 
         return ImagerStatus(
             **self.power_status().model_dump(),
@@ -328,13 +329,17 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             model=self.model,
             camera_x_size=self.width,
             camera_y_size=self.height,
-            set_point=target_temp,
+            set_point=self._setpoint,
             temperature=self.temperature if self.connected else None,
             cooler=self.cooler_on if self.connected else None,
             cooler_power=self.cooler_power if self.connected else None,
             latest_settings=self.latest_settings,
             date=time_stamp(),
         )
+
+    @property
+    def set_point(self):
+        return self._setpoint
 
     @property
     def name(self) -> str:
