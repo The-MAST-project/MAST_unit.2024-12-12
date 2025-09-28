@@ -229,14 +229,6 @@ class Guider(GuiderInterface):
             return self._backend.is_guiding
         return False
 
-    def connect(self):
-        if isinstance(self._backend, PHD2Connector):
-            self._backend.connect_equipment()
-
-    def disconnect(self):
-        if isinstance(self._backend, PHD2Connector):
-            self._backend.disconnect_equipment()
-
 if __name__ == "__main__":
     import sys
 
