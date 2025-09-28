@@ -11,9 +11,11 @@ from fastapi import Query
 from acquisition import Acquisition
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.interfaces.imager import ImagerBinning, ImagerRoi, ImagerSettings
+from common.config.rois import SkyRoiConfig
+from common.interfaces.imager import ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.rois import SkyRoi
 from common.tasks.models import UnitAssignmentModel
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
 from common.utils import Coord, boxed_info, function_name
@@ -58,6 +60,7 @@ class Acquirer:
 
         self.latest_acquisition = acquisition
         acquisition_conf = acquisition.conf
+        sky_roi_conf = acquisition_conf.rois[self.unit.fcu_version]
 
         #
         # Figure out the target, it can come from:
@@ -128,15 +131,21 @@ class Acquirer:
                 time.sleep(0.2)
             self.unit.end_activity(UnitActivities.Positioning)
 
-            imager_binning = ImagerBinning(
-                x=acquisition_conf.binning.x, y=acquisition_conf.binning.y
-            )
+            imager_binning = acquisition_conf.binning
+
+            assert isinstance(sky_roi_conf, SkyRoiConfig)
+            sky_roi = SkyRoi(
+                sky_x=sky_roi_conf.sky_x,
+                sky_y=sky_roi_conf.sky_y,
+                width=sky_roi_conf.width,
+                height=sky_roi_conf.height)
+
             sky_settings = ImagerSettings(
                 seconds=acquisition_conf.exposure,
                 base_folder=os.path.join(self.latest_acquisition.folder, phase),
                 gain=acquisition_conf.gain,
                 binning=imager_binning,
-                roi=ImagerRoi.from_other(imager_binning, acquisition_conf.roi),
+                roi=ImagerRoi.from_other(roi=sky_roi),
                 save=True,
             )
 
@@ -201,9 +210,7 @@ class Acquirer:
         # override with acquisition settings
         spec_imager_settings.seconds = acquisition.conf.exposure
         if acquisition_conf.binning is not None:
-            spec_imager_settings.binning = ImagerBinning(
-                x=acquisition_conf.binning.x, y=acquisition_conf.binning.y
-            )
+            spec_imager_settings.binning = acquisition_conf.binning
         if acquisition_conf.gain is not None:
             spec_imager_settings.gain = acquisition_conf.gain
 
