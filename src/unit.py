@@ -49,6 +49,8 @@ from common.interfaces.guiding import GuiderTypes
 # from guiding import Guider
 from common.interfaces.imager import (
     ImagerExposureSeries,
+    ImagerRoi,
+    ImagerSequenceOfExposures,
     ImagerSettings,
     ImagerStatus,
     ImagerTypes,
@@ -767,6 +769,74 @@ class Unit(Component):
         self.mount.stop_tracking()
         return CanonicalResponse_Ok
 
+    def do_start_sequence_of_exposures(self, sequence: ImagerSequenceOfExposures):  # noqa: C901
+        if not self.imager.connected:
+            self.imager.connect()
+
+        base_folder = Path(PathMaker().make_daily_folder_name()) / "sequence_of_exposures"
+        base_folder = str(base_folder / f"seq={PathMaker.make_seq(str(base_folder))}")
+        for _ in range(sequence.repeats):
+            settings = ImagerSettings(**sequence.exposure_settings.model_dump(), base_folder=base_folder)
+            settings.make_file_name(dont_bump_sequence=True)
+            self.imager.start_exposure(settings=settings)
+            self.imager.wait_for_image_saved()
+            if sequence.pause_between_exposures is not None:
+                time.sleep(sequence.pause_between_exposures)
+
+        msg = f"imager is '{type(self.imager._backend)}', guider is '{type(self.guider._backend)}': "
+        if sequence.disconnect_camera:
+            if isinstance(self.guider._backend, PHD2Connector):
+                if not isinstance(self.imager._backend, PHD2Connector):
+                    logger.info(msg + "disconecting imager camera")
+                    self.imager.disconnect()
+                else:
+                    logger.info(msg + "not disconnecting imager camera")
+        else:
+            logger.info("not disconnecting imager camera")
+
+
+        if self.guider is None or sequence.tell_guider_to_start is None or sequence.tell_guider_to_start == "nothing":
+            return
+
+        if sequence.delay_before_telling_guider is not None and sequence.delay_before_telling_guider != 0.0:
+            logger.info(f"delaying {sequence.delay_before_telling_guider}s before telling guider to '{sequence.tell_guider_to_start}'")
+            time.sleep(sequence.delay_before_telling_guider)
+
+        if not isinstance(self.guider._backend, PHD2Connector):
+            return
+
+        phd2 = self.guider._backend
+
+        if isinstance(self.guider._backend, PHD2Connector) and not isinstance(self.imager._backend, PHD2Connector):
+            start = datetime.datetime.now()
+            logger.debug(msg + "telling phd2 to disconnect equipment")
+            phd2.disconnect_equipment()
+            while phd2.equipment_is_connected():
+                time.sleep(0.1)
+            logger.debug("phd2 has disconnected the equipment")
+
+            logger.debug(msg + "telling phd2 to connect equipment")
+            self.guider._backend.connect_equipment()
+            while not phd2.equipment_is_connected():
+                time.sleep(0.1)
+            logger.debug(f"phd2 disconnect/connect took {humanfriendly.format_timespan(datetime.datetime.now() - start)}")
+
+        logger.debug(f"telling guider to start '{sequence.tell_guider_to_start}'")
+        if sequence.tell_guider_to_start == "loop":
+            self.guider.start_looping()
+        else:
+            self.guider.start_guiding()
+
+    def start_sequence_of_exposures(self, sequence: ImagerSequenceOfExposures) -> CanonicalResponse:
+        self.start_activity(UnitActivities.SequenceOfExposures)
+        Thread(name="sequence-of-exposures", target=self.do_start_sequence_of_exposures, args=[sequence]).start()
+        return CanonicalResponse_Ok
+
+    def stop_sequence_of_exposures(self):
+        if self.is_active(UnitActivities.SequenceOfExposures) and isinstance(self.guider._backend, PHD2Connector):
+            self.guider._backend.stop_capture()
+            self.end_activity(UnitActivities.SequenceOfExposures)
+
     def test_stage_repeatability(
         self,
         start_position: int | str = 50000,
@@ -1065,6 +1135,15 @@ class Unit(Component):
             endpoint=self.acquirer.start_acquisition_and_guiding,
         )
         router.add_api_route(base_path + "/expose", tags=[tag], endpoint=self.expose)
+        router.add_api_route(base_path + "/start_sequence_of_exposures",
+                             methods=["PUT"],
+                             tags=[tag],
+                             endpoint=self.start_sequence_of_exposures)
+        router.add_api_route(
+            base_path + "/stop_sequence_of_exposures",
+            tags=[tag],
+            endpoint=self.guider.stop_acquisition_and_guiding,
+        )
         router.add_api_route(
             base_path + "/test_stage_repeatability",
             tags=[tag],
