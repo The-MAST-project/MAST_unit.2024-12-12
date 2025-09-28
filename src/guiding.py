@@ -25,6 +25,10 @@ init_log(logger)
 
 guider_address_port = ("127.0.0.1", 8001)
 
+class GuiderStatus(BaseModel):
+    activities: int | None = None
+    activities_verbal: str | None = None
+    backend: PHD2GuiderStatus | None = None
 
 class Guider(GuiderInterface):
 
@@ -68,12 +72,11 @@ class Guider(GuiderInterface):
             self.guider_type = GuiderTypes.Solving
 
     def status(self):
-        return {
-            "type": self.guider_type,
-            "activities": self.activities,
-            "activities_verbal": self.activities.__repr__(),
-            "backend": self._backend.status() if self._backend else None,
-        }
+        return GuiderStatus(
+            activities=self.activities,
+            activities_verbal=self.activities.__repr__(),
+            backend=self._backend.status(capacity="guider") if self._backend else None, # type: ignore
+        )
 
     def start_guiding(self):
         if self._backend:
