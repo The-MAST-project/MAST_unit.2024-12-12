@@ -506,7 +506,7 @@ class Stage(Component, SwitchedOutlet):
                 logger.error(f"could not command_stop({self.device}), {result=}")
             # TBD:  What else needs to be done?
 
-        self.is_moving = hw_status.MvCmdSts & MvcmdStatus.MVCMD_RUNNING
+        self.is_moving = (hw_status.MvCmdSts & MvcmdStatus.MVCMD_RUNNING) != 0
 
         if not self.is_moving:
             if self.is_active(StageActivities.Moving):
