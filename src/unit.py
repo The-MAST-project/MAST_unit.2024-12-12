@@ -63,6 +63,7 @@ from common.tasks.notifications import notify_controller_about_task_acquisition_
 from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers, CoverStatus
 from focuser import Focuser, FocuserStatus
+from guiding import GuiderStatus
 from imagers import Imager
 from mount import Mount, MountStatus
 from phd2.phd2 import PHD2Connector, PHD2GuiderStatus, PHD2ImagerStatus
@@ -108,7 +109,7 @@ class UnitStatus(ComponentStatus, PowerStatus):
     covers: CoverStatus | None = None
     focuser: FocuserStatus | None = None
     stage: StageStatus | None = None
-    guider: PHD2GuiderStatus | None = None
+    guider: GuiderStatus | None = None
     errors: list[str] | None = None
     autofocus: dict | None = None
     corrections: list | None = None
@@ -354,7 +355,7 @@ class Unit(Component):
             covers=self.covers.status(),
             focuser=self.focuser.status(),
             stage=self.stage.status(),
-            guider=guider_status,  # type: ignore
+            guider=self.guider.status() if self.guider else None,  # type: ignore
             # solver= self.solver.status(),
             errors=self.errors,
             autofocus=autofocus,
