@@ -12,12 +12,8 @@ from astropy.coordinates import Angle
 from acquisition import Acquisition
 from common.activities import UnitActivities
 from common.config import Config
-from common.config.unit import (
-    AcquisitionConfig,
-    ImagerBinningConfig,
-    SkyRoiConfig,
-    ToleranceConfig,
-)
+from common.config.rois import RoisConfig, SkyRoiConfig
+from common.config.unit import AcquisitionConfig, ToleranceConfig
 from common.corrections import Correction, Corrections
 from common.filer import Filer
 from common.interfaces.imager import ImagerSettings
@@ -86,14 +82,6 @@ class Solver(SolverInterface):
         op = function_name()
 
         assert self._backend is not None, "solve: self._backend is None"
-        if (
-            imager_settings.binning is not None
-            and imager_settings.binning.x != imager_settings.binning.y
-        ):
-            raise Exception(
-                "cannot deal with non-equal horizontal and vertical binning "
-                + f"({imager_settings.binning.x=}, {imager_settings.binning.y=}"
-            )
 
         if self.unit.is_active(UnitActivities.Solving):
 
@@ -202,17 +190,10 @@ class Solver(SolverInterface):
                     height=self.unit.imager.full_frame.height,
                 )
 
-            if imager_settings.binning is not None:
-                imager_binning_config = ImagerBinningConfig(
-                    x=imager_settings.binning.x, y=imager_settings.binning.y
-                )
-            else:
-                imager_binning_config = ImagerBinningConfig(x=1, y=1)
-
             conf = AcquisitionConfig(
                 exposure=imager_settings.seconds,
-                binning=imager_binning_config,
-                roi=sky_roi_config,
+                binning=imager_settings.binning,
+                rois=RoisConfig({ self.unit.fcu_version: sky_roi_config}),
                 gain=imager_settings.gain or 100,
                 tries=self.unit.unit_conf.acquisition.tries,
                 tolerance=tolerance,
