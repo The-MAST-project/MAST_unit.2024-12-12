@@ -105,8 +105,6 @@ class Stage(Component, SwitchedOutlet):
     _instance = None
     _initialized = False
 
-    CLOSE_ENOUGH = 2
-
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -451,7 +449,7 @@ class Stage(Component, SwitchedOutlet):
 
     def close_enough(self, target):
         # logger.info(f"{self._position=}, {target=}")
-        return abs(self._position - target) <= self.CLOSE_ENOUGH
+        return abs(self._position - target) <= self.conf.close_enough
 
     @property
     def is_stationary(self) -> bool:
@@ -521,7 +519,7 @@ class Stage(Component, SwitchedOutlet):
                         logger,
                         [
                             "Stage is stationary, but not close enough to target: ",
-                            f"{self.position} != {self.target} (CLOSE_ENOUGH={self.CLOSE_ENOUGH})",
+                            f"{self.position} != {self.target} (CLOSE_ENOUGH={self.conf.close_enough})",
                             f"Moving to {self.target} again",
                         ],
                         center=True,
