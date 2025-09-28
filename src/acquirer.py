@@ -258,8 +258,7 @@ class Acquirer:
         # Acquisition was stopped
         self.unit.end_activity(UnitActivities.Acquiring)
 
-        # if not isinstance(self.unit.imager, PHD2Connector):
-        #     self.unit.mount.stop_tracking()
+        self.unit.mount.stop_tracking()
         if self.unit.acquirer.latest_acquisition is not None:
             self.unit.acquirer.latest_acquisition.post_process()
 
