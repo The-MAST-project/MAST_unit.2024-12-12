@@ -173,8 +173,6 @@ class Guider(GuiderInterface):
 
 
         imager_roi = ImagerRoi(
-            # x=guiding_roi.margin_horizontal,
-            # y=guiding_roi.margin_vertical,
             x = guiding_roi.fiber_x - half_width, # oren
             y = guiding_roi.fiber_y - half_height, # oren
             width=half_width * 2,
