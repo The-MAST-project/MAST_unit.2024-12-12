@@ -6,14 +6,15 @@ import subprocess
 import sys
 
 import astropy.io.fits
-
 # from typing import TYPE_CHECKING
 from astropy.coordinates import Angle
 
 from common.filer import Filer
-from common.interfaces.solving import SolverInterface, SolvingResult, SolvingSolution
+from common.interfaces.solving import (SolverInterface, SolvingResult,
+                                       SolvingSolution)
 from common.mast_logging import init_log
-from common.utils import Coord, boxed_info, function_name, generate_random_string
+from common.utils import (Coord, boxed_info, function_name,
+                          generate_random_string)
 from imagers import ImagerSettings
 
 # from unit import Unit  # type: ignore[import-untyped]
@@ -120,7 +121,7 @@ class AstrometryDotNet(SolverInterface):
             + "C:/Users/mast/PycharmProjects/MAST_unit/src/Standa/ximc-2.13.6/ximc/win64;"
         )
 
-        if image_path is None:
+        if image_path is None:  # noqa: SIM102
             if settings is not None:
                 assert (
                     settings.roi is not None
