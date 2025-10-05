@@ -129,11 +129,12 @@ class AstrometryDotNet(SolverInterface):
                     settings.image_path is not None
                 ), f"{function_name()}: settings.image_path is None"
 
+        binning = settings.binning if settings else 1
         cmd = ""
         args = []
         args += ["--scale-units", "arcsecperpix"]
-        args += ["--scale-low", "0.25"]
-        args += ["--scale-high", "0.27"]
+        args += ["--scale-low", f"{0.25 * binning}"]
+        args += ["--scale-high", f"{0.27 * binning}"]
         if target is not None:
             args += ["--ra", f"{target.ra.deg}"]
             args += ["--dec", f"{target.dec.value}"]
