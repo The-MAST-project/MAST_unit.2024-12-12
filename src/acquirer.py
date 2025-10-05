@@ -14,10 +14,12 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import SkyRoiConfig
 from common.interfaces.imager import ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.parsers import (sexagesimal_degrees_to_decimal,
+                            sexagesimal_hours_to_decimal)
 from common.rois import SkyRoi
 from common.tasks.models import UnitAssignmentModel
-from common.tasks.notifications import notify_controller_about_task_acquisition_path
+from common.tasks.notifications import \
+    notify_controller_about_task_acquisition_path
 from common.utils import Coord, boxed_info, function_name
 from phd2.phd2 import PHD2Connector
 from solving import SolverId, SolvingTolerance
