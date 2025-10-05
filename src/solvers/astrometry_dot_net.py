@@ -148,8 +148,9 @@ class AstrometryDotNet(SolverInterface):
         assert input_fits_path is not None, f"{function_name()}: fits_path is None"
 
         if settings is not None and settings.roi is not None:
-            args += ["--crpix-x", str(int(settings.roi.width / 2))]
-            args += ["--crpix-y", str(int(settings.roi.height / 2))]
+            # args += ["--crpix-x", str(int(settings.roi.width / 2))]
+            # args += ["--crpix-y", str(int(settings.roi.height / 2))]
+            args += ["--crpix-center"]
         else:
             with astropy.io.fits.open(input_fits_path) as hdul:
                 header = hdul[0].header  # type: ignore
