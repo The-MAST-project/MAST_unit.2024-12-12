@@ -109,5 +109,19 @@
             },
             "justMyCode": false,
         },
+        {
+            "name": "Dump MAST config DB",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "common/config/backup/mast-config.py",
+            "args": "--dump ${workspaceFolder}/src/common/config/backup/mast-config-db.json",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/src",
+            // "jinja": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "justMyCode": false,
+        },
     ]
 }
