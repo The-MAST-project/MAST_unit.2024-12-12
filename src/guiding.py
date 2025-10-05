@@ -20,6 +20,7 @@ from common.config.rois import FcuVersion, SpecRoiConfig
 from common.interfaces.guiding import GuiderInterface, GuiderTypes
 from common.interfaces.imager import ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
+from common.rois import SpecRoi
 
 logger = logging.Logger("mast.unit." + __name__)
 init_log(logger)
@@ -150,41 +151,48 @@ class Guider(GuiderInterface):
         if not  isinstance(cfg, SpecRoiConfig):
             raise ValueError(f"cannot make a guiding ROI from {type(cfg)}")
 
-        guiding_roi = SpecRoiConfig(
-            margin_horizontal=cfg.margin_horizontal,
-            margin_vertical=cfg.margin_vertical,
+        # guiding_roi = SpecRoiConfig(
+        #     margin_horizontal=cfg.margin_horizontal,
+        #     margin_vertical=cfg.margin_vertical,
+        #     fiber_x=cfg.fiber_x,
+        #     fiber_y=cfg.fiber_y)
+
+        # half_width = (
+        #     min(
+        #         guiding_roi.fiber_x,
+        #         camera_x_size - guiding_roi.fiber_x,
+        #     )
+        #     - guiding_roi.margin_horizontal
+        # )
+        # half_height = (
+        #     min(
+        #         guiding_roi.fiber_y,
+        #         camera_y_size - guiding_roi.fiber_y,
+        #     )
+        #     - guiding_roi.margin_vertical
+        # )
+
+
+        # imager_roi = ImagerRoi(
+        #     x = guiding_roi.fiber_x - half_width, # oren
+        #     y = guiding_roi.fiber_y - half_height, # oren
+        #     width=half_width * 2,
+        #     height=half_height * 2,
+        # )
+
+        guiding_roi = SpecRoi(
+            width=min(cfg.fiber_x - cfg.margin_horizontal, ASI.ASI_294MM_WIDTH - cfg.margin_horizontal),
+            height=min(cfg.fiber_y - cfg.margin_vertical, ASI.ASI_294MM_HEIGHT - cfg.margin_vertical),
             fiber_x=cfg.fiber_x,
             fiber_y=cfg.fiber_y)
-
-        half_width = (
-            min(
-                guiding_roi.fiber_x,
-                camera_x_size - guiding_roi.fiber_x,
-            )
-            - guiding_roi.margin_horizontal
-        )
-        half_height = (
-            min(
-                guiding_roi.fiber_y,
-                camera_y_size - guiding_roi.fiber_y,
-            )
-            - guiding_roi.margin_vertical
-        )
-
-
-        imager_roi = ImagerRoi(
-            x = guiding_roi.fiber_x - half_width, # oren
-            y = guiding_roi.fiber_y - half_height, # oren
-            width=half_width * 2,
-            height=half_height * 2,
-        )
 
         return ImagerSettings(
             seconds=guiding_conf.exposure,
             base_folder=base_folder,
             gain=guiding_conf.gain,
             binning=guiding_conf.binning,
-            roi=imager_roi,
+            # roi=imager_roi,
+            roi=ImagerRoi.from_other(guiding_roi),
             save=save,
         )
 
