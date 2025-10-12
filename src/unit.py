@@ -822,9 +822,8 @@ class Unit(Component):
         return CanonicalResponse_Ok
 
     def stop_sequence_of_exposures(self):
-        if self.is_active(UnitActivities.SequenceOfExposures) and isinstance(self.guider._backend, PHD2Connector):
-            self.guider._backend.stop_capture()
-            self.end_activity(UnitActivities.SequenceOfExposures)
+        self.guider.stop_acquisition_and_guiding()
+        self.end_activity(UnitActivities.SequenceOfExposures)
 
     def test_stage_repeatability(
         self,
