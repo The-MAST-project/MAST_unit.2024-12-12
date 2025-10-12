@@ -811,6 +811,9 @@ class Unit(Component):
         if sequence.tell_guider_to_start == "loop":
             self.guider.start_looping()
         else:
+            self.was_tracking_before_guiding = self.mount.is_tracking
+            if not self.was_tracking_before_guiding:
+                self.mount.start_tracking()
             self.guider.start_guiding()
 
     def start_sequence_of_exposures(self, sequence: ImagerSequenceOfExposures) -> CanonicalResponse:
