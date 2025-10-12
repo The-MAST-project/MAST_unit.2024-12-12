@@ -1453,8 +1453,7 @@ if __name__ == "__main__":
 
     def test_exposures(nexposures: int = 1,
                        gain: int = 180,
-                       binning_x: int = 1,
-                       binning_y: int = 1,
+                       binning: int = 1,
                        x: int = 0,
                        y: int = 0,
                        width: int | None = None,
@@ -1468,10 +1467,7 @@ if __name__ == "__main__":
             {
                 "seconds": 5,
                 "gain": gain,
-                "binning": {
-                    "x": binning_x,
-                    "y": binning_y
-                    },
+                "binning": binning,
                 "roi": ImagerRoi.model_validate(
                     {
                     "x": x,
