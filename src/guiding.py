@@ -198,7 +198,7 @@ class Guider(GuiderInterface):
 
     def stop_acquisition_and_guiding(self):
         """
-        Stops the `autoguide` routine
+        Stops any in-progress exposure and/or guiding
         """
         # if not self.connected:
         #     logger.warning('Cannot stop guiding - not-connected')
