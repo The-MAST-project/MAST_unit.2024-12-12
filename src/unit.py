@@ -785,7 +785,8 @@ class Unit(Component):
             return
 
         if sequence.delay_before_telling_guider is not None and sequence.delay_before_telling_guider != 0.0:
-            logger.info(f"delaying {sequence.delay_before_telling_guider}s before telling guider to '{sequence.tell_guider_to_start}'")
+            logger.info(f"delaying {sequence.delay_before_telling_guider}s " +
+                        f"before telling guider to '{sequence.tell_guider_to_start}'")
             time.sleep(sequence.delay_before_telling_guider)
 
         if not isinstance(self.guider._backend, PHD2Connector):
