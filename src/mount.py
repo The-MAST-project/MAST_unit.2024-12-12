@@ -306,6 +306,13 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.end_activity(MountActivities.Slewing)
             self.target = None
 
+    @property
+    def is_tracking(self) -> bool:
+        if not self.connected:
+            return False
+        st = self.pw.status()
+        return st.mount.is_tracking # type: ignore
+
     def status(self) -> MountStatus:
         target_verbal = None
         if isinstance(self.target, str):
