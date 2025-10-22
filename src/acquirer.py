@@ -342,7 +342,7 @@ class Acquirer:
         approach_mode: int = 2,
         make_corrections: bool = True,
         skip_sky: bool = False,
-        handover_automatically_to_guider: bool = False,
+        handover_automatically_to_guider: bool = True,
     ):
         """
         Starts an acquisition
