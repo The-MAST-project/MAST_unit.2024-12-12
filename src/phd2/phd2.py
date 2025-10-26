@@ -1600,8 +1600,8 @@ if __name__ == "__main__":
 
     test_exposures(
         nexposures=1,
-        binning_x=2, binning_y=2,
-        x=100, y=200, width=2000, height=1000
+        binning=2,
+        x=1000, y=2000, width=4000, height=3000
     )
     # test_guiding()
 
