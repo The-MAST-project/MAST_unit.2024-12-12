@@ -862,7 +862,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.call("set_limit_frame", params={"roi": None})
             self.need_to_reset_limit_frame = False
 
-    def guide(self, imager_settings: ImagerSettings | None = None, settling_settings: SettleModel | None = None):
+    def guide(self,
+              imager_settings: ImagerSettings | None = None,
+              settling_settings: SettleModel | None = None,
+              new_interface: bool = False):
         """Start guiding with the given settling parameters. PHD2 takes care
         of looping exposures, guide star selection, and settling. Call
         CheckSettling() periodically to see when settling is complete.
@@ -899,18 +902,38 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 self.cooler_on = True
 
             assert imager_settings and imager_settings.roi
-            self.set_limit_frame(roi=imager_settings.roi.binned(imager_settings.binning))
-            self.call(
-                method="guide",
-                params=[
-                    {
-                        "pixels": settling_settings.pixels,
-                        "time": settling_settings.time,
-                        "timeout": settling_settings.timeout,
-                    },
-                    False,  # don't force calibration
-                ],
-            )
+            if new_interface:
+                roi = imager_settings.roi.binned(imager_settings.binning)
+                self.call(
+                    method="guide",
+                    params=[
+                        {
+                            "pixels": settling_settings.pixels,
+                            "time": settling_settings.time,
+                            "timeout": settling_settings.timeout,
+                        },
+                        {
+                            "x": roi.x,
+                            "y": roi.y,
+                            "width": roi.width,
+                            "height": roi.height,
+                        },
+                        False,  # don't force calibration
+                    ],
+                )
+            else:
+                self.set_limit_frame(roi=imager_settings.roi.binned(imager_settings.binning))
+                self.call(
+                    method="guide",
+                    params=[
+                        {
+                            "pixels": settling_settings.pixels,
+                            "time": settling_settings.time,
+                            "timeout": settling_settings.timeout,
+                        },
+                        False,  # don't force calibration
+                    ],
+                )
             self.settle_px = settling_settings.pixels
         except Exception:
             with self.lock:
@@ -1276,6 +1299,52 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.start_guiding()
             self._needs_to_resume_guiding = False
 
+    def new_start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:
+        op = function_name()
+
+        self.errors = []
+        if not self.connected:
+            err = f"{op}: not connected"
+            self.log_and_append_error(err)
+            return CanonicalResponse(errors=[err])
+
+        logger.info(f"{function_name()}: starting {settings.seconds}s exposure")
+        self.image_was_saved = False
+        if self.parent is not None:
+            self.parent.start_activity(
+                ImagerActivities.Exposing, details=f"{settings.seconds} seconds"
+            )
+            self.parent.start_activity(
+                ImagerActivities.Saving,
+                details=f"{Path(settings.image_path).as_posix() if settings.image_path else None}",
+            )
+
+        try:
+            assert settings.roi
+            roi = settings.roi.binned(settings.binning)
+            self.call(
+                "capture_single_frame",
+                params={
+                    "exposure": int(
+                        settings.seconds * 1000  # convert to milliseconds
+                    ),
+                    "gain": int(ASI.gain_absolute_to_percent(settings.gain)),
+                    "binning": settings.binning,
+                    "save": True,
+                    "path": settings.image_path,
+                    "limit_frame": [roi.x, roi.y, roi.width, roi.height]
+                },
+            )
+
+        except PHD2ConnectorError as ex:
+            self.log_and_append_error(f"{ex=}")
+
+        return (
+            CanonicalResponse(errors=self.errors)
+            if self.errors
+            else CanonicalResponse_Ok
+        )
+
     def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:
         """
         The main entry point for starting an exposure with PHD2.
@@ -1508,10 +1577,33 @@ if __name__ == "__main__":
                 #     break
             time.sleep(1)
 
+    def test_new_guiding():
+        PHD2Connector().guide(imager_settings=ImagerSettings(
+            seconds=3.4,
+            save=False,
+            binning=2,
+            gain=200,
+            roi = ImagerRoi(x=200, y=150, width=2000, height=1000)
+        ), new_interface=True)
+
+    def test_new_single_frame():
+        PHD2Connector().new_start_exposure(settings=ImagerSettings(
+            seconds=3.4,
+            save=False,
+            binning=2,
+            gain=200,
+            image_path="c:/dummy.fits",
+            roi = ImagerRoi(x=200, y=150, width=2000, height=1000)))
+
     test_exposures(
         nexposures=1,
         binning_x=2, binning_y=2,
         x=100, y=200, width=2000, height=1000
     )
     # test_guiding()
+
+    # test_new_guiding()
+
+    # test_new_single_frame()
+
     exit(0)
