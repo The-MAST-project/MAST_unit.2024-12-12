@@ -92,7 +92,7 @@ class Guider(GuiderInterface):
             self._backend.loop()
 
     def stop_guiding(self):
-        if self._backend:
+        if self._backend is not None:
             self._backend.stop_guiding()
         if self.unit:
             self.unit.end_activity(UnitActivities.Guiding)
