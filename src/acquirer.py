@@ -129,6 +129,9 @@ class Acquirer:
 
             while self.unit.stage.is_moving or self.unit.mount.is_moving:
                 time.sleep(0.2)
+            logger.info("sleeping additional 3 seconds to let the mount really stop moving ...")
+            time.sleep(3)
+
             self.unit.end_activity(UnitActivities.Positioning)
 
             imager_binning = acquisition_conf.binning
