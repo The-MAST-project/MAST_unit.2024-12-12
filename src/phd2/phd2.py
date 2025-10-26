@@ -23,6 +23,7 @@ from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
+from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_info, function_name
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 
@@ -334,18 +335,18 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
         self.sky_quality: SeeingQualityWhilePHD2Guiding = SeeingQualityWhilePHD2Guiding()
 
-        # self.watched_process = WatchedProcess(
-        #     command='"C:/Program Files/PHDGuiding2/phd2.exe"',
-        #     command = "C:/Users/mast/Documents/GitHub/phd2/tmp64/Debug/phd2.exe"
-        #     logger=logger,
-        #     shell=True,
-        #     restart_event=self.restart_event,
-        #     no_restart=True,
-        # )
-        # self.watched_process.start()
-        # secs = 3
-        # logger.info(f"{function_name()}: sleeping {secs} seconds to allow PHD2 to start")
-        # time.sleep(secs)
+        self.watched_process = WatchedProcess(
+            command="C:/Program Files/PHDGuiding2/phd2.exe",
+            # command = "C:/Users/mast/Documents/GitHub/phd2/tmp64/Debug/phd2.exe",
+            logger=logger,
+            shell=True,
+            restart_event=self.restart_event,
+            no_restart=True,
+        )
+        self.watched_process.start()
+        secs = 3
+        logger.info(f"{function_name()}: sleeping {secs} seconds to allow PHD2 to start")
+        time.sleep(secs)
 
         self._needs_to_resume_guiding = False
         self.need_to_reset_limit_frame = False
