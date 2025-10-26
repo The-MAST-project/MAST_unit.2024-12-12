@@ -528,6 +528,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 self.version = ev["PHDVersion"]
                 self.sub_version = ev["PHDSubver"]
                 logger.debug(f"{function_name()}: {e}, {self.version=}, {self.sub_version=}")
+
         elif e == "StartGuiding":
             self.start_activity(PHD2Activities.Guiding)
             if self.guiding_verification_timer is not None:
@@ -540,6 +541,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             )
             with self.lock:
                 self.stats = stats
+                logger.debug("Started guiding")
+
         elif e == "GuideStep":
             # | Attribute | Type | Description |
             # |:----------|:-----|:------------|
@@ -723,7 +726,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             # logger.debug(f"{function_name()}: event: {e}")
             pass
         else:
-            logger.error(f"{function_name()}: TODO: Unhandled event {e}")
+            logger.warning(f"{function_name()}: TODO: Unhandled event {e}")
             pass
 
     def _worker(self):
