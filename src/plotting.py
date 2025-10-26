@@ -276,18 +276,20 @@ def plot_phase_corrections(  # noqa: C901
         dec_rms_label = Patch(color="none", label=f"Dec RMS: {dec_guiding_rms:.2f}")
 
     if phase == "acquisition" and tolerances:
-        plt.axhline(
-            y=tolerances["sky"]["ra"],
-            color="maroon",
-            linestyle=":",
-            label=f"'sky' tolerance ({tolerances['sky']['ra']} arcsec)",
-        )
-        plt.axhline(
-            y=tolerances["spec"]["ra"],
-            color="maroon",
-            linestyle="-.",
-            label=f"'spec' tolerance ({tolerances['spec']['ra']} arcsec)",
-        )
+        if "sky" in tolerances and "ra" in tolerances["sky"]:
+            plt.axhline(
+                y=tolerances["sky"]["ra"],
+                color="maroon",
+                linestyle=":",
+                label=f"'sky' tolerance ({tolerances['sky']['ra']} arcsec)",
+            )
+        if "spec" in tolerances and "ra" in tolerances["spec"]:
+            plt.axhline(
+                y=tolerances["spec"]["ra"],
+                color="maroon",
+                linestyle="-.",
+                label=f"'spec' tolerance ({tolerances['spec']['ra']} arcsec)",
+            )
 
     if start.day == end.day:
         start_time = f"{start.time().strftime('%H:%M:%S.%f')[:11]}"
