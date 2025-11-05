@@ -48,7 +48,7 @@ class SettleModel(BaseModel):
 
 
 class PHD2Configuration(BaseModel):
-    profile: str = "PWI4+ASI-native"
+    profile: str = "PWI4+ASI-native,binning=1,bpp=16"
     settle: SettleModel
 
 
@@ -306,8 +306,25 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.stats = PHD2GuideStats()
         self.settle = None
         self._setpoint: float | None = None
+        self.profile_binning: int | None = None
+        self.profile_bpp: int | None = None # bits per pixel
 
         self.conf = Config().get_unit().phd2
+
+        #
+        # We embed the binning and bpp in the profile name, so extract them
+        #
+        profile_name_parts = self.conf.profile.split(",")
+        for part in profile_name_parts[1:]:
+            key_value = part.split("=")
+            if len(key_value) == 2:
+                key = key_value[0].strip().lower()
+                value = key_value[1].strip().lower()
+                if key == "binning":
+                    self.profile_binning = int(value)
+                elif key == "bpp":
+                    self.profile_bpp = int(value)
+
         self.validation_interval = self.conf.validation_interval
 
         default_settling = self.conf.settle
@@ -363,6 +380,17 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         # threading.Thread(name="phd2-reconnector", target=self.reconnect).start()
 
         self._initialized = True
+
+    def can_expose_at(self, binning: int, bpp: int) -> bool | None:
+        if self.profile_binning is None:
+            logger.warning(f"{function_name()}: profile_binning is None {self.conf.profile=}")
+            return None
+
+        if self.profile_bpp is None:
+            logger.warning(f"{function_name()}: profile_bpp is None {self.conf.profile=}")
+            return None
+
+        return binning == self.profile_binning and bpp == self.profile_bpp
 
     def reconnect(self):
         while not self._terminate:
@@ -1211,8 +1239,23 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             except PHD2ConnectorError as ex:
                 return CanonicalResponse(errors=[f"cannot connect {ex=}"])
 
-        assert self.parent and self.parent.unit, "phd2.start_guiding(): self.parent or self.unit is None. cannot make_guiding_settings"
-        guiding_settings = self.parent.unit.guider.make_guiding_settings(save=False)
+        assert self.parent and self.parent.unit, "phd2.start_guiding(): self.parent or self.unit is None. " \
+            + "cannot make_guiding_settings"
+        guiding_settings: ImagerSettings = self.parent.unit.guider.make_guiding_settings(save=False)
+
+        requested_binning: Literal[1, 2] = guiding_settings.binning if guiding_settings and guiding_settings.binning else 1
+        if requested_binning != self.profile_binning:
+            msg = f"{function_name()}: {requested_binning=} does not match {self.profile_binning=}, cannot guide"
+            logger.warning(msg)
+            return CanonicalResponse(errors=[msg])
+
+        requested_bpp: Literal[8, 16] = 16
+        if guiding_settings:
+            requested_bpp = 8 if guiding_settings.format == "raw8" else 16
+            if requested_bpp != self.profile_bpp:
+                msg = f"{function_name()}: {requested_bpp=} does not match {self.profile_bpp=}, cannot guide"
+                logger.warning(msg)
+                return CanonicalResponse(errors=[msg])
 
         logger.info(f"{function_name()}: starting guiding")
         self.parent.unit.start_activity(UnitActivities.Guiding)
@@ -1364,7 +1407,21 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if not settings.image_path:
             raise PHD2ConnectorError("PHD2 save_image settings MUST have an image_path")
 
-        logger.info(f"{function_name()}: starting {settings.seconds} exposure")
+        requested_binning: Literal[1, 2] = settings.binning if settings and settings.binning else 1
+        if requested_binning != self.profile_binning:
+            msg = f"{function_name()}: {requested_binning=} does not match {self.profile_binning=}, cannot start exposure"
+            logger.warning(msg)
+            return CanonicalResponse(errors=[msg])
+
+        requested_bpp: Literal[8, 16] = 16
+        if settings:
+            requested_bpp = 8 if settings.format == "raw8" else 16
+            if requested_bpp != self.profile_bpp:
+                msg = f"{function_name()}: {requested_bpp=} does not match {self.profile_bpp=}, cannot start exposure"
+                logger.warning(msg)
+                return CanonicalResponse(errors=[msg])
+
+        logger.info(f"{function_name()}: starting {settings.seconds} seconds exposure")
         self.image_was_saved = False
         if self.parent is not None:
             self.parent.start_activity(
