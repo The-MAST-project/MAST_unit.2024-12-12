@@ -126,11 +126,17 @@ class Imager(ImagerInterface, SwitchedOutlet):
     def can_send_image_saved_event(self) -> bool:
         return self._backend.can_send_image_saved_event
 
+    def endpoint_startup(self) -> CanonicalResponse | None:
+        return self.startup()
+
     def startup(self) -> CanonicalResponse | None:
-        return self._backend.startup()
+        return self._backend.endpoint_startup()
 
     def shutdown(self) -> CanonicalResponse | None:
-        return self._backend.shutdown()
+        return self._backend.endpoint_shutdown()
+
+    def endpoint_shutdown(self) -> CanonicalResponse | None:
+        return self.shutdown()
 
     @property
     def name(self) -> str:
@@ -197,19 +203,25 @@ class Imager(ImagerInterface, SwitchedOutlet):
         """
         return self._backend.why_not_operational
 
+    def endpoint_abort(self) -> CanonicalResponse | None:
+        return self.abort()
+
     def abort(self) -> CanonicalResponse | None:
         """
         Immediately terminates any in-progress activities and returns the imager to its default state.
         :return: CanonicalResponse indicating the result of the operation
         """
-        return self._backend.abort()
+        return self._backend.endpoint_abort()
+
+    def endpoint_status(self):
+        return self.status()
 
     def status(self) -> ImagerStatus:
         """
         Returns the imager's current status.
         :return: ImagerStatus object containing the status information
         """
-        backend_status = self._backend.status(capacity="imager") # type: ignore
+        backend_status = self._backend.endpoint_status(capacity="imager") # type: ignore
 
         ret = ImagerStatus(
             detected=self.detected,
@@ -366,16 +378,16 @@ class Imager(ImagerInterface, SwitchedOutlet):
 
         router = APIRouter()
         router.add_api_route(
-            base_imager_path + "/startup", tags=[tag], endpoint=self.startup
+            base_imager_path + "/startup", tags=[tag], endpoint=self.endpoint_startup
         )
         router.add_api_route(
-            base_imager_path + "/shutdown", tags=[tag], endpoint=self.shutdown
+            base_imager_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown
         )
         router.add_api_route(
-            base_imager_path + "/abort", tags=[tag], endpoint=self.abort
+            base_imager_path + "/abort", tags=[tag], endpoint=self.endpoint_abort
         )
         router.add_api_route(
-            base_imager_path + "/status", tags=[tag], endpoint=self.status
+            base_imager_path + "/status", tags=[tag], endpoint=self.endpoint_status
         )
         router.add_api_route(
             base_imager_path + "/connect", tags=[tag], endpoint=self.connect
