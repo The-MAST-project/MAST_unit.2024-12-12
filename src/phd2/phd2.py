@@ -1162,6 +1162,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def __repr__(self):
         return f"PHD2Connector(profile='{self.conf.profile}')"
 
+    def endpoint_status(self):
+        return self.status()
+
     def status(
         self, capacity: Literal["imager", "guider"] = "imager"
     ) -> PHD2ImagerStatus | PHD2GuiderStatus:
@@ -1222,6 +1225,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         """
         res = self.call("save_image")
         return res["result"]["filename"]
+
+    def endpoint_shutdown(self):
+        return self.shutdown()
 
     def shutdown(self):
         self.stop_guiding()
@@ -1313,7 +1319,13 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def startup(self):
         pass
 
+    def endpoint_startup(self):
+        pass
+
     def abort(self):
+        pass
+
+    def endpoint_abort(self):
         self.stop_capture()
 
     @property
