@@ -197,7 +197,7 @@ class Guider(GuiderInterface):
                 self.unit.mount.stop_tracking()
                 logger.info("stopped tracking")
 
-            if self.unit.guider:
+            if self.unit.guider and self.unit.guider.is_guiding:
                 self.unit.guider.stop_guiding()
                 logger.info("stopped guiding")
 
