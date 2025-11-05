@@ -34,6 +34,8 @@ class Acquisition:
         conf: AcquisitionConfig | None = None,
         skip_sky: bool = False,
         handover_automatically_to_guider: bool = False,
+        gain_absolute: int | None = None,
+        gain_percent: int | None = None,
     ):
         if not conf:
             raise Exception("Acquisition: conf == None")
@@ -43,6 +45,8 @@ class Acquisition:
         self.make_corrections = make_corrections
         self.handover_automatically_to_guider = handover_automatically_to_guider
         self.unit = unit
+        self.gain_absolute = gain_absolute
+        self.gain_percent = gain_percent
         self.slew_to_target = False
         if target_ra is not None and target_dec is not None:
             self.target_ra: float = target_ra
