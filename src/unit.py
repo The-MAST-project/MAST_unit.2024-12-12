@@ -217,6 +217,9 @@ class Unit(Component):
         self.start_activity(UnitActivities.StartingUp)
         [comp.startup() for comp in self.components]
 
+    def endpoint_startup(self):
+        return self.startup()
+
     def startup(self):
         """
         Starts the **MAST** ``unit`` subsystem.  Makes it ``operational``.
@@ -236,6 +239,9 @@ class Unit(Component):
         self._was_shut_down = True
         self.timer.cancel()
         self.unit_shutdown_event.set()
+
+    def endpoint_shutdown(self):
+        return self.shutdown()
 
     def shutdown(self):
         """
@@ -294,6 +300,9 @@ class Unit(Component):
         for c in self.components:
             if isinstance(c, SwitchedOutlet):
                 c.power_off()
+
+    def endpoint_status(self) -> CanonicalResponse:
+        return self.status()
 
     def status(self) -> CanonicalResponse:
         autofocus = (
@@ -357,6 +366,9 @@ class Unit(Component):
         from app import app_quit
 
         app_quit(reason="quit()")
+
+    def endpoint_abort(self):
+        return self.abort()
 
     def abort(self):
         """
@@ -809,7 +821,7 @@ class Unit(Component):
                 self.mount.start_tracking()
             self.guider.start_guiding()
 
-    def start_sequence_of_exposures(self, sequence: ImagerSequenceOfExposures) -> CanonicalResponse:
+    def endpoint_start_sequence_of_exposures(self, sequence: ImagerSequenceOfExposures) -> CanonicalResponse:
         self.start_activity(UnitActivities.SequenceOfExposures)
         Thread(name="sequence-of-exposures", target=self.do_start_sequence_of_exposures, args=[sequence]).start()
         return CanonicalResponse_Ok
@@ -818,7 +830,7 @@ class Unit(Component):
         self.guider.stop_acquisition_and_guiding()
         self.end_activity(UnitActivities.SequenceOfExposures)
 
-    def test_stage_repeatability(
+    def endpoint_test_stage_repeatability(
         self,
         start_position: int | str = 50000,
         end_position: int | str = 300000,
@@ -953,7 +965,7 @@ class Unit(Component):
             #
             # At this point we have autofocused and can start acquisition
             #
-            self.acquirer.start_acquisition_and_guiding(
+            self.acquirer.endpoint_start_acquisition_and_guiding(
                 ra_j2000_hours=assignment.target.ra,
                 dec_j2000_degs=assignment.target.dec,
             )
@@ -968,7 +980,7 @@ class Unit(Component):
                     src=self.acquirer.latest_acquisition.folder,
                 )
 
-    async def execute_assignment(self, assignment: UnitAssignmentModel):
+    async def endpoint_execute_assignment(self, assignment: UnitAssignmentModel):
         if not self.operational:
             return CanonicalResponse(errors=self.why_not_operational)
 
@@ -996,7 +1008,7 @@ class Unit(Component):
 
     #     return CanonicalResponse_Ok
 
-    def spiral_new_path(self, x_step_arcsec: float, y_step_arcsec: float):
+    def endpoint_spiral_new_path(self, x_step_arcsec: float, y_step_arcsec: float):
         """
         Defines a new spiral path<br>
         **NOTE**: Remember to call `spiral_end_path()` when done with the spiral path
@@ -1021,7 +1033,7 @@ class Unit(Component):
         Filer().move_ram_to_shared(image_path)
         return CanonicalResponse_Ok
 
-    def spiral_next_step(self):
+    def endpoint_spiral_next_step(self):
         """
         Takes the next step in the currently defined spiral path
         """
@@ -1045,7 +1057,7 @@ class Unit(Component):
 
         return CanonicalResponse_Ok
 
-    def spiral_previous_step(self):
+    def endpoint_spiral_previous_step(self):
         """
         Goes back one step in the currently defined spiral path
         """
@@ -1069,7 +1081,7 @@ class Unit(Component):
 
         return CanonicalResponse_Ok
 
-    def spiral_end_path(self):
+    def endpoint_spiral_end_path(self):
         """
         Ends the currently defined spiral path
         """
@@ -1088,12 +1100,12 @@ class Unit(Component):
         router = APIRouter()
 
         tag = "unit"
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup)
+        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
         router.add_api_route(
-            base_path + "/shutdown", tags=[tag], endpoint=self.shutdown
+            base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown
         )
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort)
-        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
+        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
+        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
         router.add_api_route(
             base_path + "/start_autofocus",
             tags=[tag],
@@ -1102,38 +1114,38 @@ class Unit(Component):
         router.add_api_route(
             base_path + "/stop_autofocus",
             tags=[tag],
-            endpoint=self.autofocuser.stop_autofocus,
-        )
-        router.add_api_route(
-            base_path + "/stop_acquisition_and_guiding",
-            tags=[tag],
-            endpoint=self.guider.stop_acquisition_and_guiding,
+            endpoint=self.autofocuser.endpoint_stop_autofocus,
         )
         router.add_api_route(
             base_path + "/start_acquisition_and_guiding",
             tags=[tag],
-            endpoint=self.acquirer.start_acquisition_and_guiding,
+            endpoint=self.acquirer.endpoint_start_acquisition_and_guiding,
+        )
+        router.add_api_route(
+            base_path + "/stop_acquisition_and_guiding",
+            tags=[tag],
+            endpoint=self.guider.endpoint_stop_acquisition_and_guiding,
         )
         router.add_api_route(base_path + "/expose", tags=[tag], endpoint=self.expose)
         router.add_api_route(base_path + "/start_sequence_of_exposures",
                              methods=["PUT"],
                              tags=[tag],
-                             endpoint=self.start_sequence_of_exposures)
+                             endpoint=self.endpoint_start_sequence_of_exposures)
         router.add_api_route(
             base_path + "/stop_sequence_of_exposures",
             tags=[tag],
-            endpoint=self.guider.stop_acquisition_and_guiding,
+            endpoint=self.guider.endpoint_stop_acquisition_and_guiding,
         )
         router.add_api_route(
             base_path + "/test_stage_repeatability",
             tags=[tag],
-            endpoint=self.test_stage_repeatability,
+            endpoint=self.endpoint_test_stage_repeatability,
         )
         router.add_api_route(
             base_path + "/execute_assignment",
             methods=["PUT"],
             tags=[tag],
-            endpoint=self.execute_assignment,
+            endpoint=self.endpoint_execute_assignment,
         )
         # router.add_api_route(
         #     base_path + "/calculate_sky_pixel",
@@ -1143,18 +1155,18 @@ class Unit(Component):
 
         tag = "PlaneWave mount - spiral path"
         router.add_api_route(
-            base_path + "/spiral_new_path", tags=[tag], endpoint=self.spiral_new_path
+            base_path + "/spiral_new_path", tags=[tag], endpoint=self.endpoint_spiral_new_path
         )
         router.add_api_route(
-            base_path + "/spiral_next_step", tags=[tag], endpoint=self.spiral_next_step
+            base_path + "/spiral_next_step", tags=[tag], endpoint=self.endpoint_spiral_next_step
         )
         router.add_api_route(
             base_path + "/spiral_previous_step",
             tags=[tag],
-            endpoint=self.spiral_previous_step,
+            endpoint=self.endpoint_spiral_previous_step,
         )
         router.add_api_route(
-            base_path + "/spiral_end_path", tags=[tag], endpoint=self.spiral_end_path
+            base_path + "/spiral_end_path", tags=[tag], endpoint=self.endpoint_spiral_end_path
         )
 
         return router
