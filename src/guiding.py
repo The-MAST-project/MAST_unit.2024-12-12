@@ -170,7 +170,7 @@ class Guider(GuiderInterface):
             save=save,
         )
 
-    def stop_acquisition_and_guiding(self):
+    def endpoint_stop_acquisition_and_guiding(self):
         """
         Stops any in-progress exposure and/or guiding
         """
