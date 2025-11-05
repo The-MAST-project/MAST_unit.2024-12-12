@@ -85,7 +85,7 @@ class Autofocuser:
             and self.unit.pw.status().autofocus.is_running  # type: ignore[union-attr]
         )
 
-    def endpoint_start_autofocus(  # noqa: C901
+    def start_autofocus(  # noqa: C901
         self,
         ra_j2000_hours: Annotated[
             str | float | None,
@@ -497,6 +497,9 @@ class Autofocuser:
         return CanonicalResponse_Ok
 
     def endpoint_stop_autofocus(self):
+        return self.stop_autofocus()
+
+    def stop_autofocus(self):
         """
         Stops the ``autofocus`` routine
 
