@@ -8,6 +8,7 @@ import astropy.units as u
 from astropy.coordinates import Angle, Latitude, Longitude
 from fastapi import Query
 
+import common.ASI as ASI
 from acquisition import Acquisition
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
@@ -143,10 +144,14 @@ class Acquirer:
                 width=sky_roi_conf.width,
                 height=sky_roi_conf.height)
 
+            gain = acquisition.gain_absolute if acquisition.gain_absolute is not None \
+                else ASI.gain_percent_to_absolute(acquisition.gain_percent) if acquisition.gain_percent is not None \
+                    else None
+
             sky_settings = ImagerSettings(
                 seconds=acquisition_conf.exposure,
                 base_folder=os.path.join(self.latest_acquisition.folder, phase),
-                gain=acquisition_conf.gain,
+                gain=gain,
                 binning=imager_binning,
                 roi=ImagerRoi.from_other(roi=sky_roi),
                 save=True,
@@ -311,7 +316,7 @@ class Acquirer:
                 src=acquisition.folder,
             )
 
-    def start_acquisition_and_guiding(  # noqa: C901
+    def endpoint_start_acquisition_and_guiding(  # noqa: C901
         self,
         seconds: float | None = 5.0,
         ra_j2000_hours: Annotated[
@@ -340,6 +345,17 @@ class Acquirer:
                 ),
             ),
         ] = None,
+        gain_absolute: Annotated[
+            int | None,
+            Query(ge=ASI.ControlDict[ASI.Control.Gain].min_value, le=ASI.ControlDict[ASI.Control.Gain].max_value,
+                  description=f"{ASI.ControlDict[ASI.Control.Gain].min_value} <= Absolute gain <= "
+                  + f"{ASI.ControlDict[ASI.Control.Gain].max_value}")
+                  ] = None,
+        gain_percent: Annotated[
+            int | None,
+            Query(ge=0, le=100,
+                  description="0 <= Percent gain <= 100")
+                  ] = None,
         approach_mode: int = 2,
         make_corrections: bool = True,
         skip_sky: bool = False,
@@ -401,26 +417,33 @@ class Acquirer:
 
         solver_name = self.unit.unit_conf.solving.method
 
+        if all([gain_absolute, gain_percent]):
+            return CanonicalResponse(
+                errors=["supply only one of 'gain_absolute' or 'gain_percent', not both"]
+            )
+
         if ra_j2000_hours is None or dec_j2000_degs is None:
             return CanonicalResponse(
                 errors=[
                     "cannot start acquisition - no coordinates supplied and mount not connected"
                 ]
             )
-        else:
-            acquisition = Acquisition(
-                unit=self.unit,
-                approach_mode=approach_mode,
-                solver_id=SolverId[solver_name],
-                make_corrections=make_corrections,
-                target_ra=float(ra_j2000_hours),
-                target_dec=float(dec_j2000_degs),
-                conf=self.unit.unit_conf.acquisition,
-                skip_sky=skip_sky,
-                handover_automatically_to_guider=handover_automatically_to_guider,
-            )
-            Thread(
-                name="acquisition", target=self.do_acquire, args=[acquisition]
-            ).start()
 
-            return CanonicalResponse_Ok
+        acquisition = Acquisition(
+            unit=self.unit,
+            approach_mode=approach_mode,
+            solver_id=SolverId[solver_name],
+            make_corrections=make_corrections,
+            target_ra=float(ra_j2000_hours),
+            target_dec=float(dec_j2000_degs),
+            conf=self.unit.unit_conf.acquisition,
+            gain_absolute=gain_absolute,
+            gain_percent=gain_percent,
+            skip_sky=skip_sky,
+            handover_automatically_to_guider=handover_automatically_to_guider,
+        )
+        Thread(
+            name="acquisition", target=self.do_acquire, args=[acquisition]
+        ).start()
+
+        return CanonicalResponse_Ok
