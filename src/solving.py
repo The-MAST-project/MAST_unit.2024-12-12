@@ -17,8 +17,7 @@ from common.config.unit import AcquisitionConfig, ToleranceConfig
 from common.corrections import Correction, Corrections
 from common.filer import Filer
 from common.interfaces.imager import ImagerSettings
-from common.interfaces.solving import (SolverInterface, SolvingResult,
-                                       SolvingTolerance)
+from common.interfaces.solving import SolverInterface, SolvingResult, SolvingTolerance
 from common.mast_logging import init_log
 from common.safety import safety_get_sensor
 from common.solving import SolverId
