@@ -85,7 +85,7 @@ class Autofocuser:
             and self.unit.pw.status().autofocus.is_running  # type: ignore[union-attr]
         )
 
-    def start_autofocus(  # noqa: C901
+    def endpoint_start_autofocus(  # noqa: C901
         self,
         ra_j2000_hours: Annotated[
             str | float | None,
@@ -496,7 +496,7 @@ class Autofocuser:
         logger.debug("PlaneWave autofocus has started")
         return CanonicalResponse_Ok
 
-    def stop_autofocus(self):
+    def endpoint_stop_autofocus(self):
         """
         Stops the ``autofocus`` routine
 
