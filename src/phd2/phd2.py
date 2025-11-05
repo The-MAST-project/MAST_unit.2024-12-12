@@ -928,7 +928,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     imager_settings = self.latest_settings
                     logger.debug(f"{function_name()}: using self.latest_settings to set ROI")
                 else:
-                    logger.error(f"{function_name()}: no imager_settings paremeter and no self.latest_settings, cannot set ROI")
+                    logger.error(f"{function_name()}: no imager_settings and no self.latest_settings, cannot set ROI")
                     return
 
             if not self.cooler_on:
@@ -1129,14 +1129,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         current_profile = res["result"]
         if not current_profile or current_profile["name"] != self.conf.profile:
             res = self.call("get_profiles")
-            profiles = res["result"]
+            existing_profiles = res["result"]
             profile_id = -1
-            for p in profiles:
-                name = p["name"]
-                if name == self.conf.profile:
+            for p in existing_profiles:
+                if p["name"] == self.conf.profile:
                     profile_id = p.get("id", -1)
                     break
             if profile_id == -1:
+                logger.error(f"{function_name()}: unknown profile '{self.conf.profile}', {existing_profiles=}")
                 raise PHD2ConnectorError(
                     f"invalid phd2 profile name: {self.conf.profile}"
                 )
@@ -1180,7 +1180,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 operational=self.operational,
                 why_not_operational=self.why_not_operational,
             )
-        else:
+        elif capacity == "guider":
             st = self.sky_quality.state
             sky_quality: SkyQualityStatus | None = None if self.sky_quality.latest_update is None \
                 else SkyQualityStatus(
