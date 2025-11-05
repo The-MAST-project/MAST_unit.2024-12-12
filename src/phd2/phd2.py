@@ -1274,10 +1274,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if not self.connected:
             return CanonicalResponse(errors=["not connected"])
 
-        logger.info(f"{function_name()}: stopping guiding")
-        self.call("stop_capture")
-        if self.need_to_reset_limit_frame:
-            self.set_limit_frame(roi=None)
+        # logger.info(f"{function_name()}: stopping guiding")
+        # self.call("stop_capture")
+        # if self.need_to_reset_limit_frame:
+        #     self.set_limit_frame(roi=None)
 
         # self.start_activity(PHD2Activities.EquipmentTakeover)
         # self.disconnect_equipment()  # stops the exposure as well
