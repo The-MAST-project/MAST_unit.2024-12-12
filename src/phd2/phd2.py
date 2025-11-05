@@ -668,6 +668,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         elif e == "CalibrationComplete":
             if "Mount" in ev:
                 logger.debug(f"{function_name()}: {e}, Mount='{ev["Mount"]}'")
+            if self.is_active(PHD2Activities.Calibrating):
+                self.end_activity(PHD2Activities.Calibrating)
 
         elif e == "LoopingExposures":
             # | Attribute | Type | Description |
