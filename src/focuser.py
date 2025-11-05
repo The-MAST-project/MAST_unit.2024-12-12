@@ -102,9 +102,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         return self.position
 
     def startup(self):
-        """
-        :mastapi:
-        """
         if not self.is_on():
             self.power_on()
         if not self.connected:
@@ -119,9 +116,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         return CanonicalResponse_Ok
 
     def shutdown(self):
-        """
-        :mastapi:
-        """
         if self.connected:
             self.disconnect()
         self.pw.focuser_disable()
@@ -131,9 +125,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         return CanonicalResponse_Ok
 
     def connect(self):
-        """
-        :mastapi:
-        """
         if not self.is_on():
             self.power_on()
 
@@ -263,11 +254,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
     def abort(self):
         """
         Aborts any in-progress focuser activities
-
-        :mastapi:
-        Returns
-        -------
-
         """
         if self.is_active(FocuserActivities.Moving):
             self.pw.focuser_stop()
