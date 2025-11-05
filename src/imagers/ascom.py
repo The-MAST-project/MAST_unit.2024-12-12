@@ -569,6 +569,9 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             else CanonicalResponse_Ok
         )
 
+    def endpoint_status(self) -> ImagerStatus:
+        return self.status()
+
     def status(self) -> ImagerStatus:
         """
         Gets the **ASCOM** imager status
@@ -619,6 +622,12 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             self.errors.append(f"cooler_on.setter: {response.errors}")
             logger.error(f"cooler_on.setter: {response.errors}")
 
+    def endpoint_startup(self):
+        """
+        Starts the **MAST** camera up (cooling down , if needed)
+        """
+        return self.startup()
+
     def startup(self):
         """
         Starts the **MAST** camera up (cooling down , if needed)
@@ -656,6 +665,14 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
             self.cooler_on = True
         return CanonicalResponse_Ok
+
+    def endpoint_shutdown(self):
+        """
+        Shuts the **MAST** camera down (warms up, if needed)
+
+        :mastapi:
+        """
+        return self.shutdown()
 
     def shutdown(self):
         """
@@ -710,6 +727,9 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 logger.info(f"{message} setting set-point to {self.warm_set_point:.1f}")
             else:
                 logger.error(f"could not set warm point (failure='{response.failure}')")
+
+    def endpoint_abort(self):
+        return self.abort()
 
     def abort(self):
         """

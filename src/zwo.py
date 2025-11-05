@@ -229,11 +229,17 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             )
         return val / 10.0
 
+    def endpoint_startup(self):
+        return self.startup()
+
     def startup(self):
         # self.set_control(ASI.Control.ASI_HIGH_SPEED_MODE, 1)
         self.set_control(ASI.Control.TargetTemp, -5)
         self.set_control(ASI.Control.CoolerOn, True)
         return super().startup()
+
+    def endpoint_shutdown(self):
+        return self.shutdown()
 
     def shutdown(self):
         self.set_control(ASI.Control.TargetTemp, 10)
@@ -306,9 +312,21 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             gain=imager_conf.gain,
         )
 
+    def endpoint_abort(self):
+        """
+        Aborts the current exposure
+        """
+        return self.abort()
+
     def abort(self):
         if self.parent_imager.is_active(ImagerActivities.Exposing):
             asi.stopExposure(self.cam_id)
+
+    def endpoint_status(self) -> ImagerStatus:
+        """
+        Gets the **MAST** imager status
+        """
+        return self.status()
 
     def status(self) -> ImagerStatus:
         """

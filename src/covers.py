@@ -143,7 +143,9 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         else:
             return CoversState.Error
 
-    # def status(self) -> dict:
+    def endpoint_status(self) -> CoverStatus:
+        return self.status()
+
     def status(self) -> CoverStatus:
         """
         :mastapi:
@@ -163,6 +165,9 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             date=time_stamp(),
         )
 
+    def endpoint_open(self):
+        return self.open()
+
     def open(self):
         """
         Starts opening the **MAST** mirror covers
@@ -179,6 +184,9 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             logger.error(f"failed to open covers (failure='{response.failure}')")
         return CanonicalResponse_Ok
 
+    def endpoint_close(self):
+        return self.close()
+
     def close(self):
         """
         Starts closing the **MAST** mirror covers
@@ -193,6 +201,9 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         if response.failed:
             logger.error(f"failed to close covers (failure='{response.failure}')")
         return CanonicalResponse_Ok
+
+    def endpoint_startup(self):
+        return self.startup()
 
     def startup(self):
         """
@@ -224,6 +235,9 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             self.start_activity(CoverActivities.ShuttingDown)
             self.close()
         return CanonicalResponse_Ok
+
+    def endpoint_abort(self):
+        return self.abort()
 
     def abort(self):
         """
@@ -320,13 +334,13 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         tag = "Covers"
 
         router = APIRouter()
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup)
+        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
         router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown)
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort)
-        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
+        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
+        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
         router.add_api_route(base_path + "/connect", tags=[tag], endpoint=self.connect)
         router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
-        router.add_api_route(base_path + "/open", tags=[tag], endpoint=self.open)
-        router.add_api_route(base_path + "/close", tags=[tag], endpoint=self.close)
+        router.add_api_route(base_path + "/open", tags=[tag], endpoint=self.endpoint_open)
+        router.add_api_route(base_path + "/close", tags=[tag], endpoint=self.endpoint_close)
 
         return router

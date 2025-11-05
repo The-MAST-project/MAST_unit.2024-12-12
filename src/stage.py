@@ -359,6 +359,9 @@ class Stage(Component, SwitchedOutlet):
             self.connected = False
         return CanonicalResponse_Ok
 
+    def endpoint_startup(self):
+        return self.startup()
+
     def startup(self):
         """
         Startup routine for the **MAST** stage.  Makes it ``operational``:
@@ -378,6 +381,9 @@ class Stage(Component, SwitchedOutlet):
             self.start_activity(StageActivities.StartingUp)
             self.move_to_preset(StagePresetPosition.Sky)
         return CanonicalResponse_Ok
+
+    def endpoint_shutdown(self):
+        return self.shutdown()
 
     def shutdown(self):
         """
@@ -421,6 +427,9 @@ class Stage(Component, SwitchedOutlet):
             self.start_activity(StageActivities.Moving, details=f"target={self.target}")
         else:
             raise Exception(f"Could not start move to {value} ({result=})")
+
+    def endpoint_status(self) -> StageStatus:
+        return self.status()
 
     def status(self) -> StageStatus:
         at_preset = None
@@ -692,6 +701,9 @@ class Stage(Component, SwitchedOutlet):
             return CanonicalResponse(errors=[msg])
         return CanonicalResponse_Ok
 
+    def endpoint_abort(self):
+        return self.abort()
+
     def abort(self):
         """
         Aborts any in-progress stage activities
@@ -760,9 +772,15 @@ class Stage(Component, SwitchedOutlet):
         return self._was_shut_down
 
     def endpoint_get_position(self) -> CanonicalResponse:
+        return self.get_position()
+
+    def get_position(self) -> CanonicalResponse:
         return CanonicalResponse(value=self.position)
 
     def endpoint_set_position(self, pos: int):
+        return self.set_position(pos)
+
+    def set_position(self, pos: int):
         self.position = pos
         return CanonicalResponse_Ok
 
@@ -773,16 +791,16 @@ class Stage(Component, SwitchedOutlet):
 
         router = APIRouter()
         router.add_api_route(
-            base_stage_path + "/startup", tags=[tag], endpoint=self.startup
+            base_stage_path + "/startup", tags=[tag], endpoint=self.endpoint_startup
         )
         router.add_api_route(
-            base_stage_path + "/shutdown", tags=[tag], endpoint=self.shutdown
+            base_stage_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown
         )
         router.add_api_route(
-            base_stage_path + "/abort", tags=[tag], endpoint=self.abort
+            base_stage_path + "/abort", tags=[tag], endpoint=self.endpoint_abort
         )
         router.add_api_route(
-            base_stage_path + "/status", tags=[tag], endpoint=self.status
+            base_stage_path + "/status", tags=[tag], endpoint=self.endpoint_status
         )
         router.add_api_route(
             base_stage_path + "/position",

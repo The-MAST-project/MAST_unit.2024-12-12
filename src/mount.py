@@ -174,6 +174,9 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         except Exception as ex:
             logger.exception(ex)
 
+    def endpoint_startup(self):
+        return self.startup()
+
     def startup(self):
         """
         Performs the MAST startup routine (power ON, fans on and find home)
@@ -188,6 +191,9 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self.pw.request("/fans/on")
         self.find_home()
         return CanonicalResponse_Ok
+
+    def endpoint_shutdown(self):
+        return self.shutdown()
 
     def shutdown(self):
         """
@@ -313,6 +319,9 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         st = self.pw.status()
         return st.mount.is_tracking # type: ignore
 
+    def endpoint_status(self) -> MountStatus:
+        return self.status()
+
     def status(self) -> MountStatus:
         target_verbal = None
         if isinstance(self.target, str):
@@ -412,6 +421,9 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def goto_ra_dec_apparent(self, ra: float, dec: float):
         self.start_activity(MountActivities.Slewing)
         self.pw.mount_goto_ra_dec_apparent(ra, dec)
+
+    def endpoint_abort(self):
+        return self.abort()
 
     def abort(self):
         """
@@ -523,12 +535,12 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         tag = "Mount"
 
         router = APIRouter()
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup)
+        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
         router.add_api_route(
-            base_path + "/shutdown", tags=[tag], endpoint=self.shutdown
+            base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown
         )
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort)
-        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
+        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
+        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
         router.add_api_route(base_path + "/connect", tags=[tag], endpoint=self.connect)
         router.add_api_route(
             base_path + "/disconnect", tags=[tag], endpoint=self.disconnect

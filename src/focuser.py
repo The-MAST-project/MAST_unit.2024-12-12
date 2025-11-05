@@ -305,14 +305,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
                 self.target = None
 
     def status(self) -> FocuserStatus:
-        """
-
-        :mastapi:
-        Returns
-        -------
-            FocuserStatus
-
-        """
         pw_stat = self.pw.status()
         ascom_response = ascom_run(self, "IsMoving")
         is_moving = (
