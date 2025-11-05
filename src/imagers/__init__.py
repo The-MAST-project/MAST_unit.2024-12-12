@@ -130,10 +130,10 @@ class Imager(ImagerInterface, SwitchedOutlet):
         return self.startup()
 
     def startup(self) -> CanonicalResponse | None:
-        return self._backend.endpoint_startup()
+        return self._backend.startup()
 
     def shutdown(self) -> CanonicalResponse | None:
-        return self._backend.endpoint_shutdown()
+        return self._backend.shutdown()
 
     def endpoint_shutdown(self) -> CanonicalResponse | None:
         return self.shutdown()
@@ -221,7 +221,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         Returns the imager's current status.
         :return: ImagerStatus object containing the status information
         """
-        backend_status = self._backend.endpoint_status(capacity="imager") # type: ignore
+        backend_status = self._backend.status(capacity="imager") # type: ignore
 
         ret = ImagerStatus(
             detected=self.detected,
