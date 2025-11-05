@@ -101,6 +101,9 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
     def position_sampler(self):
         return self.position
 
+    def endpoint_startup(self):
+        return self.startup()
+
     def startup(self):
         if not self.is_on():
             self.power_on()
@@ -114,6 +117,9 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         ):
             self.position = self.known_as_good_position
         return CanonicalResponse_Ok
+
+    def endpoint_shutdown(self):
+        return self.shutdown()
 
     def shutdown(self):
         if self.connected:
@@ -189,7 +195,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
     def close_enough(self, position):
         return abs(self.position - position) <= self.CLOSE_ENOUGH
 
-    def set_position(self, position: int | str):
+    def endpoint_set_position(self, position: int | str):
         """
         Sends the focuser to the specified position
 
@@ -204,7 +210,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         self.position = position
         return CanonicalResponse_Ok
 
-    def goto_known_as_good_position(self):
+    def endpoint_goto_known_as_good_position(self):
         """
         Go to the 'known-as-good' position
         :mastapi:
@@ -215,10 +221,10 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         self.position = self.known_as_good_position
         return CanonicalResponse_Ok
 
-    def move_in(self, amount):
+    def endpoint_move_in(self, amount):
         self.move(amount, direction=FocusDirection.In)
 
-    def move_out(self, amount):
+    def endpoint_move_out(self, amount):
         self.move(amount, direction=FocusDirection.Out)
 
     def move(self, amount: int, direction: FocusDirection):
@@ -250,6 +256,9 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
         self.position = target
         return CanonicalResponse_Ok
+
+    def endpoint_abort(self):
+        return self.abort()
 
     def abort(self):
         """
@@ -289,6 +298,9 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             elif self.close_enough(self.target):
                 self.end_activity(FocuserActivities.Moving)
                 self.target = None
+
+    def endpoint_status(self) -> FocuserStatus:
+        return self.status()
 
     def status(self) -> FocuserStatus:
         pw_stat = self.pw.status()
@@ -362,36 +374,36 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         base_path = Const.BASE_UNIT_PATH + "/focuser"
         tag = "Focuser"
 
-        def get_position():
+        def endpoint_get_position():
             return self.position
 
         router = APIRouter()
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup)
+        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
         router.add_api_route(
-            base_path + "/shutdown", tags=[tag], endpoint=self.shutdown
+            base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown
         )
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort)
-        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
+        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
+        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
         router.add_api_route(base_path + "/connect", tags=[tag], endpoint=self.connect)
         router.add_api_route(
             base_path + "/disconnect", tags=[tag], endpoint=self.disconnect
         )
-        router.add_api_route(base_path + "/position", tags=[tag], endpoint=get_position)
+        router.add_api_route(base_path + "/position", tags=[tag], endpoint=endpoint_get_position)
         router.add_api_route(
             base_path + "/position",
             methods=["PUT"],
             tags=[tag],
-            endpoint=self.set_position,
+            endpoint=self.endpoint_set_position,
         )
         router.add_api_route(
             base_path + "/goto_known_as_good_position",
             tags=[tag],
-            endpoint=self.goto_known_as_good_position,
+            endpoint=self.endpoint_goto_known_as_good_position,
         )
         router.add_api_route(base_path + "/move", tags=[tag], endpoint=self.move)
-        router.add_api_route(base_path + "/move_in", tags=[tag], endpoint=self.move_in)
+        router.add_api_route(base_path + "/move_in", tags=[tag], endpoint=self.endpoint_move_in)
         router.add_api_route(
-            base_path + "/move_out", tags=[tag], endpoint=self.move_out
+            base_path + "/move_out", tags=[tag], endpoint=self.endpoint_move_out
         )
 
         return router
