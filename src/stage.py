@@ -29,17 +29,19 @@ init_log(logger)
 
 # os.environ["XILOG"] = "C:/temp/ximc.log"  # Enables logging for ximc library.
 
-cur_dir = Path().cwd()
-ximc_version = '2.13.6'
-ximc_dir = cur_dir / "Standa" / f"ximc-{ximc_version}" / "ximc"  # dependencies for examples.
-sys.path.append(
-    str(ximc_dir / "crossplatform" / "wrappers" / "python")
-)  # add pyximc.py wrapper to python path
+XIMC_VERSION = '2.13.6'
+ximc_top_dir = Path().cwd() / "Standa" / f"ximc-{XIMC_VERSION}" / "ximc"
+
+for path in [
+        ximc_top_dir / "crossplatform" / "wrappers" / "python", # examples
+        ximc_top_dir / "python-profiles" / "STANDA"             # profiles
+        ]:
+    sys.path.append(str(path))
 
 if platform.system() == "Windows":
     # Determining the directory with dependencies for windows depending on the bit depth.
     arch_dir = "win64" if "64" in platform.architecture()[0] else "win32"  #
-    lib_dir = ximc_dir / arch_dir  # lib directory for ximc library
+    lib_dir = ximc_top_dir / arch_dir  # lib directory for ximc library
     if not lib_dir.exists():
         raise FileNotFoundError(f"Directory with ximc library not found: {lib_dir=}. ")
     os.add_dll_directory(str(lib_dir))  # add dll path into an environment variable
@@ -292,10 +294,6 @@ class Stage(Component, SwitchedOutlet):
         return ximc_ports
 
     def set_profile(self):
-        profile_path = f"./Standa/ximc-{ximc_version}/ximc/python-profiles/STANDA"
-        sys.path.append(
-            os.path.abspath(profile_path)
-        )
 
         import importlib
 
@@ -312,7 +310,7 @@ class Stage(Component, SwitchedOutlet):
             profile_setter(ximclib, self.device)
             logger.info(f"set profile for stage model '{self.stage_model}'")
         except Exception as e:
-            logger.error(f"error setting profile for stage model '{self.stage_model}' from '{profile_path}': {e}")
+            logger.error(f"error setting profile for stage model '{self.stage_model}': {e}")
 
     def position_sampler(self):
         return self.position
