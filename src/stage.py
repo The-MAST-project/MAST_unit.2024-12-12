@@ -30,7 +30,8 @@ init_log(logger)
 # os.environ["XILOG"] = "C:/temp/ximc.log"  # Enables logging for ximc library.
 
 cur_dir = Path().cwd()
-ximc_dir = cur_dir / "Standa" / "ximc-2.13.6" / "ximc"  # dependencies for examples.
+ximc_version = '2.13.6'
+ximc_dir = cur_dir / "Standa" / f"ximc-{ximc_version}" / "ximc"  # dependencies for examples.
 sys.path.append(
     str(ximc_dir / "crossplatform" / "wrappers" / "python")
 )  # add pyximc.py wrapper to python path
@@ -291,27 +292,27 @@ class Stage(Component, SwitchedOutlet):
         return ximc_ports
 
     def set_profile(self):
-        # Add STANDA profiles directory to sys.path
+        profile_path = f"./Standa/ximc-{ximc_version}/ximc/python-profiles/STANDA"
         sys.path.append(
-            os.path.abspath("./Standa/ximc-2.13.6/ximc/python-profiles/STANDA")
+            os.path.abspath(profile_path)
         )
 
-        # Now you can import
         import importlib
 
-        setter = None
-        if self.stage_model == "8MT167-25LS-MEn1":
-            profile_module = importlib.import_module("8MT167-25LS-MEn1")
-            setter = profile_module.set_profile_8MT167_25LS_MEn1
-        elif self.stage_model == "8MT173-20DCE2":
-            profile_module = importlib.import_module("8MT173-20DCE2")
-            setter = profile_module.set_profile_8MT173_20DCE2
+        assert self.stage_model
+        profile_setter = None
+        try:
+            profile_module = importlib.import_module(self.stage_model)
+            profile_setter = getattr(profile_module, f"set_profile_{self.stage_model}")
+        except Exception:
+            logger.warning(f"cannot get profile setter for stage model '{self.stage_model}'")
+            return
 
-        if setter:
-            logger.info(f"setting profile for {self.stage_model}")
-            setter(ximclib, self.device)
-        else:
-            logger.warning(f"no profile setter for {self.stage_model}")
+        try:
+            profile_setter(ximclib, self.device)
+            logger.info(f"set profile for stage model '{self.stage_model}'")
+        except Exception as e:
+            logger.error(f"error setting profile for stage model '{self.stage_model}' from '{profile_path}': {e}")
 
     def position_sampler(self):
         return self.position
