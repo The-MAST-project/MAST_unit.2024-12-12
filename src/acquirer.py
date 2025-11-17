@@ -15,10 +15,12 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import SkyRoiConfig
 from common.interfaces.imager import ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.parsers import (sexagesimal_degrees_to_decimal,
+                            sexagesimal_hours_to_decimal)
 from common.rois import SkyRoi
 from common.tasks.models import UnitAssignmentModel
-from common.tasks.notifications import notify_controller_about_task_acquisition_path
+from common.tasks.notifications import \
+    notify_controller_about_task_acquisition_path
 from common.utils import Coord, boxed_info, function_name
 from phd2.phd2 import PHD2Connector
 from solving import SolverId, SolvingTolerance
@@ -350,7 +352,7 @@ class Acquirer:
             Query(ge=ASI.ControlDict[ASI.Control.Gain].min_value, le=ASI.ControlDict[ASI.Control.Gain].max_value,
                   description=f"{ASI.ControlDict[ASI.Control.Gain].min_value} <= Absolute gain <= "
                   + f"{ASI.ControlDict[ASI.Control.Gain].max_value}")
-                  ] = None,
+                  ] = 170,
         gain_percent: Annotated[
             int | None,
             Query(ge=0, le=100,
@@ -437,7 +439,7 @@ class Acquirer:
             target_ra=float(ra_j2000_hours),
             target_dec=float(dec_j2000_degs),
             conf=self.unit.unit_conf.acquisition,
-            gain_absolute=gain_absolute,
+            gain_absolute=gain_absolute or 170,
             gain_percent=gain_percent,
             skip_sky=skip_sky,
             handover_automatically_to_guider=handover_automatically_to_guider,
