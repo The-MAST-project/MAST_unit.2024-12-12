@@ -29,16 +29,19 @@ init_log(logger)
 
 # os.environ["XILOG"] = "C:/temp/ximc.log"  # Enables logging for ximc library.
 
-cur_dir = Path().cwd()
-ximc_dir = cur_dir / "Standa" / "ximc-2.13.6" / "ximc"  # dependencies for examples.
-sys.path.append(
-    str(ximc_dir / "crossplatform" / "wrappers" / "python")
-)  # add pyximc.py wrapper to python path
+XIMC_VERSION = '2.13.6'
+ximc_top_dir = Path().cwd() / "Standa" / f"ximc-{XIMC_VERSION}" / "ximc"
+
+for path in [
+        ximc_top_dir / "crossplatform" / "wrappers" / "python", # examples
+        ximc_top_dir / "python-profiles" / "STANDA"             # profiles
+        ]:
+    sys.path.append(str(path))
 
 if platform.system() == "Windows":
     # Determining the directory with dependencies for windows depending on the bit depth.
     arch_dir = "win64" if "64" in platform.architecture()[0] else "win32"  #
-    lib_dir = ximc_dir / arch_dir  # lib directory for ximc library
+    lib_dir = ximc_top_dir / arch_dir  # lib directory for ximc library
     if not lib_dir.exists():
         raise FileNotFoundError(f"Directory with ximc library not found: {lib_dir=}. ")
     os.add_dll_directory(str(lib_dir))  # add dll path into an environment variable
@@ -291,27 +294,23 @@ class Stage(Component, SwitchedOutlet):
         return ximc_ports
 
     def set_profile(self):
-        # Add STANDA profiles directory to sys.path
-        sys.path.append(
-            os.path.abspath("./Standa/ximc-2.13.6/ximc/python-profiles/STANDA")
-        )
 
-        # Now you can import
         import importlib
 
-        setter = None
-        if self.stage_model == "8MT167-25LS-MEn1":
-            profile_module = importlib.import_module("8MT167-25LS-MEn1")
-            setter = profile_module.set_profile_8MT167_25LS_MEn1
-        elif self.stage_model == "8MT173-20DCE2":
-            profile_module = importlib.import_module("8MT173-20DCE2")
-            setter = profile_module.set_profile_8MT173_20DCE2
+        assert self.stage_model
+        profile_setter = None
+        try:
+            profile_module = importlib.import_module(self.stage_model)
+            profile_setter = getattr(profile_module, f"set_profile_{self.stage_model}")
+        except Exception:
+            logger.warning(f"cannot get profile setter for stage model '{self.stage_model}'")
+            return
 
-        if setter:
-            logger.info(f"setting profile for {self.stage_model}")
-            setter(ximclib, self.device)
-        else:
-            logger.warning(f"no profile setter for {self.stage_model}")
+        try:
+            profile_setter(ximclib, self.device)
+            logger.info(f"set profile for stage model '{self.stage_model}'")
+        except Exception as e:
+            logger.error(f"error setting profile for stage model '{self.stage_model}': {e}")
 
     def position_sampler(self):
         return self.position
