@@ -45,7 +45,7 @@ class Acquisition:
         self.make_corrections = make_corrections
         self.handover_automatically_to_guider = handover_automatically_to_guider
         self.unit = unit
-        self.gain_absolute = gain_absolute
+        self.gain_absolute = gain_absolute or 170
         self.gain_percent = gain_percent
         self.slew_to_target = False
         if target_ra is not None and target_dec is not None:
