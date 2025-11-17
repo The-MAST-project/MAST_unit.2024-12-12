@@ -11,14 +11,9 @@ import common.ASI as ASI
 from common.activities import ImagerActivities
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.interfaces.imager import (
-    ImagerExposure,
-    ImagerExposureSeries,
-    ImagerInterface,
-    ImagerRoi,
-    ImagerSettings,
-    ImagerStatus,
-)
+from common.interfaces.imager import (ImagerExposure, ImagerExposureSeries,
+                                      ImagerInterface, ImagerRoi,
+                                      ImagerSettings, ImagerStatus)
 from common.mast_logging import init_log
 from common.utils import RepeatTimer, function_name, time_stamp
 from imagers import Imager
@@ -542,12 +537,12 @@ if __name__ == "__main__":
         exit(0)
 
     def test_gain_percent():
-        percent = ASI.gain_absolute_to_percent(170)
+        percent = ASI.gain_absolute_to_percent(ASI.ASI_294MM_DEFAULT_GAIN)
         print("")
         print(f"gain 170: {percent:2.0f}%")
         print(f"gain {percent:2.0f}%: {ASI.gain_percent_to_absolute(percent)}")
 
-        percent = ASI.gain_absolute_to_percent(170)
+        percent = ASI.gain_absolute_to_percent(ASI.ASI_294MM_DEFAULT_GAIN)
         print("")
         print(f"gain 170: {percent:2.0f}%")
         print(f"gain {percent:2.0f}%: {ASI.gain_percent_to_absolute(percent)}")
@@ -555,7 +550,7 @@ if __name__ == "__main__":
     def test_gain_absolute(percent):
         print(f"gain {percent:2.0f}%: {ASI.gain_percent_to_absolute(percent)}")
 
-        percent = ASI.gain_absolute_to_percent(170)
+        percent = ASI.gain_absolute_to_percent(ASI.ASI_294MM_DEFAULT_GAIN)
         print("")
         print(f"gain 170: {percent:2.0f}%")
         print(f"gain {percent:2.0f}%: {ASI.gain_percent_to_absolute(percent)}")

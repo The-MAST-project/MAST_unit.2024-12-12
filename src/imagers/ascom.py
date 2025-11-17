@@ -19,7 +19,8 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings, ImagerStatus
+from common.interfaces.imager import (ImagerExposureSeries, ImagerInterface,
+                                      ImagerRoi, ImagerSettings, ImagerStatus)
 from common.mast_logging import init_log
 from common.paths import PathMaker
 from common.utils import RepeatTimer, function_name, time_stamp
@@ -401,7 +402,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     def endpoint_start_exposure(
         self,
         seconds: float | None = 5,
-        gain: int | None = 170,
+        gain: int | None = ASI.ASI_294MM_DEFAULT_GAIN,
         binning: ASI.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
         center_x: int | None = None,
         center_y: int | None = None,

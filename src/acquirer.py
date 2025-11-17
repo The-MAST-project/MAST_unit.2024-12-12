@@ -352,7 +352,7 @@ class Acquirer:
             Query(ge=ASI.ControlDict[ASI.Control.Gain].min_value, le=ASI.ControlDict[ASI.Control.Gain].max_value,
                   description=f"{ASI.ControlDict[ASI.Control.Gain].min_value} <= Absolute gain <= "
                   + f"{ASI.ControlDict[ASI.Control.Gain].max_value}")
-                  ] = 170,
+                  ] = ASI.ASI_294MM_DEFAULT_GAIN,
         gain_percent: Annotated[
             int | None,
             Query(ge=0, le=100,
@@ -439,7 +439,7 @@ class Acquirer:
             target_ra=float(ra_j2000_hours),
             target_dec=float(dec_j2000_degs),
             conf=self.unit.unit_conf.acquisition,
-            gain_absolute=gain_absolute or 170,
+            gain_absolute=gain_absolute or ASI.ASI_294MM_DEFAULT_GAIN,
             gain_percent=gain_percent,
             skip_sky=skip_sky,
             handover_automatically_to_guider=handover_automatically_to_guider,

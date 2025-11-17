@@ -17,7 +17,6 @@ import numpy as np
 from fastapi import Query
 from fastapi.routing import APIRouter
 from PIL import Image
-
 # from pydantic import Field
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
@@ -25,39 +24,32 @@ import common.ASI as ASI
 from acquirer import Acquirer
 from acquisition import Acquisition
 from autofocusing import Autofocuser, AutofocusResult
-from common.activities import (
-    CoverActivities,
-    FocuserActivities,
-    ImagerActivities,
-    MountActivities,
-    StageActivities,
-    UnitActivities,
-)
+from common.activities import (CoverActivities, FocuserActivities,
+                               ImagerActivities, MountActivities,
+                               StageActivities, UnitActivities)
 from common.api import ControllerApi
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.config.rois import FcuVersion
 from common.const import Const
 from common.corrections import correction_phases
-from common.dlipowerswitch import PowerStatus, PowerSwitchFactory, PowerSwitchStatus, SwitchedOutlet
+from common.dlipowerswitch import (PowerStatus, PowerSwitchFactory,
+                                   PowerSwitchStatus, SwitchedOutlet)
 from common.filer import Filer
 from common.interfaces.components import Component, ComponentStatus
-
 # from guiding import Guider
-from common.interfaces.imager import (
-    ImagerExposureSeries,
-    ImagerRoi,
-    ImagerSequenceOfExposures,
-    ImagerSettings,
-    ImagerStatus,
-    ImagerTypes,
-)
+from common.interfaces.imager import (ImagerExposureSeries, ImagerRoi,
+                                      ImagerSequenceOfExposures,
+                                      ImagerSettings, ImagerStatus,
+                                      ImagerTypes)
 from common.mast_logging import DailyFileHandler, init_log
 from common.models.assignments import UnitAssignmentModel
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.parsers import (sexagesimal_degrees_to_decimal,
+                            sexagesimal_hours_to_decimal)
 from common.paths import PathMaker
 from common.rois import UnitRoi
-from common.tasks.notifications import notify_controller_about_task_acquisition_path
+from common.tasks.notifications import \
+    notify_controller_about_task_acquisition_path
 from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers, CoverStatus
 from focuser import Focuser, FocuserStatus
@@ -571,7 +563,7 @@ class Unit(Component):
         width: int | None = None,
         height: int | None = None,
         binning: int = 1,
-        gain: int = 170,
+        gain: int = ASI.ASI_294MM_DEFAULT_GAIN,
         ra_offsets: Annotated[
             str | list[str] | list[float] | None,
             Query(
@@ -694,7 +686,7 @@ class Unit(Component):
         width: int = 1500,
         height: int = 1300,
         binning: ASI.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
-        gain: int = 170,
+        gain: int = ASI.ASI_294MM_DEFAULT_GAIN,
     ) -> CanonicalResponse:
 
         op = function_name()
@@ -845,7 +837,7 @@ class Unit(Component):
         step: int | str = 25000,
         exposure_seconds: int | str = 5,
         binning: int | str = 1,
-        gain: int | str = 170,
+        gain: int | str = ASI.ASI_294MM_DEFAULT_GAIN,
     ) -> CanonicalResponse:
         Thread(
             name="test-stage-repeatability",
@@ -861,7 +853,7 @@ class Unit(Component):
         step: int | str = 25000,
         exposure_seconds: int | str = 5,
         binning: ASI.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
-        gain: int | str = 170,
+        gain: int | str = ASI.ASI_294MM_DEFAULT_GAIN,
     ) -> CanonicalResponse:
         op = function_name()
 
