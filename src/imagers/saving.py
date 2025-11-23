@@ -2,19 +2,19 @@ import datetime
 import logging
 import socket
 from pathlib import Path
-from venv import logger
 
 import astropy.io.fits as fits
 
 from common.activities import ImagerActivities
 from common.mast_logging import init_log
 from common.utils import function_name
+from imagers import ImagerInterface
 
 logger = logging.getLogger("mast.unit.imagers." + __name__)
 init_log(logger)
 
 
-def save_to_fits_file(imager_backend):
+def save_to_fits_file(imager_backend: ImagerInterface):
     op = function_name()
 
     settings = imager_backend.latest_settings
@@ -25,7 +25,8 @@ def save_to_fits_file(imager_backend):
         and settings.image_path is not None
     )
 
-    imager_backend.parent_imager.start_activity(ImagerActivities.Saving)
+    if imager_backend.parent_imager:
+        imager_backend.parent_imager.start_activity(ImagerActivities.Saving)
 
     header = fits.Header()
     header["SIMPLE"] = (True, "file conforms to FITS standard")
@@ -43,8 +44,8 @@ def save_to_fits_file(imager_backend):
         datetime.datetime.now(datetime.UTC).isoformat(),
         "observation datetime",
     )
-    header["XBINNING"] = (settings.binning.x, "horizontal binning")
-    header["YBINNING"] = (settings.binning.y, "vertical binning")
+    header["XBINNING"] = (settings.binning, "horizontal binning")
+    header["YBINNING"] = (settings.binning, "vertical binning")
     header["EXPTIME"] = (settings.seconds, "exposure time in seconds")
     header["INSTRUME"] = (socket.gethostname(), "the instrument")
     if imager_backend.ccd_temp_at_mid_exposure:
@@ -56,7 +57,7 @@ def save_to_fits_file(imager_backend):
 
     header["IMAGER"] = (imager_backend.name, "the imager backend")
 
-    if imager_backend.parent_imager.unit:
+    if imager_backend.parent_imager and imager_backend.parent_imager.unit:
         header["FOCUSPOS"] = imager_backend.parent_imager.unit.focuser.position
         header.comments["FOCUSPOS"] = "focuser position"
         header["STAGEPOS"] = imager_backend.parent_imager.unit.stage.position
@@ -76,5 +77,6 @@ def save_to_fits_file(imager_backend):
     except Exception as ex:
         logger.error(f"failed to save to '{settings.image_path}', {ex=}")
 
-    imager_backend.parent_imager.end_activity(ImagerActivities.Saving)
-    imager_backend.parent_imager.end_activity(ImagerActivities.Exposing)
+    if imager_backend.parent_imager:
+        imager_backend.parent_imager.end_activity(ImagerActivities.Saving)
+        imager_backend.parent_imager.end_activity(ImagerActivities.Exposing)

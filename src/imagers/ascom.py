@@ -461,7 +461,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             if not self.detected:
                 return CanonicalResponse(errors=[f"{op}: could not connect"])
 
-        if self.parent_imager.is_active(ImagerActivities.Exposing):
+        if self.parent_imager and self.parent_imager.is_active(ImagerActivities.Exposing):
             logger.info(f"{op}: already exposing")
             return CanonicalResponse(errors=["already exposing"])
 
@@ -489,7 +489,8 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         response = ascom_run(self, f"StartExposure({settings.seconds}, True)")
         if response.value is None:
-            self.parent_imager.start_activity(ImagerActivities.Exposing)
+            if self.parent_imager:
+                self.parent_imager.start_activity(ImagerActivities.Exposing)
             self.expected_mid_exposure = datetime.datetime.now() + datetime.timedelta(
                 seconds=settings.seconds / 2
             )
@@ -510,7 +511,8 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 self.image_ready_event.wait()
                 self.image_ready_event.clear()
 
-            self.parent_imager.end_activity(ImagerActivities.Exposing)
+            if self.parent_imager:
+                self.parent_imager.end_activity(ImagerActivities.Exposing)
         else:
             if response.errors:
                 self.errors.extend(response.errors)
@@ -529,7 +531,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if not self.connected:
             self.errors.append("not connected")
             return
-        if not self.parent_imager.is_active(ImagerActivities.Exposing):
+        if self.parent_imager and not self.parent_imager.is_active(ImagerActivities.Exposing):
             self.errors.append("not exposing")
 
         response = ascom_run(self, "CanAbortExposure")
@@ -537,7 +539,8 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             response = ascom_run(self, "AbortExposure()")
             if response.failed:
                 self.errors.append(f"failed to abort (failure='{response.failure}')")
-        self.parent_imager.end_activity(ImagerActivities.Exposing)
+        if self.parent_imager:
+            self.parent_imager.end_activity(ImagerActivities.Exposing)
         return (
             CanonicalResponse(errors=self.errors)
             if self.errors
@@ -553,16 +556,17 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             self.errors.append("not connected")
             return CanonicalResponse(errors=["not connected"])
 
-        if not self.parent_imager.is_active(ImagerActivities.Exposing):
+        if self.parent_imager and not self.parent_imager.is_active(ImagerActivities.Exposing):
             self.errors.append("not exposing")
-            return CanonicalResponse(errors=["not connected"])
+            return CanonicalResponse(errors=["not exposing"])
 
         response = ascom_run(self, "StopExposure()")  # the timer will read the image
         if response.failed:
             self.errors.append(
                 f"could not StopExposure(), (failure='{response.failure}')"
             )
-        self.parent_imager.end_activity(ImagerActivities.Exposing)
+        if self.parent_imager:
+            self.parent_imager.end_activity(ImagerActivities.Exposing)
 
         return (
             CanonicalResponse(errors=self.errors)
@@ -650,7 +654,8 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         response = ascom_run(self, "CanSetCCDTemperature")
         if response.succeeded and response.value:
-            self.parent_imager.start_activity(ImagerActivities.CoolingDown)
+            if self.parent_imager:
+                self.parent_imager.start_activity(ImagerActivities.CoolingDown)
             response = ascom_run(self, "CanSetCCDTemperature")
             if response.succeeded:
                 logger.info(
@@ -713,7 +718,8 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         response = ascom_run(self, "CanSetCCDTemperature")
         if response.succeeded and response.value:
-            self.parent_imager.start_activity(ImagerActivities.WarmingUp)
+            if self.parent_imager:
+                self.parent_imager.start_activity(ImagerActivities.WarmingUp)
             current_temp = self.temperature
             if current_temp is None:
                 logger.error(
@@ -762,7 +768,8 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         """
 
         if (
-            self.parent_imager.unit
+            self.parent_imager
+            and self.parent_imager.unit
             and self.parent_imager.unit.unit_shutdown_event.is_set()
         ):
             assert self.timer is not None
@@ -810,8 +817,8 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 self.expected_mid_exposure = None
 
         # logger.info(f"is_active(CameraActivities.Exposing)={self.is_active(CameraActivities.Exposing)}, {current_state=}")
-        if (
-            self.parent_imager.is_active(ImagerActivities.Exposing)
+        if (self.parent_imager
+            and self.parent_imager.is_active(ImagerActivities.Exposing)
             and current_state == AscomCameraState.Idle
             and (not self.image_lock.locked())
         ):  # it could be already locked by a previous occurrence of onTimer()
@@ -1031,7 +1038,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
     def wait_for_image_ready(self):
         op = function_name()
-        if not self.parent_imager.is_active(ImagerActivities.Exposing):
+        if self.parent_imager and not self.parent_imager.is_active(ImagerActivities.Exposing):
             return
 
         if not self.image_was_read:

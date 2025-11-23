@@ -193,16 +193,21 @@ class Guider(GuiderInterface):
             self.unit.end_activity(UnitActivities.Guiding)
 
             if self.unit.imager.is_active(ImagerActivities.Exposing):
+                logger.debug(f"{function_name()}: imager is exposing, stopping exposure ...")
                 self.unit.imager.stop_exposure()
                 logger.info("stopped exposure")
 
             if not self.unit.was_tracking_before_guiding:
+                logger.debug(f"{function_name()}: unit was tracking before guiding, stopping tracking ...")
                 self.unit.mount.stop_tracking()
                 logger.info("stopped tracking")
 
             if self.unit.guider and self.unit.guider.is_guiding:
+                logger.debug(f"{function_name()}: unit was guiding, stopping guiding ...")
                 self.unit.guider.stop_guiding()
                 logger.info("stopped guiding")
+
+            logger.debug(f"{function_name()}: acquisition and guiding stopped")
 
         return CanonicalResponse_Ok
 

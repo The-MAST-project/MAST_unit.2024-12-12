@@ -101,7 +101,8 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         op = function_name()
 
         if (
-            self.parent_imager.unit
+            self.parent_imager
+            and self.parent_imager.unit
             and self.parent_imager.unit.unit_shutdown_event.is_set()
         ):
             self.timer.cancel()
@@ -110,7 +111,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         if not self.connected:
             return
 
-        if self.connected and self.parent_imager.is_active(ImagerActivities.Exposing):
+        if self.connected and (self.parent_imager and self.parent_imager.is_active(ImagerActivities.Exposing)):
             assert self.latest_exposure is not None
             assert self.latest_settings is not None
             if (
@@ -314,7 +315,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         return self.abort()
 
     def abort(self):
-        if self.parent_imager.is_active(ImagerActivities.Exposing):
+        if self.parent_imager and self.parent_imager.is_active(ImagerActivities.Exposing):
             asi.stopExposure(self.cam_id)
 
     def endpoint_status(self) -> ImagerStatus:
@@ -445,10 +446,10 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                 date=datetime.datetime.now(datetime.UTC).isoformat(),
             )
 
-            if not self.parent_imager.connected:
+            if self.parent_imager and not self.parent_imager.connected:
                 self.parent_imager.connect()
-
-            self.parent_imager.start_activity(ImagerActivities.Exposing)
+            if self.parent_imager:
+                self.parent_imager.start_activity(ImagerActivities.Exposing)
             asi.startExposure(self.cam_id, isDark=False)
             logger.info(f"started a {settings.seconds} seconds exposure")
         except Exception as ex:
