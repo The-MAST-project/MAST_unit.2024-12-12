@@ -13,7 +13,6 @@ from acquisition import Acquisition
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import SkyRoiConfig
-from common.interfaces.imager import ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
 from common.parsers import (sexagesimal_degrees_to_decimal,
                             sexagesimal_hours_to_decimal)
@@ -149,6 +148,8 @@ class Acquirer:
             gain = acquisition.gain_absolute if acquisition.gain_absolute is not None \
                 else ASI.gain_percent_to_absolute(acquisition.gain_percent) if acquisition.gain_percent is not None \
                     else None
+
+            from common.interfaces.imager import ImagerRoi, ImagerSettings
 
             sky_settings = ImagerSettings(
                 seconds=acquisition_conf.exposure,
