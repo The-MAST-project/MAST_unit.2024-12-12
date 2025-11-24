@@ -4,17 +4,17 @@ import os
 import re
 import subprocess
 import sys
+from typing import TYPE_CHECKING
 
 import astropy.io.fits
-# from typing import TYPE_CHECKING
 from astropy.coordinates import Angle
 
+from common.config.rois import SkyRoiConfig, SpecRoiConfig
+from common.const import Const
 from common.filer import Filer
-from common.interfaces.solving import (SolverInterface, SolvingResult,
-                                       SolvingSolution)
+from common.interfaces.solving import SolverInterface, SolvingResult, SolvingSolution
 from common.mast_logging import init_log
-from common.utils import (Coord, boxed_info, function_name,
-                          generate_random_string)
+from common.utils import Coord, boxed_info, function_name, generate_random_string
 from imagers import ImagerSettings
 
 # from unit import Unit  # type: ignore[import-untyped]
@@ -22,8 +22,8 @@ from imagers import ImagerSettings
 logger = logging.Logger("astrometry_dot_net")
 init_log(logger)
 
-# if TYPE_CHECKING:
-#     from unit import Unit  # type: ignore[import-untyped]
+if TYPE_CHECKING:
+    from unit import Unit  # type: ignore[import-untyped]
 
 
 class AstrometryDotNetSolverResult:
@@ -61,13 +61,14 @@ class AstrometryDotNet(SolverInterface):
     def solve(
         self,
         unit,
+        phase: Const.SolvingPhase,
         settings: ImagerSettings | None = None,
         image_path: str | None = None,
         index_file: str | None = None,
         target: Coord | None = None,
     ) -> SolvingResult:
 
-        self.unit = unit
+        self.unit: Unit = unit
         filer = Filer(logger)
         unix_emulator = "cygwin"
         tmp_dir = generate_random_string(prefix="tmp_")
@@ -149,13 +150,26 @@ class AstrometryDotNet(SolverInterface):
         assert input_fits_path is not None, f"{function_name()}: fits_path is None"
 
         if settings is not None and settings.roi is not None:
-            # args += ["--crpix-x", str(int(settings.roi.width / 2))]
-            # args += ["--crpix-y", str(int(settings.roi.height / 2))]
-            args += ["--crpix-center"]
+            # args += ["--crpix-center"]
+
+            fcu_version = self.unit.fcu_version
+            assert fcu_version in self.unit.unit_conf.acquisition.rois
+
+            from typing import cast
+            match phase:
+                case "sky":
+                    sky_roi_config: SkyRoiConfig = cast(SkyRoiConfig, self.unit.unit_conf.acquisition.rois[fcu_version])
+                    args += ["--crpix-x", str(sky_roi_config.sky_x)]
+                    args += ["--crpix-y", str(sky_roi_config.sky_y)]
+                case "spec":
+                    spec_spec_roi: SpecRoiConfig = cast(SpecRoiConfig, self.unit.unit_conf.guiding.rois[fcu_version])
+                    args += ["--crpix-x", str(spec_spec_roi.fiber_x)]
+                    args += ["--crpix-y", str(spec_spec_roi.fiber_y)]
         else:
             with astropy.io.fits.open(input_fits_path) as hdul:
                 header = hdul[0].header  # type: ignore
                 if "CRPIX1" in header and "CRPIX2" in header:
+                    # get the center pixel from the existing FITS header
                     args += ["--crpix-x", header["CRPIX1"]]
                     args += ["--crpix-y", header["CRPIX2"]]
                     logger.info(
@@ -363,6 +377,7 @@ if __name__ == "__main__":
             image_path="Z:/MAST/mast00/2025-08-21/Acquisitions/seq=0004,time=22-01-41_209,target=20.370853562216,40.2566511405156/spec/seq=0001,time=22-01-59_706,seconds=5.0,binning=1x1,gain=170,roi=1000,340,7500,3000.fits",
             target=target,
             index_file="index-5202-13.fits",
+            phase="spec",
         )
         print(json.dumps(result.to_dict(), indent=2))
 
