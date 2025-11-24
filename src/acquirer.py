@@ -355,9 +355,8 @@ class Acquirer:
                   ] = ASI.ASI_294MM_DEFAULT_GAIN,
         gain_percent: Annotated[
             int | None,
-            Query(ge=0, le=100,
-                  description="0 <= Percent gain <= 100")
-                  ] = None,
+            Query(ge=0, le=100)
+        ] = None,
         approach_mode: int = 2,
         make_corrections: bool = True,
         skip_sky: bool = False,
