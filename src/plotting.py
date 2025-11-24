@@ -17,7 +17,7 @@ from matplotlib.patches import Patch
 
 from common.corrections import Corrections, correction_phases
 from common.mast_logging import init_log
-from common.utils import Filer, function_name
+from common.utils import Filer, fromisoformat_zulu, function_name
 
 logger = logging.Logger("mast.unit." + __name__)
 filer = Filer(logger)
@@ -218,9 +218,9 @@ def plot_phase_corrections(  # noqa: C901
         logger.info(f"Empty sequence ({phase=}), not plotting")
         return
 
-    start: datetime.datetime = sequence[0].time
-    end: datetime.datetime = sequence[-1].time
-    t = [(corr.time - start).seconds for corr in sequence]
+    start: datetime.datetime = fromisoformat_zulu(sequence[0].time)
+    end: datetime.datetime = fromisoformat_zulu(sequence[-1].time)
+    t = [(fromisoformat_zulu(corr.time) - start).seconds for corr in sequence]
     ra_deltas = [abs(corr.ra_delta) for corr in sequence]
     dec_deltas = [abs(corr.dec_delta) for corr in sequence]
 
@@ -398,7 +398,7 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):  # noqa
             "dec": corrections.tolerance_dec,
         }
         combined_corrections.sequence += sequence
-        end_of_phase.append(sequence[0].time)
+        end_of_phase.append(fromisoformat_zulu(sequence[0].time))
 
     if combined_corrections is not None:
         plot_phase_corrections(
