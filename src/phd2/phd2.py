@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Literal
 from astropy.coordinates import Angle
 from pydantic import BaseModel
 
-import common.ASI as ASI
+import common.asi as asi
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
@@ -49,7 +49,7 @@ class SettleModel(BaseModel):
 
 
 class PHD2Configuration(BaseModel):
-    profile: str = "PWI4+ASI-native,binning=1,bpp=16"
+    profile: str = "PWI4+asi-native,binning=1,bpp=16"
     settle: SettleModel
 
 
@@ -452,7 +452,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     "exposure": int(
                         guiding_settings.seconds * 1000
                     ),  # convert to milliseconds
-                    "gain": int(ASI.gain_absolute_to_percent(guiding_settings.gain)),
+                    "gain": int(asi.gain_absolute_to_percent(guiding_settings.gain)),
                     "binning": (
                         guiding_settings.binning.x if guiding_settings.binning else 1
                     ),
@@ -1300,7 +1300,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     #
     @property
     def camera_x_size(self) -> int:
-        return ASI.ASI_294MM_WIDTH
+        return asi.ASI_294MM_WIDTH
         # self.check_connected()
         # response = self.call("get_camera_frame_size")
         # if response and response["result"]:
@@ -1311,7 +1311,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
     @property
     def camera_y_size(self) -> int:
-        return ASI.ASI_294MM_HEIGHT
+        return asi.ASI_294MM_HEIGHT
         # self.check_connected()
         # response = self.call("get_camera_frame_size")
         # if response and response["result"]:
@@ -1390,7 +1390,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     "exposure": int(
                         settings.seconds * 1000  # convert to milliseconds
                     ),
-                    "gain": int(ASI.gain_absolute_to_percent(settings.gain)),
+                    "gain": int(asi.gain_absolute_to_percent(settings.gain)),
                     "binning": settings.binning,
                     "save": True,
                     "path": settings.image_path,
@@ -1466,7 +1466,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                         "exposure": int(
                             settings.seconds * 1000  # convert to milliseconds
                         ),
-                        "gain": int(ASI.gain_absolute_to_percent(settings.gain)),
+                        "gain": int(asi.gain_absolute_to_percent(settings.gain)),
                         "binning": settings.binning,
                         "save": True,
                         "path": settings.image_path,
@@ -1579,7 +1579,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             seconds=5,
             base_folder="c:/temp/phd2_images",
             binning=1,
-            gain=int(ASI.gain_absolute_to_percent(imager_conf.gain)),
+            gain=int(asi.gain_absolute_to_percent(imager_conf.gain)),
             roi=ImagerRoi(
                 x=0, y=0, width=self.camera_x_size, height=self.camera_y_size
             ),

@@ -4,7 +4,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Any
 
-import common.ASI as ASI
+import common.asi as asi
 from common.config.unit import AcquisitionConfig
 from common.corrections import Corrections
 from common.filer import Filer
@@ -45,7 +45,7 @@ class Acquisition:
         self.make_corrections = make_corrections
         self.handover_automatically_to_guider = handover_automatically_to_guider
         self.unit = unit
-        self.gain_absolute = gain_absolute or ASI.ASI_294MM_DEFAULT_GAIN
+        self.gain_absolute = gain_absolute or asi.ASI_294MM_DEFAULT_GAIN
         self.gain_percent = gain_percent
         self.slew_to_target = False
         if target_ra is not None and target_dec is not None:

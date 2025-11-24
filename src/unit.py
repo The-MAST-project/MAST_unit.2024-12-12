@@ -20,7 +20,7 @@ from PIL import Image
 # from pydantic import Field
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-import common.ASI as ASI
+import common.asi as asi
 from acquirer import Acquirer
 from acquisition import Acquisition
 from autofocusing import Autofocuser, AutofocusResult
@@ -562,7 +562,7 @@ class Unit(Component):
         width: int | None = None,
         height: int | None = None,
         binning: int = 1,
-        gain: int = ASI.ASI_294MM_DEFAULT_GAIN,
+        gain: int = asi.ASI_294MM_DEFAULT_GAIN,
         ra_offsets: Annotated[
             str | list[str] | list[float] | None,
             Query(
@@ -684,8 +684,8 @@ class Unit(Component):
         fiber_y: int = 2500,
         width: int = 1500,
         height: int = 1300,
-        binning: ASI.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
-        gain: int = ASI.ASI_294MM_DEFAULT_GAIN,
+        binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
+        gain: int = asi.ASI_294MM_DEFAULT_GAIN,
     ) -> CanonicalResponse:
 
         op = function_name()
@@ -836,7 +836,7 @@ class Unit(Component):
         step: int | str = 25000,
         exposure_seconds: int | str = 5,
         binning: int | str = 1,
-        gain: int | str = ASI.ASI_294MM_DEFAULT_GAIN,
+        gain: int | str = asi.ASI_294MM_DEFAULT_GAIN,
     ) -> CanonicalResponse:
         Thread(
             name="test-stage-repeatability",
@@ -851,8 +851,8 @@ class Unit(Component):
         end_position: int | str = 300000,
         step: int | str = 25000,
         exposure_seconds: int | str = 5,
-        binning: ASI.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
-        gain: int | str = ASI.ASI_294MM_DEFAULT_GAIN,
+        binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
+        gain: int | str = asi.ASI_294MM_DEFAULT_GAIN,
     ) -> CanonicalResponse:
         op = function_name()
 

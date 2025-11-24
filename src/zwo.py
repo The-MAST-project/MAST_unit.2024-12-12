@@ -5,9 +5,9 @@ from threading import Event, Lock, Thread
 from typing import Any
 
 import numpy as np
-import pyzwoasi as asi
+import pyzwoasi as zwoasi
 
-import common.ASI as ASI
+import common.asi as asi
 from common.activities import ImagerActivities
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
@@ -28,7 +28,7 @@ init_log(logger)
 class ZWOImager(ImagerInterface, SwitchedOutlet):
     """
     ZWOImager is a class that implements the ImagerInterface for ZWO cameras.
-    It provides methods to interact with ZWO imaging software (ASI SDK).
+    It provides methods to interact with ZWO imaging software (asi SDK).
     """
 
     _instance = None
@@ -65,8 +65,8 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         if not self.is_on():
             self.power_on()
 
-        n_cameras = asi.getNumOfConnectedCameras()
-        logger.info(f"found {n_cameras} ASI camera(s), SDK={asi.getSDKVersion()}")
+        n_cameras = zwoasi.getNumOfConnectedCameras()
+        logger.info(f"found {n_cameras} asi camera(s), SDK={zwoasi.getSDKVersion()}")
         self.cam_id = None
         self._connected: bool = False
 
@@ -86,7 +86,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         self._initialized = True
 
     def __del__(self):
-        asi.closeCamera(self.cam_id)
+        zwoasi.closeCamera(self.cam_id)
 
     def save_in_thread(self):
         from imagers.saving import save_to_fits_file
@@ -117,21 +117,21 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             if (
                 datetime.datetime.now() - self.latest_exposure.start
             ) >= datetime.timedelta(seconds=self.latest_settings.seconds / 2):
-                self.ccd_temp_at_mid_exposure, _ = asi.getControlValue(
-                    self.cam_id, ASI.Control.Temperature
+                self.ccd_temp_at_mid_exposure, _ = zwoasi.getControlValue(
+                    self.cam_id, asi.Control.Temperature
                 )
                 self.ccd_temp_at_mid_exposure /= 10
 
             try:
-                exposure_status = asi.getExpStatus(self.cam_id)
+                exposure_status = zwoasi.getExpStatus(self.cam_id)
                 # logger.info(f"{op}: {exposure_status=} ({ASIExposureStatus(exposure_status).name})")
-                if exposure_status == ASI.ExposureStatus.ASI_EXP_FAILED:
-                    asi.stopExposure(self.cam_id)
+                if exposure_status == asi.ExposureStatus.ASI_EXP_FAILED:
+                    zwoasi.stopExposure(self.cam_id)
                     self.parent_imager.end_activity(ImagerActivities.Exposing)
                     logger.error(
-                        f"exposure failed with exposure_status={ASI.ExposureStatus(exposure_status).name}"
+                        f"exposure failed with exposure_status={asi.ExposureStatus(exposure_status).name}"
                     )
-                elif exposure_status == ASI.ExposureStatus.ASI_EXP_SUCCESS:
+                elif exposure_status == asi.ExposureStatus.ASI_EXP_SUCCESS:
 
                     assert self.latest_settings.roi is not None
                     buffer_size = (
@@ -144,7 +144,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                         dtype = np.uint8
 
                     self.parent_imager.start_activity(ImagerActivities.ReadingOut)
-                    buffer = asi.getDataAfterExp(self.cam_id, bufferSize=buffer_size)
+                    buffer = zwoasi.getDataAfterExp(self.cam_id, bufferSize=buffer_size)
                     assert self.latest_settings and self.latest_settings.roi
 
                     h = self.latest_settings.roi.height
@@ -196,20 +196,20 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def temperature(self) -> float:
         self.errors = []
         try:
-            val, _ = asi.getControlValue(self.cam_id, ASI.Control.Temperature)
+            val, _ = zwoasi.getControlValue(self.cam_id, asi.Control.Temperature)
         except Exception as ex:
             self.errors.append(
-                f"failed to get control AsiControl.Temperature ({ASI.Control.Temperature}), {ex=}"
+                f"failed to get control AsiControl.Temperature ({asi.Control.Temperature}), {ex=}"
             )
         return val / 10.0
 
     def cooler(self, onoff: bool):
         self.errors = []
         try:
-            asi.setControlValue(self.cam_id, ASI.Control.CoolerOn, onoff, 0)
+            zwoasi.setControlValue(self.cam_id, asi.Control.CoolerOn, onoff, 0)
         except Exception as ex:
             self.errors.append(
-                f"failed to set control AsiControl.ASI_COOLER_ON ({ASI.Control.CoolerOn}), "
+                f"failed to set control AsiControl.ASI_COOLER_ON ({asi.Control.CoolerOn}), "
                 + f"value={onoff}, {ex=}"
             )
 
@@ -217,11 +217,11 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def cooler_power(self) -> float:
         self.errors = []
         try:
-            val, _ = asi.getControlValue(self.cam_id, ASI.Control.CoolPowerPerc)
+            val, _ = zwoasi.getControlValue(self.cam_id, asi.Control.CoolPowerPerc)
         except Exception as ex:
             self.errors.append(
                 "failed to get control AsiControl.ASI_COOLER_POWER_PERC "
-                + f"({ASI.Control.CoolPowerPerc}), {ex=}"
+                + f"({asi.Control.CoolPowerPerc}), {ex=}"
             )
         return val / 10.0
 
@@ -229,17 +229,17 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         return self.startup()
 
     def startup(self):
-        # self.set_control(ASI.Control.ASI_HIGH_SPEED_MODE, 1)
-        self.set_control(ASI.Control.TargetTemp, -5)
-        self.set_control(ASI.Control.CoolerOn, True)
+        # self.set_control(asi.Control.ASI_HIGH_SPEED_MODE, 1)
+        self.set_control(asi.Control.TargetTemp, -5)
+        self.set_control(asi.Control.CoolerOn, True)
         return super().startup()
 
     def endpoint_shutdown(self):
         return self.shutdown()
 
     def shutdown(self):
-        self.set_control(ASI.Control.TargetTemp, 10)
-        self.set_control(ASI.Control.CoolerOn, False)
+        self.set_control(asi.Control.TargetTemp, 10)
+        self.set_control(asi.Control.CoolerOn, False)
         # del self._image_array
         return super().shutdown()
 
@@ -265,20 +265,20 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         if value:
             self._connected = False
             try:
-                info = asi.getCameraProperty(self.cam_id)
+                info = zwoasi.getCameraProperty(self.cam_id)
                 self.width = info.MaxWidth
                 self.height = info.MaxHeight
                 self.model = info.Name.decode()
                 self.depth = info.BitDepth
 
-                asi.openCamera(self.cam_id)
-                asi.initCamera(self.cam_id)
+                zwoasi.openCamera(self.cam_id)
+                zwoasi.initCamera(self.cam_id)
                 self._connected = True
-                self.serial = asi.getSerialNumber(self.cam_id)
+                self.serial = zwoasi.getSerialNumber(self.cam_id)
                 self.pixel_size = info.PixelSize
 
                 logger.info(
-                    f"ZWO ASI ID={self.cam_id}, SN='{self.serial}', "
+                    f"ZWO asi ID={self.cam_id}, SN='{self.serial}', "
                     + f"model='{self.model}', "
                     + f"size={self.width}x{self.height}, "
                     + f"depth={self.depth} bits, pixel-size={self.pixel_size} micron"
@@ -287,7 +287,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                 self.log_and_append(f"could not connect to {self.cam_id=}, {ex=}")
         else:
             try:
-                asi.closeCamera(self.cam_id)
+                zwoasi.closeCamera(self.cam_id)
                 self._connected = False
             except Exception as ex:
                 self.log_and_append(f"could not closeCamera {self.cam_id=}, {ex=}")
@@ -316,7 +316,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
 
     def abort(self):
         if self.parent_imager and self.parent_imager.is_active(ImagerActivities.Exposing):
-            asi.stopExposure(self.cam_id)
+            zwoasi.stopExposure(self.cam_id)
 
     def endpoint_status(self) -> ImagerStatus:
         """
@@ -331,7 +331,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
 
         self._setpoint = None
         if self.connected:
-            self._setpoint, _ = asi.getControlValue(self.cam_id, ASI.Control.TargetTemp)
+            self._setpoint, _ = zwoasi.getControlValue(self.cam_id, asi.Control.TargetTemp)
 
         return ImagerStatus(
             **self.power_status().model_dump(),
@@ -390,15 +390,15 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             width = self.width
             height = self.height
         try:
-            format: ASI.OutputFormat = ASI.OutputFormat.from_string(settings.format)
-            asi.setROIFormat(
+            format: asi.OutputFormat = asi.OutputFormat.from_string(settings.format)
+            zwoasi.setROIFormat(
                 self.cam_id,
                 width=width,
                 height=height,
                 binning=binning,
                 imgType=format.value,
             )
-            asi.setStartPos(self.cam_id, x, y)
+            zwoasi.setStartPos(self.cam_id, x, y)
             logger.info(
                 f"set_format(roi=({x=}, {y=}, {width=}, {height=}), {binning=}, output_format={format.name})"
             )
@@ -413,7 +413,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         self.image_was_saved = False
 
         self.set_control(
-            ASI.Control.Exposure, int(settings.seconds * 1000000)
+            asi.Control.Exposure, int(settings.seconds * 1000000)
         )  # micro seconds
 
         assert self.default_settings is not None
@@ -424,7 +424,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         if settings.gain is None:
             settings.gain = self.default_settings.gain
         assert settings.gain is not None
-        self.set_control(ASI.Control.Gain, settings.gain)
+        self.set_control(asi.Control.Gain, settings.gain)
 
         if settings.roi is None:
             settings.roi = self.default_settings.roi
@@ -450,14 +450,14 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                 self.parent_imager.connect()
             if self.parent_imager:
                 self.parent_imager.start_activity(ImagerActivities.Exposing)
-            asi.startExposure(self.cam_id, isDark=False)
+            zwoasi.startExposure(self.cam_id, isDark=False)
             logger.info(f"started a {settings.seconds} seconds exposure")
         except Exception as ex:
             self.log_and_append(f"failed to start exposure, {ex=}")
 
-    def set_control(self, control: ASI.Control, value: int):
+    def set_control(self, control: asi.Control, value: int):
         try:
-            asi.setControlValue(self.cam_id, controlType=control, value=value, auto=0)
+            zwoasi.setControlValue(self.cam_id, controlType=control, value=value, auto=0)
             logger.info(f"set_control('{control.name}', value={value})")
         except Exception as ex:
             self.log_and_append(
@@ -470,10 +470,10 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         logger.error(err)
 
     def stop_exposure(self):
-        asi.stopExposure(self.cam_id)
+        zwoasi.stopExposure(self.cam_id)
 
     def abort_exposure(self):
-        asi.stopExposure(self.cam_id)
+        zwoasi.stopExposure(self.cam_id)
 
     def wait_for_image_ready(self):
         if not self.image_was_read:
@@ -484,10 +484,10 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def cooler_on(self) -> bool:
         self.errors = []
         try:
-            val, _ = asi.getControlValue(self.cam_id, ASI.Control.CoolerOn)
+            val, _ = zwoasi.getControlValue(self.cam_id, asi.Control.CoolerOn)
         except Exception as ex:
             self.errors.append(
-                f"failed to get control AsiControl.CoolerOn ({ASI.Control.CoolerOn}), {ex=}"
+                f"failed to get control AsiControl.CoolerOn ({asi.Control.CoolerOn}), {ex=}"
             )
         return bool(val)
 
@@ -495,10 +495,10 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def cooler_on(self, onoff: bool):
         self.errors = []
         try:
-            asi.setControlValue(self.cam_id, ASI.Control.CoolerOn, int(onoff), 0)
+            zwoasi.setControlValue(self.cam_id, asi.Control.CoolerOn, int(onoff), 0)
         except Exception as ex:
             self.errors.append(
-                f"failed to set control AsiControl.CoolerOn ({ASI.Control.CoolerOn}, {int(onoff)}), {ex=}"
+                f"failed to set control AsiControl.CoolerOn ({asi.Control.CoolerOn}, {int(onoff)}), {ex=}"
             )
 
     @property
@@ -538,22 +538,22 @@ if __name__ == "__main__":
         exit(0)
 
     def test_gain_percent():
-        percent = ASI.gain_absolute_to_percent(ASI.ASI_294MM_DEFAULT_GAIN)
+        percent = asi.gain_absolute_to_percent(asi.ASI_294MM_DEFAULT_GAIN)
         print("")
         print(f"gain 170: {percent:2.0f}%")
-        print(f"gain {percent:2.0f}%: {ASI.gain_percent_to_absolute(percent)}")
+        print(f"gain {percent:2.0f}%: {asi.gain_percent_to_absolute(percent)}")
 
-        percent = ASI.gain_absolute_to_percent(ASI.ASI_294MM_DEFAULT_GAIN)
+        percent = asi.gain_absolute_to_percent(asi.ASI_294MM_DEFAULT_GAIN)
         print("")
         print(f"gain 170: {percent:2.0f}%")
-        print(f"gain {percent:2.0f}%: {ASI.gain_percent_to_absolute(percent)}")
+        print(f"gain {percent:2.0f}%: {asi.gain_percent_to_absolute(percent)}")
 
     def test_gain_absolute(percent):
-        print(f"gain {percent:2.0f}%: {ASI.gain_percent_to_absolute(percent)}")
+        print(f"gain {percent:2.0f}%: {asi.gain_percent_to_absolute(percent)}")
 
-        percent = ASI.gain_absolute_to_percent(ASI.ASI_294MM_DEFAULT_GAIN)
+        percent = asi.gain_absolute_to_percent(asi.ASI_294MM_DEFAULT_GAIN)
         print("")
         print(f"gain 170: {percent:2.0f}%")
-        print(f"gain {percent:2.0f}%: {ASI.gain_percent_to_absolute(percent)}")
+        print(f"gain {percent:2.0f}%: {asi.gain_percent_to_absolute(percent)}")
 
     test_imager()

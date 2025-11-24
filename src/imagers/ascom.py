@@ -12,7 +12,7 @@ from threading import Lock, Thread
 import numpy as np
 import win32com.client
 
-import common.ASI as ASI
+import common.asi as asi
 from common.activities import ImagerActivities
 from common.ascom import AscomDispatcher, AscomStatus, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
@@ -222,7 +222,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         return self._binning
 
     @binning.setter
-    def binning(self, value: ASI.ASI_294MM_SUPPORTED_BINNINGS_LITERAL):
+    def binning(self, value: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL):
         if self.maxBinX and (1 > value > self.maxBinX):
             raise Exception(f"bad {value=}, must be > 1 and < {self.maxBinX=}")
 
@@ -402,8 +402,8 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     def endpoint_start_exposure(
         self,
         seconds: float | None = 5,
-        gain: int | None = ASI.ASI_294MM_DEFAULT_GAIN,
-        binning: ASI.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
+        gain: int | None = asi.ASI_294MM_DEFAULT_GAIN,
+        binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
         center_x: int | None = None,
         center_y: int | None = None,
         width: int | None = None,
@@ -1080,10 +1080,10 @@ def set_ASICamera2_ASCOM_profile_image_type():  # noqa: N802
     profile = win32com.client.Dispatch("ASCOM.Utilities.Profile")
     profile.DeviceType = "Camera"
     profile_image_format = profile.GetValue(
-        prog_id, "ImageType", "", str(ASI.OutputFormat.RAW16)
+        prog_id, "ImageType", "", str(asi.OutputFormat.RAW16)
     )
     configured_image_format = str(
-        ASI.OutputFormat.from_string(Config().get_unit().imager.format)
+        asi.OutputFormat.from_string(Config().get_unit().imager.format)
     )
 
     if int(profile_image_format) != configured_image_format:

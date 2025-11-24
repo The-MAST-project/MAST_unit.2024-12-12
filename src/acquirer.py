@@ -8,7 +8,7 @@ import astropy.units as u
 from astropy.coordinates import Angle, Latitude, Longitude
 from fastapi import Query
 
-import common.ASI as ASI
+import common.asi as asi
 from acquisition import Acquisition
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
@@ -146,7 +146,7 @@ class Acquirer:
                 height=sky_roi_conf.height)
 
             gain = acquisition.gain_absolute if acquisition.gain_absolute is not None \
-                else ASI.gain_percent_to_absolute(acquisition.gain_percent) if acquisition.gain_percent is not None \
+                else asi.gain_percent_to_absolute(acquisition.gain_percent) if acquisition.gain_percent is not None \
                     else None
 
             from common.interfaces.imager import ImagerRoi, ImagerSettings
@@ -350,8 +350,8 @@ class Acquirer:
         ] = None,
         gain_absolute: Annotated[
             int | None,
-            Query(ge=ASI.ControlDict[ASI.Control.Gain].min_value, le=ASI.ControlDict[ASI.Control.Gain].max_value)
-        ] = ASI.ASI_294MM_DEFAULT_GAIN,
+            Query(ge=asi.ControlDict[asi.Control.Gain].min_value, le=asi.ControlDict[asi.Control.Gain].max_value)
+        ] = asi.ASI_294MM_DEFAULT_GAIN,
         gain_percent: Annotated[
             int | None,
             Query(ge=0, le=100)
@@ -437,7 +437,7 @@ class Acquirer:
             target_ra=float(ra_j2000_hours),
             target_dec=float(dec_j2000_degs),
             conf=self.unit.unit_conf.acquisition,
-            gain_absolute=gain_absolute or ASI.ASI_294MM_DEFAULT_GAIN,
+            gain_absolute=gain_absolute or asi.ASI_294MM_DEFAULT_GAIN,
             gain_percent=gain_percent,
             skip_sky=skip_sky,
             handover_automatically_to_guider=handover_automatically_to_guider,
