@@ -578,7 +578,7 @@ class Stage(Component, SwitchedOutlet):
 
     def move_to_preset(
         self,
-        preset: Literal["Sky", "Spec", "Min", "Mid", "Max"] | StagePresetPosition,
+        preset: Const.SolvingPhase | Literal["Min", "Mid", "Max"] | StagePresetPosition,
     ):
         """
         Starts moving the stage to one of the preset positions
