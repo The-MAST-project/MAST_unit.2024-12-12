@@ -349,10 +349,8 @@ class Acquirer:
         ] = None,
         gain_absolute: Annotated[
             int | None,
-            Query(ge=ASI.ControlDict[ASI.Control.Gain].min_value, le=ASI.ControlDict[ASI.Control.Gain].max_value,
-                  description=f"{ASI.ControlDict[ASI.Control.Gain].min_value} <= Absolute gain <= "
-                  + f"{ASI.ControlDict[ASI.Control.Gain].max_value}")
-                  ] = ASI.ASI_294MM_DEFAULT_GAIN,
+            Query(ge=ASI.ControlDict[ASI.Control.Gain].min_value, le=ASI.ControlDict[ASI.Control.Gain].max_value)
+        ] = ASI.ASI_294MM_DEFAULT_GAIN,
         gain_percent: Annotated[
             int | None,
             Query(ge=0, le=100)
