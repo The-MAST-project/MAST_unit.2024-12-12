@@ -1,5 +1,4 @@
 import datetime
-import json
 import logging
 import os
 import time
@@ -86,7 +85,7 @@ class Acquisition:
             for _ in range(3):
                 try:
                     with open(path, "w") as fp:
-                        json.dump((self.corrections[phase]).to_dict(), fp, indent=2)
+                        fp.write(self.corrections[phase].model_dump_json(indent=2))
                         break
                 except Exception as e:
                     logger.error(f"failed to write {path} (error: {e})")
