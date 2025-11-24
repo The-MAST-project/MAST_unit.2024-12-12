@@ -1,4 +1,5 @@
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
 from fastapi import APIRouter
@@ -6,12 +7,14 @@ from pydantic import BaseModel
 
 from common.canonical import CanonicalResponse
 
-# from typing import TYPE_CHECKING
-# if TYPE_CHECKING:
-#     from unit import Unit
+if TYPE_CHECKING:
+    from phd2.phd2 import PHD2Connector
+
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerSettings, ImagerStatus, ImagerTypes
+from common.interfaces.imager import (ImagerExposureSeries, ImagerInterface,
+                                      ImagerSettings, ImagerStatus,
+                                      ImagerTypes)
 from common.mast_logging import init_log
 
 logger = logging.Logger("mast." + __name__)
