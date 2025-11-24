@@ -21,7 +21,8 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
-from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
+from common.interfaces.imager import (ImagerExposureSeries, ImagerInterface,
+                                      ImagerRoi, ImagerSettings)
 from common.mast_logging import init_log
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_info, function_name
@@ -955,7 +956,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     ],
                 )
             else:
-                self.set_limit_frame(roi=imager_settings.roi.binned(imager_settings.binning))
+                # self.set_limit_frame(roi=imager_settings.roi.binned(imager_settings.binning))
                 self.call(
                     method="guide",
                     params=[
@@ -1274,8 +1275,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if not self.connected:
             return CanonicalResponse(errors=["not connected"])
 
-        # logger.info(f"{function_name()}: stopping guiding")
+        logger.info(f"{function_name()}: NOT stopping guiding due to BUG")
         # self.call("stop_capture")
+
         # if self.need_to_reset_limit_frame:
         #     self.set_limit_frame(roi=None)
 
@@ -1457,7 +1459,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
             try:
                 assert settings.roi
-                self.set_limit_frame(roi=settings.roi.binned(settings.binning))
+                # self.set_limit_frame(roi=settings.roi.binned(settings.binning))
                 self.call(
                     "capture_single_frame",
                     params={
