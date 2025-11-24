@@ -10,7 +10,7 @@ from enum import Enum
 from itertools import chain
 from pathlib import Path
 from threading import Thread
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 import humanfriendly
 import numpy as np
@@ -32,7 +32,6 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.config.rois import FcuVersion
 from common.const import Const
-from common.corrections import correction_phases
 from common.dlipowerswitch import (PowerStatus, PowerSwitchFactory,
                                    PowerSwitchStatus, SwitchedOutlet)
 from common.filer import Filer
@@ -328,8 +327,8 @@ class Unit(Component):
                 else []
             )
 
-            for phase in correction_phases:
-                if phase in corrections_list and isinstance(corrections_list, dict):
+            for phase in list(get_args(Const.CorrectionPhase)):
+                if isinstance(corrections_list, dict):
                     correction = corrections_list[phase]
                     if isinstance(correction, list):
                         all_corrections.extend(correction)

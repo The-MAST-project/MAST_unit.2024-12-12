@@ -14,6 +14,7 @@ from common.activities import UnitActivities
 from common.config import Config
 from common.config.rois import RoisConfig, SkyRoiConfig
 from common.config.unit import AcquisitionConfig, ToleranceConfig
+from common.const import Const
 from common.corrections import Correction, Corrections
 from common.filer import Filer
 from common.interfaces.imager import ImagerSettings
@@ -21,7 +22,7 @@ from common.interfaces.solving import SolverInterface, SolvingResult, SolvingTol
 from common.mast_logging import init_log
 from common.safety import safety_get_sensor
 from common.solving import SolverId
-from common.utils import Coord, boxed_info, function_name
+from common.utils import Coord, boxed_info, function_name, isoformat_zulu
 
 logger = logging.Logger("mast.unit." + __name__)
 init_log(logger)
@@ -77,7 +78,7 @@ class Solver(SolverInterface):
         self.unit.errors.append(message)
 
     def solve(
-        self, imager_settings: ImagerSettings, target: Coord
+        self, imager_settings: ImagerSettings, target: Coord, phase: Const.SolvingPhase
     ) -> SolvingResult | None:
         op = function_name()
 
@@ -119,7 +120,7 @@ class Solver(SolverInterface):
 
             self.unit.imager.wait_for_image_saved()
             return self._backend.solve(
-                unit=self.unit, settings=imager_settings, target=target
+                unit=self.unit, settings=imager_settings, target=target, phase=phase
             )
 
     def solve_and_correct(  # noqa: C901
@@ -249,7 +250,8 @@ class Solver(SolverInterface):
 
             # run the plate solver
             try:
-                result = self.solve(imager_settings=imager_settings, target=target)
+                result = self.solve(imager_settings=imager_settings, target=target,
+                                    phase="sky" if phase == "sky" else "spec")
             except TimeoutError:
                 self.log_and_store_error("plate solving timed out, continuing ...")
                 continue
@@ -356,9 +358,9 @@ class Solver(SolverInterface):
                     )
 
                     latest_corrections.last_delta = Correction(
-                        time=datetime.datetime.now(datetime.UTC),
-                        ra_arcsec=delta_ra_arcsec,  # type: ignore
-                        dec_arcsec=delta_dec_arcsec,  # type: ignore
+                        time=isoformat_zulu(datetime.datetime.now(datetime.UTC)),
+                        ra_delta=delta_ra_arcsec,  # type: ignore
+                        dec_delta=delta_dec_arcsec,  # type: ignore
                     )
 
                     if not imager_settings.folder:
@@ -367,7 +369,7 @@ class Solver(SolverInterface):
                         )
                     file_name = str(Path(imager_settings.folder) / "corrections.json")
                     with open(file_name, "w") as f:
-                        json.dump(latest_corrections.to_dict(), f, indent=2)
+                        f.write(latest_corrections.model_dump_json(indent=2))
                     time.sleep(2)
                     filer.move_ram_to_shared(file_name)
 
@@ -381,9 +383,9 @@ class Solver(SolverInterface):
 
                     latest_corrections.sequence.append(
                         Correction(
-                            time=datetime.datetime.now(datetime.UTC),
-                            ra_arcsec=delta_ra_arcsec,  # type: ignore
-                            dec_arcsec=delta_dec_arcsec,  # type: ignore
+                            time=isoformat_zulu(datetime.datetime.now(datetime.UTC)),
+                            ra_delta=delta_ra_arcsec,  # type: ignore
+                            dec_delta=delta_dec_arcsec,  # type: ignore
                         )
                     )
 

@@ -6,7 +6,7 @@ import os
 import re
 import sys
 import time
-from typing import NamedTuple
+from typing import NamedTuple, get_args
 
 import astropy.units as u
 import matplotlib
@@ -15,7 +15,8 @@ import numpy as np
 from astropy.coordinates import Angle
 from matplotlib.patches import Patch
 
-from common.corrections import Corrections, correction_phases
+from common.const import Const
+from common.corrections import Corrections
 from common.mast_logging import init_log
 from common.utils import Filer, fromisoformat_zulu, function_name
 
@@ -335,7 +336,8 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):  # noqa
     op = function_name()
 
     def has_corrections(_folder: str) -> bool:
-        return any(os.path.exists(os.path.join(_folder, _phase, "corrections.json")) for _phase in correction_phases)
+        return any(os.path.exists(os.path.join(_folder, _phase, "corrections.json")) \
+                   for _phase in list(get_args(Const.CorrectionPhase)))
 
     acquisition_top = None
     if acquisition_folder is not None:
@@ -366,7 +368,6 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):  # noqa
     end_of_phase: list[datetime.datetime] = []
     tolerances = {}
 
-    # for phase in ["sky", "spec", "guiding"]:
     for phase in ["sky", "spec"]:
         file = os.path.join(acquisition_top, phase, "corrections.json")
         if not os.path.isfile(file):
@@ -374,7 +375,7 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):  # noqa
 
         try:
             with open(file) as fp:
-                corrections: Corrections = Corrections.from_dict(json.load(fp))
+                corrections: Corrections = Corrections.model_validate(json.load(fp))
         except Exception as e:
             logger.error(f"{op}: Could not get corrections from {file} ({e=})")
             continue
