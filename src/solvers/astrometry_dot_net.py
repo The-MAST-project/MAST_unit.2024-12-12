@@ -258,6 +258,15 @@ class AstrometryDotNet(SolverInterface):
                     self.unit.acquirer.latest_acquisition.solver_data = {
                         "index_file": ret.solution.index_file
                     }
+
+                # override solved RA/Dec from FITS header
+                with open(new_fits_path) as hdul:
+                    header = astropy.io.fits.getheader(hdul, 0)  # type: ignore
+                    if "CRVAL1" in header and "CRVAL2" in header:
+                        ret.solution.ra_hours = header["CRVAL1"] / 15.0
+                        ret.solution.dec_degs = header["CRVAL2"]
+                    else:
+                        logger.warning(f"no CRVAL1/CRVAL2 in solved FITS header of '{new_fits_path}'")
         else:
             ret = SolvingResult(
                 succeeded=False,
