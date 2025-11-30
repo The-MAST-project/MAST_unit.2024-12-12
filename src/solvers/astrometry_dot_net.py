@@ -235,10 +235,6 @@ class AstrometryDotNet(SolverInterface):
             file.write("\n--- timing ---\n")
             file.writelines(f"elapsed: {elapsed.total_seconds():.2f} seconds\n")
 
-        filer.move_ram_to_shared(
-            [result_file, input_fits_path, cygwin_to_win(new_fits_path)]
-        )
-
         if completed_process.returncode == 0:
             ret = self._parse_solver_output(stdout_lines)
             if ret.solution is not None:
@@ -260,13 +256,16 @@ class AstrometryDotNet(SolverInterface):
                     }
 
                 # override solved RA/Dec from FITS header
-                with open(new_fits_path) as hdul:
-                    header = astropy.io.fits.getheader(hdul, 0)  # type: ignore
-                    if "CRVAL1" in header and "CRVAL2" in header:
-                        ret.solution.ra_hours = header["CRVAL1"] / 15.0
-                        ret.solution.dec_degs = header["CRVAL2"]
-                    else:
-                        logger.warning(f"no CRVAL1/CRVAL2 in solved FITS header of '{new_fits_path}'")
+                # with open(new_fits_path) as hdul: # oren: not how fits.getheader works
+                header = astropy.io.fits.getheader(new_fits_path, 0)  # type: ignore
+                if "CRVAL1" in header and "CRVAL2" in header:
+                    ret.solution.ra_hours = header["CRVAL1"] / 15.0
+                    ret.solution.dec_degs = header["CRVAL2"]
+                    # oren: update also ra_rads and dec_rads
+                    ret.solution.ra_rads = float(Angle(ret.solution.ra_hours * 15.0, unit="deg").radian)  # type: ignore[assignment]
+                    ret.solution.dec_rads = float(Angle(ret.solution.dec_degs, unit="deg").radian)  # type: ignore[assignment]
+                else:
+                    logger.warning(f"no CRVAL1/CRVAL2 in solved FITS header of '{new_fits_path}'")
         else:
             ret = SolvingResult(
                 succeeded=False,
@@ -275,7 +274,7 @@ class AstrometryDotNet(SolverInterface):
                     ", ".join(stderr_lines),
                 ],
             )
-
+        filer.move_ram_to_shared([result_file, input_fits_path, cygwin_to_win(new_fits_path)])  # oren
         # shutil.rmtree(win_tmp_dir, ignore_errors=True)
 
         return ret
