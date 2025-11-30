@@ -307,6 +307,7 @@ class Solver(SolverInterface):
                     logger,
                     f"phase: {phase.upper()}, plate solver found a match, YEY, YEPEEE, HURRAY !!!",
                 )
+
                 # dec_avg_rad = math.radians((target.dec.arcsecond + Angle(result.solution.dec_rads * u.radian).arcsecond) / 2)  # type: ignore
                 dec_avg_rad = float(target.dec.radian + result.solution.dec_rads) / 2  # type: ignore
                 assert result.solution is not None, f"{op}: result.solution is None"
