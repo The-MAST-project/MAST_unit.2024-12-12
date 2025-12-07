@@ -23,6 +23,7 @@ from common.paths import PathMaker
 from common.rois import UnitRoi
 from PlaneWave.ps3cli_client import PS3CLIClient
 from plotting import plot_autofocus_analysis
+from src.common.utils import boxed_log
 from stage import StagePresetPosition
 
 if TYPE_CHECKING:
@@ -262,7 +263,7 @@ class Autofocuser:
             roi_conf.width,
             roi_conf.height,
         )
-        _binning = 1
+        _binning = acquisition_conf.binning
 
         max_tries: int = self.unit.unit_conf.autofocus.max_tries
         max_tolerance: float = self.unit.unit_conf.autofocus.max_tolerance
@@ -460,9 +461,9 @@ class Autofocuser:
             break  # the tries loop
 
         if try_number == max_tries - 1:
-            self.log_and_store_error(
-                f"{op}: could not achieve {max_tolerance=} within {max_tries=}"
-            )
+            msg = f"{op}: could not achieve {max_tolerance=} within {max_tries=}"
+            self.log_and_store_error(msg)
+            boxed_log(logger=logger, lines=[msg], level=logging.ERROR)
 
         self.unit.mount.stop_tracking()
         self.unit.end_activity(UnitActivities.Autofocusing)

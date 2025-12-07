@@ -25,7 +25,7 @@ from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, Imag
 from common.mast_logging import init_log
 from common.models.statuses import PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
 from common.process import WatchedProcess
-from common.utils import Coord, RepeatTimer, boxed_info, function_name
+from common.utils import Coord, RepeatTimer, boxed_log, function_name
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 
 if TYPE_CHECKING:
@@ -488,7 +488,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 abs(delta_ra) <= tolerance.ra_arcsec
                 and abs(delta_dec) <= tolerance.dec_arcsec
             )
-            boxed_info(
+            boxed_log(
                 logger=logger,
                 lines=[
                     f"{delta_ra=}, {delta_dec=}",
@@ -601,7 +601,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             if "ErrorCode" in ev:
                 lines.append(f"ErrorCode={ev['ErrorCode']}")
             if lines:
-                boxed_info(logger=logger, lines=lines)
+                boxed_log(logger=logger, lines=lines)
 
             self.sky_quality.update(FrameMetrics(snr=ev['SNR'], hfd_pixels=ev['HFD']))
 
@@ -679,7 +679,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             # | X         | number | lock position X-coordinate |
             # | Y         | number | lock position Y-coordinate |
             lines = [f'event: StarSelected at x="{ev["X"]}" y="{ev["Y"]}"']
-            boxed_info(logger=logger, lines=lines)
+            boxed_log(logger=logger, lines=lines)
 
         elif e == "LockPositionSet":
             # | Attribute | Type | Description |
@@ -687,7 +687,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             # | X         | number | lock position X-coordinate |
             # | Y         | number | lock position Y-coordinate |
             lines = [f'event: LockPositionSet at x="{ev["X"]}" y="{ev["Y"]}"']
-            boxed_info(logger=logger, lines=lines)
+            boxed_log(logger=logger, lines=lines)
 
         elif e == "StarLost":
             with self.lock:
@@ -713,7 +713,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 lines.append(f"ErrorCode={ev['ErrorCode']}")
             if "Status" in ev:
                 lines.append(f'Status="{ev["Status"]}"')
-            boxed_info(logger=logger, lines=lines)
+            boxed_log(logger=logger, lines=lines)
 
         elif e == "SingleFrameComplete":
             result = SingleFrameResult(
@@ -933,7 +933,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     ],
                 )
             else:
-                # self.set_limit_frame(roi=imager_settings.roi.binned(imager_settings.binning))
+                self.set_limit_frame(roi=imager_settings.roi.binned(imager_settings.binning))
                 self.call(
                     method="guide",
                     params=[
@@ -1436,7 +1436,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
             try:
                 assert settings.roi
-                # self.set_limit_frame(roi=settings.roi.binned(settings.binning))
+                self.set_limit_frame(roi=settings.roi.binned(settings.binning))
                 self.call(
                     "capture_single_frame",
                     params={

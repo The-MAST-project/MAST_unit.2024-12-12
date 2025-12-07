@@ -20,7 +20,7 @@ from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.models.statuses import StageStatus
-from common.utils import RepeatTimer, Timeout, boxed_info, function_name, time_stamp
+from common.utils import RepeatTimer, Timeout, boxed_log, function_name, time_stamp
 
 if TYPE_CHECKING:
     from unit import Unit
@@ -526,7 +526,7 @@ class Stage(Component, SwitchedOutlet):
                     # but it is not close enough to the target position.
                     # Try to nudge it to the target position.
                     #
-                    boxed_info(
+                    boxed_log(
                         logger,
                         [
                             "Stage is stationary, but not close enough to target: ",

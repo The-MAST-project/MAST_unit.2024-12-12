@@ -14,13 +14,11 @@ from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import SkyRoiConfig
 from common.mast_logging import init_log
-from common.parsers import (sexagesimal_degrees_to_decimal,
-                            sexagesimal_hours_to_decimal)
+from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.rois import SkyRoi
 from common.tasks.models import UnitAssignmentModel
-from common.tasks.notifications import \
-    notify_controller_about_task_acquisition_path
-from common.utils import Coord, boxed_info, function_name
+from common.tasks.notifications import notify_controller_about_task_acquisition_path
+from common.utils import Coord, boxed_log, function_name
 from phd2.phd2 import PHD2Connector
 from solving import SolverId, SolvingTolerance
 from stage import StagePresetPosition
@@ -122,7 +120,7 @@ class Acquirer:
 
         if not acquisition.skip_sky:
             phase = "sky"
-            boxed_info(logger, [f"starting phase '{phase.upper()}'"])
+            boxed_log(logger, [f"starting phase '{phase.upper()}'"])
 
             #
             # move the stage and mount (if needed) into position
@@ -198,7 +196,7 @@ class Acquirer:
                 return
 
         phase = "spec"
-        boxed_info(logger, [f"starting phase '{phase.upper()}'"])
+        boxed_log(logger, [f"starting phase '{phase.upper()}'"])
 
         self.unit.stage.move_to_preset(StagePresetPosition.Spec)
         while self.unit.stage.is_moving:
@@ -262,12 +260,12 @@ class Acquirer:
 
         if self.latest_acquisition.handover_automatically_to_guider:
             lines.append("starting PHD2 guiding")
-            boxed_info(logger, lines)
+            boxed_log(logger, lines)
             self.unit.start_activity(UnitActivities.Guiding)
             self.unit.guider.start_guiding()
         else:
             lines.append("start manual PHD2 guiding")
-            boxed_info(logger, lines)
+            boxed_log(logger, lines)
             self.unit.start_activity(UnitActivities.Guiding)
 
         while self.unit.is_active(UnitActivities.Guiding):

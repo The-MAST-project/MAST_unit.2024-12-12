@@ -10,7 +10,7 @@ from enum import Enum
 from itertools import chain
 from pathlib import Path
 from threading import Thread
-from typing import Annotated, Any, get_args
+from typing import Annotated, Any
 
 import humanfriendly
 import numpy as np
@@ -307,13 +307,15 @@ class Unit(Component):
                 else []
             )
 
-            for phase in list(get_args(Const.CorrectionPhase)):
-                if isinstance(corrections_list, dict):
-                    correction = corrections_list[phase]
-                    if isinstance(correction, list):
-                        all_corrections.extend(correction)
-                    else:
-                        all_corrections.append(correction)
+            # for phase in list(get_args(Const.CorrectionPhase)):
+            #     if isinstance(corrections_list, dict):
+            #         if phase not in corrections_list:
+            #             corrections_list[phase] = Corrections(phase=phase)
+            #         correction = corrections_list[phase]
+            #         if isinstance(correction, list):
+            #             all_corrections.extend(correction)
+            #         else:
+            #             all_corrections.append(correction)
 
         ret = FullUnitStatus(
             **self.component_status().model_dump(),

@@ -15,7 +15,7 @@ from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.models.statuses import FocuserStatus
-from common.utils import RepeatTimer, boxed_info, time_stamp
+from common.utils import RepeatTimer, boxed_log, time_stamp
 from PlaneWave import pwi4_client
 
 if TYPE_CHECKING:
@@ -277,7 +277,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
         if self.is_active(FocuserActivities.Moving):
             if self.is_stationary and not self.close_enough(self.target):
-                boxed_info(logger, [
+                boxed_log(logger, [
                     "Focuser is stationary but not close_enough to target",
                     f"{self.target=}, {self.position=}, {self.CLOSE_ENOUGH=}",
                     f"Moving it to {self.target} again"

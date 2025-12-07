@@ -14,7 +14,7 @@ from common.const import Const
 from common.filer import Filer
 from common.interfaces.solving import SolverInterface, SolvingResult, SolvingSolution
 from common.mast_logging import init_log
-from common.utils import Coord, boxed_info, function_name, generate_random_string
+from common.utils import Coord, boxed_log, function_name, generate_random_string
 from imagers import ImagerSettings
 
 # from unit import Unit  # type: ignore[import-untyped]
@@ -237,8 +237,8 @@ class AstrometryDotNet(SolverInterface):
 
         if completed_process.returncode == 0:
             ret = self._parse_solver_output(stdout_lines)
-            if ret.solution is not None:
-                boxed_info(
+            if ret.succeeded and ret.solution is not None:
+                boxed_log(
                     logger=logger,
                     lines=[
                         "FUTURE: image quality check",

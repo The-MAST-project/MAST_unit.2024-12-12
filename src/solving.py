@@ -22,7 +22,7 @@ from common.interfaces.solving import SolverInterface, SolvingResult, SolvingTol
 from common.mast_logging import init_log
 from common.safety import safety_get_sensor
 from common.solving import SolverId
-from common.utils import Coord, boxed_info, function_name, isoformat_zulu
+from common.utils import Coord, boxed_log, function_name, isoformat_zulu
 
 logger = logging.Logger("mast.unit." + __name__)
 init_log(logger)
@@ -297,13 +297,13 @@ class Solver(SolverInterface):
                 msg = None
                 if result.errors:
                     msg = f"errors: '{result.errors}'"
-                boxed_info(logger, f"{op}: plate solver failed, {msg=}")
+                boxed_log(logger, f"{op}: plate solver failed, {msg=}")
                 self.unit.errors.append(f"{op}: plate solver failed, {msg=}")
                 filer.move_ram_to_shared(imager_settings.image_path)
                 continue  # next try
 
             else:
-                boxed_info(
+                boxed_log(
                     logger,
                     f"phase: {phase.upper()}, plate solver found a match, YEY, YEPEEE, HURRAY !!!",
                 )
@@ -348,7 +348,7 @@ class Solver(SolverInterface):
                     #
                     # Within tolerance, no correction is needed
                     #
-                    boxed_info(
+                    boxed_log(
                         logger,
                         [
                             f"{op}: WITHIN TOLERANCES",
@@ -391,7 +391,7 @@ class Solver(SolverInterface):
                     )
 
                     if phase == "guiding" and not make_corrections:
-                        boxed_info(
+                        boxed_log(
                             logger,
                             [
                                 f"{phase=} and {make_corrections=} -> NOT OFFSETTING BY",
@@ -400,7 +400,7 @@ class Solver(SolverInterface):
                             center=True,
                         )
                     else:
-                        boxed_info(
+                        boxed_log(
                             logger,
                             f"phase: {phase.upper()}: OFFSETTING BY ({delta_ra_arcsec:.9f}, {delta_dec_arcsec:.9f}) arcsec",
                         )

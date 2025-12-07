@@ -10,7 +10,7 @@ from astropy.coordinates import Angle
 from common.activities import UnitActivities
 from common.interfaces.guiding import GuiderInterface
 from common.mast_logging import init_log
-from common.utils import Coord, boxed_info
+from common.utils import Coord, boxed_log
 from solving import SolvingTolerance
 
 logger = Logger("mast-unit-solving-guider")
@@ -42,7 +42,7 @@ class SolvingGuider(GuiderInterface):
 
     def start_guiding(self):
         phase = "guiding"
-        boxed_info(logger, [f"starting phase '{phase.upper()}'"])
+        boxed_log(logger, [f"starting phase '{phase.upper()}'"])
 
         assert (
             self.unit.acquirer.latest_acquisition is not None
@@ -85,13 +85,13 @@ class SolvingGuider(GuiderInterface):
             now = datetime.datetime.now()
             if now < end:
                 sec = (end - now).seconds
-                boxed_info(
+                boxed_log(
                     logger,
                     f"phase '[{phase.upper()}], sleeping {sec:.2f} seconds till end-of-cadence ...",
                 )
                 time.sleep(sec)
             else:
-                boxed_info(
+                boxed_log(
                     logger,
                     f"phase '[{phase.upper()}], cycle was longer than {cadence=} sec, not sleeping",
                 )
