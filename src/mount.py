@@ -7,16 +7,16 @@ from typing import TYPE_CHECKING
 import win32com.client
 from astropy.coordinates import Angle
 from fastapi.routing import APIRouter
-from pydantic import BaseModel
 
 from common.activities import MountActivities
-from common.ascom import AscomDispatcher, AscomStatus, ascom_run
+from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.const import Const
-from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
-from common.interfaces.components import Component, ComponentStatus
+from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.interfaces.components import Component
 from common.mast_logging import init_log
+from common.models.statuses import MountStatus, SpiralSettings
 from common.utils import RepeatTimer, caller_name, function_name, time_stamp
 from PlaneWave import pwi4_client
 
@@ -27,27 +27,27 @@ logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
 
 
-class SpiralSettings(BaseModel):
-    x: float
-    y: float
-    x_step_arcsec: float
-    y_step_arcsec: float
+# class SpiralSettings(BaseModel):
+#     x: float
+#     y: float
+#     x_step_arcsec: float
+#     y_step_arcsec: float
 
 
-class MountStatus(PowerStatus, AscomStatus, ComponentStatus):
-    errors: list[str] | None = None
-    target_verbal: str | None = None
-    tracking: bool = False
-    slewing: bool = False
-    axis0_enabled: bool = False
-    axis1_enabled: bool = False
-    ra_j2000_hours: float | None = None
-    dec_j2000_degs: float | None = None
-    ha_hours: float | None = None
-    lmst_hours: float | None = None
-    fans: bool = False
-    spiral: SpiralSettings | None = None
-    date: str | None = None
+# class MountStatus(PowerStatus, AscomStatus, ComponentStatus):
+#     errors: list[str] | None = None
+#     target_verbal: str | None = None
+#     tracking: bool = False
+#     slewing: bool = False
+#     axis0_enabled: bool = False
+#     axis1_enabled: bool = False
+#     ra_j2000_hours: float | None = None
+#     dec_j2000_degs: float | None = None
+#     ha_hours: float | None = None
+#     lmst_hours: float | None = None
+#     fans: bool = False
+#     spiral: SpiralSettings | None = None
+#     date: str | None = None
 
 
 class Mount(Component, SwitchedOutlet, AscomDispatcher):

@@ -3,13 +3,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel
-
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse_Ok
 from common.config import Config
 from common.utils import function_name
-from phd2.phd2 import PHD2Connector, PHD2GuiderStatus
+from phd2.phd2 import PHD2Connector
 from solving_guider import SolvingGuider
 
 if TYPE_CHECKING:
@@ -20,17 +18,13 @@ from common.config.rois import FcuVersion, SpecRoiConfig
 from common.interfaces.guiding import GuiderInterface, GuiderTypes
 from common.interfaces.imager import ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
+from common.models.statuses import GuiderStatus
 from common.rois import SpecRoi
 
 logger = logging.Logger("mast.unit." + __name__)
 init_log(logger)
 
 guider_address_port = ("127.0.0.1", 8001)
-
-class GuiderStatus(BaseModel):
-    activities: int | None = None
-    activities_verbal: str | None = None
-    backend: PHD2GuiderStatus | None = None
 
 class Guider(GuiderInterface):
 

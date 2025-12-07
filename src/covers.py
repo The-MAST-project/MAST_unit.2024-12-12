@@ -1,5 +1,4 @@
 import logging
-from enum import Enum
 from logging import Logger
 from typing import TYPE_CHECKING
 
@@ -7,13 +6,14 @@ import win32com.client
 from fastapi.routing import APIRouter
 
 from common.activities import CoverActivities
-from common.ascom import AscomDispatcher, AscomStatus, ascom_run
+from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse_Ok
 from common.config import Config
 from common.const import Const
-from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
-from common.interfaces.components import Component, ComponentStatus
+from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.interfaces.components import Component
 from common.mast_logging import init_log
+from common.models.statuses import CoversState, CoverStatus
 from common.utils import RepeatTimer, time_stamp
 
 if TYPE_CHECKING:
@@ -21,23 +21,6 @@ if TYPE_CHECKING:
 
 logger: logging.Logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
-
-
-# https://ascom-standards.org/Help/Developer/html/T_ASCOM_DeviceInterface_CoverStatus.htm
-class CoversState(Enum):
-    NotPresent = 0
-    Closed = 1
-    Moving = 2
-    Open = 3
-    Unknown = 4
-    Error = 5
-
-
-class CoverStatus(PowerStatus, AscomStatus, ComponentStatus):
-    target_verbal: str | None = None
-    state: CoversState | None = None
-    state_verbal: str | None = None
-    date: str | None = None
 
 
 class Covers(Component, SwitchedOutlet, AscomDispatcher):

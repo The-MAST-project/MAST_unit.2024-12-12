@@ -16,9 +16,10 @@ from common.activities import StageActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.const import Const
-from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
-from common.interfaces.components import Component, ComponentStatus
+from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.interfaces.components import Component
 from common.mast_logging import init_log
+from common.models.statuses import StageStatus
 from common.utils import RepeatTimer, Timeout, boxed_info, function_name, time_stamp
 
 if TYPE_CHECKING:
@@ -95,14 +96,14 @@ stage_direction_str2int_dict: dict = {
 }
 
 
-class StageStatus(PowerStatus, ComponentStatus):
-    info: dict | None = None
-    presets: dict | None = None
-    position: int | None = None
-    at_preset: str | None = None
-    target: int | None = None
-    target_verbal: str | None = None
-    date: str | None = None
+# class StageStatus(PowerStatus, ComponentStatus):
+#     info: dict | None = None
+#     presets: dict | None = None
+#     position: int | None = None
+#     at_preset: str | None = None
+#     target: int | None = None
+#     target_verbal: str | None = None
+#     date: str | None = None
 
 
 class Stage(Component, SwitchedOutlet):

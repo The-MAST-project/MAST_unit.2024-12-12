@@ -10,55 +10,54 @@ from enum import Enum
 from itertools import chain
 from pathlib import Path
 from threading import Thread
-from typing import Annotated, Any, Literal, get_args
+from typing import Annotated, Any, get_args
 
 import humanfriendly
 import numpy as np
 from fastapi import Query
 from fastapi.routing import APIRouter
 from PIL import Image
-# from pydantic import Field
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 import common.asi as asi
 from acquirer import Acquirer
 from acquisition import Acquisition
 from autofocusing import Autofocuser, AutofocusResult
-from common.activities import (CoverActivities, FocuserActivities,
-                               ImagerActivities, MountActivities,
-                               StageActivities, UnitActivities)
+from common.activities import (
+    CoverActivities,
+    FocuserActivities,
+    ImagerActivities,
+    MountActivities,
+    StageActivities,
+    UnitActivities,
+)
 from common.api import ControllerApi
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.config.rois import FcuVersion
 from common.const import Const
-from common.dlipowerswitch import (PowerStatus, PowerSwitchFactory,
-                                   PowerSwitchStatus, SwitchedOutlet)
+from common.dlipowerswitch import PowerSwitchFactory, SwitchedOutlet
 from common.filer import Filer
-from common.interfaces.components import Component, ComponentStatus
+from common.interfaces.components import Component
+
 # from guiding import Guider
-from common.interfaces.imager import (ImagerExposureSeries, ImagerRoi,
-                                      ImagerSequenceOfExposures,
-                                      ImagerSettings, ImagerStatus,
-                                      ImagerTypes)
+from common.interfaces.imager import ImagerExposureSeries, ImagerRoi, ImagerSequenceOfExposures, ImagerSettings, ImagerTypes
 from common.mast_logging import DailyFileHandler, init_log
 from common.models.assignments import UnitAssignmentModel
-from common.parsers import (sexagesimal_degrees_to_decimal,
-                            sexagesimal_hours_to_decimal)
+from common.models.statuses import FullUnitStatus
+from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
 from common.rois import UnitRoi
-from common.tasks.notifications import \
-    notify_controller_about_task_acquisition_path
+from common.tasks.notifications import notify_controller_about_task_acquisition_path
 from common.utils import RepeatTimer, function_name, time_stamp
-from covers import Covers, CoverStatus
-from focuser import Focuser, FocuserStatus
-from guiding import GuiderStatus
+from covers import Covers
+from focuser import Focuser
 from imagers import Imager
-from mount import Mount, MountStatus
-from phd2.phd2 import PHD2Connector, PHD2ImagerStatus
+from mount import Mount
+from phd2.phd2 import PHD2Connector
 from PlaneWave import pwi4_client
 from solving import Solver
-from stage import Stage, StageStatus
+from stage import Stage
 
 RA_REGEX = r"^(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
 DEC_REGEX = r"^([+-]?)(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
@@ -86,25 +85,6 @@ class GuideDirections(Enum):
     guide_south = 1
     guide_east = 2
     guide_west = 3
-
-
-class UnitStatus(ComponentStatus, PowerStatus):
-    id: int
-    guiding: bool = False
-    autofocusing: bool = False
-    power_switch: PowerSwitchStatus | None = None
-    mount: MountStatus | None = None
-    imager: ImagerStatus | PHD2ImagerStatus | None = None
-    covers: CoverStatus | None = None
-    focuser: FocuserStatus | None = None
-    stage: StageStatus | None = None
-    guider: GuiderStatus | None = None
-    errors: list[str] | None = None
-    autofocus: dict | None = None
-    corrections: list | None = None
-    type: Literal["short", "full"] = "full"
-    date: str | None = None
-    powered: bool = True
 
 
 class Unit(Component):
@@ -335,7 +315,7 @@ class Unit(Component):
                     else:
                         all_corrections.append(correction)
 
-        ret = UnitStatus(
+        ret = FullUnitStatus(
             **self.component_status().model_dump(),
             id=id(self),
             guiding=self.guider.is_guiding if self.guider else False,
@@ -351,7 +331,6 @@ class Unit(Component):
             errors=self.errors,
             autofocus=autofocus,
             corrections=all_corrections,
-            type="full",
             date=time_stamp(),
         )
 

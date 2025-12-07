@@ -21,9 +21,9 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
-from common.interfaces.imager import (ImagerExposureSeries, ImagerInterface,
-                                      ImagerRoi, ImagerSettings)
+from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
+from common.models.statuses import PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_info, function_name
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
@@ -65,29 +65,6 @@ class PHD2Activities(IntFlag):
     SolvingForValidation = auto()
     EquipmentHandover = auto()
     EquipmentTakeover = auto()
-
-
-class PHD2ImagerStatus(BaseModel):
-    identifier: str | None = None
-    name: str = "phd2"
-    activities: int = 0
-    activities_verbal: str | None = None
-    operational: bool = False
-    why_not_operational: list[str] = []
-    connected: bool = False
-
-class SkyQualityStatus(BaseModel):
-    score: float | None = None
-    state: str | None = None
-    latest_update: str | None = None
-
-class PHD2GuiderStatus(BaseModel):
-    identifier: str | None = None
-    is_guiding: bool = False
-    is_settling: bool = False
-    app_state: str | None = None
-    avg_dist: float | None = None
-    sky_quality: SkyQualityStatus | None = None
 
 
 class PHD2SettleProgress:
@@ -1276,7 +1253,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             return CanonicalResponse(errors=["not connected"])
 
         logger.info(f"{function_name()}: NOT stopping guiding due to BUG")
-        # self.call("stop_capture")
+        self.call("stop_capture")
 
         # if self.need_to_reset_limit_frame:
         #     self.set_limit_frame(roi=None)

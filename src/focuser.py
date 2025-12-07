@@ -7,13 +7,14 @@ import win32com.client
 from fastapi.routing import APIRouter
 
 from common.activities import FocuserActivities
-from common.ascom import AscomDispatcher, AscomStatus, ascom_run
+from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.const import Const
-from common.dlipowerswitch import OutletDomain, PowerStatus, SwitchedOutlet
-from common.interfaces.components import Component, ComponentStatus
+from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.interfaces.components import Component
 from common.mast_logging import init_log
+from common.models.statuses import FocuserStatus
 from common.utils import RepeatTimer, boxed_info, time_stamp
 from PlaneWave import pwi4_client
 
@@ -27,17 +28,6 @@ init_log(logger)
 class FocusDirection(IntEnum):
     In = auto()
     Out = auto()
-
-
-class FocuserStatus(PowerStatus, AscomStatus, ComponentStatus):
-    lower_limit: int | None = None
-    upper_limit: int | None = None
-    known_as_good_position: int | None = None
-    position: int | None = None
-    target: int | None = None
-    target_verbal: str | None = None
-    moving: bool = False
-    date: str | None = None
 
 
 class Focuser(Component, SwitchedOutlet, AscomDispatcher):
@@ -299,10 +289,10 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
                 self.end_activity(FocuserActivities.Moving)
                 self.target = None
 
-    def endpoint_status(self) -> FocuserStatus:
+    def endpoint_status(self) -> FocuserStatus | None:
         return self.status()
 
-    def status(self) -> FocuserStatus:
+    def status(self) -> FocuserStatus | None:
         pw_stat = self.pw.status()
         ascom_response = ascom_run(self, "IsMoving")
         is_moving = (
@@ -312,9 +302,9 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         )
 
         return FocuserStatus(
-            **self.power_status().dict(),
-            **self.ascom_status().dict(),
-            **self.component_status().dict(),
+            **self.power_status().model_dump(),
+            **self.ascom_status().model_dump(),
+            **self.component_status().model_dump(),
             lower_limit=self.lower_limit,
             upper_limit=self.upper_limit,
             known_as_good_position=self.known_as_good_position,
