@@ -14,9 +14,9 @@ from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import SkyRoiConfig
 from common.mast_logging import init_log
+from common.models.assignments import UnitAssignmentModel
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.rois import SkyRoi
-from common.tasks.models import UnitAssignmentModel
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
 from common.utils import Coord, boxed_log, function_name
 from phd2.phd2 import PHD2Connector
@@ -289,7 +289,7 @@ class Acquirer:
         solver_name = self.unit.unit_conf.solving.method
 
         logger.info(
-            f"starting acquisition for assignment {assignment.task.ulid}, "
+            f"starting acquisition for assignment {assignment.plan.ulid}, "
             f"approach_mode={approach_mode}, solver_name={solver_name} (from unit config), "
             f"make_corrections={make_corrections}, "
             f"ra_j2000_hours={ra_j2000_hours}, dec_j2000_degs={dec_j2000_degs}"
@@ -310,9 +310,9 @@ class Acquirer:
         This acquisition is part of an assignment, tell the controller where
          the products are.
         """
-        if assignment.task.ulid is not None:
+        if assignment.plan.ulid is not None:
             notify_controller_about_task_acquisition_path(
-                task_id=assignment.task.ulid,
+                task_id=assignment.plan.ulid,
                 link="acquisition",
                 src=acquisition.folder,
             )
