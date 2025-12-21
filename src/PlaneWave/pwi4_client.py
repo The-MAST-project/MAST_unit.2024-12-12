@@ -335,7 +335,7 @@ class PWI4:
 
     def rotator_disable(self):
         return self.request_with_status("/rotator/disable")
-        
+
     def rotator_goto_mech(self, target_degs):
         return self.request_with_status("/rotator/goto_mech", degs=target_degs)
 
@@ -360,7 +360,7 @@ class PWI4:
         at the current telescope position
         """
         return self.request("/virtualcamera/take_image")
-    
+
     def virtualcamera_take_image_and_save(self, filename: str):
         """
         Request a fake FITS image from PWI4.
@@ -388,7 +388,7 @@ class PWI4:
         Useful for testing how the library will respond.
         """
         return self.request_with_status("/internal/crash")
-    
+
     def test_invalid_parameters(self):
         """
         Try making a request with intentionally missing parameters.
@@ -407,7 +407,7 @@ class PWI4:
     def request_with_status(self, command, **kwargs):
         response_text = self.request(command, **kwargs)
         return self.parse_status(response_text)
-    
+
     ### Status parsing utilities ################################
 
     def status_text_to_dict(self, response: str | bytes):
@@ -424,22 +424,22 @@ class PWI4:
         response_dict = {}
 
         lines = response.split("\n")
-        
+
         for line in lines:
             fields = line.split("=", 1)
             if len(fields) == 2:
                 name = fields[0]
                 value = fields[1]
                 response_dict[name] = value
-        
+
         return response_dict
 
     def parse_status(self, response_text):
         response_dict = self.status_text_to_dict(response_text)
         return PWI4Status(response_dict)
 
-    
-class Section(object): 
+
+class Section:
     """
     Simple object for collecting properties in PWI4Status
     """
@@ -523,7 +523,7 @@ class PWI4Status:
             axis.measured_velocity_degs_per_sec = self.get_float(prefix + "measured_velocity_degs_per_sec") # Added in 4.0.13
             axis.acceleration_degs_per_sec_sqr = self.get_float(prefix + "acceleration_degs_per_sec_sqr") # Added in 4.0.13
             axis.measured_current_amps = self.get_float(prefix + "measured_current_amps") # Added in 4.0.13
-        
+
         self.mount.model = Section()
         self.mount.model.filename = self.get_string("mount.model.filename")
         self.mount.model.num_points_total = self.get_int("mount.model.num_points_total")
@@ -560,7 +560,7 @@ class PWI4Status:
             self.mount.offsets.path_arcsec.total=self.get_float("mount.offsets.path_arcsec.total")
             self.mount.offsets.path_arcsec.rate=self.get_float("mount.offsets.path_arcsec.rate")
             self.mount.offsets.path_arcsec.gradual_offset_progress=self.get_float("mount.offsets.path_arcsec.gradual_offset_progress")
-            
+
             self.mount.offsets.transverse_arcsec = Section()
             self.mount.offsets.transverse_arcsec.total=self.get_float("mount.offsets.transverse_arcsec.total")
             self.mount.offsets.transverse_arcsec.rate=self.get_float("mount.offsets.transverse_arcsec.rate")
@@ -582,7 +582,7 @@ class PWI4Status:
         self.focuser.is_enabled = self.get_bool("focuser.is_enabled")
         self.focuser.position = self.get_float("focuser.position")
         self.focuser.is_moving = self.get_bool("focuser.is_moving")
-        
+
         self.rotator = Section()
         self.rotator.exists = self.get_bool("rotator.exists", False) # Added in 4.0.99 Beta 2
         self.rotator.is_connected = self.get_bool("rotator.is_connected")
@@ -616,7 +616,7 @@ class PWI4Status:
         if name not in self.raw:
             return value_if_missing
         return int(self.raw[name])
-    
+
     def get_string(self, name, value_if_missing=None):
         if name not in self.raw:
             return value_if_missing
@@ -706,7 +706,7 @@ class PWI4HttpCommunicator:
             response = urlopen(url, data=postdata, timeout=self.timeout_seconds)
 
         except (urllib.error.URLError, ConnectionRefusedError) as ex:
-            raise PWException(message=f'request: Could not open the URL {url}.  Maybe PWI4 is not running !?!')
+            raise PWException(message=f'request: Could not open the URL {url}.  Maybe PWI4 is not running !?!') from ex
 
         except HTTPError as e:
             if e.code == 404:
@@ -723,7 +723,7 @@ class PWI4HttpCommunicator:
                 error_message = error_message + ": " + str(error_details)
             except:
                 pass # If that failed, we won't include any further details
-            
+
             raise PWException(message=f'request: HTTPError: error_message={error_message}, error_details: {error_details}')
 
         except Exception as e:
@@ -734,7 +734,7 @@ class PWI4HttpCommunicator:
         payload = response.read()
         return payload
 
-    
+
 def list_to_comma_separated_string(value_list):
     """
     Convert list of values (e.g. [3, 1, 5]) into a comma-separated string (e.g. "3,1,5")
