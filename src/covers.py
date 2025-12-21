@@ -285,13 +285,13 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         if not self.is_on():
             ret.append(f"{self.name}: not powered")
         elif not self.detected:
-            ret.append(f"{self.name}: (ASCOM) not detected")
+            ret.append(f"{self.name}: (via ASCOM) not detected")
         else:
             if not self.ascom:
-                ret.append(f"{self.name}: (ASCOM) - no handle")
+                ret.append(f"{self.name}: (via ASCOM) - no handle")
             else:
                 if not self.connected:
-                    ret.append(f"{self.name}: (ASCOM) - not connected")
+                    ret.append(f"{self.name}: (via ASCOM) - not connected")
                 else:
                     state = self.state
                     if self.state != CoversState.Open:
