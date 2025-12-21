@@ -246,7 +246,7 @@ class Solver(SolverInterface):
                 if phase != "guiding"
                 else f"{function_name()}:{phase.upper()}"
             )
-            logger.info(f"{op}: calling plate_solve ...")
+            boxed_log(lines=["Plate solving", f"{phase.upper()} [{try_number}_of_{max_tries}]"], center=True, logger=logger)
 
             # run the plate solver
             try:
