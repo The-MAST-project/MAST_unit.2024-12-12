@@ -475,24 +475,24 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         if not self.is_on():
             ret.append(f"{label}: not powered")
         elif not self.detected:
-            ret.append(f"{label}: (PWI4) not detected")
+            ret.append(f"{label}: (via PWI4) not detected")
         elif self.was_shut_down:
             ret.append(f"{label}: shut down")
         else:
             if self.ascom:
                 response = ascom_run(self, "Connected")
                 if response.succeeded and not response.value:
-                    ret.append(f"{label}: (ASCOM) - not connected")
+                    ret.append(f"{label}: (via ASCOM) - not connected")
             else:
-                ret.append(f"{label}: (ASCOM) - no handle")
+                ret.append(f"{label}: (via ASCOM) - no handle")
 
             if not st.mount.is_connected:  # type: ignore
-                ret.append(f"{label}: (PWI4) - not connected")
+                ret.append(f"{label}: (via PWI4) - not connected")
             else:
                 if not st.mount.axis0.is_enabled:  # type: ignore
-                    ret.append(f"{label}: (PWI4) - axis0 not enabled")
+                    ret.append(f"{label}: (via PWI4) - axis0 not enabled")
                 if not st.mount.axis1.is_enabled:  # type: ignore
-                    ret.append(f"{label}: (PWI4) - axis1 not enabled")
+                    ret.append(f"{label}: (via PWI4) - axis1 not enabled")
         return ret
 
     @property
