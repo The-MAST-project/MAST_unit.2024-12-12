@@ -459,11 +459,17 @@ class Unit(Component):
 
     @property
     def operational(self) -> bool:
-        return all([c.operational for c in self.components])
+        components = set(self.components)
+        if self.unit_conf.name.lower() == "mastw":
+            components.discard(self.covers)
+        return all([c.operational for c in components])
 
     @property
     def why_not_operational(self) -> list[str]:
-        return list(chain.from_iterable(c.why_not_operational for c in self.components))
+        components = set(self.components)
+        if self.unit_conf.name.lower() == "mastw":
+            components.discard(self.covers)
+        return list(chain.from_iterable(c.why_not_operational for c in components))
 
     @property
     def name(self) -> str:
