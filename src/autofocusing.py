@@ -21,9 +21,9 @@ from common.mast_logging import init_log
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
 from common.rois import UnitRoi
+from common.utils import boxed_log
 from PlaneWave.ps3cli_client import PS3CLIClient
 from plotting import plot_autofocus_analysis
-from src.common.utils import boxed_log
 from stage import StagePresetPosition
 
 if TYPE_CHECKING:
@@ -58,12 +58,13 @@ class PS3FocusAnalysisResult(ExtendedBaseModel):
     vcurve_b: float | None
     vcurve_c: float | None
     focus_samples: list[PS3FocusSample] | None = []
+    errors: list[str] | None = []
 
 
 class PS3AutofocusStatus(ExtendedBaseModel):
     is_running: bool
     last_log_message: str | None = None
-    error_message: str | None = None
+    errors: list[str] | None = None
     analysis_result: PS3FocusAnalysisResult | None = None
 
 
@@ -285,8 +286,7 @@ class Autofocuser:
                 autofocus_settings = ImagerSettings(
                     seconds=exposure,
                     binning=_binning,
-                    # roi=unit_roi.to_imager_roi(binning=_binning),
-                    roi=ImagerRoi.from_other(roi=unit_roi).binned(_binning),
+                    roi=ImagerRoi.from_other(roi=unit_roi), # .binned(_binning)
                     gain=acquisition_conf.gain,
                     image_path=os.path.join(
                         autofocus_folder, f"FOCUS{int(focuser_position):05}.fits"
@@ -295,7 +295,7 @@ class Autofocuser:
                 )
 
                 logger.info(
-                    f"{op}: starting exposure #{image_no} of {number_of_images} at {focuser_position=} ..."
+                    f"{op}: starting exposure #{image_no} of {number_of_images} at {focuser_position=} {autofocus_settings.roi=}..."
                 )
                 self.unit.imager.start_exposure(autofocus_settings)
                 logger.info(
@@ -368,12 +368,14 @@ class Autofocuser:
                 self.unit.end_activity(UnitActivities.Autofocusing)
                 return
 
+            last_log_message = ""
             while datetime.datetime.now() < end:
                 # wait for the autofocus analyser to stop running
                 s = ps3_client.focus_status()
                 status = PS3AutofocusStatus(**s if s else {})
                 logger.info(f"{op}: {s=}")
                 if not status.is_running:
+                    last_log_message = status.last_log_message
                     break
                 else:
                     time.sleep(0.5)
@@ -390,10 +392,15 @@ class Autofocuser:
             ps3_client.close()
             self.unit.end_activity(UnitActivities.AutofocusAnalysis)
 
+            if status:
+                status.last_log_message = last_log_message
+
             if not status or not status.analysis_result:
                 self.log_and_store_error(
                     f"{op}: focus analyser stopped working but empty analysis_result"
                 )
+                self.save_analysis(autofocus_folder, status=status,
+                                   errors=["focus analyser stopped working but empty analysis_result"])
                 filer.move_ram_to_shared(autofocus_folder)
                 continue  # next try_number
 
@@ -401,6 +408,8 @@ class Autofocuser:
                 self.log_and_store_error(
                     f"{op}: focus analyser did not find a solution"
                 )
+                self.save_analysis(autofocus_folder, status=status,
+                                   errors=["focus analyser did not find a solution"])
                 filer.move_ram_to_shared(autofocus_folder)
                 continue  # next try_number
 
@@ -408,6 +417,7 @@ class Autofocuser:
             # We have an analysis solution
             #
             self.latest_result = status.analysis_result
+
             logger.info(
                 f"{op}: analysis result: "
                 + f"{self.latest_result.best_focus_position=}, {self.latest_result.best_focus_star_diameter=}, "
@@ -423,9 +433,14 @@ class Autofocuser:
                     f"{op}: {self.latest_result.tolerance=} is either NaN or higher than "
                     + f"{max_tolerance=}, ignoring it!"
                 )
+
+                self.save_analysis(autofocus_folder, status=status,
+                                   errors=[f"tolerance {self.latest_result.tolerance} is either NaN or higher than {max_tolerance}"])
                 continue  # next try_number
 
             if self.latest_result.best_focus_position is not None:
+                self.save_analysis(autofocus_folder, status=status)
+
                 position: int = int(self.latest_result.best_focus_position)
                 logger.info(
                     f"{op}: moving focuser to best focus position {position} ..."
@@ -467,6 +482,22 @@ class Autofocuser:
 
         self.unit.mount.stop_tracking()
         self.unit.end_activity(UnitActivities.Autofocusing)
+
+    def save_analysis(self, folder: str, status: PS3AutofocusStatus  | None = None, errors: list[str] | None = None):
+            filename = os.path.join(folder, "status.json")
+            if status is None:
+                status = PS3AutofocusStatus(
+                    is_running=False,
+                    errors=errors,
+                )
+            else:
+                if errors:
+                    if not status.errors:
+                        status.errors = []
+                    status.errors.extend(errors)
+
+            with open(filename, "w") as f:
+                f.write(status.model_dump_json(indent=4))
 
     def start_pwi4_autofocus(self):
         """
