@@ -19,8 +19,7 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.interfaces.imager import (ImagerExposureSeries, ImagerInterface,
-                                      ImagerRoi, ImagerSettings, ImagerStatus)
+from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings, ImagerStatus
 from common.mast_logging import init_log
 from common.paths import PathMaker
 from common.utils import RepeatTimer, function_name, time_stamp
@@ -974,12 +973,12 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if not self._detected:
             ret.append(f"{label}: not detected")
         if not self._ascom:
-            ret.append(f"{label}: (ASCOM) - no handle")
+            ret.append(f"{label}: (via ASCOM) - no handle")
         elif not self._ascom.connected:
-            ret.append(f"{label}: (ASCOM) - not connected")
+            ret.append(f"{label}: (via ASCOM) - not connected")
 
         if not cooler_response.succeeded or not cooler_response.value:
-            ret.append(f"{label}: (ASCOM) - cooler OFF")
+            ret.append(f"{label}: (via ASCOM) - cooler OFF")
 
         return ret
 
