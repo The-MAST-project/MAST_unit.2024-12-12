@@ -914,7 +914,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
             assert imager_settings and imager_settings.roi
             if new_interface:
-                roi = imager_settings.roi.binned(imager_settings.binning)
+                # roi = imager_settings.roi.binned(imager_settings.binning)
+                roi = imager_settings.roi
                 self.call(
                     method="guide",
                     params=[
@@ -933,7 +934,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     ],
                 )
             else:
-                self.set_limit_frame(roi=imager_settings.roi.binned(imager_settings.binning))
+                # self.set_limit_frame(roi=imager_settings.roi.binned(imager_settings.binning))
+                self.set_limit_frame(roi=imager_settings.roi)
                 self.call(
                     method="guide",
                     params=[
