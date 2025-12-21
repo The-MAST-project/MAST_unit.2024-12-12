@@ -344,9 +344,9 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             else:
                 st = self.pw.status()
                 if not st.focuser.exists:  # type: ignore
-                    ret.append(f"{self.name}: (PWI4) - does not exist")
+                    ret.append(f"{self.name}: (via PWI4) - does not exist")
                 elif not st.focuser.is_connected:  # type: ignore
-                    ret.append(f"{self.name}: (PWI4) - not connected")
+                    ret.append(f"{self.name}: (via PWI4) - not connected")
         return ret
 
     @property
