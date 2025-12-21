@@ -286,7 +286,7 @@ class Autofocuser:
                 autofocus_settings = ImagerSettings(
                     seconds=exposure,
                     binning=_binning,
-                    roi=ImagerRoi.from_other(roi=unit_roi), # .binned(_binning)
+                    roi=ImagerRoi.from_other(roi=unit_roi),
                     gain=acquisition_conf.gain,
                     image_path=os.path.join(
                         autofocus_folder, f"FOCUS{int(focuser_position):05}.fits"
