@@ -921,7 +921,7 @@ class Unit(Component):
         :param assignment:
         :return:
         """
-        if assignment.task.autofocus:
+        if assignment.plan.autofocus:
             self.autofocuser.start_autofocus(
                 ra_j2000_hours=assignment.target.ra,
                 dec_j2000_degs=assignment.target.dec,
@@ -938,12 +938,12 @@ class Unit(Component):
                 return  # should propagate errors as well
 
             if (
-                assignment.task.ulid is not None
+                assignment.plan.ulid is not None
                 and self.imager.latest_settings
                 and self.imager.latest_settings.image_path
             ):
                 notify_controller_about_task_acquisition_path(
-                    task_id=assignment.task.ulid,
+                    task_id=assignment.plan.ulid,
                     link="autofocus",
                     src=Path(self.imager.latest_settings.image_path).parent.name,
                 )
@@ -957,11 +957,11 @@ class Unit(Component):
             )
 
             if (
-                assignment.task.ulid is not None
+                assignment.plan.ulid is not None
                 and self.acquirer.latest_acquisition is not None
             ):
                 notify_controller_about_task_acquisition_path(
-                    task_id=assignment.task.ulid,
+                    task_id=assignment.plan.ulid,
                     link="acquisition",
                     src=self.acquirer.latest_acquisition.folder,
                 )
