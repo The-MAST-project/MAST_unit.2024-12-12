@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 import astropy.io.fits
 from astropy.coordinates import Angle
 
-from common.config.rois import SkyRoiConfig, SpecRoiConfig
 from common.const import Const
 from common.filer import Filer
 from common.interfaces.solving import SolverInterface, SolvingResult, SolvingSolution
@@ -155,16 +154,17 @@ class AstrometryDotNet(SolverInterface):
             fcu_version = self.unit.fcu_version
             assert fcu_version in self.unit.unit_conf.acquisition.rois
 
-            from typing import cast
             match phase:
                 case "sky":
-                    sky_roi_config: SkyRoiConfig = cast(SkyRoiConfig, self.unit.unit_conf.acquisition.rois[fcu_version])
-                    args += ["--crpix-x", str(sky_roi_config.sky_x)]
-                    args += ["--crpix-y", str(sky_roi_config.sky_y)]
+                    # sky_roi_config: SkyRoiConfig = cast(SkyRoiConfig, self.unit.unit_conf.acquisition.rois[fcu_version])
+                    # args += ["--crpix-x", str(sky_roi_config.sky_x)]
+                    # args += ["--crpix-y", str(sky_roi_config.sky_y)]
+                    args += ["--crpix-center"]
                 case "spec":
-                    spec_spec_roi: SpecRoiConfig = cast(SpecRoiConfig, self.unit.unit_conf.guiding.rois[fcu_version])
-                    args += ["--crpix-x", str(spec_spec_roi.fiber_x)]
-                    args += ["--crpix-y", str(spec_spec_roi.fiber_y)]
+                    # spec_spec_roi: SpecRoiConfig = cast(SpecRoiConfig, self.unit.unit_conf.guiding.rois[fcu_version])
+                    # args += ["--crpix-x", str(spec_spec_roi.fiber_x)]
+                    # args += ["--crpix-y", str(spec_spec_roi.fiber_y)]
+                    args += ["--crpix-center"]
         else:
             with astropy.io.fits.open(input_fits_path) as hdul:
                 header = hdul[0].header  # type: ignore
@@ -256,12 +256,11 @@ class AstrometryDotNet(SolverInterface):
                     }
 
                 # override solved RA/Dec from FITS header
-                # with open(new_fits_path) as hdul: # oren: not how fits.getheader works
                 header = astropy.io.fits.getheader(new_fits_path, 0)  # type: ignore
                 if "CRVAL1" in header and "CRVAL2" in header:
                     ret.solution.ra_hours = header["CRVAL1"] / 15.0
                     ret.solution.dec_degs = header["CRVAL2"]
-                    # oren: update also ra_rads and dec_rads
+
                     ret.solution.ra_rads = float(Angle(ret.solution.ra_hours * 15.0, unit="deg").radian)  # type: ignore[assignment]
                     ret.solution.dec_rads = float(Angle(ret.solution.dec_degs, unit="deg").radian)  # type: ignore[assignment]
                 else:
@@ -274,7 +273,7 @@ class AstrometryDotNet(SolverInterface):
                     ", ".join(stderr_lines),
                 ],
             )
-        filer.move_ram_to_shared([result_file, input_fits_path, cygwin_to_win(new_fits_path)])  # oren
+        filer.move_ram_to_shared([result_file, input_fits_path, cygwin_to_win(new_fits_path)])
         # shutil.rmtree(win_tmp_dir, ignore_errors=True)
 
         return ret
