@@ -311,9 +311,17 @@ class Solver(SolverInterface):
                 # dec_avg_rad = math.radians((target.dec.arcsecond + Angle(result.solution.dec_rads * u.radian).arcsecond) / 2)  # type: ignore
                 dec_avg_rad = float(target.dec.radian + result.solution.dec_rads) / 2  # type: ignore
                 assert result.solution is not None, f"{op}: result.solution is None"
-                delta_ra_arcsec = (
-                    target.ra.arcsecond - result.solution.ra_hours * 15 * 3600
-                )  # type: ignore
+                # delta_ra_arcsec = (
+                #     target.ra.arcsecond - result.solution.ra_hours * 15 * 3600
+                # )  # type: ignore
+
+                # Oren's solution to avoid RA wrap-around issues
+                delta_ra_deg = (target.ra.deg - result.solution.ra_hours * 15) % 360  # type: ignore
+                if delta_ra_deg > 180:
+                    delta_ra_deg -= 360
+                delta_ra_arcsec = delta_ra_deg * 3600
+
+                # Eran's original delta_ra calculation with cos(dec) correction
                 # - Angle(result.solution.ra_rads * u.radian).arcsecond  # type: ignore
                 # ) * math.cos(
                 #     dec_avg_rad
