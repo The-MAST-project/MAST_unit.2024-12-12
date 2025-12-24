@@ -16,7 +16,7 @@ from astropy.coordinates import Angle
 from pydantic import BaseModel
 
 import common.asi as asi
-from common.activities import ImagerActivities, UnitActivities
+from common.activities import ImagerActivities, UnitActivities, verbalize
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
@@ -263,7 +263,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             outlet_names=["Camera", "CameraUSB"],
         ).transfer_attributes(self)
 
-
+        self.activities = PHD2Activities(0)
         self.parent = parent
         self.hostname = hostname
         self.instance = instance
@@ -325,7 +325,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         else:
             logger.info(f"{function_name()}: no guiding validation ({self.validation_interval=})")
 
-        self.activities = PHD2Activities.Idle
         self.restart_event: threading.Event = threading.Event()
 
         self.sky_quality: SeeingQualityWhilePHD2Guiding = SeeingQualityWhilePHD2Guiding()
@@ -1186,7 +1185,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             ret = PHD2ImagerStatus(
                 identifier=self.identifier,
                 activities=int(self.activities),
-                activities_verbal=self.activities.__repr__(),
+                activities_verbal=verbalize(self.activities),
                 connected=self.connected,
                 operational=self.operational,
                 why_not_operational=self.why_not_operational,

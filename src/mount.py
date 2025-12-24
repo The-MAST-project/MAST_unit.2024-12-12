@@ -75,6 +75,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self.conf = Config().get_unit().mount
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Mount")
         Component.__init__(self)
+        self.activities = MountActivities(0)
 
         if not self.is_on():
             self.power_on()

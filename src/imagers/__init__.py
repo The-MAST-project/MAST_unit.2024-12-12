@@ -5,6 +5,7 @@ import numpy as np
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from common.activities import verbalize
 from common.canonical import CanonicalResponse
 
 if TYPE_CHECKING:
@@ -12,9 +13,7 @@ if TYPE_CHECKING:
 
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.interfaces.imager import (ImagerExposureSeries, ImagerInterface,
-                                      ImagerSettings, ImagerStatus,
-                                      ImagerTypes)
+from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerSettings, ImagerStatus, ImagerTypes
 from common.mast_logging import init_log
 
 logger = logging.Logger("mast." + __name__)
@@ -240,7 +239,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
             set_point=self._backend.set_point,
             latest_settings=self.latest_settings,
             activities=self.activities,
-            activities_verbal=self.activities.__repr__(),
+            activities_verbal=verbalize(self.activities),
             backend=backend_status if isinstance(backend_status, BaseModel) else backend_status.__dict__
         )
         return ret

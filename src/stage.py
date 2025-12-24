@@ -127,6 +127,7 @@ class Stage(Component, SwitchedOutlet):
 
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Stage")
         Component.__init__(self)
+        self.activities = StageActivities(0)
 
         self.errors: list[str] = []
         self.device = None

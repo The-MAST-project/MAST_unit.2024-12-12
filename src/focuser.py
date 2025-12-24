@@ -59,6 +59,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Focuser")
         Component.__init__(self)
+        self.activities = FocuserActivities(0)
 
         if not self.is_on():
             self.power_on()

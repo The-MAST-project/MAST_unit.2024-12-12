@@ -102,6 +102,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             return
 
         ImagerInterface.__init__(self)
+        self.activities = ImagerActivities(0)
 
         SwitchedOutlet.group(
             domain=OutletDomain.UnitOutlets,

@@ -11,9 +11,14 @@ import common.asi as asi
 from common.activities import ImagerActivities
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.interfaces.imager import (ImagerExposure, ImagerExposureSeries,
-                                      ImagerInterface, ImagerRoi,
-                                      ImagerSettings, ImagerStatus)
+from common.interfaces.imager import (
+    ImagerExposure,
+    ImagerExposureSeries,
+    ImagerInterface,
+    ImagerRoi,
+    ImagerSettings,
+    ImagerStatus,
+)
 from common.mast_logging import init_log
 from common.utils import RepeatTimer, function_name, time_stamp
 from imagers import Imager
@@ -55,6 +60,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         self.parent_imager = parent_imager
         self.imager_params = imager_params or {}
 
+        self.activities = ImagerActivities(0)
         self.errors: list[str] = []
         self.latest_settings: ImagerSettings | None = None
         self.latest_exposure: ImagerExposure | None = None
