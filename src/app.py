@@ -109,8 +109,8 @@ ensure_process_is_running(
 
 @asynccontextmanager
 async def lifespan(fast_app: FastAPI):
-    from unit import unit
 
+    unit = Unit()
     if unit:
         unit.start_lifespan()
         yield
@@ -175,8 +175,9 @@ if __name__ == "__main__":
         host = service_conf.listen_on
         port = service_conf.port
 
-    from unit import unit
+    from unit import Unit
 
+    unit = Unit()
     if not unit:
         logger.error("Unit is not initialized, exiting ...")
         app_quit(reason="unit not initialized")
