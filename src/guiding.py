@@ -13,7 +13,7 @@ from solving_guider import SolvingGuider
 if TYPE_CHECKING:
     from unit import Unit
 
-from common.activities import Activities, verbalize
+from common.activities import Activities
 from common.config.rois import FcuVersion, SpecRoiConfig
 from common.interfaces.guiding import GuiderInterface, GuiderTypes
 from common.interfaces.imager import ImagerRoi, ImagerSettings
@@ -73,7 +73,7 @@ class Guider(GuiderInterface):
     def status(self):
         return GuiderStatus(
             activities=self.activities,
-            activities_verbal=verbalize(self.activities),
+            activities_verbal=self.activities_verbal(),
             backend=self._backend.status(capacity="guider") if self._backend else None, # type: ignore
         )
 

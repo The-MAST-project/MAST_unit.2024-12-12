@@ -16,7 +16,7 @@ from astropy.coordinates import Angle
 from pydantic import BaseModel
 
 import common.asi as asi
-from common.activities import ImagerActivities, UnitActivities, verbalize
+from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
@@ -1188,7 +1188,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             ret = PHD2ImagerStatus(
                 identifier=self.identifier,
                 activities=int(self.activities),
-                activities_verbal=verbalize(self.activities),
+                activities_verbal=self.activities_verbal(),
                 connected=self.connected,
                 operational=self.operational,
                 why_not_operational=self.why_not_operational,
