@@ -17,6 +17,7 @@ from common.activities import ImagerActivities
 from common.ascom import AscomDispatcher, AscomStatus, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
+from common.config.imager import ImagerConfig
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings, ImagerStatus
@@ -101,7 +102,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if self._initialized:
             return
 
-        ImagerInterface.__init__(self)
+        ImagerInterface.__init__(self, ImagerActivities)
 
         SwitchedOutlet.group(
             domain=OutletDomain.UnitOutlets,
@@ -116,11 +117,12 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             "temp_check_interval": 15,
         }
 
-        self.conf = Config().get_unit().imager
-        Component.__init__(self)
+        assert self.parent_imager.unit and self.parent_imager.unit.unit_conf is not None
+        self.conf: ImagerConfig = self.parent_imager.unit.unit_conf.imager
+        Component.__init__(self, ImagerActivities)
 
         if not prog_id:
-            prog_id = Config().get_unit().imager.imager_type.replace("ascom:", "")
+            prog_id = self.conf.imager_type.replace("ascom:", "")
         if not prog_id:
             raise Exception(
                 "ASCOMImager: no ASCOM driver specified either as parameter or in the configuration"
@@ -194,7 +196,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             self.camera_x_size is not None and self.camera_y_size is not None
         ), "don't have camera_x_size or camera_y_size yet!"
 
-        imager_conf = Config().get_unit().imager
+        imager_conf = self.conf
         return ImagerSettings(
             seconds=5,
             roi=ImagerRoi(
@@ -1081,8 +1083,10 @@ def set_ASICamera2_ASCOM_profile_image_type():  # noqa: N802
     profile_image_format = profile.GetValue(
         prog_id, "ImageType", "", str(asi.OutputFormat.RAW16)
     )
+    unit_conf = Config().get_unit()
+    assert unit_conf is not None
     configured_image_format = str(
-        asi.OutputFormat.from_string(Config().get_unit().imager.format)
+        asi.OutputFormat.from_string(unit_conf.imager.format)
     )
 
     if int(profile_image_format) != configured_image_format:

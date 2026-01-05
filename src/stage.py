@@ -14,7 +14,6 @@ from fastapi.routing import APIRouter
 
 from common.activities import StageActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config import Config
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
@@ -123,10 +122,11 @@ class Stage(Component, SwitchedOutlet):
 
         op = "Stage.__init__"
         self.unit = unit
-        self.conf = Config().get_unit().stage
+        assert self.unit and self.unit.unit_conf is not None
+        self.conf = self.unit.unit_conf.stage
 
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Stage")
-        Component.__init__(self)
+        Component.__init__(self, StageActivities)
 
         self.errors: list[str] = []
         self.device = None

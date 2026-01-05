@@ -8,7 +8,6 @@ from fastapi.routing import APIRouter
 from common.activities import CoverActivities
 from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse_Ok
-from common.config import Config
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
@@ -50,7 +49,8 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             return
 
         self.unit = unit
-        self.conf = Config().get_unit().covers
+        assert self.unit is not None and self.unit.unit_conf is not None
+        self.conf = self.unit.unit_conf.covers
         try:
             self._ascom = win32com.client.Dispatch(self.conf.ascom_driver)
         except Exception as ex:

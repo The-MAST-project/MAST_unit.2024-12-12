@@ -256,7 +256,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             return  # singleton, do not re-initialize
 
         GuiderInterface.__init__(self)
-        ImagerInterface.__init__(self)
+        ImagerInterface.__init__(self, PHD2Activities)
         SwitchedOutlet.group(
             domain=OutletDomain.UnitOutlets,
             group_name="Camera",
@@ -287,7 +287,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.profile_binning: int | None = None
         self.profile_bpp: int | None = None # bits per pixel
 
-        self.conf = Config().get_unit().phd2
+        unit_conf = Config().get_unit()
+        assert unit_conf is not None
+        self.conf = unit_conf.phd2
 
         #
         # We embed the binning and bpp in the profile name, so extract them
@@ -468,7 +470,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 unit="degrees",
             ),
         )
-        tolerance = Config().get_unit().guiding.tolerance
+
+        tolerance = self.parent.unit.unit_conf.guiding.tolerance
 
         self.start_activity(PHD2Activities.SolvingForValidation)
         with ThreadPoolExecutor() as executor:
@@ -1585,7 +1588,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def default_settings(self) -> ImagerSettings:
         self.check_connected()
 
-        imager_conf = Config().get_unit().imager
+        unit_conf = self.parent.unit.config if self.parent and self.parent.unit else None
+        assert unit_conf is not None, "PHD2Connector.default_settings: self.parent or self.parent.unit is None"
+        imager_conf = unit_conf.imager
         return ImagerSettings(
             seconds=5,
             base_folder="c:/temp/phd2_images",

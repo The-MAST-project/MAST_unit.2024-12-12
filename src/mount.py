@@ -11,7 +11,6 @@ from fastapi.routing import APIRouter
 from common.activities import MountActivities
 from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config import Config
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
@@ -72,7 +71,8 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             return
 
         self.unit = unit
-        self.conf = Config().get_unit().mount
+        assert self.unit and self.unit.unit_conf is not None
+        self.conf = self.unit.unit_conf.mount
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Mount")
         Component.__init__(self)
 

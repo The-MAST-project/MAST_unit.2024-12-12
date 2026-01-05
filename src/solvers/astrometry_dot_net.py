@@ -152,7 +152,7 @@ class AstrometryDotNet(SolverInterface):
             # args += ["--crpix-center"]
 
             fcu_version = self.unit.fcu_version
-            assert fcu_version in self.unit.unit_conf.acquisition.rois
+            assert self.unit.unit_conf is not None and fcu_version in self.unit.unit_conf.acquisition.rois
 
             match phase:
                 case "sky":

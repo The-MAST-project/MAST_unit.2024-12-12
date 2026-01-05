@@ -166,6 +166,7 @@ class Acquirer:
             default_tolerance: Angle = Angle(1 * u.arcsecond)  # type: ignore
             ra_tolerance: Angle = default_tolerance
             dec_tolerance: Angle = default_tolerance
+            assert self.unit.unit_conf is not None
             phase_conf = self.unit.unit_conf.acquisition
             ra_tolerance = Angle(phase_conf.tolerance.ra_arcsec * u.arcsecond)  # type: ignore
             dec_tolerance = Angle(phase_conf.tolerance.dec_arcsec * u.arcsecond)  # type: ignore
@@ -208,6 +209,7 @@ class Acquirer:
         if self.unit.is_active(UnitActivities.Positioning):
             self.unit.end_activity(UnitActivities.Positioning)
 
+        assert self.unit.unit_conf is not None
         phase_conf = self.unit.unit_conf.guiding
         ra_tolerance = Angle(phase_conf.tolerance.ra_arcsec * u.arcsecond)  # type: ignore
         dec_tolerance = Angle(phase_conf.tolerance.dec_arcsec * u.arcsecond)  # type: ignore
@@ -286,6 +288,7 @@ class Acquirer:
         ra_j2000_hours = assignment.target.ra
         dec_j2000_degs = assignment.target.dec
 
+        assert self.unit.unit_conf is not None
         solver_name = self.unit.unit_conf.solving.method
 
         logger.info(
@@ -405,6 +408,7 @@ class Acquirer:
                 )
             dec_j2000_degs = pw_status.mount.dec_j2000_degs  # type: ignore
 
+        assert self.unit.unit_conf is not None
         if seconds is not None:
             self.unit.unit_conf.acquisition.exposure = seconds
 
@@ -427,6 +431,7 @@ class Acquirer:
                 ]
             )
 
+        assert self.unit.unit_conf is not None
         acquisition = Acquisition(
             unit=self.unit,
             approach_mode=approach_mode,

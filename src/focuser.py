@@ -9,7 +9,6 @@ from fastapi.routing import APIRouter
 from common.activities import FocuserActivities
 from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config import Config
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
@@ -50,7 +49,8 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             return
 
         self.unit = unit
-        self.conf = Config().get_unit().focuser
+        assert self.unit and self.unit.unit_conf is not None
+        self.conf = self.unit.unit_conf.focuser
         try:
             self._ascom = win32com.client.Dispatch(self.conf.ascom_driver)
         except Exception as ex:
@@ -58,7 +58,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             raise ex
 
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Focuser")
-        Component.__init__(self)
+        Component.__init__(self, FocuserActivities)
 
         if not self.is_on():
             self.power_on()
