@@ -980,6 +980,16 @@ class Unit(Component):
 
         return CanonicalResponse_Ok
 
+    async def endpoint_start_dancing(self, style: str = "foxtrot"):
+        logger.info(f"unit.dance: dancing the {style} ...")
+        self.start_activity(UnitActivities.Dancing, details=style)
+        return CanonicalResponse_Ok
+
+    async def endpoint_stop_dancing(self):
+        logger.info("unit.dance: stopping dancing ...")
+        self.end_activity(UnitActivities.Dancing)
+        return CanonicalResponse_Ok
+
     # async def set_sky_and_spec_pixel_values(self,
     #     sky_x: int, sky_y: int, spec_x: int, spec_y: int
     # ):
@@ -1137,6 +1147,16 @@ class Unit(Component):
             methods=["PUT"],
             tags=[tag],
             endpoint=self.endpoint_execute_assignment,
+        )
+        router.add_api_route(
+            base_path + "/start_dancing",
+            tags=[tag],
+            endpoint=self.endpoint_start_dancing,
+        )
+        router.add_api_route(
+            base_path + "/stop_dancing",
+            tags=[tag],
+            endpoint=self.endpoint_stop_dancing,
         )
         # router.add_api_route(
         #     base_path + "/calculate_sky_pixel",

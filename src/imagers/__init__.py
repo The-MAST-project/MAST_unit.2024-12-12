@@ -247,7 +247,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
             set_point=self._backend.set_point,
             latest_settings=self.latest_settings,
             activities=self.activities,
-            activities_verbal=self.activities.__repr__(),
+            activities_verbal=verbalize(self.activities),
             backend=backend_status if isinstance(backend_status, BaseModel) else backend_status.__dict__
         )
         return ret
