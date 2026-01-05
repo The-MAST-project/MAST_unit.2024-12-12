@@ -59,7 +59,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             raise ex
 
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Covers")
-        Component.__init__(self)
+        Component.__init__(self, CoverActivities)
         self._connected: bool = False
 
         if not self.is_on():

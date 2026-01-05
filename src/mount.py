@@ -74,7 +74,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         assert self.unit and self.unit.unit_conf is not None
         self.conf = self.unit.unit_conf.mount
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Mount")
-        Component.__init__(self)
+        Component.__init__(self, MountActivities)
 
         if not self.is_on():
             self.power_on()
