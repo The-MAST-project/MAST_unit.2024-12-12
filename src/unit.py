@@ -35,6 +35,7 @@ from common.api import ControllerApi
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.config.rois import FcuVersion
+from common.config.unit import UnitConfig
 from common.const import Const
 from common.dlipowerswitch import PowerSwitchFactory, SwitchedOutlet
 from common.filer import Filer
@@ -67,8 +68,11 @@ init_log(logger)
 filer = Filer(logger)
 
 
-def configured_imager() -> ImagerTypes:
-    t = Config().get_unit().imager.imager_type
+def configured_imager() -> ImagerTypes | None:
+    unit_conf = Config().get_unit()
+    if not unit_conf:
+        return None
+    t = unit_conf.imager.imager_type
     if t.startswith("ascom"):
         t = "ascom"
     return ImagerTypes(t)
@@ -77,7 +81,11 @@ def configured_imager() -> ImagerTypes:
 def get_imager_type(
     imager_type: ImagerTypes = Query(default=configured_imager()),
 ) -> ImagerTypes:
-    return imager_type or configured_imager()
+    t = imager_type
+    if not t:
+        t = configured_imager()
+        assert t is not None, "No imager type configured"
+    return t
 
 
 class GuideDirections(Enum):
@@ -102,14 +110,14 @@ class Unit(Component):
             # logger.info(f"Unit.__new__: allocated instance 0x{id(cls._instance):x}")
         return cls._instance
 
-    def __init__(self, id_: int | str):
+    def __init__(self):
         from guiding import Guider
 
         if self._initialized:
             return
         # logger.info(f"Unit.__init__: initiating instance 0x{id(self):x}")
 
-        Component.__init__(self)
+        Component.__init__(self, UnitActivities)
 
         self._connected: bool = False
 
@@ -118,16 +126,8 @@ class Unit(Component):
         file_handler = [h for h in logger.handlers if isinstance(h, DailyFileHandler)]
         logger.info(f"logging to '{file_handler[0].path}'")
 
-        if isinstance(id_, int):
-            if id_ > Unit.MAX_UNITS:
-                raise Exception(
-                    f"Bad unit id '{id_}', must be in [1..{Unit.MAX_UNITS}]"
-                )
-            else:
-                id_ = int(id_)
-
-        self.id = id_
-        self.unit_conf = Config().get_unit()
+        self.unit_conf: UnitConfig | None = Config().get_unit()
+        assert self.unit_conf is not None, "Unit configuration could not be loaded"
 
         self.min_ra_correction_arcsec = self.unit_conf.guiding.min_ra_correction_arcsec
         self.min_dec_correction_arcsec = (
@@ -411,6 +411,7 @@ class Unit(Component):
                     self.autofocus_result.tolerance = autofocus_status.tolerance  # type: ignore
 
                     best_position = autofocus_status.best_position  # type: ignore
+                    assert self.unit_conf is not None
                     self.unit_conf.focuser.known_as_good_position = best_position
                     try:
                         Config().set_unit(self.hostname, self.unit_conf)
@@ -460,6 +461,7 @@ class Unit(Component):
     @property
     def operational(self) -> bool:
         components = set(self.components)
+        assert self.unit_conf is not None
         if self.unit_conf.name.lower() == "mastw":
             components.discard(self.covers)
         return all([c.operational for c in components])
@@ -467,6 +469,7 @@ class Unit(Component):
     @property
     def why_not_operational(self) -> list[str]:
         components = set(self.components)
+        assert self.unit_conf is not None
         if self.unit_conf.name.lower() == "mastw":
             components.discard(self.covers)
         return list(chain.from_iterable(c.why_not_operational for c in components))
@@ -1085,7 +1088,9 @@ class Unit(Component):
 
         router = APIRouter()
 
-        tag = "unit"
+        base_path = Const.BASE_UNIT_PATH
+        tag = "Unit"
+
         router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
         router.add_api_route(
             base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown
@@ -1167,21 +1172,3 @@ def serialize_ip_addresses(data: Any) -> Any:
         return str(data)
     else:
         return data
-
-
-# unit_id: int | str | None = None
-hostname = socket.gethostname()
-if hostname.startswith("mast"):
-    try:
-        unit_id = int(hostname[4:])
-    except ValueError:
-        unit_id = hostname[4:]
-else:
-    logger.error(f"Cannot figure out the MAST unit_id ({hostname=})")
-
-base_path = Const.BASE_UNIT_PATH
-tag = "Unit"
-
-unit = None
-if not unit:
-    unit = Unit(id_=unit_id)
