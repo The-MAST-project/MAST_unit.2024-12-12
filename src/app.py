@@ -6,9 +6,11 @@ from pathlib import Path
 
 import psutil
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, ORJSONResponse, RedirectResponse
+from pydantic import ValidationError
 
 from common.config import Config
 from common.mast_logging import init_log
@@ -130,6 +132,16 @@ app = FastAPI(
     # exception_handlers={WebSocketDisconnect: websocket_disconnect_handler},
 )
 
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+    logger.error("Request validation error", exc_info=exc)
+    # Optionally return the default structure so client still sees details
+    return JSONResponse(status_code=422, content={"detail": exc.errors(), "body": exc.body})
+
+@app.exception_handler(ValidationError)
+async def pydantic_validation_exception_handler(request: Request, exc: ValidationError):
+    logger.error("Pydantic validation error", exc_info=exc)
+    return JSONResponse(status_code=400, content={"error": exc.errors()})
 
 @app.get("/favicon.ico")
 def read_favicon():
