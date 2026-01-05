@@ -1,20 +1,18 @@
 import logging
-from typing import TYPE_CHECKING
 
+# from typing import TYPE_CHECKING
 import numpy as np
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from common.activities import ImagerActivities
 from common.canonical import CanonicalResponse
 
-if TYPE_CHECKING:
-    from phd2.phd2 import PHD2Connector
-
+# if TYPE_CHECKING:
+#     from phd2.phd2 import PHD2Connector
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.interfaces.imager import (ImagerExposureSeries, ImagerInterface,
-                                      ImagerSettings, ImagerStatus,
-                                      ImagerTypes)
+from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerSettings, ImagerStatus, ImagerTypes
 from common.mast_logging import init_log
 
 logger = logging.Logger("mast." + __name__)
@@ -38,7 +36,10 @@ class Imager(ImagerInterface, SwitchedOutlet):
 
         valid_types = []
 
-        for t in Config().get_unit().imager.valid_imager_types:
+        unit_conf = Config().get_unit()
+        assert unit_conf is not None
+
+        for t in unit_conf.imager.valid_imager_types:
             valid_types.append("ascom" if t.startswith("ascom") else t)
         return valid_types
 
@@ -46,7 +47,10 @@ class Imager(ImagerInterface, SwitchedOutlet):
     def configured_imager():
         from common.config import Config
 
-        return Config().get_unit().imager.imager_type
+        unit_conf = Config().get_unit()
+        assert unit_conf is not None
+
+        return unit_conf.imager.imager_type
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -73,7 +77,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         if not self.is_on():
             self.power_on()
 
-        ImagerInterface.__init__(self)
+        ImagerInterface.__init__(self, ImagerActivities)
 
 
         self.unit = unit
@@ -82,7 +86,10 @@ class Imager(ImagerInterface, SwitchedOutlet):
         else:
             from common.config import Config
 
-            self.conf = Config().get_unit().imager
+            unit_conf = Config().get_unit()
+            assert unit_conf is not None
+
+            self.conf = unit_conf.imager
 
         imager_type = imager_type or self.conf.imager_type.lower()
         if not (
