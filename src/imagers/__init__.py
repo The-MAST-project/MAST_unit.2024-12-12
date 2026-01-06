@@ -1,15 +1,16 @@
 import logging
+from typing import TYPE_CHECKING
 
-# from typing import TYPE_CHECKING
 import numpy as np
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from common.activities import ImagerActivities
 from common.canonical import CanonicalResponse
+from src.common.activities import ImagerActivities
 
-# if TYPE_CHECKING:
-#     from phd2.phd2 import PHD2Connector
+if TYPE_CHECKING:
+    from phd2.phd2 import PHD2Connector
+
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerSettings, ImagerStatus, ImagerTypes
@@ -36,10 +37,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
 
         valid_types = []
 
-        unit_conf = Config().get_unit()
-        assert unit_conf is not None
-
-        for t in unit_conf.imager.valid_imager_types:
+        for t in Config().get_unit().imager.valid_imager_types:
             valid_types.append("ascom" if t.startswith("ascom") else t)
         return valid_types
 
@@ -47,10 +45,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
     def configured_imager():
         from common.config import Config
 
-        unit_conf = Config().get_unit()
-        assert unit_conf is not None
-
-        return unit_conf.imager.imager_type
+        return Config().get_unit().imager.imager_type
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -86,10 +81,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         else:
             from common.config import Config
 
-            unit_conf = Config().get_unit()
-            assert unit_conf is not None
-
-            self.conf = unit_conf.imager
+            self.conf = Config().get_unit().imager
 
         imager_type = imager_type or self.conf.imager_type.lower()
         if not (
@@ -247,7 +239,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
             set_point=self._backend.set_point,
             latest_settings=self.latest_settings,
             activities=self.activities,
-            activities_verbal=self.activities_verbal(),
+            activities_verbal=self.activities_verbal,
             backend=backend_status if isinstance(backend_status, BaseModel) else backend_status.__dict__
         )
         return ret
