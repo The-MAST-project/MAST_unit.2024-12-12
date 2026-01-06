@@ -469,7 +469,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 unit="degrees",
             ),
         )
-
         tolerance = self.parent.unit.unit_conf.guiding.tolerance
 
         self.start_activity(PHD2Activities.SolvingForValidation)
@@ -1188,7 +1187,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             ret = PHD2ImagerStatus(
                 identifier=self.identifier,
                 activities=int(self.activities),
-                activities_verbal=self.activities_verbal(),
+                activities_verbal=self.activities_verbal,
                 connected=self.connected,
                 operational=self.operational,
                 why_not_operational=self.why_not_operational,
@@ -1587,8 +1586,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def default_settings(self) -> ImagerSettings:
         self.check_connected()
 
-        unit_conf = self.parent.unit.config if self.parent and self.parent.unit else None
-        assert unit_conf is not None, "PHD2Connector.default_settings: self.parent or self.parent.unit is None"
+        unit_conf = Config().get_unit()
+        assert unit_conf is not None
         imager_conf = unit_conf.imager
         return ImagerSettings(
             seconds=5,
