@@ -5,8 +5,8 @@ import numpy as np
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from common.activities import ImagerActivities
 from common.canonical import CanonicalResponse
-from src.common.activities import ImagerActivities
 
 if TYPE_CHECKING:
     from phd2.phd2 import PHD2Connector

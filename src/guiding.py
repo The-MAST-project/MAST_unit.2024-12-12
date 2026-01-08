@@ -73,7 +73,7 @@ class Guider(GuiderInterface):
     def status(self):
         return GuiderStatus(
             activities=self.activities,
-            activities_verbal=self.activities_verbal(),
+            activities_verbal=self.activities_verbal,
             backend=self._backend.status(capacity="guider") if self._backend else None, # type: ignore
         )
 
