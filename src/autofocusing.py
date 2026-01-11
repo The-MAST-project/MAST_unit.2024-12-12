@@ -424,18 +424,17 @@ class Autofocuser:
                 + f"{self.latest_result.tolerance=}"
             )
 
-            if (
-                self.latest_result.tolerance is None
-                or math.isnan(self.latest_result.tolerance)
-                or self.latest_result.tolerance > max_tolerance
-            ):
-                self.log_and_store_error(
-                    f"{op}: {self.latest_result.tolerance=} is either NaN or higher than "
-                    + f"{max_tolerance=}, ignoring it!"
-                )
+            error = None
+            if self.latest_result.tolerance is None:
+                error = "tolerance is None"
+            elif math.isnan(self.latest_result.tolerance):
+                error = "tolerance is NaN"
+            elif self.latest_result.tolerance > max_tolerance:
+                error = f"tolerance {self.latest_result.tolerance} is higher than {max_tolerance=}"
+            if error:
+                self.log_and_store_error(f"{op}: {error=}, ignoring analysis result")
 
-                self.save_analysis(autofocus_folder, status=status,
-                                   errors=[f"tolerance {self.latest_result.tolerance} is either NaN or higher than {max_tolerance}"])
+                self.save_analysis(autofocus_folder, status=status, errors=[error])
                 continue  # next try_number
 
             if self.latest_result.best_focus_position is not None:
