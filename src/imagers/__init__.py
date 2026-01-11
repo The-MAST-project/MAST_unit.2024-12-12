@@ -4,6 +4,7 @@ import numpy as np
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from common.activities import ImagerActivities
 from common.canonical import CanonicalResponse
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet

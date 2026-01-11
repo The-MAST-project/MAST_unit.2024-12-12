@@ -51,7 +51,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         _from_imager: bool = False,
     ):
 
-        ImagerInterface.__init__(self)
+        ImagerInterface.__init__(self, ImagerActivities)
         SwitchedOutlet.group(
             domain=OutletDomain.UnitOutlets,
             group_name="Camera",
@@ -304,7 +304,9 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         Produces default ImagerSettings for the "zwo" imager.
         """
 
-        imager_conf = Config().get_unit().imager
+        unit_conf = Config().get_unit()
+        assert unit_conf is not None
+        imager_conf = unit_conf.imager
         return ImagerSettings(
             seconds=0,
             roi=ImagerRoi(x=0, y=0, width=self.width, height=self.height),
