@@ -72,7 +72,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         if not self.is_on():
             self.power_on()
 
-        ImagerInterface.__init__(self, ImagerActivities)
+        ImagerInterface.__init__(self)
 
 
         self.unit = unit
