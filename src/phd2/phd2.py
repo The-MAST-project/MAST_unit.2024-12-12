@@ -968,7 +968,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 )
             else:
                 # self.set_limit_frame(roi=imager_settings.roi.binned(imager_settings.binning))
-                self.set_limit_frame(roi=imager_settings.roi)
+                if imager_settings.set_limit_frame:
+                    self.set_limit_frame(roi=imager_settings.roi)
+
                 self.call(
                     method="guide",
                     params=[
@@ -1472,7 +1474,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             try:
                 assert settings.roi
                 # self.set_limit_frame(roi=settings.roi.binned(settings.binning))
-                self.set_limit_frame(roi=settings.roi)
+                if settings.set_limit_frame:
+                    self.set_limit_frame(roi=settings.roi)
+
                 self.call(
                     "capture_single_frame",
                     params={

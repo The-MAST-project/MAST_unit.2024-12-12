@@ -156,6 +156,7 @@ class Acquirer:
                 binning=imager_binning,
                 roi=ImagerRoi.from_other(roi=sky_roi),
                 save=True,
+                set_limit_frame=acquisition.set_limit_frame,
             )
 
             #
@@ -224,6 +225,8 @@ class Acquirer:
             spec_imager_settings.binning = acquisition_conf.binning
         if acquisition_conf.gain is not None:
             spec_imager_settings.gain = acquisition_conf.gain
+
+        spec_imager_settings.set_limit_frame = acquisition.set_limit_frame
 
         achieved_tolerances = self.unit.solver.solve_and_correct(
             target=target,
@@ -360,6 +363,7 @@ class Acquirer:
         approach_mode: int = 2,
         make_corrections: bool = True,
         skip_sky: bool = False,
+        set_limit_frame: bool = True,
         handover_automatically_to_guider: bool = True,
     ):
         """
@@ -443,6 +447,7 @@ class Acquirer:
             gain_absolute=gain_absolute or asi.ASI_294MM_DEFAULT_GAIN,
             gain_percent=gain_percent,
             skip_sky=skip_sky,
+            set_limit_frame=set_limit_frame,
             handover_automatically_to_guider=handover_automatically_to_guider,
         )
         Thread(

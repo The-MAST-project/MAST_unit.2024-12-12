@@ -33,6 +33,7 @@ class Acquisition:
         target_dec: float | None = None,
         conf: AcquisitionConfig | None = None,
         skip_sky: bool = False,
+        set_limit_frame: bool = True,
         handover_automatically_to_guider: bool = False,
         gain_absolute: int | None = None,
         gain_percent: int | None = None,
@@ -77,6 +78,7 @@ class Acquisition:
             }
         )
         self.skip_sky = skip_sky
+        self.set_limit_frame = set_limit_frame
         self.solver_data: Any = None  # May be set by the solver, to remember something
 
     def save_corrections(self, phase: str):
