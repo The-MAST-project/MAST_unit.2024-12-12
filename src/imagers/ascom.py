@@ -102,7 +102,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if self._initialized:
             return
 
-        ImagerInterface.__init__(self, ImagerActivities)
+        ImagerInterface.__init__(self)
 
         SwitchedOutlet.group(
             domain=OutletDomain.UnitOutlets,
