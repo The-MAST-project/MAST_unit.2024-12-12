@@ -256,7 +256,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             return  # singleton, do not re-initialize
 
         GuiderInterface.__init__(self)
-        ImagerInterface.__init__(self, PHD2Activities)
+        ImagerInterface.__init__(self)
         SwitchedOutlet.group(
             domain=OutletDomain.UnitOutlets,
             group_name="Camera",
