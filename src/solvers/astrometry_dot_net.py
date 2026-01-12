@@ -4,11 +4,12 @@ import os
 import re
 import subprocess
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import astropy.io.fits
 from astropy.coordinates import Angle
 
+from common.config.rois import SkyRoiConfig, SpecRoiConfig
 from common.const import Const
 from common.filer import Filer
 from common.interfaces.solving import SolverInterface, SolvingResult, SolvingSolution
@@ -156,15 +157,19 @@ class AstrometryDotNet(SolverInterface):
 
             match phase:
                 case "sky":
-                    # sky_roi_config: SkyRoiConfig = cast(SkyRoiConfig, self.unit.unit_conf.acquisition.rois[fcu_version])
-                    # args += ["--crpix-x", str(sky_roi_config.sky_x)]
-                    # args += ["--crpix-y", str(sky_roi_config.sky_y)]
-                    args += ["--crpix-center"]
+                    if settings.use_set_limit_frame:
+                        sky_roi_config: SkyRoiConfig = cast(SkyRoiConfig, self.unit.unit_conf.acquisition.rois[fcu_version])
+                        args += ["--crpix-x", str(sky_roi_config.sky_x)]
+                        args += ["--crpix-y", str(sky_roi_config.sky_y)]
+                    else:
+                        args += ["--crpix-center"]
                 case "spec":
-                    # spec_spec_roi: SpecRoiConfig = cast(SpecRoiConfig, self.unit.unit_conf.guiding.rois[fcu_version])
-                    # args += ["--crpix-x", str(spec_spec_roi.fiber_x)]
-                    # args += ["--crpix-y", str(spec_spec_roi.fiber_y)]
-                    args += ["--crpix-center"]
+                    if settings.use_set_limit_frame:
+                        spec_roi_config: SpecRoiConfig = cast(SpecRoiConfig, self.unit.unit_conf.acquisition.rois[fcu_version])
+                        args += ["--crpix-x", str(spec_roi_config.fiber_x)]
+                        args += ["--crpix-y", str(spec_roi_config.fiber_y)]
+                    else:
+                        args += ["--crpix-center"]
         else:
             with astropy.io.fits.open(input_fits_path) as hdul:
                 header = hdul[0].header  # type: ignore
