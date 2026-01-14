@@ -266,7 +266,8 @@ class Stage(Component, SwitchedOutlet):
         logger.info(f"detected: {self.device_info}")
         with self.stage_lock:
             assert ximclib
-            result = ximclib.command_homezero(self.device)
+            with Timeout(60) as timeout:
+                result = timeout.run(ximclib.command_homezero, self.device)
             if result == Result.Ok:
                 self.start_activity(StageActivities.Homing)
 
