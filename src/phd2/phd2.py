@@ -1392,7 +1392,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             )
             self.parent.start_activity(
                 ImagerActivities.Saving,
-                details=f"{Path(settings.image_path).as_posix() if settings.image_path else None}",
+                # details=f"{Path(settings.image_path).as_posix() if settings.image_path else None}",
             )
 
         try:
