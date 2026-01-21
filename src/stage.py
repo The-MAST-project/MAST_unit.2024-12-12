@@ -19,7 +19,8 @@ from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.models.statuses import StageStatus
-from common.utils import RepeatTimer, Timeout, boxed_log, function_name, time_stamp
+from common.utils import (RepeatTimer, Timeout, boxed_log, function_name,
+                          time_stamp)
 
 if TYPE_CHECKING:
     from unit import Unit
@@ -46,23 +47,13 @@ if platform.system() == "Windows":
         raise FileNotFoundError(f"Directory with ximc library not found: {lib_dir=}. ")
     os.add_dll_directory(str(lib_dir))  # add dll path into an environment variable
 
-    from pyximc import (
-        POINTER,
-        EnumerateFlags,  # type: ignore[name]
-        MvcmdStatus,
-        Result,  # type: ignore[name]
-        StateFlags,
-        byref,
-        c_char_p,
-        c_int,
-        cast,
-        controller_name_t,
-        device_information_t,
-        edges_settings_t,
-        status_t,
-        string_at,
-    )
+    from pyximc import EnumerateFlags  # type: ignore[name]
+    from pyximc import Result  # type: ignore[name]
+    from pyximc import (POINTER, MvcmdStatus, StateFlags, byref, c_char_p,
+                        c_int, cast, controller_name_t, device_information_t,
+                        edges_settings_t)
     from pyximc import lib as ximclib  # type: ignore[name]
+    from pyximc import status_t, string_at
 
 RESULT_MAP = {
     Result.Ok: "Ok",
@@ -266,10 +257,14 @@ class Stage(Component, SwitchedOutlet):
         logger.info(f"detected: {self.device_info}")
         with self.stage_lock:
             assert ximclib
-            with Timeout(60) as timeout:
-                result = timeout.run(ximclib.command_homezero, self.device)
-            if result == Result.Ok:
-                self.start_activity(StageActivities.Homing)
+
+            try:
+                with Timeout(60) as timeout:
+                    result = timeout.run(ximclib.command_homezero, self.device)
+                if result == Result.Ok:
+                    self.start_activity(StageActivities.Homing)
+            except TimeoutError as ex:
+                logger.error(f"{op}: timeout during homing: {ex}")
 
         self._initialized = True
 
