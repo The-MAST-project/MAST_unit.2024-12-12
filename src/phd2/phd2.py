@@ -21,9 +21,11 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
-from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
+from common.interfaces.imager import (ImagerExposureSeries, ImagerInterface,
+                                      ImagerRoi, ImagerSettings)
 from common.mast_logging import init_log
-from common.models.statuses import PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
+from common.models.statuses import (PHD2GuiderStatus, PHD2ImagerStatus,
+                                    SkyQualityStatus)
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_log, function_name
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
@@ -1459,7 +1461,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             )
             self.parent.start_activity(
                 ImagerActivities.Saving,
-                details=f"{Path(settings.image_path).as_posix()}",
+                # details=f"{Path(settings.image_path).as_posix()}",
             )
 
         if self._is_guiding(self.app_state):
