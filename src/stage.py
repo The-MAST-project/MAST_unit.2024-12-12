@@ -425,7 +425,7 @@ class Stage(Component, SwitchedOutlet):
             assert ximclib, "No ximclib"
             result = ximclib.command_move(self.device, value)
         if result == Result.Ok:
-            self.start_activity(StageActivities.Moving, details=f"target={self.target}")
+            self.start_activity(StageActivities.Moving, details=[f"to {self.target}"])
         else:
             raise Exception(f"Could not start move to {value} ({result=})")
 
@@ -654,7 +654,7 @@ class Stage(Component, SwitchedOutlet):
         self.target = position
         self.motion_start_time = datetime.datetime.now()
         self.start_activity(
-            StageActivities.Moving, details=f"from {self.position} to {self.target}"
+            StageActivities.Moving, details=[f"from {self.position} to {self.target}"]
         )
 
         return CanonicalResponse_Ok
@@ -685,7 +685,7 @@ class Stage(Component, SwitchedOutlet):
         try:
             self.target = current_position + amount
             self.start_activity(
-                StageActivities.Moving, details=f"from {self.position} to {self.target}"
+                StageActivities.Moving, details=[f"from {self.position} to {self.target}"]
             )
             with self.stage_lock:
                 assert ximclib
