@@ -654,7 +654,7 @@ class Stage(Component, SwitchedOutlet):
         self.target = position
         self.motion_start_time = datetime.datetime.now()
         self.start_activity(
-            StageActivities.Moving, details=f"from {self.position} to {self.target}"
+            StageActivities.Moving, details=[f"from {self.position} to {self.target}"]
         )
 
         return CanonicalResponse_Ok
@@ -685,7 +685,7 @@ class Stage(Component, SwitchedOutlet):
         try:
             self.target = current_position + amount
             self.start_activity(
-                StageActivities.Moving, details=f"from {self.position} to {self.target}"
+                StageActivities.Moving, details=[f"from {self.position} to {self.target}"]
             )
             with self.stage_lock:
                 assert ximclib
