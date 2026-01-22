@@ -982,7 +982,7 @@ class Unit(Component):
 
     async def endpoint_start_dancing(self, style: str = "foxtrot"):
         logger.info(f"unit.dance: dancing the {style} ...")
-        self.start_activity(UnitActivities.Dancing, details=style)
+        self.start_activity(UnitActivities.Dancing, details=[style])
         return CanonicalResponse_Ok
 
     async def endpoint_stop_dancing(self):
