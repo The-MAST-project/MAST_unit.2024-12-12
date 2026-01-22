@@ -290,7 +290,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.start_activity(
                 MountActivities.Moving,
                 details=(
-                    f"target={self.target}" if self.target else "unsolicited movement"
+                    [f"target={self.target}" if self.target else "unsolicited movement"]
                 ),
             )
 

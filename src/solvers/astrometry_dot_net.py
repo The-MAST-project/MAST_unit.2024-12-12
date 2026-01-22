@@ -157,17 +157,17 @@ class AstrometryDotNet(SolverInterface):
 
             match phase:
                 case "sky":
-                    if settings.use_set_limit_frame:
+                    if not settings.use_set_limit_frame:
                         sky_roi_config: SkyRoiConfig = cast(SkyRoiConfig, self.unit.unit_conf.acquisition.rois[fcu_version])
-                        args += ["--crpix-x", str(sky_roi_config.sky_x)]
-                        args += ["--crpix-y", str(sky_roi_config.sky_y)]
+                        args += ["--crpix-x", str(sky_roi_config.sky_x / binning)]
+                        args += ["--crpix-y", str(sky_roi_config.sky_y / binning)]
                     else:
                         args += ["--crpix-center"]
                 case "spec":
-                    if settings.use_set_limit_frame:
-                        spec_roi_config: SpecRoiConfig = cast(SpecRoiConfig, self.unit.unit_conf.acquisition.rois[fcu_version])
-                        args += ["--crpix-x", str(spec_roi_config.fiber_x)]
-                        args += ["--crpix-y", str(spec_roi_config.fiber_y)]
+                    if not settings.use_set_limit_frame:
+                        spec_roi_config: SpecRoiConfig = cast(SpecRoiConfig, self.unit.unit_conf.guiding.rois[fcu_version])
+                        args += ["--crpix-x", str(spec_roi_config.fiber_x / binning)]
+                        args += ["--crpix-y", str(spec_roi_config.fiber_y / binning)]
                     else:
                         args += ["--crpix-center"]
         else:
