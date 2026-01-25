@@ -21,11 +21,9 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
-from common.interfaces.imager import (ImagerExposureSeries, ImagerInterface,
-                                      ImagerRoi, ImagerSettings)
+from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
-from common.models.statuses import (PHD2GuiderStatus, PHD2ImagerStatus,
-                                    SkyQualityStatus)
+from common.models.statuses import PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_log, function_name
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
@@ -894,7 +892,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if not self.connected:
             logger.error(f"{function_name()}: not connected")
 
-        if roi:
+        if roi is not None: # oren
             logger.debug(f"{function_name()}: setting {roi=}")
             self.call("set_limit_frame", params={
                 "roi": [
@@ -972,6 +970,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 # self.set_limit_frame(roi=imager_settings.roi.binned(imager_settings.binning))
                 if imager_settings.use_set_limit_frame:
                     self.set_limit_frame(roi=imager_settings.roi)
+                else: # oren
+                    self.set_limit_frame(roi=None) # oren
 
                 self.call(
                     method="guide",
@@ -1478,6 +1478,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 # self.set_limit_frame(roi=settings.roi.binned(settings.binning))
                 if settings.use_set_limit_frame:
                     self.set_limit_frame(roi=settings.roi)
+                else: # oren
+                    self.set_limit_frame(roi=None) # oren
 
                 self.call(
                     "capture_single_frame",
