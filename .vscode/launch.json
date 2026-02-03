@@ -83,6 +83,19 @@
             "justMyCode": false,
         },
         {
+            "name": "Test mastrometry",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "solvers.mastrometry",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/src",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src",
+                "PATH": "C:\\Users\\mast\\PycharmProjects\\MAST_unit.2024-12-12\\external\\libusb-1.0.29\\VS2022\\MS64\\dll;${env:PATH}"
+            },
+            "justMyCode": false,
+        },
+        {
             "name": "Test safety",
             "type": "debugpy",
             "request": "launch",
