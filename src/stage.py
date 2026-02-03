@@ -14,13 +14,14 @@ from fastapi.routing import APIRouter
 
 from common.activities import StageActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from common.config import Config
+from common.config.rois import FcuVersion
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.models.statuses import StageStatus
-from common.utils import (RepeatTimer, Timeout, boxed_log, function_name,
-                          time_stamp)
+from common.utils import RepeatTimer, Timeout, boxed_log, function_name, time_stamp
 
 if TYPE_CHECKING:
     from unit import Unit
@@ -47,13 +48,24 @@ if platform.system() == "Windows":
         raise FileNotFoundError(f"Directory with ximc library not found: {lib_dir=}. ")
     os.add_dll_directory(str(lib_dir))  # add dll path into an environment variable
 
-    from pyximc import EnumerateFlags  # type: ignore[name]
-    from pyximc import Result  # type: ignore[name]
-    from pyximc import (POINTER, MvcmdStatus, StateFlags, byref, c_char_p,
-                        c_int, cast, controller_name_t, device_information_t,
-                        edges_settings_t)
+    from pyximc import (
+        POINTER,
+        BorderFlags,
+        EnumerateFlags,  # type: ignore[name]
+        MvcmdStatus,
+        Result,  # type: ignore[name]
+        StateFlags,
+        byref,
+        c_char_p,
+        c_int,
+        cast,
+        controller_name_t,
+        device_information_t,
+        edges_settings_t,
+        status_t,
+        string_at,
+    )
     from pyximc import lib as ximclib  # type: ignore[name]
-    from pyximc import status_t, string_at
 
 RESULT_MAP = {
     Result.Ok: "Ok",
@@ -85,17 +97,6 @@ stage_direction_str2int_dict: dict = {
     "Down": StageDirection.Down,
 }
 
-
-# class StageStatus(PowerStatus, ComponentStatus):
-#     info: dict | None = None
-#     presets: dict | None = None
-#     position: int | None = None
-#     at_preset: str | None = None
-#     target: int | None = None
-#     target_verbal: str | None = None
-#     date: str | None = None
-
-
 class Stage(Component, SwitchedOutlet):
     _instance = None
     _initialized = False
@@ -113,8 +114,14 @@ class Stage(Component, SwitchedOutlet):
 
         op = "Stage.__init__"
         self.unit = unit
-        assert self.unit and self.unit.unit_conf is not None
-        self.conf = self.unit.unit_conf.stage
+        if unit and unit.unit_conf and unit.unit_conf.stage:
+            self.conf = unit.unit_conf.stage
+        else:
+            unit_conf = Config().get_unit()
+            if unit_conf and unit_conf.stage:
+                self.conf = unit_conf.stage
+            else:
+                raise Exception(f"{op}: cannot get stage configuration")
 
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Stage")
         Component.__init__(self, StageActivities)
@@ -166,7 +173,6 @@ class Stage(Component, SwitchedOutlet):
             logger.error(f"{op}: no device detected ({dev_count=})")
             return
 
-        assert ximclib
         self.device_uri = ximclib.get_device_name(dev_enum, 0)
         ximclib.free_enumerate_devices(dev_enum)
         self.device = ximclib.open_device(self.device_uri)
@@ -183,21 +189,26 @@ class Stage(Component, SwitchedOutlet):
                 string_at(x_controller_name.ControllerName).decode()
             ).replace("'", "")
 
+            match self.stage_model:
+                case "8MT167-25LS-MEn1":
+                    self.fcu_version = FcuVersion.v1
+                case "8MT173-20DCE2":
+                    self.fcu_version = FcuVersion.v2
+                case _:
+                    raise Exception(f"{op}: unsupported stage model '{self.stage_model}'")
+        else:
+            raise Exception(f"{op}: cannot get controller name ({result=})")
+
         # self.set_profile()  # FUTURE: set motion profile parameters for known stage models
 
         x_device_information = device_information_t()
-        assert ximclib
         result = ximclib.get_device_information(
             self.device, byref(x_device_information)
         )
-        x_edges_settings = edges_settings_t()
-        assert ximclib
-        result1 = ximclib.get_edges_settings(self.device, byref(x_edges_settings))
-        if result == Result.Ok and result1 == Result.Ok:
+
+        if result == Result.Ok:
             comport = str(self.device_uri)
             comport = comport[comport.find("COM") :].removesuffix("'")
-            self.min_travel = x_edges_settings.LeftBorder
-            self.max_travel = x_edges_settings.RightBorder
 
             self.info["port"] = comport
             self.info["controller"] = repr(
@@ -210,26 +221,32 @@ class Stage(Component, SwitchedOutlet):
                 f"{repr(x_device_information.Major)}.{repr(x_device_information.Minor)}"
                 + f".{repr(x_device_information.Release)}"
             )
-            self.info["travel"] = {
-                "min": self.min_travel,
-                "max": self.max_travel,
-            }
 
-            self.fcu_version = None
-            if self.stage_model is None:
-                logger.warning("{op}: could not determine stage model")
-            elif self.unit is not None:
-                if self.stage_model == "8MT167-25LS-MEn1":
-                    self.fcu_version = "fcu_v1"
-                elif self.stage_model.startswith("8MT173-20DCE2"):
-                    self.fcu_version = "fcu_v2"
+        x_edges_settings = edges_settings_t()
+        result = ximclib.get_edges_settings(self.device, byref(x_edges_settings))
+        if result == Result.Ok:
+            if x_edges_settings.BorderFlags & BorderFlags.BORDER_IS_ENCODER:
+                self.min_travel = x_edges_settings.LeftBorder
+                self.max_travel = x_edges_settings.RightBorder
+                self.border_by = "encoder values"
+            else:
+                self.border_by = "limit switches"
+                match self.fcu_version:
+                    case FcuVersion.v1:
+                        self.min_travel = 0
+                        self.max_travel = 195000
+                    case FcuVersion.v2:
+                        self.min_travel = 0
+                        self.max_travel = 343544
+        else:
+            raise Exception(f"{op}: cannot get edges settings ({result=})")
 
-            self.device_info = (
-                f"port='{comport}', manufacturer='{self.info['controller']}', product='{self.info['product']}', "
-                + f"version='{self.info['version']}', model='{self.stage_model}', "
-                + f"fcu_version='{self.fcu_version if self.unit else None}', "
-                + f"range={self.min_travel}..{self.max_travel}, close_enough={self.conf.close_enough}"
-            )
+        self.device_info = (
+            f"port='{comport}', manufacturer='{self.info['controller']}', product='{self.info['product']}', "
+            + f"version='{self.info['version']}', model='{self.stage_model}', "
+            + f"fcu_version='{self.fcu_version.value}', "
+            + f"range={self.min_travel}..{self.max_travel} (borders by: {self.border_by}), close_enough={self.conf.close_enough}"
+        )
         self.stage_lock = threading.Lock()
 
         if self.min_travel is not None and self.max_travel is not None:
@@ -242,7 +259,6 @@ class Stage(Component, SwitchedOutlet):
         # get initial values from the hardware
         hw_status = status_t()
         with self.stage_lock:
-            assert ximclib
             result = ximclib.get_status(self.device, byref(hw_status))
         if result == Result.Ok:
             self._position = hw_status.CurPosition
@@ -255,17 +271,8 @@ class Stage(Component, SwitchedOutlet):
         self.timer.start()
 
         logger.info(f"detected: {self.device_info}")
-        with self.stage_lock:
-            assert ximclib
 
-            try:
-                with Timeout(60) as timeout:
-                    result = timeout.run(ximclib.command_homezero, self.device)
-                if result == Result.Ok:
-                    self.start_activity(StageActivities.Homing)
-            except TimeoutError as ex:
-                logger.error(f"{op}: timeout during homing: {ex}")
-
+        self.home()
         self._initialized = True
 
     def __del__(self):
@@ -279,6 +286,22 @@ class Stage(Component, SwitchedOutlet):
 
     def __repr__(self):
         return f"<Stage device={self.device}>"
+
+    def home(self):
+        """
+        Homes the stage
+        """
+
+        op = function_name()
+        with self.stage_lock:
+            assert ximclib
+            try:
+                with Timeout(60) as timeout:
+                    result = timeout.run(ximclib.command_homezero, self.device)
+                if result == Result.Ok:
+                    self.start_activity(StageActivities.Homing)
+            except TimeoutError as ex:
+                logger.error(f"{op}: timeout during homing: {ex}")
 
     def find_ximc_ports(self):
         from serial.tools import list_ports
@@ -844,4 +867,15 @@ if __name__ == "__main__":
             time.sleep(5)
             move_and_wait(StagePresetPosition.Spec)
 
-    move_between_presets()
+    def get_position():
+        logger.info(f"Stage position: {stage.position}")
+
+    # move_between_presets()
+    if stage.is_moving:
+        logger.info("Stage is moving, waiting to get position until it stops...")
+    while stage.is_moving:
+        time.sleep(1)
+    logger.info("Stage stopped, getting position...")
+    get_position()
+
+    sys.exit(0)
