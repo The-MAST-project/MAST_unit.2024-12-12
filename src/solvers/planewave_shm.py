@@ -10,7 +10,8 @@ from astropy.io import fits
 
 from common.const import Const
 from common.extended_basemodel import ExtendedBaseModel
-from common.interfaces.solving import SolverInterface, SolvingResult, SolvingSolution
+from common.interfaces.solving import (SolverInterface, SolvingResult,
+                                       SolvingSolution)
 from common.mast_logging import init_log
 from common.utils import Coord, function_name
 from imagers import ImagerSettings
@@ -191,3 +192,7 @@ class PlaneWaveShm(SolverInterface):
 
     def solve_and_correct(self):
         pass
+
+    @property
+    def name(self) -> str:
+        return "PlanewaveShm"
