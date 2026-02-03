@@ -11,6 +11,7 @@ from astropy.coordinates import Angle
 
 from acquisition import Acquisition
 from common.activities import UnitActivities
+from common.asi import ASI_294MM_HEIGHT, ASI_294MM_WIDTH
 from common.config import Config
 from common.config.rois import RoisConfig, SkyRoiConfig
 from common.config.unit import AcquisitionConfig, ToleranceConfig
@@ -18,7 +19,8 @@ from common.const import Const
 from common.corrections import Correction, Corrections
 from common.filer import Filer
 from common.interfaces.imager import ImagerSettings
-from common.interfaces.solving import SolverInterface, SolvingResult, SolvingTolerance
+from common.interfaces.solving import (SolverInterface, SolvingResult,
+                                       SolvingTolerance)
 from common.mast_logging import init_log
 from common.safety import safety_get_sensor
 from common.solving import SolverId
@@ -49,27 +51,35 @@ class Solver(SolverInterface):
         self.latest_result: SolvingResult | None = None
 
         from solvers.astrometry_dot_net import AstrometryDotNet
+        from solvers.mastrometry import MastrometryDotNet
         from solvers.planewave_cli import PlaneWaveCli
         from solvers.planewave_shm import PlaneWaveShm
 
         self._backend: SolverInterface | None = None
 
-        solving_config = Config().get_unit().solving
-        method = solving_config.method
-        valid_methods = solving_config.valid_methods
-        if method not in valid_methods:
+        unit_config = unit.unit_conf or Config().get_unit()
+        assert unit_config is not None, f"{function_name()}: unit_config is None"
+
+        solving_config = unit_config.solving
+        assert solving_config is not None, f"{function_name()}: solving_config is None"
+
+        if solving_config.method not in solving_config.valid_methods:
             raise ValueError(
-                f"invalid solving method '{method}' in configuration, must be one of {valid_methods}"
+                f"invalid solving method '{solving_config.method}', must be one of {solving_config.valid_methods}"
             )
 
-        if method == "AstrometryDotNet":
-            self._backend = AstrometryDotNet()
-        elif method == "PlaneWaveCli":
-            self._backend = PlaneWaveCli()
-        elif method == "PlanewaveShm":
-            self._backend = PlaneWaveShm()
+        match solving_config.method:
+            case "AstrometryDotNet":
+                self._backend = AstrometryDotNet()
+            case "MastrometryDotNet":
+                self._backend = MastrometryDotNet()
+            case "PlaneWaveCli":
+                self._backend = PlaneWaveCli()
+            case "PlanewaveShm":
+                self._backend = PlaneWaveShm()
+
         if not self._backend:
-            raise Exception("could not figure out solving backend")
+            raise Exception(f"could not figure out solving backend '{solving_config.method=}'")
 
         self._initialized = True
 
@@ -87,6 +97,17 @@ class Solver(SolverInterface):
         if self.unit.is_active(UnitActivities.Solving):
 
             imager_settings.make_file_name()
+            if self._backend.name == "mastrometry.net":
+                assert imager_settings.image_path is not None, f"{op}: imager_settings.image_path is None"
+                imager_settings.image_path = imager_settings.image_path.replace(
+                    f"binning={imager_settings.binning}",
+                    "binning=1x1",
+                )
+
+                if imager_settings.roi is not None:
+                    imager_settings.image_path = imager_settings.image_path.replace(
+                        f"binned_roi={imager_settings.roi.binned(imager_settings.binning)}",
+                        f"binned_roi={ASI_294MM_WIDTH}x{ASI_294MM_HEIGHT}",)
 
             #
             # Start exposure
@@ -190,6 +211,9 @@ class Solver(SolverInterface):
                     width=self.unit.imager.full_frame.width,
                     height=self.unit.imager.full_frame.height,
                 )
+
+            assert self.unit is not None, f"{op}: self.unit is None"
+            assert self.unit.unit_conf is not None, f"{op}: self.unit.unit_conf is None"
 
             conf = AcquisitionConfig(
                 exposure=imager_settings.seconds,
