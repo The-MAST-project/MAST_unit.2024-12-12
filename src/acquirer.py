@@ -12,12 +12,14 @@ import common.asi as asi
 from acquisition import Acquisition
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config.rois import SkyRoiConfig
+from common.config.rois import FcuVersion, SkyRoiConfig
 from common.mast_logging import init_log
 from common.models.assignments import UnitAssignmentModel
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.parsers import (sexagesimal_degrees_to_decimal,
+                            sexagesimal_hours_to_decimal)
 from common.rois import SkyRoi
-from common.tasks.notifications import notify_controller_about_task_acquisition_path
+from common.tasks.notifications import \
+    notify_controller_about_task_acquisition_path
 from common.utils import Coord, boxed_log, function_name
 from phd2.phd2 import PHD2Connector
 from solving import SolverId, SolvingTolerance
@@ -118,7 +120,7 @@ class Acquirer:
             purpose="acquisition"
         )
 
-        if not acquisition.skip_sky:
+        if  self.unit.fcu_version == FcuVersion.v1 and not acquisition.skip_sky:
             phase = "sky"
             boxed_log(logger, [f"starting phase '{phase.upper()}'"])
 
@@ -200,7 +202,11 @@ class Acquirer:
         phase = "spec"
         boxed_log(logger, [f"starting phase '{phase.upper()}'"])
 
-        self.unit.stage.move_to_preset(StagePresetPosition.Spec)
+        match self.unit.fcu_version:
+            case FcuVersion.v1:
+                self.unit.stage.move_to_preset(StagePresetPosition.Spec)
+            case FcuVersion.v2:
+                self.unit.stage.home()
         while self.unit.stage.is_moving:
             time.sleep(0.2)
         logger.info("sleeping additional 5 seconds to let the stage stop moving ...")
@@ -227,6 +233,17 @@ class Acquirer:
             spec_imager_settings.gain = acquisition_conf.gain
 
         spec_imager_settings.use_set_limit_frame = acquisition.use_set_limit_frame
+
+        # override for fcu_v2 to use full frame
+        if self.unit.fcu_version == FcuVersion.v2:
+            spec_imager_settings.roi = ImagerRoi(
+                x=0,
+                y=0,
+                width=self.unit.imager.full_frame.width,
+                height=self.unit.imager.full_frame.height,
+            )
+            spec_imager_settings.use_set_limit_frame = True
+            spec_imager_settings.binning = 1
 
         achieved_tolerances = self.unit.solver.solve_and_correct(
             target=target,
@@ -265,15 +282,18 @@ class Acquirer:
 
         if self.latest_acquisition.handover_automatically_to_guider:
             lines.append("starting PHD2 guiding")
+            if self.unit.fcu_version == FcuVersion.v2:
+                self.unit.stage.move_to_preset(StagePresetPosition.Spec)
+                lines.append("started moving stage to SPEC")
             boxed_log(logger, lines)
-            self.unit.start_activity(UnitActivities.Guiding)
+            self.unit.start_activity(UnitActivities.PreGuiding)
             self.unit.guider.start_guiding()
         else:
             lines.append("start manual PHD2 guiding")
             boxed_log(logger, lines)
-            self.unit.start_activity(UnitActivities.Guiding)
+            self.unit.start_activity(UnitActivities.PreGuiding)
 
-        while self.unit.is_active(UnitActivities.Guiding):
+        while self.unit.is_active(UnitActivities.PreGuiding) or self.unit.is_active(UnitActivities.Guiding):
             time.sleep(1)
 
         # Acquisition was stopped
