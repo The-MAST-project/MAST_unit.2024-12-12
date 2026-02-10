@@ -51,7 +51,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         _from_imager: bool = False,
     ):
 
-        ImagerInterface.__init__(self, ImagerActivities)
+        ImagerInterface.__init__(self)
         SwitchedOutlet.group(
             domain=OutletDomain.UnitOutlets,
             group_name="Camera",
@@ -244,10 +244,19 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         return self.shutdown()
 
     def shutdown(self):
+        self.start_activity(ImagerActivities.ShuttingDown)
         self.set_control(asi.Control.TargetTemp, 10)
         self.set_control(asi.Control.CoolerOn, False)
         # del self._image_array
+        self.end_activity(ImagerActivities.ShuttingDown)
         return super().shutdown()
+
+    @property
+    def is_shutting_down(self) -> bool:
+        return self.is_active(ImagerActivities.ShuttingDown)
+
+    def powerdown(self):
+        pass
 
     @property
     def operational(self) -> bool:
@@ -323,7 +332,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         return self.abort()
 
     def abort(self):
-        if self.parent_imager and self.parent_imager.is_active(ImagerActivities.Exposing):
+        if self.connected and (self.parent_imager and self.parent_imager.is_active(ImagerActivities.Exposing)):
             zwoasi.stopExposure(self.cam_id)
 
     def endpoint_status(self) -> ImagerStatus:

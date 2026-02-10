@@ -112,13 +112,22 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         return self.shutdown()
 
     def shutdown(self):
+        self.start_activity(FocuserActivities.ShuttingDown)
         if self.connected:
             self.disconnect()
         self.pw.focuser_disable()
-        if self.is_on():
-            self.power_off()
-        self._was_shut_down = True
-        return CanonicalResponse_Ok
+        self.end_activity(FocuserActivities.ShuttingDown)
+
+    @property
+    def is_shutting_down(self) -> bool:
+        return self.is_active(FocuserActivities.ShuttingDown)
+
+    def powerdown(self):
+        if not self._was_shut_down:
+            self.shutdown()
+        while self.is_shutting_down:
+            time.sleep(1)
+        self.power_off()
 
     def connect(self):
         if not self.is_on():

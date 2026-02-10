@@ -1,4 +1,5 @@
 import logging
+import time
 from logging import Logger
 from typing import TYPE_CHECKING
 
@@ -208,8 +209,6 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
     def shutdown(self):
         """
         Performs the ``shutdown`` procedure for the **MAST** mirror covers controller
-
-        :mastapi:
         """
         if not self.connected:
             self.power_off()
@@ -219,6 +218,17 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             self.start_activity(CoverActivities.ShuttingDown)
             self.close()
         return CanonicalResponse_Ok
+
+    @property
+    def is_shutting_down(self) -> bool:
+        return self.is_active(CoverActivities.ShuttingDown)
+
+    def powerdown(self):
+        if not self._was_shut_down:
+            self.shutdown()
+        while self.is_shutting_down:
+            time.sleep(1)
+        self.power_off()
 
     def endpoint_abort(self):
         return self.abort()

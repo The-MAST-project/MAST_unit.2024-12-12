@@ -1,4 +1,5 @@
 import logging
+import time
 
 import numpy as np
 from fastapi import APIRouter
@@ -140,6 +141,17 @@ class Imager(ImagerInterface, SwitchedOutlet):
 
     def shutdown(self) -> CanonicalResponse | None:
         return self._backend.shutdown()
+
+    @property
+    def is_shutting_down(self) -> bool:
+        return self._backend.is_shutting_down
+
+    def powerdown(self):
+        if not self._backend.was_shut_down:
+            self._backend.shutdown()
+        while self._backend.is_shutting_down:
+            time.sleep(1)
+        self.power_off()
 
     def endpoint_shutdown(self) -> CanonicalResponse | None:
         return self.shutdown()

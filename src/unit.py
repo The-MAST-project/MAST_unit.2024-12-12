@@ -219,6 +219,21 @@ class Unit(Component):
         self.timer.cancel()
         self.unit_shutdown_event.set()
 
+    @property
+    def is_shutting_down(self) -> bool:
+        return self.is_active(UnitActivities.ShuttingDown)
+
+    def powerdown(self):
+        """
+        Powers down the unit by shutting down and then turning off all power sockets.
+        """
+        if not self._was_shut_down:
+            self.shutdown()
+        while self.is_shutting_down:
+            time.sleep(0.5)
+        self.power_all_off()
+        return CanonicalResponse_Ok
+
     def endpoint_shutdown(self):
         return self.shutdown()
 
@@ -277,8 +292,7 @@ class Unit(Component):
         Turn **OFF** all power sockets
         """
         for c in self.components:
-            if isinstance(c, SwitchedOutlet):
-                c.power_off()
+            c.powerdown()
 
     def endpoint_status(self) -> CanonicalResponse:
         return self.status()
