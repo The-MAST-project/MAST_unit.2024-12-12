@@ -208,6 +208,18 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self.power_off()
         return CanonicalResponse_Ok
 
+    @property
+    def is_shutting_down(self) -> bool:
+        return self.is_active(MountActivities.ShuttingDown)
+
+    def powerdown(self):
+        if not self._was_shut_down:
+            self.shutdown()
+        while self.is_shutting_down:
+            time.sleep(1)
+
+        self.power_off()
+
     def park(self):
         """
         Parks the MAST mount

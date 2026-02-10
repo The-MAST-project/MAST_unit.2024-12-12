@@ -23,9 +23,14 @@ import common.asi as asi
 from acquirer import Acquirer
 from acquisition import Acquisition
 from autofocusing import Autofocuser, AutofocusResult
-from common.activities import (CoverActivities, FocuserActivities,
-                               ImagerActivities, MountActivities,
-                               StageActivities, UnitActivities)
+from common.activities import (
+    CoverActivities,
+    FocuserActivities,
+    ImagerActivities,
+    MountActivities,
+    StageActivities,
+    UnitActivities,
+)
 from common.api import ControllerApi
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
@@ -35,19 +40,16 @@ from common.const import Const
 from common.dlipowerswitch import PowerSwitchFactory, SwitchedOutlet
 from common.filer import Filer
 from common.interfaces.components import Component
+
 # from guiding import Guider
-from common.interfaces.imager import (ImagerExposureSeries, ImagerRoi,
-                                      ImagerSequenceOfExposures,
-                                      ImagerSettings, ImagerTypes)
+from common.interfaces.imager import ImagerExposureSeries, ImagerRoi, ImagerSequenceOfExposures, ImagerSettings, ImagerTypes
 from common.mast_logging import DailyFileHandler, init_log
 from common.models.assignments import UnitAssignmentModel
 from common.models.statuses import FullUnitStatus
-from common.parsers import (sexagesimal_degrees_to_decimal,
-                            sexagesimal_hours_to_decimal)
+from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
 from common.rois import UnitRoi
-from common.tasks.notifications import \
-    notify_controller_about_task_acquisition_path
+from common.tasks.notifications import notify_controller_about_task_acquisition_path
 from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers
 from focuser import Focuser
@@ -217,6 +219,21 @@ class Unit(Component):
         self.timer.cancel()
         self.unit_shutdown_event.set()
 
+    @property
+    def is_shutting_down(self) -> bool:
+        return self.is_active(UnitActivities.ShuttingDown)
+
+    def powerdown(self):
+        """
+        Powers down the unit by shutting down and then turning off all power sockets.
+        """
+        if not self._was_shut_down:
+            self.shutdown()
+        while self.is_shutting_down:
+            time.sleep(0.5)
+        self.power_all_off()
+        return CanonicalResponse_Ok
+
     def endpoint_shutdown(self):
         return self.shutdown()
 
@@ -275,8 +292,7 @@ class Unit(Component):
         Turn **OFF** all power sockets
         """
         for c in self.components:
-            if isinstance(c, SwitchedOutlet):
-                c.power_off()
+            c.powerdown()
 
     def endpoint_status(self) -> CanonicalResponse:
         return self.status()
@@ -412,7 +428,7 @@ class Unit(Component):
                     assert self.unit_conf is not None
                     self.unit_conf.focuser.known_as_good_position = best_position
                     try:
-                        Config().set_unit(self.hostname, self.unit_conf)
+                        Config().set_unit(None, self.hostname, self.unit_conf)
                         logger.info(
                             f"autofocus: saved {best_position=} in the configuration for unit {self.hostname}."
                         )

@@ -22,14 +22,11 @@ from common.config import Config
 from common.config.rois import FcuVersion
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
-from common.interfaces.imager import (ImagerExposureSeries, ImagerInterface,
-                                      ImagerRoi, ImagerSettings)
+from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
-from common.models.statuses import (PHD2GuiderStatus, PHD2ImagerStatus,
-                                    SkyQualityStatus)
+from common.models.statuses import PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
 from common.process import WatchedProcess
-from common.utils import (Coord, RepeatTimer, Timeout, boxed_debug,
-                          function_name)
+from common.utils import Coord, RepeatTimer, Timeout, boxed_debug, function_name
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 from stage import StagePresetPosition
 
@@ -64,6 +61,7 @@ class PHD2Activities(IntFlag):
     Settling = auto()
     Calibrating = auto()
     Looping = auto()
+    ShuttingDown = auto()
     Saving = auto()
     Validating = auto()
     ExposingForValidation = auto()
@@ -1278,10 +1276,19 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         return self.shutdown()
 
     def shutdown(self):
+        self.start_activity(PHD2Activities.ShuttingDown)
         self.stop_guiding()
         self.disconnect()
         if self.watched_process:
             self.watched_process.terminate()
+        self.end_activity(PHD2Activities.ShuttingDown)
+
+    @property
+    def is_shutting_down(self) -> bool:
+        return self.is_active(PHD2Activities.ShuttingDown)
+
+    def powerdown(self):
+        pass
 
     def start_guiding(self) -> CanonicalResponse:
 

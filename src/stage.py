@@ -407,13 +407,19 @@ class Stage(Component, SwitchedOutlet):
     def shutdown(self):
         """
         Shutdown routine for the **MAST** stage.  Makes it ``idle``
-
-        :mastapi:
         """
         self.disconnect()
-        self.power_off()
         self._was_shut_down = True
         return CanonicalResponse_Ok
+
+    @property
+    def is_shutting_down(self) -> bool:
+        return False
+
+    def powerdown(self):
+        if not self._was_shut_down:
+            self.shutdown()
+        self.power_off()
 
     def at_preset(self, preset: StagePresetPosition) -> bool:
         current_position = self.position
