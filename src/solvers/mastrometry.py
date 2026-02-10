@@ -20,8 +20,7 @@ from common.mast_logging import init_log
 from common.utils import Coord, boxed_log, function_name
 from imagers import ImagerSettings
 
-from .astrometry_dot_net import (cygwin_to_win, generate_random_string,
-                                 parse_solver_output, win_to_cygwin)
+from .astrometry_dot_net import cygwin_to_win, generate_random_string, parse_solver_output, win_to_cygwin
 
 logger = logging.Logger("mastrometry_dot_net")
 init_log(logger)
