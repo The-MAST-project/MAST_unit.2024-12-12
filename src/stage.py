@@ -245,7 +245,8 @@ class Stage(Component, SwitchedOutlet):
             f"port='{comport}', manufacturer='{self.info['controller']}', product='{self.info['product']}', "
             + f"version='{self.info['version']}', model='{self.stage_model}', "
             + f"fcu_version='{self.fcu_version.value}', "
-            + f"range={self.min_travel}..{self.max_travel} (borders by: {self.border_by}), close_enough={self.conf.close_enough}"
+            + f"range={self.min_travel}..{self.max_travel} (borders by: {self.border_by}), "
+            + f"close_enough={self.conf.close_enough}"
         )
         self.stage_lock = threading.Lock()
 
