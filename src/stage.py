@@ -316,22 +316,41 @@ class Stage(Component, SwitchedOutlet):
 
     def set_profile(self):
 
-        import importlib
+        if self.stage_model is None:
+            logger.warning("Stage model is unknown, cannot set profile")
+            return
 
-        assert self.stage_model
-        profile_setter = None
+        file_path = Path(ximc_top_dir) / "python-profiles" / "Standa" / f"{self.stage_model}.py"
+        if not file_path.exists():
+            logger.warning(f"Profile file '{file_path}' missing, cannot set profile for stage model '{self.stage_model}'")
+            return
+        profile_setter_function = f"set_profile_{self.stage_model.replace('-', '_')}"
+        with open(file_path) as f:
+            code = f.read()
+
+        preamble = """
+from pyximc import *
+"""
+
+        namespace = {}
         try:
-            profile_module = importlib.import_module(self.stage_model)
-            profile_setter = getattr(profile_module, f"set_profile_{self.stage_model}")
-        except Exception:
-            logger.warning(f"cannot get profile setter for stage model '{self.stage_model}'")
+            exec(compile(preamble + code, f"{self.stage_model}", "exec"), namespace)
+        except Exception as e:
+            logger.warning(f"Error executing profile file '{file_path.as_posix()}': {e}")
+            return
+
+        profile_setter = namespace.get(profile_setter_function)
+        if profile_setter is None:
+            logger.warning(f"Profile setter function '{profile_setter_function}' not found in profile file '{file_path.as_posix()}'")
             return
 
         try:
-            profile_setter(ximclib, self.device)
-            logger.info(f"set profile for stage model '{self.stage_model}'")
+            result = profile_setter(ximclib, self.device)
+            logger.info(f"set profile for stage model '{self.stage_model}' from file '{file_path.as_posix()}', "
+                        + f"result: {RESULT_MAP.get(result, result)}")
         except Exception as e:
-            logger.error(f"error setting profile for stage model '{self.stage_model}': {e}")
+            logger.error(f"error setting profile for stage model '{self.stage_model}' "
+                         + f"from file '{file_path.as_posix()}': {e}")
 
     def position_sampler(self):
         return self.position
@@ -877,12 +896,17 @@ if __name__ == "__main__":
     def get_position():
         logger.info(f"Stage position: {stage.position}")
 
-    # move_between_presets()
-    if stage.is_moving:
-        logger.info("Stage is moving, waiting to get position until it stops...")
-    while stage.is_moving:
-        time.sleep(1)
-    logger.info("Stage stopped, getting position...")
-    get_position()
+    def test_set_profile():
+        stage.set_profile()
 
+    def test_move_between_presets():
+        move_between_presets()
+        if stage.is_moving:
+            logger.info("Stage is moving, waiting to get position until it stops...")
+        while stage.is_moving:
+            time.sleep(1)
+        logger.info("Stage stopped, getting position...")
+        get_position()
+
+    test_set_profile()
     sys.exit(0)
