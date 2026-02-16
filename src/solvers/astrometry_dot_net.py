@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import astropy.io.fits
@@ -12,11 +13,9 @@ from astropy.coordinates import Angle
 from common.config.rois import SkyRoiConfig, SpecRoiConfig
 from common.const import Const
 from common.filer import Filer
-from common.interfaces.solving import (SolverInterface, SolvingResult,
-                                       SolvingSolution)
+from common.interfaces.solving import SolverInterface, SolvingResult, SolvingSolution
 from common.mast_logging import init_log
-from common.utils import (Coord, boxed_log, function_name,
-                          generate_random_string)
+from common.utils import Coord, boxed_log, function_name, generate_random_string
 from imagers import ImagerSettings
 
 # from unit import Unit  # type: ignore[import-untyped]
@@ -60,7 +59,7 @@ def win_to_wsl(path: str) -> str:
 
 class AstrometryDotNet(SolverInterface):
 
-    def solve(
+    def solve(  # noqa: C901
         self,
         unit,
         phase: Const.SolvingPhase,
@@ -199,6 +198,16 @@ class AstrometryDotNet(SolverInterface):
                 args += [
                     "--index-file",
                     "/usr/local/astrometry/data/" + index_file,
+                ]
+
+            if not Path("/usr/local/astrometry/data").exists() and Path("/usr/local/astrometry/data.saved").exists():
+                #
+                # For mastrometry.net we don't want 'data' to exists so we moved it aside to 'data.saved'.
+                # But if 'data' doesn't exist, we need to point astrometry.net to 'data.saved' for the index files.
+                #
+                args += [
+                    "--index-dir",
+                    "/usr/local/astrometry/data.saved",
                 ]
 
             args += ["--new-fits", win_to_cygwin(new_fits_path)]
