@@ -249,7 +249,8 @@ class MastrometryDotNet(SolverInterface):
                     "--crpix-y", str(refpix[1]),
                 ]
 
-            new_fits_path = Path(str(downsampled_image_path).replace(".fits", f",solver={self.name}.fits").replace("downsampled_", ""))
+            new_fits_path = Path(str(downsampled_image_path).replace(
+                ".fits", f",solver={self.name}.fits").replace("downsampled_", ""))
             args += [
                 "--new-fits", win_to_cygwin(str(new_fits_path)),
                 win_to_cygwin(str(downsampled_image_path)),
@@ -335,11 +336,6 @@ class MastrometryDotNet(SolverInterface):
 
 if __name__ == "__main__":
     def test_solver():
-        target = Coord(
-            ra=Angle(20.370853562216, unit="hour"),
-            dec=Angle(40.2566511405156, unit="deg"),
-        )
-
         solver = MastrometryDotNet()
         result = solver.solve(
             unit=None,
