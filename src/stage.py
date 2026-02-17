@@ -59,9 +59,10 @@ if platform.system() == "Windows":
         c_char_p,
         c_int,
         cast,
-        controller_name_t,
         device_information_t,
         edges_settings_t,
+        serial_number_t,
+        stage_information_t,
         status_t,
         string_at,
     )
@@ -181,12 +182,12 @@ class Stage(Component, SwitchedOutlet):
             logger.error(f"{op}: no device detected ({self.device=}")
             return
 
-        self.stage_model = None
-        x_controller_name = controller_name_t()
-        result = ximclib.get_controller_name(self.device, byref(x_controller_name))
+        stage_information = stage_information_t()
+        result = ximclib.get_stage_information(self.device, byref(stage_information))
+
         if result == Result.Ok:
             self.stage_model = repr(
-                string_at(x_controller_name.ControllerName).decode()
+                string_at(stage_information.PartNumber).decode()
             ).replace("'", "")
 
             match self.stage_model:
@@ -198,6 +199,13 @@ class Stage(Component, SwitchedOutlet):
                     raise Exception(f"{op}: unsupported stage model '{self.stage_model}'")
         else:
             raise Exception(f"{op}: cannot get controller name ({result=})")
+
+        serial_number = serial_number_t()
+        result = ximclib.get_serial_number(self.device, byref(serial_number))
+        if result == Result.Ok:
+            self.serial_number = serial_number.SN
+        else:
+            logger.warning(f"{op}: cannot get serial number ({result=})")
 
         # self.set_profile()  # FUTURE: set motion profile parameters for known stage models
 
@@ -243,7 +251,7 @@ class Stage(Component, SwitchedOutlet):
 
         self.device_info = (
             f"port='{comport}', manufacturer='{self.info['controller']}', product='{self.info['product']}', "
-            + f"version='{self.info['version']}', model='{self.stage_model}', "
+            + f"version='{self.info['version']}', model='{self.stage_model}', serial={self.serial_number}, "
             + f"fcu_version='{self.fcu_version.value}', "
             + f"range={self.min_travel}..{self.max_travel} (borders by: {self.border_by}), "
             + f"close_enough={self.conf.close_enough}"
