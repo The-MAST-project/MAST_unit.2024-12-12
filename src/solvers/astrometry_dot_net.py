@@ -138,7 +138,7 @@ class AstrometryDotNet(SolverInterface):
         args += ["--scale-units", "arcsecperpix"]
         args += ["--scale-low", f"{0.25 * binning}"]
         args += ["--scale-high", f"{0.27 * binning}"]
-        # args +=["--downsample", '2'] # oren
+        args +=["--downsample", '2'] # bin2 during source extraction to speed up solving, but the image is still saved at full resolution
         if target is not None:
             args += ["--ra", f"{target.ra.deg}"]
             args += ["--dec", f"{target.dec.value}"]
