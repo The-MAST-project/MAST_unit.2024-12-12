@@ -138,6 +138,7 @@ class AstrometryDotNet(SolverInterface):
         args += ["--scale-units", "arcsecperpix"]
         args += ["--scale-low", f"{0.25 * binning}"]
         args += ["--scale-high", f"{0.27 * binning}"]
+        # args +=["--downsample", '2'] # oren
         if target is not None:
             args += ["--ra", f"{target.ra.deg}"]
             args += ["--dec", f"{target.dec.value}"]

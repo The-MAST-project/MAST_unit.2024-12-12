@@ -59,6 +59,7 @@ if platform.system() == "Windows":
         c_char_p,
         c_int,
         cast,
+        controller_name_t,
         device_information_t,
         edges_settings_t,
         serial_number_t,
@@ -185,9 +186,19 @@ class Stage(Component, SwitchedOutlet):
         stage_information = stage_information_t()
         result = ximclib.get_stage_information(self.device, byref(stage_information))
 
+        # oren
+        controller_name = controller_name_t()
+        result = ximclib.get_controller_name(self.device, byref(controller_name))
+        # oren
+
         if result == Result.Ok:
+            # self.stage_model = repr(
+            #     string_at(stage_information.PartNumber).decode()
+            # ).replace("'", "")
+
+            # oren
             self.stage_model = repr(
-                string_at(stage_information.PartNumber).decode()
+                string_at(controller_name.ControllerName).decode()
             ).replace("'", "")
 
             match self.stage_model:
@@ -888,7 +899,7 @@ if __name__ == "__main__":
 
     stage = Stage(unit=None)  # type: ignore
 
-    def move_between_presets():
+    def test_move_between_presets():
 
         def move_and_wait(preset: StagePresetPosition):
             stage.move_to_preset(preset)
@@ -901,20 +912,11 @@ if __name__ == "__main__":
             time.sleep(5)
             move_and_wait(StagePresetPosition.Spec)
 
-    def get_position():
+    def test_get_position():
         logger.info(f"Stage position: {stage.position}")
 
     def test_set_profile():
         stage.set_profile()
 
-    def test_move_between_presets():
-        move_between_presets()
-        if stage.is_moving:
-            logger.info("Stage is moving, waiting to get position until it stops...")
-        while stage.is_moving:
-            time.sleep(1)
-        logger.info("Stage stopped, getting position...")
-        get_position()
-
-    test_set_profile()
+    test_get_position()
     sys.exit(0)
