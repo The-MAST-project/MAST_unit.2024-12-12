@@ -61,8 +61,8 @@ if platform.system() == "Windows":
         cast,
         device_information_t,
         edges_settings_t,
+        secure_settings_t,
         serial_number_t,
-        stage_information_t,
         status_t,
         string_at,
     )
@@ -102,12 +102,36 @@ class Stage(Component, SwitchedOutlet):
     _instance = None
     _initialized = False
 
+    state_flags_dict: dict = {
+        StateFlags.STATE_ERRC: "STATE_ERRC",
+        StateFlags.STATE_ERRV: "STATE_ERRV",
+        StateFlags.STATE_ERRD: "STATE_ERRD",
+
+        StateFlags.STATE_IS_HOMED: "STATE_IS_HOMED",
+        StateFlags.STATE_EEPROM_CONNECTED: "STATE_EEPROM_CONNECTED",
+
+        StateFlags.STATE_ALARM: "STATE_ALARM",
+        StateFlags.STATE_CTP_ERROR: "STATE_CTP_ERROR",
+        StateFlags.STATE_POWER_OVERHEAT: "STATE_POWER_OVERHEAT",
+        StateFlags.STATE_CONTROLLER_OVERHEAT: "STATE_CONTROLLER_OVERHEAT",
+        StateFlags.STATE_OVERLOAD_POWER_VOLTAGE: "STATE_OVERLOAD_POWER_VOLTAGE",
+        StateFlags.STATE_OVERLOAD_POWER_CURRENT: "STATE_OVERLOAD_POWER_CURRENT",
+        StateFlags.STATE_OVERLOAD_USB_VOLTAGE: "STATE_OVERLOAD_USB_VOLTAGE",
+        StateFlags.STATE_LOW_USB_VOLTAGE: "STATE_LOW_USB_VOLTAGE",
+        StateFlags.STATE_OVERLOAD_USB_CURRENT: "STATE_OVERLOAD_USB_CURRENT",
+        StateFlags.STATE_BORDERS_SWAP_MISSET: "STATE_BORDERS_SWAP_MISSET",
+        StateFlags.STATE_LOW_POWER_VOLTAGE: "STATE_LOW_POWER_VOLTAGE",
+        StateFlags.STATE_H_BRIDGE_FAULT: "STATE_H_BRIDGE_FAULT",
+        StateFlags.STATE_WINDING_RES_MISMATCH: "STATE_WINDING_RES_MISMATCH",
+        StateFlags.STATE_ENCODER_FAULT: "STATE_ENCODER_FAULT",
+        StateFlags.STATE_ENGINE_RESPONSE_ERROR: "STATE_ENGINE_RESPONSE_ERROR",
+        StateFlags.STATE_EXTIO_ALARM: "STATE_EXTIO_ALARM",
+    }
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
-
-    _positioning_precision: int = 100
 
     def __init__(self, unit: "Unit"):  # type: ignore  # noqa: C901
         if self._initialized:
@@ -182,23 +206,37 @@ class Stage(Component, SwitchedOutlet):
             logger.error(f"{op}: no device detected ({self.device=}")
             return
 
-        stage_information = stage_information_t()
-        result = ximclib.get_stage_information(self.device, byref(stage_information))
+        # these two are set by the ontimer() method
+        self._currently_operational = True
+        self._why_not_currently_operational = []
 
-        if result == Result.Ok:
-            self.stage_model = repr(
-                string_at(stage_information.PartNumber).decode()
-            ).replace("'", "")
+        # stage_information = stage_information_t()
+        # result = ximclib.get_stage_information(self.device, byref(stage_information))
 
-            match self.stage_model:
-                case "8MT167-25LS-MEn1":
-                    self.fcu_version = FcuVersion.v1
-                case "8MT173-20DCE2":
-                    self.fcu_version = FcuVersion.v2
-                case _:
-                    raise Exception(f"{op}: unsupported stage model '{self.stage_model}'")
-        else:
-            raise Exception(f"{op}: cannot get controller name ({result=})")
+        # if result == Result.Ok:
+        #     self.stage_model = repr(
+        #         string_at(stage_information.PartNumber).decode()
+        #     ).replace("'", "")
+
+        #     match self.stage_model:
+        #         case "8MT167-25LS-MEn1":
+        #             self.fcu_version = FcuVersion.v1
+        #         case "8MT173-20DCE2":
+        #             self.fcu_version = FcuVersion.v2
+        #         case _:
+        #             raise Exception(f"{op}: unsupported stage model '{self.stage_model}'")
+        # else:
+        #     raise Exception(f"{op}: cannot get controller name ({result=})")
+
+        match self.conf.model:
+            case "8MT167-25LS-MEn1":
+                self.fcu_version = FcuVersion.v1
+            case "8MT173-20DCE2":
+                self.fcu_version = FcuVersion.v2
+            case _:
+                logger.warning(f"{op}: unsupported stage model in config: '{self.conf.model}'")
+                raise Exception(f"{op}: unsupported stage model '{self.conf.model}'")
+        self.stage_model = self.conf.model
 
         serial_number = serial_number_t()
         result = ximclib.get_serial_number(self.device, byref(serial_number))
@@ -249,10 +287,24 @@ class Stage(Component, SwitchedOutlet):
         else:
             raise Exception(f"{op}: cannot get edges settings ({result=})")
 
+        self.secure_settings: secure_settings_t = secure_settings_t()
+        result = ximclib.get_secure_settings(self.device, byref(self.secure_settings))
+        if result != Result.Ok:
+            logger.warning(f"{op}: cannot get secure settings ({result=})")
+
+        status = status_t()
+        result = ximclib.get_status(self.device, byref(status))
+        if result == Result.Ok:
+            if status.Flags & StateFlags.STATE_EEPROM_CONNECTED:
+                self.info["eeprom_connected"] = True
+            else:
+                self.info["eeprom_connected"] = False
+
         self.device_info = (
             f"port='{comport}', manufacturer='{self.info['controller']}', product='{self.info['product']}', "
             + f"version='{self.info['version']}', model='{self.stage_model}', serial={self.serial_number}, "
             + f"fcu_version='{self.fcu_version.value}', "
+            + f"EEPROM connected={self.info.get('eeprom_connected', 'unknown')}, "
             + f"range={self.min_travel}..{self.max_travel} (borders by: {self.border_by}), "
             + f"close_enough={self.conf.close_enough}"
         )
@@ -525,6 +577,88 @@ from pyximc import *
             pos == self.latest_positions[0] for pos in self.latest_positions
         )
 
+    def check_current_status(self, status: status_t):  # noqa: C901
+        """
+        Checks the current status of the controller,
+            updates currently_operational and why_not_currently_operational accordingly,
+            and logs any relevant information or errors.
+        """
+        op = function_name()
+        assert ximclib
+
+        self._why_not_currently_operational = []
+        self._currently_operational = True
+
+        secure_settings = secure_settings_t()
+        with self.stage_lock:
+            result = ximclib.get_secure_settings(self.device, byref(secure_settings))
+            if result == Result.Ok:
+                if status.CurT > secure_settings.CriticalT:
+                    logger.warning(
+                        f"{op}: WARNING: controller temperature {(status.CurT/10):.2f}C "
+                        + f"exceeds critical temperature {(secure_settings.CriticalT/10):.2f}C"
+                    )
+                    logger.debug(f"{op}: secure settings: {secure_settings:x}")
+            else:
+                logger.warning(f"{op}: cannot get secure settings ({result=})")
+
+        controller_errors = []
+        for error_bit in [
+            StateFlags.STATE_ERRC,
+            StateFlags.STATE_ERRV,
+            StateFlags.STATE_ERRD,
+        ]:
+            if status.Flags & error_bit:
+                controller_errors.append(self.state_flags_dict.get(error_bit, f"Unknown error bit 0x{error_bit:08X}"))
+        if controller_errors:
+            logger.error(f"{op}: controller errors detected: {', '.join(controller_errors)}")
+
+        security_error = status.Flags & StateFlags.STATE_SECUR
+        if security_error != 0:
+            security_errors = []
+            for bit in [
+                StateFlags.STATE_CTP_ERROR,
+                StateFlags.STATE_POWER_OVERHEAT,
+                StateFlags.STATE_CONTROLLER_OVERHEAT,
+                StateFlags.STATE_OVERLOAD_POWER_VOLTAGE,
+                StateFlags.STATE_OVERLOAD_POWER_CURRENT,
+                StateFlags.STATE_OVERLOAD_USB_VOLTAGE,
+                StateFlags.STATE_LOW_USB_VOLTAGE,
+                StateFlags.STATE_OVERLOAD_USB_CURRENT,
+                StateFlags.STATE_BORDERS_SWAP_MISSET,
+                StateFlags.STATE_LOW_POWER_VOLTAGE,
+                StateFlags.STATE_H_BRIDGE_FAULT,
+                StateFlags.STATE_WINDING_RES_MISMATCH,
+                StateFlags.STATE_ENCODER_FAULT,
+                StateFlags.STATE_ENGINE_RESPONSE_ERROR,
+                StateFlags.STATE_EXTIO_ALARM,
+            ]:
+                if (security_error & bit) != 0:
+                    security_errors.append(self.state_flags_dict.get(bit, f"Unknown security error bit 0x{bit:08X}"))
+
+            if security_errors:
+                logger.error(f"{op}: security errors detected: {', '.join(security_errors)}")
+
+            if (security_error & StateFlags.STATE_ALARM) != 0:
+                if (security_error & (StateFlags.STATE_POWER_OVERHEAT | StateFlags.STATE_CONTROLLER_OVERHEAT)) != 0:
+
+                    if status.CurT > self.secure_settings.CriticalT:
+                        logger.error(
+                            f"{op}: controller temperature {(status.CurT/10):.2f}C exceeds critical temperature "
+                            + f"{(self.secure_settings.CriticalT/10):.2f}C"
+                        )
+                        self.start_activity(StageActivities.Overheating, existing_ok=True)
+                    else:
+                        pass # TODO: Check other ALARM conditions
+            else:
+                # STATE_ALARM was set but is no longer. If we were previously in Overheating activity, end it.
+                if self.is_active(StageActivities.Overheating):
+                    logger.info(f"{op}: controller temperature back to normal, ending Overheating activity")
+                    result = ximclib.command_stop(self.device)
+                    if result != Result.Ok:
+                        logger.error(f"{op}: failed to stop stage after overheating: {RESULT_MAP.get(result, result)}")
+                    self.end_activity(StageActivities.Overheating)
+
     def ontimer(self):  # noqa: C901
         if self.unit and self.unit.unit_shutdown_event.is_set():
             if self.timer:
@@ -537,37 +671,19 @@ from pyximc import *
         if not self.detected or not self.stage_lock:
             return
 
+        op = function_name()
+        assert ximclib
         hw_status = status_t()
         with self.stage_lock:
-            assert ximclib
             result = ximclib.get_status(self.device, byref(hw_status))
         if result != Result.Ok:
-            logger.error(f"could not get_status(), {result=} ({RESULT_MAP[result]})")
+            logger.error(f"{op}: could not get_status(), {result=} ({RESULT_MAP[result]})")
             return
+
+        self.check_current_status(hw_status)
 
         self._position = hw_status.CurPosition
         self.latest_positions.append(self._position)
-
-        error_bits = (
-            StateFlags.STATE_ERRC | StateFlags.STATE_ERRV | StateFlags.STATE_ERRD
-        )
-        controller_error = hw_status.Flags & error_bits
-        if controller_error:
-            logger.error(f"CONTR ERROR 0x{controller_error:08X}")
-
-        security_error = hw_status.Flags & StateFlags.STATE_SECUR
-        if security_error:
-            logger.error(f"SECUR ERROR 0x{security_error:08X}")
-
-        if hw_status.Flags & StateFlags.STATE_ALARM:
-            # should wait for the ALARM cause to go away and then issue a command_stop()
-            # for now, just log
-            logger.info("Detected StateFlags.STATE_ALARM, issuing a STOP command")
-            with self.stage_lock:
-                result = ximclib.command_stop(self.device)
-            if result != Result.Ok:
-                logger.error(f"could not command_stop({self.device}), {result=}")
-            # TBD:  What else needs to be done?
 
         self.is_moving = (hw_status.MvCmdSts & MvcmdStatus.MVCMD_RUNNING) != 0
 
@@ -597,7 +713,7 @@ from pyximc import *
                 elif (hw_status.MvCmdSts & MvcmdStatus.MVCMD_ERROR) != 0:
                     self.end_activity(StageActivities.Moving)
                     logger.error(
-                        f"move command 0x{hw_status.MvCmdSts & MvcmdStatus.MVCMD_NAME_BITS:08X} "
+                        f"{op}: move command 0x{hw_status.MvCmdSts & MvcmdStatus.MVCMD_NAME_BITS:08X} "
                         + "ended with MVCMD_ERROR"
                     )
                     with self.stage_lock:
@@ -610,15 +726,15 @@ from pyximc import *
                             result = ximclib.get_status(self.device, byref(hw_status))
                             if result != Result.Ok:
                                 logger.error(
-                                    f"attempt #{i} (of 3): could not get_status(), {result=} ({RESULT_MAP[result]})"
+                                    f"{op}: attempt #{i} (of 3): could not get_status(), {result=} ({RESULT_MAP[result]})"
                                 )
                                 break
                             logger.error(
-                                f"attempt #{i} (of 3): status after command_stop(): MvCmdSts=0x{hw_status.MvCmdSts:08X}"
+                                f"{op}: attempt #{i} (of 3): status after command_stop(): {hw_status.MvCmdSts=:08X}"
                             )
                             if (hw_status.MvCmdSts & MvcmdStatus.MVCMD_ERROR) != 0:
                                 logger.error(
-                                    f"attempt #{i} (of 3): successfully cleared MVCMD_ERROR"
+                                    f"{op}: attempt #{i} (of 3): successfully cleared MVCMD_ERROR"
                                 )
                                 break
 
@@ -789,6 +905,7 @@ from pyximc import *
                     self.at_preset(StagePresetPosition.Spec)
                     or self.at_preset(StagePresetPosition.Sky)
                 ),
+                self._currently_operational,
             ]
         )
 
@@ -814,6 +931,8 @@ from pyximc import *
                     + f"({self.presets[StagePresetPosition.Spec]}) or 'Sky' "
                     + f"({self.presets[StagePresetPosition.Sky]}) preset positions"
                 )
+            if not self._currently_operational:
+                ret.extend(self._why_not_currently_operational)
         return ret
 
     @property
@@ -916,5 +1035,6 @@ if __name__ == "__main__":
         logger.info("Stage stopped, getting position...")
         get_position()
 
-    test_set_profile()
+    # test_set_profile()
+    get_position()
     sys.exit(0)
