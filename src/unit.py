@@ -44,7 +44,7 @@ from common.interfaces.components import Component
 # from guiding import Guider
 from common.interfaces.imager import ImagerExposureSeries, ImagerRoi, ImagerSequenceOfExposures, ImagerSettings, ImagerTypes
 from common.mast_logging import DailyFileHandler, init_log
-from common.models.assignments import UnitAssignmentModel
+from common.models.assignments import UnitAssignment
 from common.models.statuses import FullUnitStatus
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
@@ -932,7 +932,7 @@ class Unit(Component):
         logger.info(f"{op}: done.")
         return CanonicalResponse_Ok
 
-    def do_execute_assignment(self, assignment: UnitAssignmentModel):
+    def do_execute_assignment(self, assignment: UnitAssignment):
         """
         Execute an assignment in a separate Thread
         :param assignment:
@@ -983,7 +983,7 @@ class Unit(Component):
                     path_on_share=self.acquirer.latest_acquisition.folder,
                 )
 
-    async def endpoint_execute_assignment(self, assignment: UnitAssignmentModel):
+    async def endpoint_execute_assignment(self, assignment: UnitAssignment):
         if not self.operational:
             return CanonicalResponse(errors=self.why_not_operational)
 

@@ -22,11 +22,14 @@ from common.config import Config
 from common.config.rois import FcuVersion
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
-from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
+from common.interfaces.imager import (ImagerExposureSeries, ImagerInterface,
+                                      ImagerRoi, ImagerSettings)
 from common.mast_logging import init_log
-from common.models.statuses import PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
+from common.models.statuses import (PHD2GuiderStatus, PHD2ImagerStatus,
+                                    SkyQualityStatus)
 from common.process import WatchedProcess
-from common.utils import Coord, RepeatTimer, Timeout, boxed_debug, function_name
+from common.utils import (Coord, RepeatTimer, Timeout, boxed_debug,
+                          function_name)
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 from stage import StagePresetPosition
 
@@ -996,9 +999,19 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             else:
                 # self.set_limit_frame(roi=imager_settings.roi.binned(imager_settings.binning))
                 if imager_settings.use_set_limit_frame:
+                    logger.info("Hardcoded ROI for guiding- add separate database entry for this")
+                    imager_settings.roi.x = 0
+                    imager_settings.roi.y = 0
+                    imager_settings.roi.width = 4000
+                    imager_settings.roi.height = 5000
                     self.set_limit_frame(roi=imager_settings.roi)
                 else: # oren
-                    self.set_limit_frame(roi=None) # oren
+                    logger.info("Hardcoded ROI for guiding- add separate database entry for this")
+                    imager_settings.roi.x = 0
+                    imager_settings.roi.y = 0
+                    imager_settings.roi.width = 4000
+                    imager_settings.roi.height = 5000
+                    self.set_limit_frame(roi=imager_settings.roi) # oren
 
                 self.call(
                     method="guide",
@@ -1739,6 +1752,30 @@ if __name__ == "__main__":
 
     # test_new_guiding()
 
+    # test_new_single_frame()
+
+    exit(0)
+    # test_new_single_frame()
+
+    exit(0)
+    # test_new_single_frame()
+
+    exit(0)
+    # test_new_single_frame()
+
+    exit(0)
+    # test_new_single_frame()
+
+    exit(0)
+    # test_new_single_frame()
+
+    exit(0)
+    # test_new_single_frame()
+
+    exit(0)
+    # test_new_single_frame()
+
+    exit(0)
     # test_new_single_frame()
 
     exit(0)
