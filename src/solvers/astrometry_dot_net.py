@@ -59,6 +59,40 @@ def win_to_wsl(path: str) -> str:
 
 class AstrometryDotNet(SolverInterface):
 
+    def __init__(self):
+        """
+        Prepare things for Astrometry.net solving
+        - check the ImDisk RAM disk is mounted and contains the indexes
+
+        """
+        super().__init__()
+
+        ram = Filer().ram
+        assert ram is not None, f"{function_name()}: RAM disk is not mounted"
+        if not Path(ram.root).exists():
+            Path(ram.root).mkdir(parents=True, exist_ok=True)
+
+        self.index_dir = Path(str(ram.drive), "mast-indexes")
+        if not self.index_dir.exists():
+            raise Exception(f"{function_name()}: RAM disk path '{self.index_dir.as_posix()}' does not exist")
+
+        missing = False
+        for i in range(0, 47):
+            index_5206_file = self.index_dir / f"index-5206-{i:02d}.fits" # needed
+            if not index_5206_file.exists():
+                logger.warning(f"{function_name()}: RAM disk is missing index file '{index_5206_file.as_posix()}'")
+                missing = True
+
+            # index_5205_file = self.index_dir / f"index-5205-{i:02d}.fits" # niced to have
+            # if not index_5205_file.exists():
+            #     logger.warning(f"{function_name()}: RAM disk is missing index file '{index_5205_file.as_posix()}'")
+            #     missing = True
+
+            if missing:
+                raise Exception(f"{function_name()}: RAM disk is missing some index files")
+
+        logger.info(f"{function_name()}: RAM disk contains all needed index files")
+
     def solve(  # noqa: C901
         self,
         unit,
@@ -135,6 +169,8 @@ class AstrometryDotNet(SolverInterface):
         binning = settings.binning if settings else 1
         cmd = ""
         args = []
+        # Index file directory
+        args += ["--index-dir", win_to_cygwin(str(self.index_dir))]
         args += ["--scale-units", "arcsecperpix"]
         args += ["--scale-low", f"{0.25 * binning}"]
         args += ["--scale-high", f"{0.27 * binning}"]
@@ -195,21 +231,21 @@ class AstrometryDotNet(SolverInterface):
             args += ["--dir", tmp_path]
             args += ["--temp-dir", tmp_path]
 
-            if index_file is not None:
-                args += [
-                    "--index-file",
-                    "/usr/local/astrometry/data/" + index_file,
-                ]
+            # if index_file is not None:
+            #     args += [
+            #         "--index-file",
+            #         win_to_cygwin(str(self.index_dir)) + "/" + index_file,
+            #     ]
 
-            if not Path("/usr/local/astrometry/data").exists() and Path("/usr/local/astrometry/data.saved").exists():
-                #
-                # For mastrometry.net we don't want 'data' to exists so we moved it aside to 'data.saved'.
-                # But if 'data' doesn't exist, we need to point astrometry.net to 'data.saved' for the index files.
-                #
-                args += [
-                    "--index-dir",
-                    "/usr/local/astrometry/data.saved",
-                ]
+            # if not Path("/usr/local/astrometry/data").exists() and Path("/usr/local/astrometry/data.saved").exists():
+            #     #
+            #     # For mastrometry.net we don't want 'data' to exists so we moved it aside to 'data.saved'.
+            #     # But if 'data' doesn't exist, we need to point astrometry.net to 'data.saved' for the index files.
+            #     #
+            #     args += [
+            #         "--index-dir",
+            #         "/usr/local/astrometry/data.saved",
+            #     ]
 
             args += ["--new-fits", win_to_cygwin(new_fits_path)]
             args += [win_to_cygwin(input_fits_path)]
@@ -418,5 +454,15 @@ if __name__ == "__main__":
         result = parse_solver_output(lines)
         print(json.dumps(result.to_dict(), indent=2))
 
+    test_solver()
+    sys.exit(0)
+    test_solver()
+    sys.exit(0)
+    test_solver()
+    sys.exit(0)
+    test_solver()
+    sys.exit(0)
+    test_solver()
+    sys.exit(0)
     test_solver()
     sys.exit(0)
