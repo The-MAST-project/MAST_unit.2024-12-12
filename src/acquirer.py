@@ -14,10 +14,11 @@ from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import FcuVersion, SkyRoiConfig
 from common.mast_logging import init_log
-from common.models.assignments import UnitAssignmentModel
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.models.assignments import UnitAssignment
+from common.parsers import (sexagesimal_degrees_to_decimal,
+                            sexagesimal_hours_to_decimal)
 from common.rois import SkyRoi
-from common.tasks.notifications import notify_controller_about_task_acquisition_path
+from common.tasks.notifications import notify_controller_about_acquisition_path
 from common.utils import Coord, boxed_log, function_name
 from phd2.phd2 import PHD2Connector
 from solving import SolverId, SolvingTolerance
@@ -235,6 +236,8 @@ class Acquirer:
 
         # override for fcu_v2 to use full frame
         if self.unit.fcu_version == FcuVersion.v2:
+            from common.interfaces.imager import ImagerRoi
+
             spec_imager_settings.roi = ImagerRoi(
                 x=0,
                 y=0,
@@ -303,12 +306,12 @@ class Acquirer:
             self.unit.acquirer.latest_acquisition.post_process()
 
     def start_acquisition_and_guiding_for_assignment(
-        self, assignment: UnitAssignmentModel
+        self, assignment: UnitAssignment
     ):
         approach_mode: int = 2
         make_corrections = True
-        ra_j2000_hours = assignment.target.ra
-        dec_j2000_degs = assignment.target.dec
+        ra_j2000_hours = assignment.plan.target.ra_hours
+        dec_j2000_degs = assignment.plan.target.dec_degrees
 
         assert self.unit.unit_conf is not None
         solver_name = self.unit.unit_conf.solving.method
@@ -336,8 +339,8 @@ class Acquirer:
          the products are.
         """
         if assignment.plan.ulid is not None:
-            notify_controller_about_task_acquisition_path(
-                task_id=assignment.plan.ulid,
+            notify_controller_about_acquisition_path(
+                assignment_id=assignment.plan.ulid,
                 subpath="acquisition",
                 path_on_share=acquisition.folder,
             )
