@@ -22,11 +22,14 @@ from common.config import Config
 from common.config.rois import FcuVersion
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
-from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
+from common.interfaces.imager import (ImagerExposureSeries, ImagerInterface,
+                                      ImagerRoi, ImagerSettings)
 from common.mast_logging import init_log
-from common.models.statuses import PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
+from common.models.statuses import (PHD2GuiderStatus, PHD2ImagerStatus,
+                                    SkyQualityStatus)
 from common.process import WatchedProcess
-from common.utils import Coord, RepeatTimer, Timeout, boxed_debug, function_name
+from common.utils import (Coord, RepeatTimer, Timeout, boxed_debug,
+                          function_name)
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 from stage import StagePresetPosition
 
@@ -1426,7 +1429,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.image_was_saved = False
         if self.parent is not None:
             self.parent.start_activity(
-                ImagerActivities.Exposing, details=f"{settings.seconds} seconds"
+                ImagerActivities.Exposing, details=[f"{settings.seconds} seconds"]
             )
             self.parent.start_activity(
                 ImagerActivities.Saving,
@@ -1493,7 +1496,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.image_was_saved = False
         if self.parent is not None:
             self.parent.start_activity(
-                ImagerActivities.Exposing, details=f"{settings.seconds} seconds"
+                ImagerActivities.Exposing, details=[f"{settings.seconds} seconds"]
             )
             self.parent.start_activity(
                 ImagerActivities.Saving,
