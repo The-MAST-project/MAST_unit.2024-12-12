@@ -401,7 +401,7 @@ from pyximc import *
 
         profile_setter = namespace.get(profile_setter_function)
         if profile_setter is None:
-            logger.warning(f"Profile setter function '{profile_setter_function}' not found in profile file '{file_path.as_posix()}'")
+            logger.warning(f"Profile setter function '{profile_setter_function}' not found in '{file_path.as_posix()}'")
             return
 
         try:

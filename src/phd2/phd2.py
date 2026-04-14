@@ -212,13 +212,13 @@ class PHD2Connection:
 
     def write_line(self, s):
         if not self.sock:
-            raise RuntimeError("socket not connected")
+            raise RuntimeError("{function_name()}: socket not connected")
         b = s.encode()
         totsent = 0
         while totsent < len(b):
             sent = self.sock.send(b[totsent:])
             if sent == 0:
-                raise RuntimeError("socket connection broken")
+                raise RuntimeError("{function_name()}: socket connection broken")
             totsent += sent
 
     def terminate(self):

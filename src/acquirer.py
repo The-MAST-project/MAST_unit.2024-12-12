@@ -15,8 +15,7 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import FcuVersion, SkyRoiConfig
 from common.mast_logging import init_log
 from common.models.assignments import UnitAssignment
-from common.parsers import (sexagesimal_degrees_to_decimal,
-                            sexagesimal_hours_to_decimal)
+from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.rois import SkyRoi
 from common.tasks.notifications import notify_controller_about_acquisition_path
 from common.utils import Coord, boxed_log, function_name

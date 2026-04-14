@@ -23,9 +23,14 @@ import common.asi as asi
 from acquirer import Acquirer
 from acquisition import Acquisition
 from autofocusing import Autofocuser, AutofocusResult
-from common.activities import (CoverActivities, FocuserActivities,
-                               ImagerActivities, MountActivities,
-                               StageActivities, UnitActivities)
+from common.activities import (
+    CoverActivities,
+    FocuserActivities,
+    ImagerActivities,
+    MountActivities,
+    StageActivities,
+    UnitActivities,
+)
 from common.api import ControllerApi
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
@@ -35,15 +40,13 @@ from common.const import Const
 from common.dlipowerswitch import PowerSwitchFactory, SwitchedOutlet
 from common.filer import Filer
 from common.interfaces.components import Component
+
 # from guiding import Guider
-from common.interfaces.imager import (ImagerExposureSeries, ImagerRoi,
-                                      ImagerSequenceOfExposures,
-                                      ImagerSettings, ImagerTypes)
+from common.interfaces.imager import ImagerExposureSeries, ImagerRoi, ImagerSequenceOfExposures, ImagerSettings, ImagerTypes
 from common.mast_logging import DailyFileHandler, init_log
 from common.models.assignments import UnitAssignment
 from common.models.statuses import FullUnitStatus
-from common.parsers import (sexagesimal_degrees_to_decimal,
-                            sexagesimal_hours_to_decimal)
+from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
 from common.rois import UnitRoi
 from common.tasks.notifications import notify_controller_about_acquisition_path
