@@ -44,12 +44,12 @@ from common.interfaces.components import Component
 # from guiding import Guider
 from common.interfaces.imager import ImagerExposureSeries, ImagerRoi, ImagerSequenceOfExposures, ImagerSettings, ImagerTypes
 from common.mast_logging import DailyFileHandler, init_log
-from common.models.assignments import UnitAssignmentModel
+from common.models.assignments import UnitAssignment
 from common.models.statuses import FullUnitStatus
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
 from common.rois import UnitRoi
-from common.tasks.notifications import notify_controller_about_task_acquisition_path
+from common.tasks.notifications import notify_controller_about_acquisition_path
 from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers
 from focuser import Focuser
@@ -932,7 +932,7 @@ class Unit(Component):
         logger.info(f"{op}: done.")
         return CanonicalResponse_Ok
 
-    def do_execute_assignment(self, assignment: UnitAssignmentModel):
+    def do_execute_assignment(self, assignment: UnitAssignment):
         """
         Execute an assignment in a separate Thread
         :param assignment:
@@ -940,8 +940,8 @@ class Unit(Component):
         """
         if assignment.plan.autofocus:
             self.autofocuser.start_autofocus(
-                ra_j2000_hours=assignment.target.ra,
-                dec_j2000_degs=assignment.target.dec,
+                ra_j2000_hours=assignment.plan.target.ra_hours,
+                dec_j2000_degs=assignment.plan.target.dec_degrees,
             )
 
             while self.is_active(UnitActivities.Autofocusing):
@@ -959,8 +959,8 @@ class Unit(Component):
                 and self.imager.latest_settings
                 and self.imager.latest_settings.image_path
             ):
-                notify_controller_about_task_acquisition_path(
-                    task_id=assignment.plan.ulid,
+                notify_controller_about_acquisition_path(
+                    assignment_id=assignment.plan.ulid,
                     subpath="autofocus",
                     path_on_share=Path(self.imager.latest_settings.image_path).parent.name,
                 )
@@ -969,21 +969,21 @@ class Unit(Component):
             # At this point we have autofocused and can start acquisition
             #
             self.acquirer.endpoint_start_acquisition_and_guiding(
-                ra_j2000_hours=assignment.target.ra,
-                dec_j2000_degs=assignment.target.dec,
+                ra_j2000_hours=assignment.plan.target.ra_hours,
+                dec_j2000_degs=assignment.plan.target.dec_degrees,
             )
 
             if (
                 assignment.plan.ulid is not None
                 and self.acquirer.latest_acquisition is not None
             ):
-                notify_controller_about_task_acquisition_path(
-                    task_id=assignment.plan.ulid,
+                notify_controller_about_acquisition_path(
+                    assignment_id=assignment.plan.ulid,
                     subpath="acquisition",
                     path_on_share=self.acquirer.latest_acquisition.folder,
                 )
 
-    async def endpoint_execute_assignment(self, assignment: UnitAssignmentModel):
+    async def endpoint_execute_assignment(self, assignment: UnitAssignment):
         if not self.operational:
             return CanonicalResponse(errors=self.why_not_operational)
 
