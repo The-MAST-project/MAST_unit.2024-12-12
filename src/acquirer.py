@@ -234,15 +234,17 @@ class Acquirer:
         spec_imager_settings.use_set_limit_frame = acquisition.use_set_limit_frame
 
         # override for fcu_v2 to use full frame
-        # if self.unit.fcu_version == FcuVersion.v2:
-        #     spec_imager_settings.roi = ImagerRoi(
-        #         x=0,
-        #         y=0,
-        #         width=self.unit.imager.full_frame.width,
-        #         height=self.unit.imager.full_frame.height,
-        #     )
-        #     spec_imager_settings.use_set_limit_frame = True
-        #     spec_imager_settings.binning = 1
+        if self.unit.fcu_version == FcuVersion.v2:
+            from common.interfaces.imager import ImagerRoi
+
+            spec_imager_settings.roi = ImagerRoi(
+                x=0,
+                y=0,
+                width=self.unit.imager.full_frame.width,
+                height=self.unit.imager.full_frame.height,
+            )
+            spec_imager_settings.use_set_limit_frame = True
+            spec_imager_settings.binning = 1
 
         achieved_tolerances = self.unit.solver.solve_and_correct(
             target=target,
