@@ -13,9 +13,11 @@ from astropy.coordinates import Angle
 from common.config.rois import SkyRoiConfig, SpecRoiConfig
 from common.const import Const
 from common.filer import Filer
-from common.interfaces.solving import SolverInterface, SolvingResult, SolvingSolution
+from common.interfaces.solving import (SolverInterface, SolvingResult,
+                                       SolvingSolution)
 from common.mast_logging import init_log
-from common.utils import Coord, boxed_log, function_name, generate_random_string
+from common.utils import (Coord, boxed_log, function_name,
+                          generate_random_string)
 from imagers import ImagerSettings
 
 # from unit import Unit  # type: ignore[import-untyped]
@@ -174,6 +176,7 @@ class AstrometryDotNet(SolverInterface):
         args += ["--scale-units", "arcsecperpix"]
         args += ["--scale-low", f"{0.25 * binning}"]
         args += ["--scale-high", f"{0.27 * binning}"]
+        args += ["--parity", "pos"] # parity known to be positive for our setup, so set it to speed up solving
         args +=["--downsample", '2'] # bin2 during source extraction to speed up solving, but the image is still saved at full resolution
         if target is not None:
             args += ["--ra", f"{target.ra.deg}"]

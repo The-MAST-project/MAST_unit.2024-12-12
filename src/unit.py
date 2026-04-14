@@ -23,14 +23,9 @@ import common.asi as asi
 from acquirer import Acquirer
 from acquisition import Acquisition
 from autofocusing import Autofocuser, AutofocusResult
-from common.activities import (
-    CoverActivities,
-    FocuserActivities,
-    ImagerActivities,
-    MountActivities,
-    StageActivities,
-    UnitActivities,
-)
+from common.activities import (CoverActivities, FocuserActivities,
+                               ImagerActivities, MountActivities,
+                               StageActivities, UnitActivities)
 from common.api import ControllerApi
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
@@ -40,16 +35,18 @@ from common.const import Const
 from common.dlipowerswitch import PowerSwitchFactory, SwitchedOutlet
 from common.filer import Filer
 from common.interfaces.components import Component
-
 # from guiding import Guider
-from common.interfaces.imager import ImagerExposureSeries, ImagerRoi, ImagerSequenceOfExposures, ImagerSettings, ImagerTypes
+from common.interfaces.imager import (ImagerExposureSeries, ImagerRoi,
+                                      ImagerSequenceOfExposures,
+                                      ImagerSettings, ImagerTypes)
 from common.mast_logging import DailyFileHandler, init_log
 from common.models.assignments import UnitAssignment
 from common.models.statuses import FullUnitStatus
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.parsers import (sexagesimal_degrees_to_decimal,
+                            sexagesimal_hours_to_decimal)
 from common.paths import PathMaker
 from common.rois import UnitRoi
-from common.tasks.notifications import notify_controller_about_task_acquisition_path
+# from common.tasks.notifications import notify_controller_about_task_acquisition_path
 from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers
 from focuser import Focuser
@@ -954,16 +951,16 @@ class Unit(Component):
             if not self.autofocuser.latest_result:
                 return  # should propagate errors as well
 
-            if (
-                assignment.plan.ulid is not None
-                and self.imager.latest_settings
-                and self.imager.latest_settings.image_path
-            ):
-                notify_controller_about_task_acquisition_path(
-                    task_id=assignment.plan.ulid,
-                    subpath="autofocus",
-                    path_on_share=Path(self.imager.latest_settings.image_path).parent.name,
-                )
+            # if (
+            #     assignment.plan.ulid is not None
+            #     and self.imager.latest_settings
+            #     and self.imager.latest_settings.image_path
+            # ):
+            #     notify_controller_about_task_acquisition_path(
+            #         task_id=assignment.plan.ulid,
+            #         subpath="autofocus",
+            #         path_on_share=Path(self.imager.latest_settings.image_path).parent.name,
+            #     )
 
             #
             # At this point we have autofocused and can start acquisition
@@ -973,15 +970,15 @@ class Unit(Component):
                 dec_j2000_degs=assignment.target.dec,
             )
 
-            if (
-                assignment.plan.ulid is not None
-                and self.acquirer.latest_acquisition is not None
-            ):
-                notify_controller_about_task_acquisition_path(
-                    task_id=assignment.plan.ulid,
-                    subpath="acquisition",
-                    path_on_share=self.acquirer.latest_acquisition.folder,
-                )
+            # if (
+            #     assignment.plan.ulid is not None
+            #     and self.acquirer.latest_acquisition is not None
+            # ):
+            #     notify_controller_about_task_acquisition_path(
+            #         task_id=assignment.plan.ulid,
+            #         subpath="acquisition",
+            #         path_on_share=self.acquirer.latest_acquisition.folder,
+            #     )
 
     async def endpoint_execute_assignment(self, assignment: UnitAssignment):
         if not self.operational:

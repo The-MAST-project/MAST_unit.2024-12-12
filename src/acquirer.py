@@ -15,9 +15,10 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import FcuVersion, SkyRoiConfig
 from common.mast_logging import init_log
 from common.models.assignments import UnitAssignment
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.parsers import (sexagesimal_degrees_to_decimal,
+                            sexagesimal_hours_to_decimal)
 from common.rois import SkyRoi
-from common.tasks.notifications import notify_controller_about_task_acquisition_path
+# from common.tasks.notifications import notify_controller_about_task_acquisition_path
 from common.utils import Coord, boxed_log, function_name
 from phd2.phd2 import PHD2Connector
 from solving import SolverId, SolvingTolerance
@@ -335,12 +336,12 @@ class Acquirer:
         This acquisition is part of an assignment, tell the controller where
          the products are.
         """
-        if assignment.plan.ulid is not None:
-            notify_controller_about_task_acquisition_path(
-                task_id=assignment.plan.ulid,
-                subpath="acquisition",
-                path_on_share=acquisition.folder,
-            )
+        # if assignment.plan.ulid is not None:
+        #     notify_controller_about_task_acquisition_path(
+        #         task_id=assignment.plan.ulid,
+        #         subpath="acquisition",
+        #         path_on_share=acquisition.folder,
+        #     )
 
     def endpoint_start_acquisition_and_guiding(  # noqa: C901
         self,
