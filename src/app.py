@@ -20,7 +20,7 @@ from PlaneWave import pwi4_client
 #
 # Log level configuration from the 'global' section of the 'config' file
 #
-unit_conf = Config().get_unit(socket.gethostname())
+unit_conf = Config().get_unit(site_name=None, unit_name=socket.gethostname().split('.')[0])
 
 # if 'log_level' in unit_conf.global:
 #     log_level = getattr(logging, unit_conf.global.log_level.upper())
