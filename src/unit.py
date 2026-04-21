@@ -49,7 +49,8 @@ from common.models.statuses import FullUnitStatus
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
 from common.rois import UnitRoi
-from common.tasks.notifications import notify_controller_about_acquisition_path
+from common.models.assignments import AssignmentNotification
+from common.notifications import Notifier
 from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers
 from focuser import Focuser
@@ -959,11 +960,12 @@ class Unit(Component):
                 and self.imager.latest_settings
                 and self.imager.latest_settings.image_path
             ):
-                notify_controller_about_acquisition_path(
+                Notifier().assignment_notification(AssignmentNotification(
                     assignment_id=assignment.plan.ulid,
-                    subpath="autofocus",
-                    path_on_share=Path(self.imager.latest_settings.image_path).parent.name,
-                )
+                    state="in-progress",
+                    shared_top=Path(self.imager.latest_settings.image_path).parent.name,
+                    shared_subpath="autofocus",
+                ))
 
             #
             # At this point we have autofocused and can start acquisition
@@ -977,11 +979,12 @@ class Unit(Component):
                 assignment.plan.ulid is not None
                 and self.acquirer.latest_acquisition is not None
             ):
-                notify_controller_about_acquisition_path(
+                Notifier().assignment_notification(AssignmentNotification(
                     assignment_id=assignment.plan.ulid,
-                    subpath="acquisition",
-                    path_on_share=self.acquirer.latest_acquisition.folder,
-                )
+                    state="in-progress",
+                    shared_top=self.acquirer.latest_acquisition.folder,
+                    shared_subpath="acquisition",
+                ))
 
     async def endpoint_execute_assignment(self, assignment: UnitAssignment):
         if not self.operational:
