@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(try { Get-ChildItem -Path 'HKLM:\\\\SOFTWARE\\\\' -ErrorAction Stop | Out-Null; Write-Output \"ok\" } catch { Write-Output \\(\"err: \" + $_.Exception.Message\\) })"
+    ]
+  }
+}
