@@ -13,11 +13,9 @@ from astropy.coordinates import Angle
 from common.config.rois import SkyRoiConfig, SpecRoiConfig
 from common.const import Const
 from common.filer import Filer
-from common.interfaces.solving import (SolverInterface, SolvingResult,
-                                       SolvingSolution)
+from common.interfaces.solving import SolverInterface, SolvingResult, SolvingSolution
 from common.mast_logging import init_log
-from common.utils import (Coord, boxed_log, function_name,
-                          generate_random_string)
+from common.utils import Coord, boxed_log, function_name, generate_random_string
 from imagers import ImagerSettings
 
 # from unit import Unit  # type: ignore[import-untyped]
@@ -78,22 +76,22 @@ class AstrometryDotNet(SolverInterface):
         if not self.index_dir.exists():
             raise Exception(f"{function_name()}: RAM disk path '{self.index_dir.as_posix()}' does not exist")
 
-        missing = False
-        for i in range(0, 47):
-            index_5206_file = self.index_dir / f"index-5206-{i:02d}.fits" # needed
-            if not index_5206_file.exists():
-                logger.warning(f"{function_name()}: RAM disk is missing index file '{index_5206_file.as_posix()}'")
-                missing = True
+        # missing = False
+        # for i in range(0, 47):
+        #     index_5206_file = self.index_dir / f"index-5206-{i:02d}.fits" # needed
+        #     if not index_5206_file.exists():
+        #         logger.warning(f"{function_name()}: RAM disk is missing index file '{index_5206_file.as_posix()}'")
+        #         missing = True
 
-            # index_5205_file = self.index_dir / f"index-5205-{i:02d}.fits" # niced to have
-            # if not index_5205_file.exists():
-            #     logger.warning(f"{function_name()}: RAM disk is missing index file '{index_5205_file.as_posix()}'")
-            #     missing = True
+        #     # index_5205_file = self.index_dir / f"index-5205-{i:02d}.fits" # niced to have
+        #     # if not index_5205_file.exists():
+        #     #     logger.warning(f"{function_name()}: RAM disk is missing index file '{index_5205_file.as_posix()}'")
+        #     #     missing = True
 
-            if missing:
-                raise Exception(f"{function_name()}: RAM disk is missing some index files")
+        #     if missing:
+        #         raise Exception(f"{function_name()}: RAM disk is missing some index files")
 
-        logger.info(f"{function_name()}: RAM disk contains all needed index files")
+        # logger.info(f"{function_name()}: RAM disk contains all needed index files")
 
     def solve(  # noqa: C901
         self,
