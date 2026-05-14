@@ -85,11 +85,7 @@ ensure_process_is_running(
 
 ensure_process_is_running(
     name="ps3cli.exe",
-    cwd=str(
-        Path(
-            "C:\\Program Files (x86)\\PlaneWave Instruments\\ps3cli\\ps3cli-2024-09-10"
-        ).as_posix()
-    ),
+    cwd="C:\\Users\\mast\\Documents\\PlaneWave\\ps3cli\\ps3cli",
     cmd="ps3cli.exe --server --port=8998",
     logger=logger,
     shell=True,
