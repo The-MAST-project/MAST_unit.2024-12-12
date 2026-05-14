@@ -32,7 +32,7 @@ init_log(logger)
 # os.environ["XILOG"] = "C:/temp/ximc.log"  # Enables logging for ximc library.
 
 XIMC_VERSION = '2.13.6'
-ximc_top_dir = Path().cwd() / "Standa" / f"ximc-{XIMC_VERSION}" / "ximc"
+ximc_top_dir = Path(__file__).parent / "Standa" / f"ximc-{XIMC_VERSION}" / "ximc"
 
 for path in [
         ximc_top_dir / "crossplatform" / "wrappers" / "python", # examples
