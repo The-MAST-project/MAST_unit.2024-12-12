@@ -17,7 +17,8 @@ from common.mast_logging import init_log
 from common.models.assignments import UnitAssignment
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.rois import SkyRoi
-from common.tasks.notifications import notify_controller_about_acquisition_path
+from common.models.assignments import AssignmentNotification
+from common.notifications import Notifier
 from common.utils import Coord, boxed_log, function_name
 from phd2.phd2 import PHD2Connector
 from solving import SolverId, SolvingTolerance
@@ -338,11 +339,12 @@ class Acquirer:
          the products are.
         """
         if assignment.plan.ulid is not None:
-            notify_controller_about_acquisition_path(
+            Notifier().assignment_notification(AssignmentNotification(
                 assignment_id=assignment.plan.ulid,
-                subpath="acquisition",
-                path_on_share=acquisition.folder,
-            )
+                state="in-progress",
+                shared_top=acquisition.folder,
+                shared_subpath="acquisition",
+            ))
 
     def endpoint_start_acquisition_and_guiding(  # noqa: C901
         self,
