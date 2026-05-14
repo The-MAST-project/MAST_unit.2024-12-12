@@ -156,6 +156,7 @@ class Autofocuser:
             elif isinstance(dec_j2000_degs, float):
                 pass
 
+        assert self.unit.unit_conf is not None
         if number_of_images is None:
             number_of_images = self.unit.unit_conf.autofocus.images
         if number_of_images and number_of_images % 2 != 1:
@@ -217,6 +218,8 @@ class Autofocuser:
         self.unit.errors = []
         self.latest_result = None
 
+        assert self.unit.unit_conf is not None
+
         self.unit.start_activity(UnitActivities.Autofocusing)
 
         self.unit.stage.move_to_preset(StagePresetPosition.Sky)
@@ -276,8 +279,8 @@ class Autofocuser:
 
         for try_number in range(max_tries):
 
-            logger.info(f"{op}: starting autofocus try #{try_number} (of {max_tries})")
             autofocus_folder = PathMaker().make_autofocus_folder()
+            logger.info(f"{op}: starting autofocus try #{try_number} (of {max_tries}) in '{autofocus_folder}' ...")
             #
             # Acquire images
             #
@@ -328,7 +331,7 @@ class Autofocuser:
                     self.unit.imager.end_exposure_series(autofocus_exposure_series)
                     return
 
-            # The files are now on the RAM disk
+            # The files are now in the autofocus_folder
 
             self.unit.imager.end_exposure_series(autofocus_exposure_series)
 
@@ -454,7 +457,7 @@ class Autofocuser:
 
                 self.unit.unit_conf.focuser.known_as_good_position = position
                 try:
-                    Config().set_unit(self.unit.hostname, self.unit.unit_conf)
+                    Config().set_unit(unit_name=self.unit.hostname, unit_conf=self.unit.unit_conf)
                     logger.info(
                         f"saved unit '{self.unit.hostname}' configuration for "
                         + f"focuser known-as-good-position {position}"
