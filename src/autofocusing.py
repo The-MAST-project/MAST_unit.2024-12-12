@@ -92,7 +92,7 @@ class Autofocuser:
         ra_j2000_hours: Annotated[
             str | float | None,
             Query(
-                regex=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
+                pattern=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
                 description=(
                     "### Right Ascension (J2000) in either:\n"
                     "- decimal hours (e.g., `12.5`) or\n"
@@ -105,7 +105,7 @@ class Autofocuser:
         dec_j2000_degs: Annotated[
             str | float | None,
             Query(
-                regex=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
+                pattern=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
                 description=(
                     "### Declination (J2000) in either:\n"
                     "- decimal degrees (e.g., `-45.5`) or\n"

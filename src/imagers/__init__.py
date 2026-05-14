@@ -9,7 +9,8 @@ from common.activities import ImagerActivities
 from common.canonical import CanonicalResponse
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerSettings, ImagerStatus, ImagerTypes
+from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerSettings, ImagerTypes
+from common.models.statuses import ImagerStatus
 from common.mast_logging import init_log
 
 logger = logging.Logger("mast." + __name__)
