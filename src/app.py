@@ -1,6 +1,7 @@
 import logging
 import os
 import socket
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -83,14 +84,31 @@ ensure_process_is_running(
 )
 
 
-ensure_process_is_running(
-    name="ps3cli.exe",
-    cwd="C:\\Users\\mast\\Documents\\PlaneWave\\ps3cli\\ps3cli",
-    cmd="ps3cli.exe --server --port=8998",
-    logger=logger,
-    shell=True,
-    log_stdout_and_stderr=True,
-)
+def check_ps3cli() -> None:
+    """Verify ps3cli.exe is present and executable. It is a one-shot solver tool,
+    not a persistent process, so we only probe it at startup rather than keep it running."""
+    ps3cli_exe = "C:\\Users\\mast\\Documents\\PlaneWave\\ps3cli\\ps3cli\\ps3cli.exe"
+    if not Path(ps3cli_exe).exists():
+        logger.error(f"ps3cli health check: exe not found at {ps3cli_exe}")
+        return
+    try:
+        result = subprocess.run(
+            [ps3cli_exe],
+            capture_output=True,
+            timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        # Exit code 1 = invalid arguments (no args given) -- binary loaded and ran correctly.
+        if result.returncode in (0, 1):
+            logger.info(f"ps3cli health check: OK (exit code {result.returncode})")
+        else:
+            logger.warning(f"ps3cli health check: unexpected exit code {result.returncode}")
+    except Exception as e:
+        logger.error(f"ps3cli health check: failed to run: {e}")
+
+
+check_ps3cli()
+
 
 # Configure logging for WebSocketProtocol
 # logging.basicConfig(level=logging.DEBUG)
