@@ -4,8 +4,8 @@ import logging
 import os
 import shutil
 import subprocess
+from contextlib import suppress
 from pathlib import Path
-from threading import Thread
 from typing import TYPE_CHECKING, cast
 
 from astropy.coordinates import Angle
@@ -15,14 +15,17 @@ from common.config import Config
 from common.config.rois import FcuVersion, SkyRoiConfig, SpecRoiConfig
 from common.const import Const
 from common.filer import Filer
+from common.interfaces.imager import ImagerRoi
 from common.interfaces.solving import SolverInterface, SolvingResult
 from common.mast_logging import init_log
+from common.rois import SkyRoi, SpecRoi
 from common.utils import Coord, boxed_log, function_name
 from imagers import ImagerSettings
 
-from .astrometry_dot_net import cygwin_to_win, generate_random_string, parse_solver_output, win_to_cygwin
+from .astrometry_dot_net import (cygwin_to_win, generate_random_string,
+                                 parse_solver_output, win_to_cygwin)
 
-logger = logging.Logger("mastrometry_dot_net")
+logger = logging.getLogger("mastrometry_dot_net")
 init_log(logger)
 
 if TYPE_CHECKING:
@@ -66,22 +69,23 @@ class MastrometryDotNet(SolverInterface):
         if not self.index_dir.exists():
             raise Exception(f"{function_name()}: RAM disk path '{self.index_dir.as_posix()}' does not exist")
 
-        missing = False
-        for i in range(0, 47):
-            index_5206_file = self.index_dir / f"index-5206-{i:02d}.fits" # needed
-            if not index_5206_file.exists():
-                logger.warning(f"{function_name()}: RAM disk is missing index file '{index_5206_file.as_posix()}'")
-                missing = True
+        # missing = False
+        # for i in range(0, 47):
+        #     index_5206_file = self.index_dir / f"index-5206-{i:02d}.fits" # needed
+        #     if not index_5206_file.exists():
+        #         logger.warning(f"{function_name()}: RAM disk is missing index file '{index_5206_file.as_posix()}'")
+        #         missing = True
 
-            # index_5205_file = self.index_dir / f"index-5205-{i:02d}.fits" # niced to have
-            # if not index_5205_file.exists():
-            #     logger.warning(f"{function_name()}: RAM disk is missing index file '{index_5205_file.as_posix()}'")
-            #     missing = True
+        #     # index_5205_file = self.index_dir / f"index-5205-{i:02d}.fits" # niced to have
+        #     # if not index_5205_file.exists():
+        #     #     logger.warning(f"{function_name()}: RAM disk is missing index file '{index_5205_file.as_posix()}'")
+        #     #     missing = True
 
-            if missing:
-                raise Exception(f"{function_name()}: RAM disk is missing some index files")
+        #     if missing:
+        #         raise Exception(f"{function_name()}: RAM disk is missing some index files")
 
-        logger.info(f"{function_name()}: RAM disk contains all needed index files")
+        # logger.info(f"{function_name()}: RAM disk contains all needed index files")
+        logger.warning(f"{function_name()}: Skipping RAM disk index file check (TODO: remove this after testing)")
 
 
     @property
@@ -96,26 +100,34 @@ class MastrometryDotNet(SolverInterface):
         full_frame_input_image_path: str | None = None,
         index_file: str | None = None,
         target: Coord | None = None,
-    ) -> SolvingResult:
+    ) -> SolvingResult | None:
         """
         MAST specific astrometry.net solver implementation.
+
         The caller is expected to pass an input image that is full frame, unbinned, which gets
           downsampled by a factor 2 (2x2 binning) and cropped to the ROI (if any)
-        before being sent to astrometry.net for solving.
+          before being sent to astrometry.net for solving.
         """
 
         self.unit: Unit | None = unit
         filer = Filer(logger)
+
+        #
+        # A temporary folder is created on the RAM disk for the solving process, and deleted afterwards.
+        # This is needed to speed up the solving process by using the RAM disk.
+        #
         tmp_dir = generate_random_string(prefix="tmp_")
         assert filer.ram is not None
         win_tmp_dir = Path(filer.ram.root, "tmp", tmp_dir)
         win_tmp_dir.mkdir(parents=True, exist_ok=True)
 
-        os.environ["PATH"] = (
-            "C:/cygwin64/bin;/usr/lib/lapack;C:/Users/mast/PycharmProjects/MAST_unit/venv/Scripts;C:/Windows/system32;"
-            + "C:/Users/mast/AppData/Local/Microsoft/WindowsApps;"
-            + "C:/Program Files/MongoDB/Server/7.0/bin;C:/Users/mast/AppData/Local/Programs/Python/Launcher/;"
-        )
+        # solve-field.exe is a cygwin binary:
+        #  - C:\cygwin64\bin is needed so Windows can load cygwin1.dll
+        #  - /usr/lib/lapack is a cygwin POSIX path (cygwin1.dll re-parses PATH at
+        #    startup); numpy's lapack_lite extension needs it when removelines runs.
+        # Pass via env= so we don't mutate the parent process's PATH.
+        env = os.environ.copy()
+        env["PATH"] = r"C:\cygwin64\bin" + os.pathsep + "/usr/lib/lapack" + os.pathsep + env.get("PATH", "")
 
         if full_frame_input_image_path is None:  # noqa: SIM102
             if settings is not None:
@@ -125,9 +137,11 @@ class MastrometryDotNet(SolverInterface):
                 full_frame_input_image_path = settings.image_path
 
         assert full_frame_input_image_path is not None, f"{function_name()}: full_frame_input_image_path is None"
-        original_folder = Path(full_frame_input_image_path).parent
 
-        # Read FITS file
+        #
+        # Read the full frame FITS file we got from te imager
+        # We don't really know that the input image is full frame and unbinned, but we assume it is.
+        #
         with fits.open(full_frame_input_image_path) as hdul:
             header = hdul[0].header # type: ignore
             data = hdul[0].data # type: ignore
@@ -135,73 +149,120 @@ class MastrometryDotNet(SolverInterface):
             # Get image dimensions and data type from header
             height, width = data.shape
             dtype = data.dtype
-            logger.info(f"{function_name()}: Original image dimensions: {width}x{height}, dtype: {dtype}")
+            logger.info(f"{function_name()}: Full frame image dimensions: {width}x{height}, dtype: {dtype}")
 
+            #
+            # Passed to astrometry.net as the reference pixel for the solving process
+            # If not specified it will default to the center pixel of the image,
+            #  but if we're using an ROI it will be the center of the ROI
+            #
+            # NOTE: the values are in downsampled pixel units
+            #
             refpix: tuple[int, int] | None = None
-            # Crop if ROI is specified (not None)
-            if settings is None or settings.roi is None:
+
+            downsample_factor: int = 2   # simulated binning factor (2x2), to speed up solving by reducing the image size
+
+            imager_roi: ImagerRoi | None = None
+
+            if settings is not None and settings.roi is not None:
                 #
-                # Full frame
-                # - reference pixel is according to the phase and the configuration settings
+                # An ROI was provided in the settings, use it and ignore the phase specific ROIs
+                #
+                imager_roi = settings.roi
+            else:
+                #
+                # No ROI in settings.  Use phase specific configured ROIs
                 #
                 unit_conf = unit.unit_conf if unit and unit.unit_conf else Config().get_unit()
                 assert unit_conf is not None
 
                 fcu_version = self.unit.fcu_version if self.unit else FcuVersion.v2
 
-                assert fcu_version in unit_conf.acquisition.rois
                 match phase:
                     case "sky":
-                        roi = cast(SkyRoiConfig, unit_conf.acquisition.rois[fcu_version])
-                        refpix = (roi.sky_x // 2, roi.sky_y // 2)
+                        assert fcu_version in unit_conf.acquisition.rois
+                        cfg = cast(SkyRoiConfig, unit_conf.acquisition.rois[fcu_version])
+                        sky_roi = SkyRoi(sky_x=cfg.sky_x, sky_y=cfg.sky_y, width=cfg.width, height=cfg.height)
+
+                        imager_roi = ImagerRoi.from_other(sky_roi)
+
                     case "spec":
-                        roi = cast(SpecRoiConfig, unit_conf.guiding.rois[fcu_version])
-                        refpix = (roi.fiber_x // 2, roi.fiber_y // 2)
-                logger.info(f"{function_name()}: Full frame: {refpix=})")
+                        import common.asi as asi
+
+                        camera_x_size = asi.ASI_294MM_WIDTH
+                        camera_y_size = asi.ASI_294MM_HEIGHT
+                        assert fcu_version in unit_conf.guiding.rois
+                        cfg = cast(SpecRoiConfig, unit_conf.guiding.rois[fcu_version])
+
+                        half_width = min(cfg.fiber_x - cfg.margin_horizontal,
+                                         camera_x_size - cfg.margin_horizontal - cfg.fiber_x)
+                        half_height = min(cfg.fiber_y - cfg.margin_vertical,
+                                          camera_y_size - cfg.margin_vertical - cfg.fiber_y)
+
+                        spec_roi = SpecRoi(fiber_x=cfg.fiber_x, fiber_y=cfg.fiber_y,
+                                           width=half_width*2, height=half_height*2)
+
+                        imager_roi = ImagerRoi.from_other(spec_roi)
+
+                    case _:
+                        # No ROI and no recognized phase: leave imager_roi=None
+                        # → no crop, refpix stays None, solve-field uses --crpix-center
+                        pass
+
+            if imager_roi is not None:
+                if imager_roi.x + imager_roi.width > width or imager_roi.y + imager_roi.height > height:
+                    raise Exception(
+                        f"{function_name()}: ROI (x={imager_roi.x}, y={imager_roi.y}, "
+                        + f"width={imager_roi.width}, height={imager_roi.height}) "
+                        + f"is out of bounds for image dimensions ({width}x{height})"
+                    )
+                assert imager_roi._center is not None
+
+                # Crop to the ROI, then refpix is expressed in the cropped+downsampled coord system
+                data = data[imager_roi.y:imager_roi.y + imager_roi.height,
+                            imager_roi.x:imager_roi.x + imager_roi.width]
+                refpix = ((imager_roi._center.x - imager_roi.x) // downsample_factor,
+                          (imager_roi._center.y - imager_roi.y) // downsample_factor)
+
+                logger.info(f"{function_name()}: Cropped to {imager_roi=}, {refpix=}")
             else:
-                #
-                # Crop to ROI
-                # - reference pixel is center of ROI
-                #
-                roi = settings.roi
-                x_start, y_start = roi.x // 2, roi.y // 2
-                x_end = x_start + roi.width // 2
-                y_end = y_start + roi.height // 2
-                data = data[y_start:y_end, x_start:x_end]
-                logger.info(f"{function_name()}: ROI: {roi.width // 2}x{roi.height // 2} at ({x_start}, {y_start})")
+                logger.info(f"{function_name()}: No ROI, using full frame, refpix=center")
 
-                # Update header with new dimensions
-                header['NAXIS1'] = roi.width // 2
-                header['NAXIS2'] = roi.height // 2
-                if 'CRPIX1' in header:
-                    header['CRPIX1'] -= x_start
-                if 'CRPIX2' in header:
-                    header['CRPIX2'] -= y_start
+            # Downsample by factor downsample_factor (binning)
+            downsampled_height = data.shape[0] // downsample_factor
+            downsampled_width = data.shape[1] // downsample_factor
 
-            # Downsample by factor 2 (2x2 binning)
-            new_height = data.shape[0] // 2
-            new_width = data.shape[1] // 2
-
-            # Reshape and average 2x2 blocks
-            downsampled = data[:new_height*2, :new_width*2].reshape(
-                new_height, 2, new_width, 2
+            # Reshape and average downsample_factor x downsample_factor blocks
+            downsampled = data[:downsampled_height*downsample_factor, :downsampled_width*downsample_factor].reshape(
+                downsampled_height, downsample_factor, downsampled_width, downsample_factor
             ).mean(axis=(1, 3)).astype(dtype)
 
-            logger.info(f"{function_name()}: Downsampled by factor 2 to {new_width}x{new_height}")
+            logger.info(f"{function_name()}: Downsampled by factor of {downsample_factor} to "
+                        + f"{downsampled_width}x{downsampled_height}")
 
             # Update header for downsampled image
-            header['NAXIS1'] = new_width
-            header['NAXIS2'] = new_height
+            header['NAXIS1'] = downsampled_width
+            header['NAXIS2'] = downsampled_height
+
+            header['XBINNING'] = downsample_factor
+            header['YBINNING'] = downsample_factor
+            header['DOWNSAMP'] = (downsample_factor, "Downsampling factor applied to original image")
+
+            if imager_roi is not None:
+                header['ROI_X'] = (imager_roi.x, "X coordinate of ROI in original image")
+                header['ROI_Y'] = (imager_roi.y, "Y coordinate of ROI in original image")
+                header['ROI_W'] = (imager_roi.width, "Width of ROI in original image")
+                header['ROI_H'] = (imager_roi.height, "Height of ROI in original image")
 
             # Save downsampled image to temporary directory
             assert full_frame_input_image_path is not None
             downsampled_image_path = win_tmp_dir / f"downsampled_{str(Path(full_frame_input_image_path).name)}"
             fits.writeto(downsampled_image_path, downsampled, header, overwrite=True)
-            logger.info(f"{function_name()}: Saved downsampled image to {downsampled_image_path}")
+            logger.info(f"{function_name()}: Saved downsampled image to '{downsampled_image_path}'")
 
             # Build astrometry.net command
-            # After downsampling by 2x: 0.2616 * 2 = 0.5232 arcsec/pixel
-            effective_pixelscale = self.pixelscale * 2
+            # After downsampling by {downsample_factor}x: 0.2616 * {downsample_factor} = {effective_pixelscale} arcsec/pixel
+            effective_pixelscale = self.pixelscale * downsample_factor
 
             args = [
 
@@ -237,7 +298,6 @@ class MastrometryDotNet(SolverInterface):
 
             # Additional recommended options
             args += [
-                "--downsample", "1",  # already downsampled, don't do it again
                 "--no-tweak",  # skip SIP distortion (faster)
             ]
 
@@ -257,15 +317,15 @@ class MastrometryDotNet(SolverInterface):
             ]
 
         command = " ".join([r"C:/cygwin64/usr/local/astrometry/bin/solve-field"] + args)
-        logger.info(f"{function_name()}: Running astrometry.net with {command}")
+        logger.info(f"{function_name()}: Running astrometry.net with '{command}'")
         start = datetime.datetime.now()
 
-        completed_process = subprocess.run(command, capture_output=True, shell=True)
+        completed_process = subprocess.run(command, capture_output=True, shell=True, env=env)
         stdout_lines = completed_process.stdout.decode().strip().splitlines()
         stderr_lines = completed_process.stderr.decode().strip().splitlines()
         elapsed = datetime.datetime.now() - start
         logger.info(
-            f"{'succeeded' if completed_process.returncode == 0 else 'failed'}"
+            f"{function_name()}: {'succeeded' if completed_process.returncode == 0 else 'failed'}"
             + f" in {elapsed.total_seconds():.2f} seconds"
         )
 
@@ -273,46 +333,52 @@ class MastrometryDotNet(SolverInterface):
         with open(result_file, "w") as file:
             file.write("--- command ---\n")
             file.write(f"{command}\n")
+
+            file.write("\n--- returncode ---\n")
+            file.write(f"{completed_process.returncode}\n")
+
             file.write("\n--- stdout ---\n")
             for line in stdout_lines:
                 file.writelines(line + "\n")
+
             file.write("\n--- stderr ---\n")
             for line in stderr_lines:
                 file.writelines(line + "\n")
+
             file.write("\n--- timing ---\n")
             file.writelines(f"elapsed: {elapsed.total_seconds():.2f} seconds\n")
 
         if completed_process.returncode == 0:
             ret = parse_solver_output(stdout_lines)
-            if ret.succeeded and ret.solution is not None:
-                boxed_log(
-                    logger=logger,
-                    lines=[
-                        "FUTURE: image quality check",
-                        f"#sources {ret.solution.sources}",
-                        f"#matched {ret.solution.matched_stars}",
-                    ],
-                    center=True,
-                )
-                if (
-                    ret.solution.index_file
-                    and self.unit is not None
-                    and self.unit.acquirer.latest_acquisition is not None
-                ):
-                    self.unit.acquirer.latest_acquisition.solver_data = {
-                        "index_file": ret.solution.index_file
-                    }
+            if ret is not None and ret.solution is not None and ret.succeeded:
+                    boxed_log(
+                        logger=logger,
+                        lines=[
+                            "FUTURE: image quality check",
+                            f"#sources {ret.solution.sources}",
+                            f"#matched {ret.solution.matched_stars}",
+                        ],
+                        center=True,
+                    )
+                    if (
+                        ret.solution.index_file
+                        and self.unit is not None
+                        and self.unit.acquirer.latest_acquisition is not None
+                    ):
+                        self.unit.acquirer.latest_acquisition.solver_data = {
+                            "index_file": ret.solution.index_file
+                        }
 
-                # override solved RA/Dec from FITS header
-                header = fits.getheader(new_fits_path, 0)  # type: ignore
-                if "CRVAL1" in header and "CRVAL2" in header:
-                    ret.solution.ra_hours = header["CRVAL1"] / 15.0
-                    ret.solution.dec_degs = header["CRVAL2"]
+                    # override solved RA/Dec from FITS header
+                    header = fits.getheader(new_fits_path, 0)  # type: ignore
+                    if "CRVAL1" in header and "CRVAL2" in header:
+                        ret.solution.ra_hours = header["CRVAL1"] / 15.0
+                        ret.solution.dec_degs = header["CRVAL2"]
 
-                    ret.solution.ra_rads = float(Angle(ret.solution.ra_hours * 15.0, unit="deg").radian)  # type: ignore[assignment]
-                    ret.solution.dec_rads = float(Angle(ret.solution.dec_degs, unit="deg").radian)  # type: ignore[assignment]
-                else:
-                    logger.warning(f"no CRVAL1/CRVAL2 in solved FITS header of '{new_fits_path}'")
+                        ret.solution.ra_rads = float(Angle(ret.solution.ra_hours * 15.0, unit="deg").radian)  # type: ignore[assignment]
+                        ret.solution.dec_rads = float(Angle(ret.solution.dec_degs, unit="deg").radian)  # type: ignore[assignment]
+                    else:
+                        logger.warning(f"no CRVAL1/CRVAL2 in solved FITS header of '{new_fits_path}'")
         else:
             ret = SolvingResult(
                 succeeded=False,
@@ -322,14 +388,21 @@ class MastrometryDotNet(SolverInterface):
                 ],
             )
 
-        Thread(target=self.cleanup, args=([Path(result_file), Path(new_fits_path)], original_folder, win_tmp_dir)).start()
+        # Thread(target=self.cleanup, args=([Path(result_file), Path(new_fits_path)], original_folder, win_tmp_dir)).start()
+        logger.info(f"{function_name()}: Temporary files left in '{win_tmp_dir}' (TODO: clean up in background thread)")
         return ret
 
     def cleanup(self, files_to_move: list[Path], target_folder: Path, tmp_dir: Path):
-        for file in files_to_move:
-            shutil.move(file, target_folder / file.name)
-            logger.info(f"{function_name()}: saved '{(target_folder / file.name).as_posix()}'")
-        shutil.rmtree(tmp_dir)
+        files_to_move = [f for f in files_to_move if f.exists()]
+        if files_to_move:
+            if not target_folder.exists():
+                target_folder.mkdir(parents=True, exist_ok=True)
+            for file in files_to_move:
+                shutil.move(file, target_folder / file.name)
+                logger.info(f"{function_name()}: saved '{(target_folder / file.name).as_posix()}'")
+
+        with suppress(Exception):
+            shutil.rmtree(tmp_dir)
 
     def solve_and_correct(self):
         pass
@@ -340,8 +413,27 @@ if __name__ == "__main__":
         result = solver.solve(
             unit=None,
             phase="spec",
-            full_frame_input_image_path="D:\\tmp\\mastrometry\\full-frame.fits",
+            full_frame_input_image_path="D:\\MAST\\tmp\\mastrometry\\full-frame.fits",
         )
-        print(json.dumps(result.to_dict(), indent=2))
+        print(json.dumps(result.to_dict() if result else None, indent=2))
 
-    test_solver()
+    def test_solver_with_roi():
+        from common.interfaces.imager import ImagerRoi, ImagerSettings
+
+        test_image_path = "D:\\MAST\\tmp\\mastrometry\\full-frame.fits"
+        solver = MastrometryDotNet()
+        result = solver.solve(
+            unit=None,
+            phase="spec",
+            full_frame_input_image_path=test_image_path,
+            settings=ImagerSettings(
+                seconds=5,
+                binning=1,
+                roi=ImagerRoi(x=0, y=0, width=2500, height=5500),
+                image_path=test_image_path,
+            ),
+        )
+        print(json.dumps(result.to_dict() if result else None, indent=2))
+
+    # test_solver()
+    test_solver_with_roi()
