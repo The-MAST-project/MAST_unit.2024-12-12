@@ -14,11 +14,10 @@ from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import FcuVersion, SkyRoiConfig
 from common.mast_logging import init_log
-from common.models.assignments import UnitAssignment
+from common.models.assignments import AssignmentNotification, UnitAssignment
+from common.notifications import Notifier
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.rois import SkyRoi
-from common.models.assignments import AssignmentNotification
-from common.notifications import Notifier
 from common.utils import Coord, boxed_log, function_name
 from phd2.phd2 import PHD2Connector
 from solving import SolverId, SolvingTolerance
@@ -236,15 +235,29 @@ class Acquirer:
 
         # override for fcu_v2 to use full frame
         if self.unit.fcu_version == FcuVersion.v2:
+            from common.asi import ASI_294MM_HEIGHT, ASI_294MM_WIDTH
             from common.interfaces.imager import ImagerRoi
+            from common.models.statuses import ImagerPixel
 
+            # ROI to be used for the exposures
             spec_imager_settings.roi = ImagerRoi(
                 x=0,
                 y=0,
-                width=self.unit.imager.full_frame.width,
-                height=self.unit.imager.full_frame.height,
+                # width=self.unit.imager.full_frame.width,
+                # height=self.unit.imager.full_frame.height,
+                width=ASI_294MM_WIDTH,
+                height=ASI_294MM_HEIGHT,
             )
-            spec_imager_settings.use_set_limit_frame = True
+            # override the roi to be the ASI full frame, we get it from PHD2
+            spec_imager_settings.roi.x = 0
+            spec_imager_settings.roi.y = 0
+            spec_imager_settings.roi.width = ASI_294MM_WIDTH
+            spec_imager_settings.roi.height = ASI_294MM_HEIGHT
+            spec_imager_settings.roi._center = \
+                ImagerPixel(x=spec_imager_settings.roi.width // 2, y=spec_imager_settings.roi.height // 2)
+
+            # spec_imager_settings.use_set_limit_frame = True
+            spec_imager_settings.use_set_limit_frame = False
             spec_imager_settings.binning = 1
 
         achieved_tolerances = self.unit.solver.solve_and_correct(
