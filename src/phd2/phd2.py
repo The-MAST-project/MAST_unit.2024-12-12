@@ -22,14 +22,11 @@ from common.config import Config
 from common.config.rois import FcuVersion
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
-from common.interfaces.imager import (ImagerExposureSeries, ImagerInterface,
-                                      ImagerRoi, ImagerSettings)
+from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
-from common.models.statuses import (PHD2GuiderStatus, PHD2ImagerStatus,
-                                    SkyQualityStatus)
+from common.models.statuses import PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
 from common.process import WatchedProcess
-from common.utils import (Coord, RepeatTimer, Timeout, boxed_debug,
-                          function_name)
+from common.utils import Coord, RepeatTimer, Timeout, boxed_debug, function_name
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 from stage import StagePresetPosition
 
@@ -549,256 +546,270 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def _handle_event(self, ev):  # noqa: C901
         e = ev["Event"]
 
-        if e == "AppState":
-            with self.lock:
-                self.app_state = ev["State"]
-                if self._is_guiding(self.app_state):
-                    self.avg_dist = 0  # until we get a GuideStep event
-            boxed_debug(lines=[f"{function_name()}: {e}, app_state: {self.app_state}"], logger=logger)
-        elif e == "Alert":
-            boxed_debug(lines=[f"{function_name()}: {e}, Type: {ev['Type']}, Msg: {ev['Msg']}"], logger=logger)
-        elif e == "Version":
-            with self.lock:
-                self.version = ev["PHDVersion"]
-                self.sub_version = ev["PHDSubver"]
-            boxed_debug(lines=[f"{function_name()}: {e}, {self.version=}, {self.sub_version=}"], logger=logger)
+        match e:
+            case "AppState":
+                with self.lock:
+                    self.app_state = ev["State"]
+                    if self._is_guiding(self.app_state):
+                        self.avg_dist = 0  # until we get a GuideStep event
+                boxed_debug(lines=[f"{function_name()}: {e}, app_state: {self.app_state}"], logger=logger)
+            case "Alert":
+                boxed_debug(lines=[f"{function_name()}: {e}, Type: {ev['Type']}, Msg: {ev['Msg']}"], logger=logger)
+            case "Version":
+                with self.lock:
+                    self.version = ev["PHDVersion"]
+                    self.sub_version = ev["PHDSubver"]
+                boxed_debug(lines=[f"{function_name()}: {e}, {self.version=}, {self.sub_version=}"], logger=logger)
 
-        elif e == "StartGuiding":
-            if self.parent is not None and self.parent.unit is not None and self.parent.unit.fcu_version == FcuVersion.v2:
-                boxed_debug(lines=[f"{function_name()}: {e}, waiting for FCU v2 to reach SPEC"], logger=logger)
-                threading.Thread(target=self._wait_for_fcu_v2_at_spec).start()
+            case "StartGuiding":
+                if self.parent is not None and self.parent.unit is not None and self.parent.unit.fcu_version == FcuVersion.v2:
+                    boxed_debug(lines=[f"{function_name()}: {e}, waiting for FCU v2 to reach SPEC"], logger=logger)
+                    threading.Thread(target=self._wait_for_fcu_v2_at_spec).start()
 
-            self.start_activity(PHD2Activities.Guiding)
-            if self.guiding_verification_timer is not None:
-                self.guiding_verification_timer.start()
-            self.accumulators_active = True
-            self.ra_accumulator.reset()
-            self.dec_accumulator.reset()
-            stats = self._get_accumulated_stats(
-                self.ra_accumulator, self.dec_accumulator
-            )
-            with self.lock:
-                self.stats = stats
-                logger.debug(f"{function_name()}: Started guiding")
-            boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
-
-        elif e == "GuideStep":
-            # | Attribute | Type | Description |
-            # |:----------|:-----|:------------|
-            # |Frame      |number|The frame number; starts at 1 each time guiding starts|
-            # |Time       |number| the time in seconds, including fractional seconds, since guiding started|
-            # |Mount      |string|the name of the mount|
-            # |dx         |number|the X-offset in pixels|
-            # |dy         |number|the Y-offset in pixels|
-            # |RADistanceRaw|number|the RA distance in pixels of the guide offset vector|
-            # |DECDistanceRaw|number|the Dec distance in pixels of the guide offset vector|
-            # |RADistanceGuide|number|the guide algorithm-modified RA distance in pixels of the guide offset vector|
-            # |DECDistanceGuide|number|the guide algorithm-modified Dec distance in pixels of the guide offset vector|
-            # |RADuration |number|the RA guide pulse duration in milliseconds|
-            # |RADirection|string|"East" or "West"   |
-            # |DECDuration|number|the Dec guide pulse duration in milliseconds|
-            # |DECDirection|string|"South" or "North"   |
-            # |StarMass   |number|the Star Mass value of the guide star|
-            # |SNR        |number|the computed Signal-to-noise ratio of the guide star|
-            # |HFD        |number|the guide star half-flux diameter (HFD) in pixels|
-            # |AvgDist    |number|a smoothed average of the guide distance in pixels (equivalent to value returned by socket server MSG\_REQDIST)|
-            # |RALimited  |boolean|true if step was limited by the Max RA setting (attribute omitted if step was not limited)|
-            # |DecLimited |boolean|true if step was limited by the Max Dec setting (attribute omitted if step was not limited)|
-            # |ErrorCode  |number|the star finder error code, 1=saturated, 2=low SNR, 3=low mass, 4=low HFD, 5=High HFD, 6=edge of frame, 7=mass change, 8=unexpected|
-            stats = None
-            boxed_debug(lines=[f"{function_name()}: {e}, Frame={ev['Frame']}, Time={ev['Time']:.1f}s, ",
-                         f"dx={ev['dx']:.2f}, dy={ev['dy']:.2f}, ",
-                         f"RADistanceRaw={ev['RADistanceRaw']:.2f}, DECDistanceRaw={ev['DECDistanceRaw']:.2f}, ",
-                         f"StarMass={ev.get('StarMass')}, SNR={ev.get('SNR')}, HFD={ev.get('HFD')}"], logger=logger)
-            if self.accumulators_active:
-                self.ra_accumulator.add(ev["RADistanceRaw"])
-                self.dec_accumulator.add(ev["DECDistanceRaw"])
+                self.start_activity(PHD2Activities.Guiding)
+                if self.guiding_verification_timer is not None:
+                    self.guiding_verification_timer.start()
+                self.accumulators_active = True
+                self.ra_accumulator.reset()
+                self.dec_accumulator.reset()
                 stats = self._get_accumulated_stats(
                     self.ra_accumulator, self.dec_accumulator
                 )
-            with self.lock:
-                self.app_state = "Guiding"
-                self.start_activity(PHD2Activities.Guiding, existing_ok=True)
-                if self.is_active(PHD2Activities.EquipmentHandover):
-                    self.end_activity(
-                        PHD2Activities.EquipmentHandover
-                    )  # To get the timing printout
-                self.avg_dist = ev["AvgDist"]
-                if self.accumulators_active:
+                with self.lock:
                     self.stats = stats
-            lines = []
-            if "Time" in ev:
-                lines.append(f'Seconds since guiding="{ev["Time"]:.1f}s"')
-            if "StarMass" in ev:
-                lines.append(f"StarMass={ev['StarMass']}")
-            if "SNR" in ev:
-                lines.append(f"SNR={ev['SNR']:.1f}")
-            if "HFD" in ev:
-                lines.append(f"HFD={ev['HFD']:.1f}")
-            if "ErrorCode" in ev:
-                lines.append(f"ErrorCode={ev['ErrorCode']}")
-            if lines:
+                    logger.debug(f"{function_name()}: Started guiding")
+                boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
+
+            case "GuideStep":
+                # | Attribute | Type | Description |
+                # |:----------|:-----|:------------|
+                # |Frame      |number|The frame number; starts at 1 each time guiding starts|
+                # |Time       |number| the time in seconds, including fractional seconds, since guiding started|
+                # |Mount      |string|the name of the mount|
+                # |dx         |number|the X-offset in pixels|
+                # |dy         |number|the Y-offset in pixels|
+                # |RADistanceRaw|number|the RA distance in pixels of the guide offset vector|
+                # |DECDistanceRaw|number|the Dec distance in pixels of the guide offset vector|
+                # |RADistanceGuide|number|the guide algorithm-modified RA distance in pixels of the guide offset vector|
+                # |DECDistanceGuide|number|the guide algorithm-modified Dec distance in pixels of the guide offset vector|
+                # |RADuration |number|the RA guide pulse duration in milliseconds|
+                # |RADirection|string|"East" or "West"   |
+                # |DECDuration|number|the Dec guide pulse duration in milliseconds|
+                # |DECDirection|string|"South" or "North"   |
+                # |StarMass   |number|the Star Mass value of the guide star|
+                # |SNR        |number|the computed Signal-to-noise ratio of the guide star|
+                # |HFD        |number|the guide star half-flux diameter (HFD) in pixels|
+                # |AvgDist    |number|a smoothed average of the guide distance in pixels (equivalent to value returned by socket server MSG\_REQDIST)|
+                # |RALimited  |boolean|true if step was limited by the Max RA setting (attribute omitted if step was not limited)|
+                # |DecLimited |boolean|true if step was limited by the Max Dec setting (attribute omitted if step was not limited)|
+                # |ErrorCode  |number|the star finder error code, 1=saturated, 2=low SNR, 3=low mass, 4=low HFD, 5=High HFD, 6=edge of frame, 7=mass change, 8=unexpected|
+                stats = None
+                boxed_debug(lines=[f"{function_name()}: {e}, Frame={ev['Frame']}, Time={ev['Time']:.1f}s, ",
+                            f"dx={ev['dx']:.2f}, dy={ev['dy']:.2f}, ",
+                            f"RADistanceRaw={ev['RADistanceRaw']:.2f}, DECDistanceRaw={ev['DECDistanceRaw']:.2f}, ",
+                            f"StarMass={ev.get('StarMass')}, SNR={ev.get('SNR')}, HFD={ev.get('HFD')}"], logger=logger)
+                if self.accumulators_active:
+                    self.ra_accumulator.add(ev["RADistanceRaw"])
+                    self.dec_accumulator.add(ev["DECDistanceRaw"])
+                    stats = self._get_accumulated_stats(
+                        self.ra_accumulator, self.dec_accumulator
+                    )
+                with self.lock:
+                    self.app_state = "Guiding"
+                    self.start_activity(PHD2Activities.Guiding, existing_ok=True)
+                    self.avg_dist = ev["AvgDist"]
+                    if self.accumulators_active:
+                        self.stats = stats
+                lines = []
+                if "Time" in ev:
+                    lines.append(f'Seconds since guiding="{ev["Time"]:.1f}s"')
+                if "StarMass" in ev:
+                    lines.append(f"StarMass={ev['StarMass']}")
+                if "SNR" in ev:
+                    lines.append(f"SNR={ev['SNR']:.1f}")
+                if "HFD" in ev:
+                    lines.append(f"HFD={ev['HFD']:.1f}")
+                if "ErrorCode" in ev:
+                    lines.append(f"ErrorCode={ev['ErrorCode']}")
+                if lines:
+                    boxed_debug(logger=logger, lines=lines)
+
+                self.sky_quality.update(FrameMetrics(snr=ev['SNR'], hfd_pixels=ev['HFD']))
+
+            case "SettleBegin":
+                self.start_activity(PHD2Activities.Settling)
+                self.accumulators_active = (
+                    False  # exclude GuideStep messages from stats while settling
+                )
+                boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
+
+            case "Settling":
+                self.start_activity(PHD2Activities.Settling, existing_ok=True)
+                s = PHD2SettleProgress()
+                s.done = False
+                s.distance = ev["Distance"]
+                s.settle_px = self.settle_px
+                s.time = ev["Time"]
+                s.settle_time = ev["SettleTime"]
+                s.status = 0
+                with self.lock:
+                    self.settle = s
+                boxed_debug(lines=[f"{function_name()}: Settling in progress, distance={s.distance:.2f}",
+                            f"time={s.time:.1f}s, settle_time={s.settle_time:.1f}s"], logger=logger)
+
+            case "SettleDone":
+                self.end_activity(PHD2Activities.Settling)
+                self.accumulators_active = True
+                self.ra_accumulator.reset()
+                self.dec_accumulator.reset()
+                stats = self._get_accumulated_stats(
+                    self.ra_accumulator, self.dec_accumulator
+                )
+                s = PHD2SettleProgress()
+                s.done = True
+                s.status = ev["Status"]
+                s.error = ev.get("error")
+                with self.lock:
+                    self.settle = s
+                    self.stats = stats
+                boxed_debug(lines=[f"{function_name()}: Settling done, status={s.status}, error={s.error}"], logger=logger)
+
+            case "Paused":
+                with self.lock:
+                    self.app_state = "Paused"
+                boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
+
+            case "StartCalibration":
+                self.start_activity(PHD2Activities.Calibrating)
+                with self.lock:
+                    self.app_state = "Calibrating"
+                boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
+
+            case "Calibrating":
+                # | Attribute | Type | Description |
+                # |:----------|:-----|:------------|
+                # | Mount     | string | name of the mount that was calibrated |
+                # | dir       | string | calibration direction (phase) |
+                # | dist      | number | distance from starting location |
+                # | dx        | number | x offset from starting position |
+                # | dy        | number | y offset from starting position |
+                # | pos       | [number,number] | star coordinates |
+                # | step      | number | step number |
+                # | State     | string | calibration status message |
+                boxed_debug(lines=[f"Mount='{ev['Mount']}', dir='{ev['dir']}', dist={ev['dist']:.2f}, ",
+                            f"dx={ev['dx']:.2f}, dy={ev['dy']:.2f}, step={ev['step']}, State='{ev['State']}'"], logger=logger)
+
+            case "CalibrationComplete":
+                if "Mount" in ev:
+                    logger.debug(f"{function_name()}: {e}, Mount='{ev["Mount"]}'")
+                if self.is_active(PHD2Activities.Calibrating):
+                    self.end_activity(PHD2Activities.Calibrating)
+
+            case "LoopingExposures":
+                # | Attribute | Type | Description |
+                # |:----------|:-----|:------------|
+                # | Frame     | number | the exposure frame number; starts at 1 each time looping starts |
+                if self.is_active(PHD2Activities.Calibrating):
+                    self.end_activity(PHD2Activities.Calibrating)
+                # self.start_activity(PHD2Activities.Looping)
+                with self.lock:
+                    self.app_state = "Looping"
+                boxed_debug(lines=[f"{function_name()}: LoopingExposures frame# {ev['Frame']}"], logger=logger)
+
+            case "LoopingExposuresStopped":
+                activity = (
+                    PHD2Activities.Looping
+                    if e == "LoopingExposuresStopped"
+                    else PHD2Activities.Guiding
+                )
+                self.end_activity(activity)
+                if activity == PHD2Activities.Guiding and self.guiding_verification_timer is not None:
+                        logger.info(f"{function_name()}: stopping guiding verification timer")
+                        self.guiding_verification_timer.cancel()
+                with self.lock:
+                    self.app_state = "Stopped"
+                boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
+
+            case "GuidingStopped":
+                activity = (
+                    PHD2Activities.Looping
+                    if e == "LoopingExposuresStopped"
+                    else PHD2Activities.Guiding
+                )
+                self.end_activity(activity)
+                if activity == PHD2Activities.Guiding and self.guiding_verification_timer is not None:
+                        logger.info(f"{function_name()}: stopping guiding verification timer")
+                        self.guiding_verification_timer.cancel()
+                with self.lock:
+                    self.app_state = "Stopped"
+                boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
+
+            case "StarSelected":
+                # | Attribute | Type | Description |
+                # |:----------|:-----|:------------|
+                # | X         | number | lock position X-coordinate |
+                # | Y         | number | lock position Y-coordinate |
+                lines = [f'event: StarSelected at x="{ev["X"]}" y="{ev["Y"]}"']
                 boxed_debug(logger=logger, lines=lines)
 
-            self.sky_quality.update(FrameMetrics(snr=ev['SNR'], hfd_pixels=ev['HFD']))
+            case "LockPositionSet":
+                # | Attribute | Type | Description |
+                # |:----------|:-----|:------------|
+                # | X         | number | lock position X-coordinate |
+                # | Y         | number | lock position Y-coordinate |
+                lines = [f'event: LockPositionSet at x="{ev["X"]}" y="{ev["Y"]}"']
+                boxed_debug(logger=logger, lines=lines)
 
-        elif e == "SettleBegin":
-            self.start_activity(PHD2Activities.Settling)
-            self.accumulators_active = (
-                False  # exclude GuideStep messages from stats while settling
-            )
-            boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
+            case "LockPositionLost":
+                boxed_debug(logger=logger, lines=[f"{function_name()}: event: LockPositionLost"])
 
-        elif e == "Settling":
-            self.start_activity(PHD2Activities.Settling, existing_ok=True)
-            s = PHD2SettleProgress()
-            s.done = False
-            s.distance = ev["Distance"]
-            s.settle_px = self.settle_px
-            s.time = ev["Time"]
-            s.settle_time = ev["SettleTime"]
-            s.status = 0
-            with self.lock:
-                self.settle = s
-            boxed_debug(lines=[f"{function_name()}: Settling in progress, distance={s.distance:.2f}",
-                         f"time={s.time:.1f}s, settle_time={s.settle_time:.1f}s"], logger=logger)
+            case "StarLost":
+                with self.lock:
+                    self.app_state = "LostLock"
+                    self.avg_dist = ev["AvgDist"]
+                # | Attribute | Type | Description |
+                # |:----------|:-----|:------------|
+                # | Frame     | number | frame number |
+                # | Time      | number | time since guiding started, seconds |
+                # | StarMass  | number | star mass value |
+                # | SNR       | number | star SNR value |
+                # | AvgDist   | number |a smoothed average of the guide distance in pixels (equivalent to value returned by socket server MSG\_REQDIST)|
+                # | ErrorCode | number | error code  |
+                # | Status    | string | error message |
+                lines = ["event: Star Lost!"]
+                if "Time" in ev:
+                    lines.append(f'Seconds since guiding="{ev["Time"]:.1f}s"')
+                if "StarMass" in ev:
+                    lines.append(f"StarMass={ev['StarMass']}")
+                if "SNR" in ev:
+                    lines.append(f"SNR={ev['SNR']:.1f}")
+                if "ErrorCode" in ev:
+                    lines.append(f"ErrorCode={ev['ErrorCode']}")
+                if "Status" in ev:
+                    lines.append(f'Status="{ev["Status"]}"')
+                boxed_debug(logger=logger, lines=lines)
 
-        elif e == "SettleDone":
-            self.end_activity(PHD2Activities.Settling)
-            self.accumulators_active = True
-            self.ra_accumulator.reset()
-            self.dec_accumulator.reset()
-            stats = self._get_accumulated_stats(
-                self.ra_accumulator, self.dec_accumulator
-            )
-            s = PHD2SettleProgress()
-            s.done = True
-            s.status = ev["Status"]
-            s.error = ev.get("error")
-            with self.lock:
-                self.settle = s
-                self.stats = stats
-            boxed_debug(lines=[f"{function_name()}: Settling done, status={s.status}, error={s.error}"], logger=logger)
+            case "SingleFrameComplete":
+                result = SingleFrameResult(
+                    success=ev["Success"],
+                    error_message=ev.get("Error"),
+                    path=None,
+                )
+                with self.lock:
+                    self.single_frame = result
+                boxed_debug(lines=[f"{function_name()}: SingleFrameComplete, {result=}"], logger=logger)
+                self.image_was_saved = True
+                self.image_saved_event.set()
+                if self.parent is not None:
+                    self.parent.end_activity(ImagerActivities.Saving)
+                    self.parent.end_activity(ImagerActivities.Exposing)
 
-        elif e == "Paused":
-            with self.lock:
-                self.app_state = "Paused"
-            boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
-
-        elif e == "StartCalibration":
-            self.start_activity(PHD2Activities.Calibrating)
-            with self.lock:
-                self.app_state = "Calibrating"
-            boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
-
-        elif e == "Calibrating":
-            # | Attribute | Type | Description |
-            # |:----------|:-----|:------------|
-            # | Mount     | string | name of the mount that was calibrated |
-            # | dir       | string | calibration direction (phase) |
-            # | dist      | number | distance from starting location |
-            # | dx        | number | x offset from starting position |
-            # | dy        | number | y offset from starting position |
-            # | pos       | [number,number] | star coordinates |
-            # | step      | number | step number |
-            # | State     | string | calibration status message |
-            boxed_debug(lines=[f"Mount='{ev['Mount']}', dir='{ev['dir']}', dist={ev['dist']:.2f}, ",
-                         f"dx={ev['dx']:.2f}, dy={ev['dy']:.2f}, step={ev['step']}, State='{ev['State']}'"], logger=logger)
-
-        elif e == "CalibrationComplete":
-            if "Mount" in ev:
-                logger.debug(f"{function_name()}: {e}, Mount='{ev["Mount"]}'")
-            if self.is_active(PHD2Activities.Calibrating):
-                self.end_activity(PHD2Activities.Calibrating)
-
-        elif e == "LoopingExposures":
-            # | Attribute | Type | Description |
-            # |:----------|:-----|:------------|
-            # | Frame     | number | the exposure frame number; starts at 1 each time looping starts |
-            if self.is_active(PHD2Activities.Calibrating):
-                self.end_activity(PHD2Activities.Calibrating)
-            # self.start_activity(PHD2Activities.Looping)
-            with self.lock:
-                self.app_state = "Looping"
-            boxed_debug(lines=[f"{function_name()}: LoopingExposures frame# {ev['Frame']}"], logger=logger)
-
-        elif e == "LoopingExposuresStopped" or e == "GuidingStopped":
-            activity = (
-                PHD2Activities.Looping
-                if e == "LoopingExposuresStopped"
-                else PHD2Activities.Guiding
-            )
-            self.end_activity(activity)
-            if activity == PHD2Activities.Guiding and self.guiding_verification_timer is not None:
-                    logger.info(f"{function_name()}: stopping guiding verification timer")
-                    self.guiding_verification_timer.cancel()
-            with self.lock:
-                self.app_state = "Stopped"
-            boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
-
-        elif e == "StarSelected":
-            # | Attribute | Type | Description |
-            # |:----------|:-----|:------------|
-            # | X         | number | lock position X-coordinate |
-            # | Y         | number | lock position Y-coordinate |
-            lines = [f'event: StarSelected at x="{ev["X"]}" y="{ev["Y"]}"']
-            boxed_debug(logger=logger, lines=lines)
-
-        elif e == "LockPositionSet":
-            # | Attribute | Type | Description |
-            # |:----------|:-----|:------------|
-            # | X         | number | lock position X-coordinate |
-            # | Y         | number | lock position Y-coordinate |
-            lines = [f'event: LockPositionSet at x="{ev["X"]}" y="{ev["Y"]}"']
-            boxed_debug(logger=logger, lines=lines)
-
-        elif e == "StarLost":
-            with self.lock:
-                self.app_state = "LostLock"
-                self.avg_dist = ev["AvgDist"]
-            # | Attribute | Type | Description |
-            # |:----------|:-----|:------------|
-            # | Frame     | number | frame number |
-            # | Time      | number | time since guiding started, seconds |
-            # | StarMass  | number | star mass value |
-            # | SNR       | number | star SNR value |
-            # | AvgDist   | number |a smoothed average of the guide distance in pixels (equivalent to value returned by socket server MSG\_REQDIST)|
-            # | ErrorCode | number | error code  |
-            # | Status    | string | error message |
-            lines = ["event: Star Lost!"]
-            if "Time" in ev:
-                lines.append(f'Seconds since guiding="{ev["Time"]:.1f}s"')
-            if "StarMass" in ev:
-                lines.append(f"StarMass={ev['StarMass']}")
-            if "SNR" in ev:
-                lines.append(f"SNR={ev['SNR']:.1f}")
-            if "ErrorCode" in ev:
-                lines.append(f"ErrorCode={ev['ErrorCode']}")
-            if "Status" in ev:
-                lines.append(f'Status="{ev["Status"]}"')
-            boxed_debug(logger=logger, lines=lines)
-
-        elif e == "SingleFrameComplete":
-            result = SingleFrameResult(
-                success=ev["Success"],
-                error_message=ev.get("Error"),
-                path=None,
-            )
-            with self.lock:
-                self.single_frame = result
-            boxed_debug(lines=[f"{function_name()}: SingleFrameComplete, {result=}"], logger=logger)
-            self.image_was_saved = True
-            self.image_saved_event.set()
-            if self.parent is not None:
-                self.parent.end_activity(ImagerActivities.Saving)
-                self.parent.end_activity(ImagerActivities.Exposing)
-
-        elif e == "ConfigurationChange":
-            # logger.debug(f"{function_name()}: event: {e}")
-            pass
-        else:
-            logger.warning(f"{function_name()}: TODO: Unhandled event {e}")
-            pass
+            case "ConfigurationChange":
+                # logger.debug(f"{function_name()}: event: {e}")
+                pass
+            case _:
+                logger.warning(f"{function_name()}: TODO: Unhandled event {e}")
+                pass
 
     def _worker(self):
         if not self.conn:
@@ -1329,19 +1340,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def stop_guiding(self) -> CanonicalResponse:
         if not self.connected:
             return CanonicalResponse(errors=["not connected"])
-
-        logger.info(f"{function_name()}: NOT stopping guiding due to BUG")
         self.call("stop_capture")
-
-        # if self.need_to_reset_limit_frame:
-        #     self.set_limit_frame(roi=None)
-
-        # self.start_activity(PHD2Activities.EquipmentTakeover)
-        # self.disconnect_equipment()  # stops the exposure as well
-        # if self.parent is not None:
-        #     self.parent.connect()
-        # self.end_activity(PHD2Activities.EquipmentTakeover)
-
         return CanonicalResponse_Ok
 
     @property
