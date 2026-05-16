@@ -19,14 +19,6 @@ from common.mast_logging import init_log
 from common.process import ensure_process_is_running
 from PlaneWave import pwi4_client
 
-#
-# Log level configuration from the 'global' section of the 'config' file
-#
-unit_conf = Config().get_unit(site_name=None, unit_name=socket.gethostname().split('.')[0])
-
-# if 'log_level' in unit_conf.global:
-#     log_level = getattr(logging, unit_conf.global.log_level.upper())
-# else:
 log_level = logging.WARNING
 logging.basicConfig(level=log_level)
 logger = logging.getLogger("mast.unit." + __name__)
@@ -129,12 +121,15 @@ check_ps3cli()
 
 @asynccontextmanager
 async def lifespan(fast_app: FastAPI):
-
-    unit = Unit()
-    if unit:
-        unit.start_lifespan()
+    try:
+        unit = Unit()
+    except Exception as ex:
+        logger.error(f"Unit initialization failed in lifespan: {ex}")
         yield
-        unit.end_lifespan()
+        return
+    unit.start_lifespan()
+    yield
+    unit.end_lifespan()
 
 
 async def websocket_disconnect_handler(websocket: WebSocket, exc: WebSocketDisconnect):
@@ -197,10 +192,12 @@ if __name__ == "__main__":
 
     from unit import Unit
 
-    unit = Unit()
-    if not unit:
-        logger.error("Unit is not initialized, exiting ...")
-        app_quit(reason="unit not initialized")
+    try:
+        unit = Unit()
+    except Exception as ex:
+        logger.error(f"Unit initialization failed: {ex}")
+        app_quit(reason=f"unit initialization failed: {ex}")
+        unit = None
 
     if unit:
         app.include_router(unit.api_router)

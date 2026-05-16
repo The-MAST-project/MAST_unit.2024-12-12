@@ -127,20 +127,31 @@ class Unit(Component):
         file_handler = [h for h in logger.handlers if isinstance(h, DailyFileHandler)]
         logger.info(f"logging to '{file_handler[0].path}'")
 
-        self.unit_conf: UnitConfig | None = Config().get_unit()
-        assert self.unit_conf is not None, "Unit configuration could not be loaded"
+        self._init_errors: list[str] = []
 
-        self.min_ra_correction_arcsec = self.unit_conf.guiding.min_ra_correction_arcsec
-        self.min_dec_correction_arcsec = (
-            self.unit_conf.guiding.min_dec_correction_arcsec
-        )
+        self.unit_conf: UnitConfig | None = None
+        try:
+            self.unit_conf = Config().get_unit()
+        except Exception as ex:
+            msg = f"unit configuration failed to load: {ex}"
+            logger.error(msg)
+            self._init_errors.append(msg)
+        if self.unit_conf is None and not self._init_errors:
+            msg = "unit configuration could not be loaded (no config in database or TOML)"
+            logger.error(msg)
+            self._init_errors.append(msg)
 
-        self.autofocus_max_tolerance = self.unit_conf.autofocus.max_tolerance
+        if self.unit_conf is not None:
+            self.min_ra_correction_arcsec = self.unit_conf.guiding.min_ra_correction_arcsec
+            self.min_dec_correction_arcsec = self.unit_conf.guiding.min_dec_correction_arcsec
+            self.autofocus_max_tolerance = self.unit_conf.autofocus.max_tolerance
+        else:
+            self.min_ra_correction_arcsec = 0.0
+            self.min_dec_correction_arcsec = 0.0
+            self.autofocus_max_tolerance = 0.0
         self.autofocus_try: int = 0
 
         self.hostname = socket.gethostname()
-
-        self._init_errors: list[str] = []
 
         def _try_init(name: str, factory):
             try:
@@ -221,7 +232,8 @@ class Unit(Component):
     def do_shutdown(self):
         self.start_activity(UnitActivities.ShuttingDown)
         [comp.shutdown() for comp in self.components]
-        self.guider.abort()
+        if self.guider:
+            self.guider.abort()
 
         self._was_shut_down = True
         self.timer.cancel()
@@ -267,11 +279,11 @@ class Unit(Component):
         """
         Should connect/disconnect anything that needs connecting/disconnecting
         """
-        self.mount.connected = value
-        self.imager.connected = value
-        self.covers.connected = value
-        self.stage.connected = value
-        self.focuser.connected = value
+        if self.mount: self.mount.connected = value
+        if self.imager: self.imager.connected = value
+        if self.covers: self.covers.connected = value
+        if self.stage: self.stage.connected = value
+        if self.focuser: self.focuser.connected = value
 
     def connect(self):
         """
@@ -386,7 +398,8 @@ class Unit(Component):
             ):
                 time.sleep(0.2)
 
-        self.guider.abort()
+        if self.guider:
+            self.guider.abort()
         [comp.abort() for comp in self.components]
 
     def ontimer(self):  # noqa: C901
@@ -399,22 +412,21 @@ class Unit(Component):
         """
         # UnitActivities.StartingUp
         if self.is_active(UnitActivities.StartingUp) and not (
-            self.mount.is_active(MountActivities.StartingUp)
-            or self.imager.is_active(ImagerActivities.StartingUp)
-            or self.stage.is_active(StageActivities.StartingUp)
-            or self.focuser.is_active(FocuserActivities.StartingUp)
-            or self.covers.is_active(CoverActivities.StartingUp)
+            (self.mount and self.mount.is_active(MountActivities.StartingUp))
+            or (self.imager and self.imager.is_active(ImagerActivities.StartingUp))
+            or (self.stage and self.stage.is_active(StageActivities.StartingUp))
+            or (self.focuser and self.focuser.is_active(FocuserActivities.StartingUp))
+            or (self.covers and self.covers.is_active(CoverActivities.StartingUp))
         ):
             self.end_activity(UnitActivities.StartingUp)
 
         # UnitActivities.ShuttingDown
         if self.is_active(UnitActivities.ShuttingDown) and not (
-            self.mount.is_active(MountActivities.ShuttingDown)
-            or self.imager.is_active(ImagerActivities.ShuttingDown)
-            or self.stage.is_active(StageActivities.ShuttingDown)
-            or self.focuser.is_active(FocuserActivities.ShuttingDown)
-            or self.covers.is_active(CoverActivities.ShuttingDown)
-            or self.mount.is_active(MountActivities.ShuttingDown)
+            (self.mount and self.mount.is_active(MountActivities.ShuttingDown))
+            or (self.imager and self.imager.is_active(ImagerActivities.ShuttingDown))
+            or (self.stage and self.stage.is_active(StageActivities.ShuttingDown))
+            or (self.focuser and self.focuser.is_active(FocuserActivities.ShuttingDown))
+            or (self.covers and self.covers.is_active(CoverActivities.ShuttingDown))
         ):
             self.end_activity(UnitActivities.ShuttingDown)
             self._was_shut_down = True
@@ -482,17 +494,19 @@ class Unit(Component):
 
     @property
     def operational(self) -> bool:
+        if self._init_errors:
+            return False
         components = set(self.components)
-        assert self.unit_conf is not None
-        if self.unit_conf.name.lower() == "mastw":
+        if self.unit_conf and self.unit_conf.name.lower() == "mastw":
             components.discard(self.covers)
         return all([c.operational for c in components])
 
     @property
     def why_not_operational(self) -> list[str]:
+        if self._init_errors:
+            return list(self._init_errors)
         components = set(self.components)
-        assert self.unit_conf is not None
-        if self.unit_conf.name.lower() == "mastw":
+        if self.unit_conf and self.unit_conf.name.lower() == "mastw":
             components.discard(self.covers)
         return list(chain.from_iterable(c.why_not_operational for c in components))
 
