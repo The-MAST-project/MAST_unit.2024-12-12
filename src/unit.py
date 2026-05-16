@@ -184,9 +184,9 @@ class Unit(Component):
         self.connected_clients: list[WebSocket] = []
         # self.imager.register_visualizer('image-to-dashboard', self.push_image_to_dashboards)
 
-        self.errors: list[str] = list(self._init_errors)
+        self.controller_api = _try_init("controller_api", ControllerApi)
 
-        self.controller_api = ControllerApi()
+        self.errors: list[str] = list(self._init_errors)
 
         self.spirals_folder: str | None = None
         self.spiral_exposure_series: ImagerExposureSeries | None = None
