@@ -1131,36 +1131,40 @@ class Unit(Component):
         )
         router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
         router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
-        router.add_api_route(
-            base_path + "/start_autofocus",
-            tags=[tag],
-            endpoint=self.autofocuser.start_autofocus,
-        )
-        router.add_api_route(
-            base_path + "/stop_autofocus",
-            tags=[tag],
-            endpoint=self.autofocuser.endpoint_stop_autofocus,
-        )
-        router.add_api_route(
-            base_path + "/start_acquisition_and_guiding",
-            tags=[tag],
-            endpoint=self.acquirer.endpoint_start_acquisition_and_guiding,
-        )
-        router.add_api_route(
-            base_path + "/stop_acquisition_and_guiding",
-            tags=[tag],
-            endpoint=self.guider.endpoint_stop_acquisition_and_guiding,
-        )
+        if self.autofocuser:
+            router.add_api_route(
+                base_path + "/start_autofocus",
+                tags=[tag],
+                endpoint=self.autofocuser.start_autofocus,
+            )
+            router.add_api_route(
+                base_path + "/stop_autofocus",
+                tags=[tag],
+                endpoint=self.autofocuser.endpoint_stop_autofocus,
+            )
+        if self.acquirer:
+            router.add_api_route(
+                base_path + "/start_acquisition_and_guiding",
+                tags=[tag],
+                endpoint=self.acquirer.endpoint_start_acquisition_and_guiding,
+            )
+        if self.guider:
+            router.add_api_route(
+                base_path + "/stop_acquisition_and_guiding",
+                tags=[tag],
+                endpoint=self.guider.endpoint_stop_acquisition_and_guiding,
+            )
         router.add_api_route(base_path + "/expose", tags=[tag], endpoint=self.expose)
         router.add_api_route(base_path + "/start_sequence_of_exposures",
                              methods=["PUT"],
                              tags=[tag],
                              endpoint=self.endpoint_start_sequence_of_exposures)
-        router.add_api_route(
-            base_path + "/stop_sequence_of_exposures",
-            tags=[tag],
-            endpoint=self.guider.endpoint_stop_acquisition_and_guiding,
-        )
+        if self.guider:
+            router.add_api_route(
+                base_path + "/stop_sequence_of_exposures",
+                tags=[tag],
+                endpoint=self.guider.endpoint_stop_acquisition_and_guiding,
+            )
         router.add_api_route(
             base_path + "/test_stage_repeatability",
             tags=[tag],
