@@ -166,6 +166,8 @@ class Stage(Component, SwitchedOutlet):
 
         self.info = {}
         self._was_shut_down = False
+        self._currently_operational = False
+        self._why_not_currently_operational = ["stage not yet initialized"]
 
         if not self.is_on():
             self.power_on()
