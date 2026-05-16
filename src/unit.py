@@ -139,31 +139,38 @@ class Unit(Component):
         self.autofocus_try: int = 0
 
         self.hostname = socket.gethostname()
-        try:
-            self.power_switch = PowerSwitchFactory.get_instance()
-            self.mount: Mount = Mount(self)
-            self.imager: Imager = Imager(self)
-            self.covers: Covers = Covers(self)
-            self.stage: Stage = Stage(self)
-            self.focuser: Focuser = Focuser(self)
-            self.pw: pwi4_client.PWI4 = pwi4_client.PWI4()
 
-            self.autofocuser: Autofocuser = Autofocuser(self)
-            self.solver: Solver = Solver(self)
-            self.acquirer: Acquirer = Acquirer(self)
-            self.guider: Guider = Guider(self)
-        except Exception as ex:
-            logger.exception(msg="could not create a Unit", exc_info=ex)
-            raise ex
+        self._init_errors: list[str] = []
 
-        self.components: list[Component] = [
+        def _try_init(name: str, factory):
+            try:
+                return factory()
+            except Exception as ex:
+                msg = f"component '{name}' failed to initialize: {ex}"
+                logger.error(msg)
+                self._init_errors.append(msg)
+                return None
+
+        self.power_switch = _try_init("power_switch", PowerSwitchFactory.get_instance)
+        self.mount: Mount | None = _try_init("mount", lambda: Mount(self))
+        self.imager: Imager | None = _try_init("imager", lambda: Imager(self))
+        self.covers: Covers | None = _try_init("covers", lambda: Covers(self))
+        self.stage: Stage | None = _try_init("stage", lambda: Stage(self))
+        self.focuser: Focuser | None = _try_init("focuser", lambda: Focuser(self))
+        self.pw: pwi4_client.PWI4 | None = _try_init("pw", pwi4_client.PWI4)
+        self.autofocuser: Autofocuser | None = _try_init("autofocuser", lambda: Autofocuser(self))
+        self.solver: Solver | None = _try_init("solver", lambda: Solver(self))
+        self.acquirer: Acquirer | None = _try_init("acquirer", lambda: Acquirer(self))
+        self.guider: Guider | None = _try_init("guider", lambda: Guider(self))
+
+        self.components: list[Component] = [c for c in [
             self.power_switch,
             self.mount,
             self.imager,
             self.covers,
             self.focuser,
             self.stage,
-        ]
+        ] if c is not None]
 
         self.timer: RepeatTimer = RepeatTimer(2, function=self.ontimer)
         self.timer.name = "unit-timer-thread"
@@ -177,7 +184,7 @@ class Unit(Component):
         self.connected_clients: list[WebSocket] = []
         # self.imager.register_visualizer('image-to-dashboard', self.push_image_to_dashboards)
 
-        self.errors: list[str] = []
+        self.errors: list[str] = list(self._init_errors)
 
         self.controller_api = ControllerApi()
 
@@ -312,7 +319,7 @@ class Unit(Component):
 
         all_corrections: list = []
 
-        if self.acquirer.latest_acquisition:
+        if self.acquirer and self.acquirer.latest_acquisition:
             corrections_list = (
                 self.acquirer.latest_acquisition.corrections
                 if (
@@ -336,13 +343,13 @@ class Unit(Component):
             **self.component_status().model_dump(),
             id=id(self),
             guiding=self.guider.is_guiding if self.guider else False,
-            autofocusing=self.autofocuser.is_autofocusing,
-            power_switch=self.power_switch.status(),
-            mount=self.mount.status(),
+            autofocusing=self.autofocuser.is_autofocusing if self.autofocuser else False,
+            power_switch=self.power_switch.status() if self.power_switch else None,
+            mount=self.mount.status() if self.mount else None,
             imager=self.imager.status() if self.imager else None,  # type: ignore
-            covers=self.covers.status(),
-            focuser=self.focuser.status(),
-            stage=self.stage.status(),
+            covers=self.covers.status() if self.covers else None,
+            focuser=self.focuser.status() if self.focuser else None,
+            stage=self.stage.status() if self.stage else None,
             guider=self.guider.status() if self.guider else None,  # type: ignore
             # solver= self.solver.status(),
             errors=self.errors,

@@ -2,6 +2,7 @@ import logging
 import os
 import socket
 import subprocess
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -61,19 +62,24 @@ ensure_process_is_running(
     shell=True,
 )
 
-# try, as soon as possible, to talk to PWI4 and quit if not possible
-while True:
+# Try to talk to PWI4 at startup; proceed without it if unavailable.
+_pwi4_ok = False
+_pwi4_deadline = time.monotonic() + 30
+while time.monotonic() < _pwi4_deadline:
     try:
         pw = pwi4_client.PWI4()
         pw.status()
         logger.info("OK, established connection to PWI4")
+        _pwi4_ok = True
         break
-    except pwi4_client.PWException as ex:
-        logger.error("no PWI4 yet, waiting ...", exc_info=ex)
-        continue
+    except pwi4_client.PWException:
+        logger.warning("PWI4 not ready yet, retrying ...")
+        time.sleep(1)
     except Exception as ex:
-        logger.error("cannot connect to PWI4, giving up!", exc_info=ex)
-        app_quit(reason="cannot talk to PWI4")
+        logger.error(f"cannot connect to PWI4: {ex}")
+        break
+if not _pwi4_ok:
+    logger.warning("PWI4 unavailable at startup - unit will start with mount unavailable")
 
 ensure_process_is_running(
     name="PWShutter.exe",
@@ -198,11 +204,16 @@ if __name__ == "__main__":
 
     if unit:
         app.include_router(unit.api_router)
-        app.include_router(unit.mount.api_router)
-        app.include_router(unit.covers.api_router)
-        app.include_router(unit.focuser.api_router)
-        app.include_router(unit.stage.api_router)
-        app.include_router(unit.imager.api_router)
+        if unit.mount:
+            app.include_router(unit.mount.api_router)
+        if unit.covers:
+            app.include_router(unit.covers.api_router)
+        if unit.focuser:
+            app.include_router(unit.focuser.api_router)
+        if unit.stage:
+            app.include_router(unit.stage.api_router)
+        if unit.imager:
+            app.include_router(unit.imager.api_router)
 
         logger.info(f"The MAST Unit server is starting on {host}:{port} ...")
 
