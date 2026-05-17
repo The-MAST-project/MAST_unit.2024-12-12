@@ -1,7 +1,6 @@
 import logging
 import os
 import socket
-import subprocess
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -82,30 +81,32 @@ ensure_process_is_running(
 )
 
 
-def check_ps3cli() -> None:
-    """Verify ps3cli.exe is present and executable. It is a one-shot solver tool,
-    not a persistent process, so we only probe it at startup rather than keep it running."""
-    ps3cli_exe = "C:\\Users\\mast\\Documents\\PlaneWave\\ps3cli\\ps3cli\\ps3cli.exe"
-    if not Path(ps3cli_exe).exists():
-        logger.error(f"ps3cli health check: exe not found at {ps3cli_exe}")
-        return
-    try:
-        result = subprocess.run(
-            [ps3cli_exe],
-            capture_output=True,
-            timeout=10,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        # Exit code 1 = invalid arguments (no args given) -- binary loaded and ran correctly.
-        if result.returncode in (0, 1):
-            logger.info(f"ps3cli health check: OK (exit code {result.returncode})")
-        else:
-            logger.warning(f"ps3cli health check: unexpected exit code {result.returncode}")
-    except Exception as e:
-        logger.error(f"ps3cli health check: failed to run: {e}")
+def _locate_ps3cli_dir() -> str | None:
+    candidates = [
+        Path(os.environ.get("PS3CLI_DIR", "")) if os.environ.get("PS3CLI_DIR") else None,
+        Path.home() / "Documents" / "PlaneWave" / "ps3cli" / "ps3cli",
+        Path.home() / "Documents" / "PlaneWave" / "ps3cli",
+        Path(r"C:\Program Files (x86)\PlaneWave Instruments\ps3cli\ps3cli"),
+    ]
+    for c in candidates:
+        if c and (c / "ps3cli.exe").is_file():
+            return str(c)
+    return None
 
 
-check_ps3cli()
+_ps3cli_dir = _locate_ps3cli_dir()
+if _ps3cli_dir is None:
+    logger.error("ps3cli.exe not found in any known location; skipping ps3cli startup")
+else:
+    ensure_process_is_running(
+        name="ps3cli.exe",
+        cwd=_ps3cli_dir,
+        cmd="ps3cli.exe --server --port=8998",
+        logger=logger,
+        shell=True,
+        log_stdout_and_stderr=True,
+        needs_console=True,
+    )
 
 
 # Configure logging for WebSocketProtocol
