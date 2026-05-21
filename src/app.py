@@ -12,10 +12,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, ORJSONResponse, RedirectResponse
 from pydantic import ValidationError
 
+from common.build_report_api import make_build_report_router
 from common.config import Config
 from common.mast_logging import init_log
 from common.process import ensure_process_is_running
 from PlaneWave import pwi4_client
+
+# MAST_unit.2024-12-12/src/app.py -> workspace is two levels up
+_WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 
 #
 # Log level configuration from the 'global' section of the 'config' file
@@ -165,6 +169,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(make_build_report_router(_WORKSPACE_ROOT))
 
 if __name__ == "__main__":
     service_conf = Config().get_service(service_name="unit")
