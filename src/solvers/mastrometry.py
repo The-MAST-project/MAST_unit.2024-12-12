@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from contextlib import suppress
 from pathlib import Path
+from threading import Thread
 from typing import TYPE_CHECKING, cast
 
 from astropy.coordinates import Angle
@@ -378,8 +379,8 @@ class MastrometryDotNet(SolverInterface):
                 ],
             )
 
-        # Thread(target=self.cleanup, args=([Path(result_file), Path(new_fits_path)], original_folder, win_tmp_dir)).start()
-        logger.info(f"{function_name()}: Temporary files left in '{win_tmp_dir}' (TODO: clean up in background thread)")
+        Thread(target=self.cleanup, args=([Path(result_file), Path(new_fits_path)], win_tmp_dir)).start()
+        # logger.info(f"{function_name()}: Temporary files left in '{win_tmp_dir}' (TODO: clean up in background thread)")
         return ret
 
     def cleanup(self, files_to_move: list[Path], target_folder: Path, tmp_dir: Path):
