@@ -27,7 +27,7 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
 }
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-$ServiceName  = "MAST_unit"
+$ServiceName  = "mast-unit"
 $DisplayName  = "MAST Unit Service"
 $ProjectDir   = "C:\Users\mast\PycharmProjects\MAST_unit.2024-12-12"
 $Python       = "$ProjectDir\.venv\Scripts\python.exe"
