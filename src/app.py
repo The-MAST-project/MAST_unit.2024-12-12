@@ -105,14 +105,47 @@ def _locate_ps3cli_dir() -> str | None:
     return None
 
 
+def _locate_ps3cli_catalog() -> str | None:
+    # ps3cli (PlateSolve3) needs a star-catalog directory containing UC4 and Orca
+    # subdirectories. This is separate from the astrometry.net indexes (the
+    # index-*.fits files) and is NOT interchangeable with them. Without it,
+    # `ps3cli --server` validates the catalog at startup and exits.
+    def _is_catalog(p: Path) -> bool:
+        return (p / "UC4").is_dir() and (p / "Orca").is_dir()
+
+    roots = [
+        Path(os.environ["PS3CLI_CATALOG"]) if os.environ.get("PS3CLI_CATALOG") else None,
+        Path.home() / "Documents" / "Kepler",
+        Path.home() / "Downloads" / "PlaneWave" / "Platesolve3.80" / "Kepler",
+    ]
+    for root in roots:
+        if not root or not root.is_dir():
+            continue
+        if _is_catalog(root):
+            return str(root)
+        for sub in root.iterdir():
+            if sub.is_dir() and _is_catalog(sub):
+                return str(sub)
+    return None
+
+
 _ps3cli_dir = _locate_ps3cli_dir()
+_ps3cli_catalog = _locate_ps3cli_catalog()
 if _ps3cli_dir is None:
     logger.error("ps3cli.exe not found in any known location; skipping ps3cli startup")
+elif _ps3cli_catalog is None:
+    logger.error(
+        "PlateSolve catalog (a directory containing UC4 and Orca subdirectories) "
+        "not found; ps3cli --server cannot start. Install the catalog or set "
+        "PS3CLI_CATALOG to its location. Skipping ps3cli startup."
+    )
 else:
+    # --root-path tells ps3cli where the UC4/Orca catalog lives; without it the
+    # server cannot auto-detect a catalog and exits immediately.
     ensure_process_is_running(
         name="ps3cli.exe",
         cwd=_ps3cli_dir,
-        cmd="ps3cli.exe --server --port=8998",
+        cmd=f'ps3cli.exe --server --port=8998 --root-path="{_ps3cli_catalog}"',
         logger=logger,
         shell=True,
         log_stdout_and_stderr=True,
