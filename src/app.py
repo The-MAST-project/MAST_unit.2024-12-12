@@ -82,15 +82,26 @@ ensure_process_is_running(
 
 
 def _locate_ps3cli_dir() -> str | None:
-    candidates = [
-        Path(os.environ.get("PS3CLI_DIR", "")) if os.environ.get("PS3CLI_DIR") else None,
-        Path.home() / "Documents" / "PlaneWave" / "ps3cli" / "ps3cli",
+    # The special --server build ships inside a dated folder (e.g. ps3cli-2024-09-10)
+    # whose name changes per build, so search recursively under known roots rather
+    # than hardcoding the subdirectory. Returns the directory containing ps3cli.exe.
+    roots = [
+        Path(os.environ["PS3CLI_DIR"]) if os.environ.get("PS3CLI_DIR") else None,
         Path.home() / "Documents" / "PlaneWave" / "ps3cli",
-        Path(r"C:\Program Files (x86)\PlaneWave Instruments\ps3cli\ps3cli"),
+        Path(r"C:\Program Files (x86)\PlaneWave Instruments\ps3cli"),
     ]
-    for c in candidates:
-        if c and (c / "ps3cli.exe").is_file():
-            return str(c)
+    for root in roots:
+        if not root or not root.is_dir():
+            continue
+        # Pick the largest ps3cli.exe: the special --server build (~4 MB) wins over
+        # any stale older on-demand build (~10 KB) left beside it from a prior install.
+        exe = max(
+            (p for p in root.rglob("ps3cli.exe") if p.is_file()),
+            key=lambda p: p.stat().st_size,
+            default=None,
+        )
+        if exe:
+            return str(exe.parent)
     return None
 
 

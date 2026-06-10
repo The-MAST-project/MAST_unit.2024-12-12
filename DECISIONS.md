@@ -2,6 +2,40 @@
 
 ---
 
+## [2026-06-10] ps3cli runs as a persistent --server; locate by largest exe (supersedes 2026-05-14)
+
+**Why:** The 2026-05-14 entry ("ps3cli is a one-shot tool, not a persistent process")
+was based on the older on-demand `ps3cli.exe`, which exited immediately and could not
+serve repeated requests. We have since obtained a specially built `ps3cli.exe`
+(2024-09-10) that supports `--server` mode: it loads its catalogs once and stays
+resident, making repeat plate-solves fast. That makes the persistent-process model
+correct again -- the exact case the 2026-05-14 entry anticipated ("if a future change
+makes ps3cli persistent again, restore the `ensure_process_is_running` call").
+
+**What:**
+
+`src/app.py`
+- Launches `ps3cli.exe --server --port=8998` via `ensure_process_is_running(...,
+  needs_console=True)`; the one-shot `check_ps3cli()` probe was removed.
+- `_locate_ps3cli_dir()` searches recursively under known roots (`$PS3CLI_DIR`,
+  `~/Documents/PlaneWave/ps3cli`, the Program Files path) and returns the directory of
+  the **largest** `ps3cli.exe`. The special build unpacks into a dated folder
+  (`ps3cli-2024-09-10\`) and an older build may linger beside it; picking the largest
+  selects the special `--server` build regardless of folder name.
+
+**Implications:**
+- Supersedes the 2026-05-14 "one-shot" decision; that entry stays for history but the
+  design has reverted to persistent `--server`.
+- `needs_console=True` (from MAST_common `process.py`) keeps the
+  `ensure_process_is_running` wait from hanging on the server process; whether it is
+  still required with the real `--server` build is still being evaluated.
+- Resolution logic is kept in sync with `verify-planewave.ps1` in MAST_provisioning,
+  which selects the largest `ps3cli.exe` the same way. The install itself is provisioned
+  by the `planewave` provider; see the matching 2026-06-10 entry in
+  MAST_provisioning/DECISIONS.md.
+
+---
+
 ## [2026-05-16] Unit service must not crash on missing hardware or config
 
 **Why:** The unit service was crashing at startup (or failing to serve any response) whenever
