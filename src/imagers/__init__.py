@@ -5,13 +5,12 @@ import numpy as np
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from common.activities import ImagerActivities
 from common.canonical import CanonicalResponse
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerSettings, ImagerTypes
-from common.models.statuses import ImagerStatus
 from common.mast_logging import init_log
+from common.models.statuses import ImagerStatus
 
 logger = logging.Logger("mast." + __name__)
 init_log(logger)

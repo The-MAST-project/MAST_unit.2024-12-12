@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from contextlib import suppress
 from pathlib import Path
+from threading import Thread
 from typing import TYPE_CHECKING, cast
 
 from astropy.coordinates import Angle
@@ -22,8 +23,7 @@ from common.rois import SkyRoi, SpecRoi
 from common.utils import Coord, boxed_log, function_name
 from imagers import ImagerSettings
 
-from .astrometry_dot_net import (cygwin_to_win, generate_random_string,
-                                 parse_solver_output, win_to_cygwin)
+from .astrometry_dot_net import cygwin_to_win, generate_random_string, parse_solver_output, win_to_cygwin
 
 logger = logging.getLogger("mastrometry_dot_net")
 init_log(logger)
@@ -164,50 +164,41 @@ class MastrometryDotNet(SolverInterface):
 
             imager_roi: ImagerRoi | None = None
 
-            if settings is not None and settings.roi is not None:
-                #
-                # An ROI was provided in the settings, use it and ignore the phase specific ROIs
-                #
-                imager_roi = settings.roi
-            else:
-                #
-                # No ROI in settings.  Use phase specific configured ROIs
-                #
-                unit_conf = unit.unit_conf if unit and unit.unit_conf else Config().get_unit()
-                assert unit_conf is not None
+            unit_conf = unit.unit_conf if unit and unit.unit_conf else Config().get_unit()
+            assert unit_conf is not None
 
-                fcu_version = self.unit.fcu_version if self.unit else FcuVersion.v2
+            fcu_version = self.unit.fcu_version if self.unit else FcuVersion.v2
 
-                match phase:
-                    case "sky":
-                        assert fcu_version in unit_conf.acquisition.rois
-                        cfg = cast(SkyRoiConfig, unit_conf.acquisition.rois[fcu_version])
-                        sky_roi = SkyRoi(sky_x=cfg.sky_x, sky_y=cfg.sky_y, width=cfg.width, height=cfg.height)
+            match phase:
+                case "sky":
+                    assert fcu_version in unit_conf.acquisition.rois
+                    cfg = cast(SkyRoiConfig, unit_conf.acquisition.rois[fcu_version])
+                    sky_roi = SkyRoi(sky_x=cfg.sky_x, sky_y=cfg.sky_y, width=cfg.width, height=cfg.height)
 
-                        imager_roi = ImagerRoi.from_other(sky_roi)
+                    imager_roi = ImagerRoi.from_other(sky_roi)
 
-                    case "spec":
-                        import common.asi as asi
+                case "spec":
+                    import common.asi as asi
 
-                        camera_x_size = asi.ASI_294MM_WIDTH
-                        camera_y_size = asi.ASI_294MM_HEIGHT
-                        assert fcu_version in unit_conf.guiding.rois
-                        cfg = cast(SpecRoiConfig, unit_conf.guiding.rois[fcu_version])
+                    camera_x_size = asi.ASI_294MM_WIDTH
+                    camera_y_size = asi.ASI_294MM_HEIGHT
+                    assert fcu_version in unit_conf.guiding.rois
+                    cfg = cast(SpecRoiConfig, unit_conf.guiding.rois[fcu_version])
 
-                        half_width = min(cfg.fiber_x - cfg.margin_horizontal,
-                                         camera_x_size - cfg.margin_horizontal - cfg.fiber_x)
-                        half_height = min(cfg.fiber_y - cfg.margin_vertical,
-                                          camera_y_size - cfg.margin_vertical - cfg.fiber_y)
+                    half_width = min(cfg.fiber_x - cfg.margin_horizontal,
+                                        camera_x_size - cfg.margin_horizontal - cfg.fiber_x)
+                    half_height = min(cfg.fiber_y - cfg.margin_vertical,
+                                        camera_y_size - cfg.margin_vertical - cfg.fiber_y)
 
-                        spec_roi = SpecRoi(fiber_x=cfg.fiber_x, fiber_y=cfg.fiber_y,
-                                           width=half_width*2, height=half_height*2)
+                    spec_roi = SpecRoi(fiber_x=cfg.fiber_x, fiber_y=cfg.fiber_y,
+                                        width=half_width*2, height=half_height*2)
 
-                        imager_roi = ImagerRoi.from_other(spec_roi)
+                    imager_roi = ImagerRoi.from_other(spec_roi)
 
-                    case _:
-                        # No ROI and no recognized phase: leave imager_roi=None
-                        # → no crop, refpix stays None, solve-field uses --crpix-center
-                        pass
+                case _:
+                    # No ROI and no recognized phase: leave imager_roi=None
+                    # → no crop, refpix stays None, solve-field uses --crpix-center
+                    pass
 
             if imager_roi is not None:
                 if imager_roi.x + imager_roi.width > width or imager_roi.y + imager_roi.height > height:
@@ -388,8 +379,8 @@ class MastrometryDotNet(SolverInterface):
                 ],
             )
 
-        # Thread(target=self.cleanup, args=([Path(result_file), Path(new_fits_path)], original_folder, win_tmp_dir)).start()
-        logger.info(f"{function_name()}: Temporary files left in '{win_tmp_dir}' (TODO: clean up in background thread)")
+        Thread(target=self.cleanup, args=([Path(result_file), Path(new_fits_path)], win_tmp_dir)).start()
+        # logger.info(f"{function_name()}: Temporary files left in '{win_tmp_dir}' (TODO: clean up in background thread)")
         return ret
 
     def cleanup(self, files_to_move: list[Path], target_folder: Path, tmp_dir: Path):
