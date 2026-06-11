@@ -149,7 +149,6 @@ else:
         logger=logger,
         shell=True,
         log_stdout_and_stderr=True,
-        needs_console=True,
     )
 
 

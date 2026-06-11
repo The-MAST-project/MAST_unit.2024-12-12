@@ -15,8 +15,8 @@ makes ps3cli persistent again, restore the `ensure_process_is_running` call").
 **What:**
 
 `src/app.py`
-- Launches `ps3cli.exe --server --port=8998` via `ensure_process_is_running(...,
-  needs_console=True)`; the one-shot `check_ps3cli()` probe was removed.
+- Launches `ps3cli.exe --server --port=8998` via `ensure_process_is_running(...)`;
+  the one-shot `check_ps3cli()` probe was removed.
 - `_locate_ps3cli_dir()` searches recursively under known roots (`$PS3CLI_DIR`,
   `~/Documents/PlaneWave/ps3cli`, the Program Files path) and returns the directory of
   the **largest** `ps3cli.exe`. The special build unpacks into a dated folder
@@ -26,9 +26,6 @@ makes ps3cli persistent again, restore the `ensure_process_is_running` call").
 **Implications:**
 - Supersedes the 2026-05-14 "one-shot" decision; that entry stays for history but the
   design has reverted to persistent `--server`.
-- `needs_console=True` (from MAST_common `process.py`) keeps the
-  `ensure_process_is_running` wait from hanging on the server process; whether it is
-  still required with the real `--server` build is still being evaluated.
 - Resolution logic is kept in sync with `verify-planewave.ps1` in MAST_provisioning,
   which selects the largest `ps3cli.exe` the same way. The install itself is provisioned
   by the `planewave` provider; see the matching 2026-06-10 entry in
