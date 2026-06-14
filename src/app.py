@@ -3,7 +3,6 @@ import os
 import socket
 import time
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import psutil
 import uvicorn
@@ -17,6 +16,7 @@ from common.config import Config
 from common.mast_logging import init_log
 from common.process import ensure_process_is_running
 from PlaneWave import pwi4_client
+from PlaneWave.ps3cli_locate import locate_ps3cli_catalog, locate_ps3cli_dir
 
 log_level = logging.WARNING
 logging.basicConfig(level=log_level)
@@ -81,56 +81,8 @@ ensure_process_is_running(
 )
 
 
-def _locate_ps3cli_dir() -> str | None:
-    # The special --server build ships inside a dated folder (e.g. ps3cli-2024-09-10)
-    # whose name changes per build, so search recursively under known roots rather
-    # than hardcoding the subdirectory. Returns the directory containing ps3cli.exe.
-    roots = [
-        Path(os.environ["PS3CLI_DIR"]) if os.environ.get("PS3CLI_DIR") else None,
-        Path.home() / "Documents" / "PlaneWave" / "ps3cli",
-        Path(r"C:\Program Files (x86)\PlaneWave Instruments\ps3cli"),
-    ]
-    for root in roots:
-        if not root or not root.is_dir():
-            continue
-        # Pick the largest ps3cli.exe: the special --server build (~4 MB) wins over
-        # any stale older on-demand build (~10 KB) left beside it from a prior install.
-        exe = max(
-            (p for p in root.rglob("ps3cli.exe") if p.is_file()),
-            key=lambda p: p.stat().st_size,
-            default=None,
-        )
-        if exe:
-            return str(exe.parent)
-    return None
-
-
-def _locate_ps3cli_catalog() -> str | None:
-    # ps3cli (PlateSolve3) needs a star-catalog directory containing UC4 and Orca
-    # subdirectories. This is separate from the astrometry.net indexes (the
-    # index-*.fits files) and is NOT interchangeable with them. Without it,
-    # `ps3cli --server` validates the catalog at startup and exits.
-    def _is_catalog(p: Path) -> bool:
-        return (p / "UC4").is_dir() and (p / "Orca").is_dir()
-
-    roots = [
-        Path(os.environ["PS3CLI_CATALOG"]) if os.environ.get("PS3CLI_CATALOG") else None,
-        Path.home() / "Documents" / "Kepler",
-        Path.home() / "Downloads" / "PlaneWave" / "Platesolve3.80" / "Kepler",
-    ]
-    for root in roots:
-        if not root or not root.is_dir():
-            continue
-        if _is_catalog(root):
-            return str(root)
-        for sub in root.iterdir():
-            if sub.is_dir() and _is_catalog(sub):
-                return str(sub)
-    return None
-
-
-_ps3cli_dir = _locate_ps3cli_dir()
-_ps3cli_catalog = _locate_ps3cli_catalog()
+_ps3cli_dir = locate_ps3cli_dir()
+_ps3cli_catalog = locate_ps3cli_catalog()
 if _ps3cli_dir is None:
     logger.error("ps3cli.exe not found in any known location; skipping ps3cli startup")
 elif _ps3cli_catalog is None:
