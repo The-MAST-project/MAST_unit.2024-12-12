@@ -2,6 +2,28 @@
 
 ---
 
+## [2026-06-21] Unit fails startup loudly on invalid configuration
+
+**Why:** With the bootstrap configuration moving to a per-machine TOML file (see the
+MAST_common decision of the same date), an absent, malformed, or drifted config must
+not let the unit limp along with bad values. It should refuse to start and say
+exactly why.
+
+**What:**
+
+`src/app.py`
+- The `__main__` entrypoint constructs `Config()` inside `try/except ConfigError`
+  *before* anything else (and before `uvicorn.run()`). On failure it logs the detailed
+  reason, calls `app_quit()` (which also tears down the PWI4 child it spawned earlier),
+  and `sys.exit(1)`. The server never starts.
+- `ConfigError` covers: missing `MAST_PROJECT`, missing/malformed `C:\WIS\unit.toml`
+  (or `$MAST_CONFIG`), schema/validation errors, and the local config disagreeing with
+  the DB `sites` document (`site`/`project`/`controller_host`/`location`).
+- Requires the unit's `src/common` submodule to point at the MAST_common commit that
+  introduces `config/local.py` (`ConfigError`, `load_local_config`).
+
+---
+
 ## [2026-06-10] ps3cli runs as a persistent --server; locate by largest exe (supersedes 2026-05-14)
 
 **Why:** The 2026-05-14 entry ("ps3cli is a one-shot tool, not a persistent process")
