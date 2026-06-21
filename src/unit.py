@@ -44,13 +44,12 @@ from common.interfaces.components import Component
 # from guiding import Guider
 from common.interfaces.imager import ImagerExposureSeries, ImagerRoi, ImagerSequenceOfExposures, ImagerSettings, ImagerTypes
 from common.mast_logging import DailyFileHandler, init_log
-from common.models.assignments import UnitAssignment
-from common.models.statuses import FullUnitStatus
+from common.models.assignments import AssignmentNotification, UnitAssignment
+from common.models.statuses import FullUnitStatus, StatusType
+from common.notifications import Notifier
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
 from common.rois import UnitRoi
-from common.models.assignments import AssignmentNotification
-from common.notifications import Notifier
 from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers
 from focuser import Focuser
@@ -335,6 +334,7 @@ class Unit(Component):
         ret = FullUnitStatus(
             **self.component_status().model_dump(),
             id=id(self),
+            powered=True,
             guiding=self.guider.is_guiding if self.guider else False,
             autofocusing=self.autofocuser.is_autofocusing,
             power_switch=self.power_switch.status(),
