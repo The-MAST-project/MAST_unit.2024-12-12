@@ -32,7 +32,7 @@ init_log(logger)
 # os.environ["XILOG"] = "C:/temp/ximc.log"  # Enables logging for ximc library.
 
 XIMC_VERSION = '2.13.6'
-ximc_top_dir = Path().cwd() / "Standa" / f"ximc-{XIMC_VERSION}" / "ximc"
+ximc_top_dir = Path(__file__).parent / "Standa" / f"ximc-{XIMC_VERSION}" / "ximc"
 
 for path in [
         ximc_top_dir / "crossplatform" / "wrappers" / "python", # examples
@@ -166,6 +166,8 @@ class Stage(Component, SwitchedOutlet):
 
         self.info = {}
         self._was_shut_down = False
+        self._currently_operational = False
+        self._why_not_currently_operational = ["stage not yet initialized"]
 
         if not self.is_on():
             self.power_on()

@@ -32,7 +32,9 @@ class Guider(GuiderInterface):
     def valid_guiding_methods():
         from common.config import Config
 
-        return Config().get_unit().guider.method
+        unit_conf = Config().get_unit()
+        assert unit_conf is not None
+        return unit_conf.guider.method
 
     def __init__(self, unit: "Unit" | None, guider_type: str | None = None):  # type: ignore # noqa: UP037
         from phd2.phd2 import PHD2Connector
@@ -47,7 +49,7 @@ class Guider(GuiderInterface):
                     f"{function_name()}: bad guider_type argument '{guider_type}' "
                     + f"(valid methods={valid_guiding_methods})"
                 )
-        elif self.unit is not None and self.unit.unit_conf.guider.method is not None:
+        elif self.unit is not None and self.unit.unit_conf is not None:
             if self.unit.unit_conf.guider.method not in valid_guiding_methods:
                 raise ValueError(
                     f"{function_name()}: bad guider_type configuration '{self.unit.unit_conf.guider.method} "
@@ -55,7 +57,9 @@ class Guider(GuiderInterface):
                 )
             guider_type = self.unit.unit_conf.guider.method
         else:
-            guider_type = Config().get_unit().guider.method
+            unit_conf = Config().get_unit()
+            assert unit_conf is not None
+            guider_type = unit_conf.guider.method
 
         Activities.__init__(self)
         if guider_type == "phd2":
@@ -124,8 +128,11 @@ class Guider(GuiderInterface):
         #   |.................v......................|
         #   +----------------------------------------+
         #
+        unit_conf = Config().get_unit()
+        assert unit_conf is not None
+
         if self.unit:
-            guiding_conf = self.unit.unit_conf.guiding
+            guiding_conf = unit_conf.guiding
             fcu_version = self.unit.fcu_version
             camera_x_size = self.unit.imager.camera_x_size
             camera_y_size = self.unit.imager.camera_y_size
@@ -138,7 +145,7 @@ class Guider(GuiderInterface):
 
             camera_x_size = asi.ASI_294MM_WIDTH
             camera_y_size = asi.ASI_294MM_HEIGHT
-            guiding_conf = Config().get_unit().guiding
+            guiding_conf = unit_conf.guiding
             fcu_version = FcuVersion("fcu_v1")
 
         cfg = guiding_conf.rois[fcu_version]

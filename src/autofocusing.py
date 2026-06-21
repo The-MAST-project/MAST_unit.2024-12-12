@@ -1,9 +1,7 @@
-import datetime
 import logging
 import math
 import os
 import time
-from pathlib import Path
 from threading import Thread
 from typing import TYPE_CHECKING, Annotated
 
@@ -14,7 +12,6 @@ from common.activities import FocuserActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.config.rois import SkyRoiConfig
-from common.extended_basemodel import ExtendedBaseModel
 from common.filer import Filer
 from common.interfaces.imager import ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
@@ -22,7 +19,12 @@ from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_
 from common.paths import PathMaker
 from common.rois import UnitRoi
 from common.utils import boxed_log
-from PlaneWave.ps3cli_client import PS3CLIClient
+from focus_analysis import (
+    FocusAnalysisError,
+    PS3AutofocusStatus,
+    PS3FocusAnalysisResult,
+    analyze_focus_files,
+)
 from plotting import plot_autofocus_analysis
 from stage import StagePresetPosition
 
@@ -41,31 +43,9 @@ class AutofocusResult:
     time_stamp: str
 
 
-class PS3FocusSample(ExtendedBaseModel):
-    is_valid: bool
-    focus_position: float | None = None
-    num_stars: int | None = None
-    star_rms_diameter_pixels: float | None = None
-    vcurve_star_rms_diameter_pixels: float | None = None
-
-
-class PS3FocusAnalysisResult(ExtendedBaseModel):
-    has_solution: bool
-    best_focus_position: float | None
-    best_focus_star_diameter: float | None
-    tolerance: float | None
-    vcurve_a: float | None
-    vcurve_b: float | None
-    vcurve_c: float | None
-    focus_samples: list[PS3FocusSample] | None = []
-    errors: list[str] | None = []
-
-
-class PS3AutofocusStatus(ExtendedBaseModel):
-    is_running: bool
-    last_log_message: str | None = None
-    errors: list[str] | None = None
-    analysis_result: PS3FocusAnalysisResult | None = None
+# PS3FocusSample, PS3FocusAnalysisResult and PS3AutofocusStatus now live in
+# focus_analysis.py (imported above) so the ps3cli step can be reused by the
+# autofocus-solve validation harness without pulling in the unit/hardware deps.
 
 
 class Autofocuser:
@@ -92,7 +72,7 @@ class Autofocuser:
         ra_j2000_hours: Annotated[
             str | float | None,
             Query(
-                regex=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
+                pattern=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
                 description=(
                     "### Right Ascension (J2000) in either:\n"
                     "- decimal hours (e.g., `12.5`) or\n"
@@ -105,7 +85,7 @@ class Autofocuser:
         dec_j2000_degs: Annotated[
             str | float | None,
             Query(
-                regex=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
+                pattern=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
                 description=(
                     "### Declination (J2000) in either:\n"
                     "- decimal degrees (e.g., `-45.5`) or\n"
@@ -156,6 +136,7 @@ class Autofocuser:
             elif isinstance(dec_j2000_degs, float):
                 pass
 
+        assert self.unit.unit_conf is not None
         if number_of_images is None:
             number_of_images = self.unit.unit_conf.autofocus.images
         if number_of_images and number_of_images % 2 != 1:
@@ -217,6 +198,8 @@ class Autofocuser:
         self.unit.errors = []
         self.latest_result = None
 
+        assert self.unit.unit_conf is not None
+
         self.unit.start_activity(UnitActivities.Autofocusing)
 
         self.unit.stage.move_to_preset(StagePresetPosition.Sky)
@@ -276,8 +259,8 @@ class Autofocuser:
 
         for try_number in range(max_tries):
 
-            logger.info(f"{op}: starting autofocus try #{try_number} (of {max_tries})")
             autofocus_folder = PathMaker().make_autofocus_folder()
+            logger.info(f"{op}: starting autofocus try #{try_number} (of {max_tries}) in '{autofocus_folder}' ...")
             #
             # Acquire images
             #
@@ -328,72 +311,23 @@ class Autofocuser:
                     self.unit.imager.end_exposure_series(autofocus_exposure_series)
                     return
 
-            # The files are now on the RAM disk
+            # The files are now in the autofocus_folder
 
             self.unit.imager.end_exposure_series(autofocus_exposure_series)
 
             self.unit.start_activity(UnitActivities.AutofocusAnalysis)
-            ps3_client = PS3CLIClient()
-            ps3_client.connect("127.0.0.1", 8998)
-            files = [Path(file).as_posix() for file in files]
-            logger.info(f"calling ps3_client.begin_analyze_focus({files})")
-            ps3_client.begin_analyze_focus(files)
-
-            status: PS3AutofocusStatus | None = None
-            timeout = 60
-            start = datetime.datetime.now()
-            end = start + datetime.timedelta(seconds=timeout)
-            while datetime.datetime.now() < end:
-                # wait for the autofocus analyser to start running
-                d = ps3_client.focus_status()
-                if d is None:
-                    time.sleep(0.1)
-                    continue
-                try:
-                    status = PS3AutofocusStatus(**d)
-                except Exception as ex:
-                    self.log_and_store_error(f"{op}: cannot parse focus_status() response: {d=} ({ex=})")
-                    continue
-                if not status.is_running:
-                    time.sleep(0.1)
-                else:
-                    break
-
-            if datetime.datetime.now() >= end:
-                self.log_and_store_error(
-                    f"{op}: autofocus analyser did not start within {timeout} seconds"
-                )
+            try:
+                status = analyze_focus_files(files, timeout=60)
+            except FocusAnalysisError as ex:
+                self.log_and_store_error(f"{op}: {ex}")
                 filer.move_ram_to_shared(autofocus_folder)
                 self.unit.end_activity(UnitActivities.AutofocusAnalysis)
-                self.unit.end_activity(UnitActivities.Autofocusing)
-                return
-
-            last_log_message = ""
-            while datetime.datetime.now() < end:
-                # wait for the autofocus analyser to stop running
-                s = ps3_client.focus_status()
-                status = PS3AutofocusStatus(**s if s else {})
-                logger.info(f"{op}: {s=}")
-                if not status.is_running:
-                    last_log_message = status.last_log_message
-                    break
-                else:
-                    time.sleep(0.5)
-
-            if datetime.datetime.now() >= end:
-                self.log_and_store_error(
-                    f"{op}: autofocus analyser did not finish within {timeout} seconds"
-                )
-                ps3_client.close()
-                filer.move_ram_to_shared(autofocus_folder)
-                self.unit.end_activity(UnitActivities.AutofocusAnalysis)
+                if ex.phase == "start":
+                    self.unit.end_activity(UnitActivities.Autofocusing)
+                    return
                 continue  # next try_number
 
-            ps3_client.close()
             self.unit.end_activity(UnitActivities.AutofocusAnalysis)
-
-            if status:
-                status.last_log_message = last_log_message
 
             if not status or not status.analysis_result:
                 self.log_and_store_error(
@@ -454,7 +388,7 @@ class Autofocuser:
 
                 self.unit.unit_conf.focuser.known_as_good_position = position
                 try:
-                    Config().set_unit(self.unit.hostname, self.unit.unit_conf)
+                    Config().set_unit(unit_name=self.unit.hostname, unit_conf=self.unit.unit_conf)
                     logger.info(
                         f"saved unit '{self.unit.hostname}' configuration for "
                         + f"focuser known-as-good-position {position}"

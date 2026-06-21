@@ -1,4 +1,4 @@
 [submodule "src/common"]
 	path = src/common
 	url = https://github.com/The-MAST-project/MAST_common.git
-
+	branch = master

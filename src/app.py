@@ -1,8 +1,8 @@
 import logging
 import os
 import socket
+import time
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import psutil
 import uvicorn
@@ -16,15 +16,8 @@ from common.config import Config
 from common.mast_logging import init_log
 from common.process import ensure_process_is_running
 from PlaneWave import pwi4_client
+from PlaneWave.ps3cli_locate import locate_ps3cli_catalog, locate_ps3cli_dir
 
-#
-# Log level configuration from the 'global' section of the 'config' file
-#
-unit_conf = Config().get_unit(site_name=None, unit_name=socket.gethostname().split('.')[0])
-
-# if 'log_level' in unit_conf.global:
-#     log_level = getattr(logging, unit_conf.global.log_level.upper())
-# else:
 log_level = logging.WARNING
 logging.basicConfig(level=log_level)
 logger = logging.getLogger("mast.unit." + __name__)
@@ -60,19 +53,24 @@ ensure_process_is_running(
     shell=True,
 )
 
-# try, as soon as possible, to talk to PWI4 and quit if not possible
-while True:
+# Try to talk to PWI4 at startup; proceed without it if unavailable.
+_pwi4_ok = False
+_pwi4_deadline = time.monotonic() + 30
+while time.monotonic() < _pwi4_deadline:
     try:
         pw = pwi4_client.PWI4()
         pw.status()
         logger.info("OK, established connection to PWI4")
+        _pwi4_ok = True
         break
-    except pwi4_client.PWException as ex:
-        logger.error("no PWI4 yet, waiting ...", exc_info=ex)
-        continue
+    except pwi4_client.PWException:
+        logger.warning("PWI4 not ready yet, retrying ...")
+        time.sleep(1)
     except Exception as ex:
-        logger.error("cannot connect to PWI4, giving up!", exc_info=ex)
-        app_quit(reason="cannot talk to PWI4")
+        logger.error(f"cannot connect to PWI4: {ex}")
+        break
+if not _pwi4_ok:
+    logger.warning("PWI4 unavailable at startup - unit will start with mount unavailable")
 
 ensure_process_is_running(
     name="PWShutter.exe",
@@ -83,18 +81,28 @@ ensure_process_is_running(
 )
 
 
-ensure_process_is_running(
-    name="ps3cli.exe",
-    cwd=str(
-        Path(
-            "C:\\Program Files (x86)\\PlaneWave Instruments\\ps3cli\\ps3cli-2024-09-10"
-        ).as_posix()
-    ),
-    cmd="ps3cli.exe --server --port=8998",
-    logger=logger,
-    shell=True,
-    log_stdout_and_stderr=True,
-)
+_ps3cli_dir = locate_ps3cli_dir()
+_ps3cli_catalog = locate_ps3cli_catalog()
+if _ps3cli_dir is None:
+    logger.error("ps3cli.exe not found in any known location; skipping ps3cli startup")
+elif _ps3cli_catalog is None:
+    logger.error(
+        "PlateSolve catalog (a directory containing UC4 and Orca subdirectories) "
+        "not found; ps3cli --server cannot start. Install the catalog or set "
+        "PS3CLI_CATALOG to its location. Skipping ps3cli startup."
+    )
+else:
+    # --root-path tells ps3cli where the UC4/Orca catalog lives; without it the
+    # server cannot auto-detect a catalog and exits immediately.
+    ensure_process_is_running(
+        name="ps3cli.exe",
+        cwd=_ps3cli_dir,
+        cmd=f'ps3cli.exe --server --port=8998 --root-path="{_ps3cli_catalog}"',
+        logger=logger,
+        shell=True,
+        log_stdout_and_stderr=True,
+    )
+
 
 # Configure logging for WebSocketProtocol
 # logging.basicConfig(level=logging.DEBUG)
@@ -109,12 +117,15 @@ ensure_process_is_running(
 
 @asynccontextmanager
 async def lifespan(fast_app: FastAPI):
-
-    unit = Unit()
-    if unit:
-        unit.start_lifespan()
+    try:
+        unit = Unit()
+    except Exception as ex:
+        logger.error(f"Unit initialization failed in lifespan: {ex}")
         yield
-        unit.end_lifespan()
+        return
+    unit.start_lifespan()
+    yield
+    unit.end_lifespan()
 
 
 async def websocket_disconnect_handler(websocket: WebSocket, exc: WebSocketDisconnect):
@@ -177,18 +188,25 @@ if __name__ == "__main__":
 
     from unit import Unit
 
-    unit = Unit()
-    if not unit:
-        logger.error("Unit is not initialized, exiting ...")
-        app_quit(reason="unit not initialized")
+    try:
+        unit = Unit()
+    except Exception as ex:
+        logger.error(f"Unit initialization failed: {ex}")
+        app_quit(reason=f"unit initialization failed: {ex}")
+        unit = None
 
     if unit:
         app.include_router(unit.api_router)
-        app.include_router(unit.mount.api_router)
-        app.include_router(unit.covers.api_router)
-        app.include_router(unit.focuser.api_router)
-        app.include_router(unit.stage.api_router)
-        app.include_router(unit.imager.api_router)
+        if unit.mount:
+            app.include_router(unit.mount.api_router)
+        if unit.covers:
+            app.include_router(unit.covers.api_router)
+        if unit.focuser:
+            app.include_router(unit.focuser.api_router)
+        if unit.stage:
+            app.include_router(unit.stage.api_router)
+        if unit.imager:
+            app.include_router(unit.imager.api_router)
 
         logger.info(f"The MAST Unit server is starting on {host}:{port} ...")
 

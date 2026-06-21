@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import astropy.units as u
 from astropy.coordinates import Angle
 
-from acquisition import Acquisition
+from acquisition import Acquisition, ApproachMode
 from common.activities import UnitActivities
 from common.asi import ASI_294MM_HEIGHT, ASI_294MM_WIDTH
 from common.config import Config
@@ -24,6 +24,7 @@ from common.mast_logging import init_log
 from common.safety import safety_get_sensor
 from common.solving import SolverId
 from common.utils import Coord, boxed_log, function_name, isoformat_zulu
+from mount import SettleMode
 
 logger = logging.Logger("mast.unit." + __name__)
 init_log(logger)
@@ -111,6 +112,7 @@ class Solver(SolverInterface):
             #
             # Start exposure
             #
+            assert self.unit.imager is not None
 
             #
             # Try to fetch wind-speed from safety system
@@ -146,7 +148,7 @@ class Solver(SolverInterface):
     def solve_and_correct(  # noqa: C901
         self,
         target: Coord,
-        approach_mode: int,
+        approach_mode: ApproachMode,
         solver_id: SolverId,
         make_corrections: bool,
         imager_settings: ImagerSettings,
@@ -189,7 +191,7 @@ class Solver(SolverInterface):
 
         self.unit.start_activity(UnitActivities.Solving)
 
-        if not self.unit.acquirer.latest_acquisition:
+        if self.unit.acquirer is not None and not self.unit.acquirer.latest_acquisition:
             # when not part of an acquisition sequence
             tolerance = ToleranceConfig(
                 ra_arcsec=float(solving_tolerance.ra.arcsecond),  # type: ignore
@@ -203,7 +205,7 @@ class Solver(SolverInterface):
                     width=imager_settings.roi.width,
                     height=imager_settings.roi.height,
                 )
-            else:
+            elif self.unit.imager is not None:
                 sky_roi_config = SkyRoiConfig(
                     sky_x=self.unit.imager.full_frame.x,
                     sky_y=self.unit.imager.full_frame.y,
@@ -249,16 +251,17 @@ class Solver(SolverInterface):
 
             self.unit.acquirer.latest_acquisition.corrections = {}
 
-        if phase not in self.unit.acquirer.latest_acquisition.corrections:
-            # in case there were no corrections yet for this phase
-            self.unit.acquirer.latest_acquisition.corrections[phase] = Corrections(
-                phase=phase,
-                target_ra=target.ra.hour,  # type: ignore
-                target_dec=target.dec.deg,  # type: ignore
-                tolerance_ra=solving_tolerance.ra.arcsecond,  # type: ignore
-                tolerance_dec=solving_tolerance.dec.arcsecond,  # type: ignore
-            )
-        latest_corrections = self.unit.acquirer.latest_acquisition.corrections[phase]
+        if self.unit.acquirer is not None and self.unit.acquirer.latest_acquisition is not None:
+            if phase not in self.unit.acquirer.latest_acquisition.corrections:
+                # in case there were no corrections yet for this phase
+                self.unit.acquirer.latest_acquisition.corrections[phase] = Corrections(
+                    phase=phase,
+                    target_ra=target.ra.hour,  # type: ignore
+                    target_dec=target.dec.deg,  # type: ignore
+                    tolerance_ra=solving_tolerance.ra.arcsecond,  # type: ignore
+                    tolerance_dec=solving_tolerance.dec.arcsecond,  # type: ignore
+                )
+            latest_corrections = self.unit.acquirer.latest_acquisition.corrections[phase]
 
         for try_number in range(max_tries):
             if was_cancelled():
@@ -412,6 +415,7 @@ class Solver(SolverInterface):
                     #
                     # Outside of tolerance, need to correct
                     #
+                    assert self.unit.pw is not None and self.unit.mount is not None
 
                     latest_corrections.sequence.append(
                         Correction(
@@ -438,126 +442,151 @@ class Solver(SolverInterface):
 
                         self.unit.start_activity(UnitActivities.Correcting)
 
-                        if approach_mode == 1:
-                            logger.info(
-                                f"{op}: offsetting mount with mount_offset(ra_add_arcsec={delta_ra_arcsec}, "
-                                + f"dec_add_arcsec={delta_dec_arcsec})"
-                            )
-                            self.unit.pw.mount_offset(
-                                ra_add_arcsec=delta_ra_arcsec,
-                                dec_add_arcsec=delta_dec_arcsec,
-                            )
+                        match approach_mode:
+                            case ApproachMode.DISCRETE_STEP:
+                                logger.info(
+                                    f"{op}: offsetting mount with mount_offset(ra_add_arcsec={delta_ra_arcsec}, "
+                                    + f"dec_add_arcsec={delta_dec_arcsec})"
+                                )
+                                self.unit.pw.mount_offset(
+                                    ra_add_arcsec=delta_ra_arcsec,
+                                    dec_add_arcsec=delta_dec_arcsec,
+                                )
 
-                        elif approach_mode == 2:
+                                # Discrete step: wait for the servo following-
+                                # distance to spike then settle (is_moving can't
+                                # see a small offset).
+                                self.unit.mount.wait_until_settled(
+                                    SettleMode.OFFSET_STEP
+                                )
 
-                            if abs_delta_ra_arcsec > 10:
-                                # ra_rate_arcsec_per_sec = abs_delta_ra_arcsec * 0.1
-                                ra_rate_arcsec_per_sec = abs_delta_ra_arcsec * 0.2
-                            elif abs_delta_ra_arcsec > 1:
-                                # ra_rate_arcsec_per_sec = 1
-                                ra_rate_arcsec_per_sec = 2
-                            else:
-                                # ra_rate_arcsec_per_sec = 0.1
-                                ra_rate_arcsec_per_sec = 0.2
+                            case ApproachMode.GRADUAL_BY_RATE:
 
-                            if abs_delta_dec_arcsec > 10:
-                                # dec_rate_arcsec_per_sec = abs_delta_dec_arcsec * 0.1
-                                dec_rate_arcsec_per_sec = abs_delta_dec_arcsec * 0.2
-                            elif abs_delta_dec_arcsec > 1:
-                                # dec_rate_arcsec_per_sec = 1
-                                dec_rate_arcsec_per_sec = 2
-                            else:
-                                # dec_rate_arcsec_per_sec = 0.1
-                                dec_rate_arcsec_per_sec = 0.2
+                                if abs_delta_ra_arcsec > 10:
+                                    # ra_rate_arcsec_per_sec = abs_delta_ra_arcsec * 0.1
+                                    ra_rate_arcsec_per_sec = abs_delta_ra_arcsec * 0.2
+                                elif abs_delta_ra_arcsec > 1:
+                                    # ra_rate_arcsec_per_sec = 1
+                                    ra_rate_arcsec_per_sec = 2
+                                else:
+                                    # ra_rate_arcsec_per_sec = 0.1
+                                    ra_rate_arcsec_per_sec = 0.2
 
-                            logger.info(
-                                f"{op}: offsetting mount with mount_offset("
-                                + f"ra_add_gradual_offset_arcsec={delta_ra_arcsec}, "
-                                + f"ra_gradual_offset_rate={ra_rate_arcsec_per_sec}, "
-                                + f"dec_add_gradual_offset_arcsec={delta_dec_arcsec}, "
-                                + f"dec_gradual_offset_rate={dec_rate_arcsec_per_sec})"
-                            )
-                            self.unit.pw.mount_offset(
-                                ra_add_gradual_offset_arcsec=delta_ra_arcsec,
-                                ra_gradual_offset_rate=ra_rate_arcsec_per_sec,
-                                dec_add_gradual_offset_arcsec=delta_dec_arcsec,
-                                dec_gradual_offset_rate=dec_rate_arcsec_per_sec,
-                            )
+                                if abs_delta_dec_arcsec > 10:
+                                    # dec_rate_arcsec_per_sec = abs_delta_dec_arcsec * 0.1
+                                    dec_rate_arcsec_per_sec = abs_delta_dec_arcsec * 0.2
+                                elif abs_delta_dec_arcsec > 1:
+                                    # dec_rate_arcsec_per_sec = 1
+                                    dec_rate_arcsec_per_sec = 2
+                                else:
+                                    # dec_rate_arcsec_per_sec = 0.1
+                                    dec_rate_arcsec_per_sec = 0.2
 
-                        elif approach_mode == 3:
+                                logger.info(
+                                    f"{op}: offsetting mount with mount_offset("
+                                    + f"ra_add_gradual_offset_arcsec={delta_ra_arcsec}, "
+                                    + f"ra_gradual_offset_rate={ra_rate_arcsec_per_sec}, "
+                                    + f"dec_add_gradual_offset_arcsec={delta_dec_arcsec}, "
+                                    + f"dec_gradual_offset_rate={dec_rate_arcsec_per_sec})"
+                                )
+                                self.unit.pw.mount_offset(
+                                    ra_add_gradual_offset_arcsec=delta_ra_arcsec,
+                                    ra_gradual_offset_rate=ra_rate_arcsec_per_sec,
+                                    dec_add_gradual_offset_arcsec=delta_dec_arcsec,
+                                    dec_gradual_offset_rate=dec_rate_arcsec_per_sec,
+                                )
 
-                            if abs_delta_ra_arcsec > 100:
-                                ra_offsetting_seconds = 5
-                            elif abs_delta_ra_arcsec > 10:
-                                ra_offsetting_seconds = 3
-                            else:
-                                ra_offsetting_seconds = 2
+                                # Gradual ramp: wait for the commanded ra/dec
+                                # channels' gradual_offset_progress to reach 1.0
+                                # (guards the start-of-ramp race; is_moving can't
+                                # see a ramp the servo follows).
+                                self.unit.mount.wait_until_settled(
+                                    SettleMode.OFFSET_GRADUAL, channels=("ra", "dec")
+                                )
 
-                            if abs_delta_dec_arcsec > 100:
-                                dec_offsetting_seconds = 5
-                            elif abs_delta_dec_arcsec > 10:
-                                dec_offsetting_seconds = 3
-                            else:
-                                dec_offsetting_seconds = 2
+                            case ApproachMode.GRADUAL_BY_TIME:
 
-                            logger.info(
-                                f"{op}: offsetting mount with mount_offset("
-                                + f"ra_add_gradual_offset_arcsec={delta_ra_arcsec}, "
-                                + f"ra_gradual_offset_seconds={ra_offsetting_seconds}, "
-                                + f"dec_add_gradual_offset_arcsec={delta_dec_arcsec}, "
-                                + f"dec_gradual_offset_seconds={dec_offsetting_seconds})"
-                            )
-                            self.unit.pw.mount_offset(
-                                ra_reset=0,
-                                dec_reset=0,
-                                ra_add_gradual_offset_arcsec=delta_ra_arcsec,
-                                ra_gradual_offset_seconds=ra_offsetting_seconds,
-                                dec_add_gradual_offset_arcsec=delta_dec_arcsec,
-                                dec_gradual_offset_seconds=dec_offsetting_seconds,
-                            )
+                                if abs_delta_ra_arcsec > 100:
+                                    ra_offsetting_seconds = 5
+                                elif abs_delta_ra_arcsec > 10:
+                                    ra_offsetting_seconds = 3
+                                else:
+                                    ra_offsetting_seconds = 2
 
-                        elif approach_mode == 4:
+                                if abs_delta_dec_arcsec > 100:
+                                    dec_offsetting_seconds = 5
+                                elif abs_delta_dec_arcsec > 10:
+                                    dec_offsetting_seconds = 3
+                                else:
+                                    dec_offsetting_seconds = 2
 
-                            if abs_delta_ra_arcsec > 100:
-                                ra_rate_arcsec_per_sec = abs_delta_ra_arcsec * 0.2
-                            elif abs_delta_ra_arcsec > 10:
-                                ra_rate_arcsec_per_sec = abs_delta_ra_arcsec * 0.5
-                            else:
-                                ra_rate_arcsec_per_sec = 1
+                                logger.info(
+                                    f"{op}: offsetting mount with mount_offset("
+                                    + f"ra_add_gradual_offset_arcsec={delta_ra_arcsec}, "
+                                    + f"ra_gradual_offset_seconds={ra_offsetting_seconds}, "
+                                    + f"dec_add_gradual_offset_arcsec={delta_dec_arcsec}, "
+                                    + f"dec_gradual_offset_seconds={dec_offsetting_seconds})"
+                                )
+                                self.unit.pw.mount_offset(
+                                    ra_reset=0,
+                                    dec_reset=0,
+                                    ra_add_gradual_offset_arcsec=delta_ra_arcsec,
+                                    ra_gradual_offset_seconds=ra_offsetting_seconds,
+                                    dec_add_gradual_offset_arcsec=delta_dec_arcsec,
+                                    dec_gradual_offset_seconds=dec_offsetting_seconds,
+                                )
 
-                            if abs_delta_dec_arcsec > 100:
-                                dec_rate_arcsec_per_sec = abs_delta_dec_arcsec * 0.2
-                            elif abs_delta_dec_arcsec > 10:
-                                dec_rate_arcsec_per_sec = abs_delta_dec_arcsec * 0.5
-                            else:
-                                dec_rate_arcsec_per_sec = 1
+                                # Gradual ramp: wait for the commanded ra/dec
+                                # channels' gradual_offset_progress to reach 1.0
+                                # (guards the start-of-ramp race; is_moving can't
+                                # see a ramp the servo follows).
+                                self.unit.mount.wait_until_settled(
+                                    SettleMode.OFFSET_GRADUAL, channels=("ra", "dec")
+                                )
 
-                            logger.info(
-                                f"{op}: offsetting mount with mount_offset("
-                                + f"ra_add_arcsec={delta_ra_arcsec}, "
-                                + f"ra_set_rate_arcsec_per_sec={ra_rate_arcsec_per_sec}, "
-                                + f"dec_add_arcsec={delta_dec_arcsec}, "
-                                + f"dec_set_rate_arcsec_per_sec={dec_rate_arcsec_per_sec})"
-                            )
-                            self.unit.pw.mount_offset(
-                                ra_add_arcsec=delta_ra_arcsec,
-                                dec_add_arcsec=delta_dec_arcsec,
-                                ra_set_rate_arcsec_per_sec=ra_rate_arcsec_per_sec,
-                                dec_set_rate_arcsec_per_sec=dec_rate_arcsec_per_sec,
-                            )
+                            case ApproachMode.STEP_WITH_TRACKING_RATE:
 
-                        ra_progress = 0
-                        dec_progress = 0
-                        while ra_progress < 1 or dec_progress < 1:
-                            st = self.unit.pw.status()
-                            ra_progress = st.mount.offsets.axis0_arcsec.gradual_offset_progress  # type: ignore
-                            dec_progress = st.mount.offsets.axis1_arcsec.gradual_offset_progress  # type: ignore
-                            logger.info(f"{op}: {ra_progress=}, {dec_progress=}")
-                            time.sleep(1)
+                                if abs_delta_ra_arcsec > 100:
+                                    ra_rate_arcsec_per_sec = abs_delta_ra_arcsec * 0.2
+                                elif abs_delta_ra_arcsec > 10:
+                                    ra_rate_arcsec_per_sec = abs_delta_ra_arcsec * 0.5
+                                else:
+                                    ra_rate_arcsec_per_sec = 1
 
-                        while self.unit.mount.is_moving:
-                            logger.info("mount still moving, sleeping 1 second ...")
-                            time.sleep(1)
+                                if abs_delta_dec_arcsec > 100:
+                                    dec_rate_arcsec_per_sec = abs_delta_dec_arcsec * 0.2
+                                elif abs_delta_dec_arcsec > 10:
+                                    dec_rate_arcsec_per_sec = abs_delta_dec_arcsec * 0.5
+                                else:
+                                    dec_rate_arcsec_per_sec = 1
+
+                                logger.info(
+                                    f"{op}: offsetting mount with mount_offset("
+                                    + f"ra_add_arcsec={delta_ra_arcsec}, "
+                                    + f"ra_set_rate_arcsec_per_sec={ra_rate_arcsec_per_sec}, "
+                                    + f"dec_add_arcsec={delta_dec_arcsec}, "
+                                    + f"dec_set_rate_arcsec_per_sec={dec_rate_arcsec_per_sec})"
+                                )
+                                self.unit.pw.mount_offset(
+                                    ra_add_arcsec=delta_ra_arcsec,
+                                    dec_add_arcsec=delta_dec_arcsec,
+                                    ra_set_rate_arcsec_per_sec=ra_rate_arcsec_per_sec,
+                                    dec_set_rate_arcsec_per_sec=dec_rate_arcsec_per_sec,
+                                )
+
+                                # Discrete jump + continuous rate: wait for the
+                                # discrete step to land; the ongoing set_rate is
+                                # servo-followed (small dist) and persists by
+                                # design, so it reads as settled.
+                                self.unit.mount.wait_until_settled(
+                                    SettleMode.OFFSET_STEP
+                                )
+
+                            case _:
+                                logger.error(
+                                    f"{op}: unknown approach_mode {approach_mode!r}; "
+                                    "no offset applied"
+                                )
 
                         self.unit.end_activity(UnitActivities.Correcting)
                         # logger.info(f"{op}: corrected by {delta_ra_arcsec=:.6f}, {delta_dec_arcsec=:.6f}")

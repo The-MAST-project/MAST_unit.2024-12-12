@@ -13,9 +13,11 @@ from astropy.coordinates import Angle
 from common.config.rois import SkyRoiConfig, SpecRoiConfig
 from common.const import Const
 from common.filer import Filer
-from common.interfaces.solving import SolverInterface, SolvingResult, SolvingSolution
+from common.interfaces.solving import (SolverInterface, SolvingConfidenceLevel,
+                                       SolvingResult, SolvingSolution)
 from common.mast_logging import init_log
-from common.utils import Coord, boxed_log, function_name, generate_random_string
+from common.utils import (Coord, boxed_log, function_name,
+                          generate_random_string)
 from imagers import ImagerSettings
 
 # from unit import Unit  # type: ignore[import-untyped]
@@ -28,7 +30,7 @@ if TYPE_CHECKING:
 
 
 class AstrometryDotNetSolverResult:
-    index_file: str = ""
+    index_file: str | None = None
 
     def to_dict(self):
         return {
@@ -67,7 +69,7 @@ class AstrometryDotNet(SolverInterface):
         image_path: str | None = None,
         index_file: str | None = None,
         target: Coord | None = None,
-    ) -> SolvingResult:
+    ) -> SolvingResult | None:
 
         self.unit: Unit = unit
         filer = Filer(logger)
@@ -253,7 +255,7 @@ class AstrometryDotNet(SolverInterface):
 
         if completed_process.returncode == 0:
             ret = parse_solver_output(stdout_lines)
-            if ret.succeeded and ret.solution is not None:
+            if ret is not None and  ret.succeeded and ret.solution is not None:
                 boxed_log(
                     logger=logger,
                     lines=[
@@ -275,6 +277,7 @@ class AstrometryDotNet(SolverInterface):
                 header = astropy.io.fits.getheader(new_fits_path, 0)  # type: ignore
                 if "CRVAL1" in header and "CRVAL2" in header:
                     ret.solution.ra_hours = header["CRVAL1"] / 15.0
+                    ret.solution.ra_degs = header["CRVAL1"]
                     ret.solution.dec_degs = header["CRVAL2"]
 
                     ret.solution.ra_rads = float(Angle(ret.solution.ra_hours * 15.0, unit="deg").radian)  # type: ignore[assignment]
@@ -301,7 +304,7 @@ class AstrometryDotNet(SolverInterface):
     def name(self) -> str:
         return "astrometry.net"
 
-def parse_solver_output(lines: list[str]) -> SolvingResult:  # noqa: C901
+def parse_solver_output(lines: list[str]) -> SolvingResult | None:
     op = function_name()
 
     #
@@ -317,8 +320,12 @@ def parse_solver_output(lines: list[str]) -> SolvingResult:  # noqa: C901
     # Field center: (RA H:M:S, Dec D:M:S) = (01:55:06.076, +20:56:14.439).                      # (2)
     # Field size: 13.1336 x 13.1196 arcminutes
     # Field rotation angle: up is 116.172 degrees E of N                                        # (1)
+    #
+    # Did not solve (or no WCS file was written).
+    #
 
     ret = SolvingResult(succeeded=False)
+    ret.errors = []
     ret.solution = SolvingSolution()
     ret.native_result = AstrometryDotNetSolverResult()
     pattern_float = r"([+-]?(?:\d+(?:\.\d*)?|\.\d+))"
@@ -347,6 +354,7 @@ def parse_solver_output(lines: list[str]) -> SolvingResult:  # noqa: C901
                     ret.solution.ra_rads = float(Angle(ra_degs, unit="deg").radian)  # type: ignore[assignment]
                     ret.solution.dec_rads = float(Angle(dec_degs, unit="deg").radian)  # type: ignore[assignment]
                     ret.solution.ra_hours = Angle(ra_degs, unit="deg").hour  # type: ignore[assignment]
+                    ret.solution.ra_degs = ra_degs
                     ret.solution.dec_degs = dec_degs
                 else:
                     logger.error("bad match for ra_degs, dec_degs")
@@ -355,16 +363,24 @@ def parse_solver_output(lines: list[str]) -> SolvingResult:  # noqa: C901
                 ret.succeeded = True
                 match = re.match(r"^.*solved with index (.*)\.$", line)
                 if match:
+                    ret.native_result.index_file = match.group(1)
                     ret.solution.index_file = match.group(1)
                     # logger.info(f"{ret.solution.index_file=}")
                 else:
                     logger.error("bad match for ret.native_result.index_file")
 
             elif line.startswith("  log-odds ratio"):  # (4)
-                match = re.match(r"^.*[)], (\d+) match,", line)
+                # log-odds ratio 119.57 (8.48588e+51), 17 match, 0 conflict, 0 distractors, 103 index.
+                # log-odds ratio 1594.18 (inf), 614 match, 41 conflict, 231 distractors, 1124 index.
+                match = re.match(
+                    r"^\s*log-odds ratio\s+([+-]?\d+(?:\.\d+)?)\s+\([^)]+\),\s*(\d+)\s+match,",
+                    line,
+                )
                 if match:
-                    ret.solution.matched_stars = int(match.group(1))
-                    # logger.info(f"{ret.solution.matched_stars=}")
+                    ret.solution.confidence = float(match.group(1))
+                    ret.solution.confidence_level = confidence_to_confidence_level(ret.solution.confidence)
+                    ret.solution.matched_stars = int(match.group(2))
+                    # logger.info(f"{ret.solution.confidence=}, {ret.solution.matched_stars=}")
                 else:
                     logger.error("bad match for ret.solution.matched_stars")
 
@@ -384,11 +400,41 @@ def parse_solver_output(lines: list[str]) -> SolvingResult:  # noqa: C901
                 if match:
                     ret.solution.sources = int(match.group(1))
 
+            elif line.startswith("Total CPU time limit reached!"):
+                err = "astrometry.net reached total CPU time limit without solving the field"
+                logger.warning(err)
+                ret.succeeded = False
+                ret.errors.append(err)
+                ret.solution.confidence = None
+                ret.solution.confidence_level = SolvingConfidenceLevel.Unsolved
+
+            elif line.startswith("Did not solve (or no WCS file was written)."):
+                err = "astrometry.net did not solve the field"
+                logger.warning(err)
+                ret.succeeded = False
+                ret.errors.append(err)
+                ret.solution.confidence = None
+                ret.solution.confidence_level = SolvingConfidenceLevel.Unsolved
+
     except Exception as e:
         logger.error(f"{op}: exception: {e}")
 
     return ret
 
+
+def confidence_to_confidence_level(confidence: float | None) -> SolvingConfidenceLevel | None:
+    if confidence is None:
+        return None
+    if confidence < 20.7:
+        return SolvingConfidenceLevel.Unsolved
+    elif confidence < 27.6:
+        return SolvingConfidenceLevel.Marginal
+    elif confidence < 46.0:
+        return SolvingConfidenceLevel.Confident
+    elif confidence < 115.0:
+        return SolvingConfidenceLevel.VeryConfident
+    else:
+        return SolvingConfidenceLevel.Certain
 
 
 if __name__ == "__main__":
@@ -407,7 +453,7 @@ if __name__ == "__main__":
             index_file="index-5202-13.fits",
             phase="spec",
         )
-        print(json.dumps(result.to_dict(), indent=2))
+        print(json.dumps(result.to_dict(), indent=2) if result else None)
 
     def test_result_parser():
         with open(
@@ -415,7 +461,7 @@ if __name__ == "__main__":
         ) as file:
             lines = file.readlines()
         result = parse_solver_output(lines)
-        print(json.dumps(result.to_dict(), indent=2))
+        print(json.dumps(result.to_dict() if result else None, indent=2))
 
     test_solver()
     sys.exit(0)
