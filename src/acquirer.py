@@ -14,11 +14,10 @@ from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import FcuVersion, SkyRoiConfig
 from common.mast_logging import init_log
-from common.models.assignments import UnitAssignment
+from common.models.assignments import AssignmentNotification, UnitAssignment
+from common.notifications import Notifier
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.rois import SkyRoi
-from common.models.assignments import AssignmentNotification
-from common.notifications import Notifier
 from common.utils import Coord, boxed_log, function_name
 from phd2.phd2 import PHD2Connector
 from solving import SolverId, SolvingTolerance
