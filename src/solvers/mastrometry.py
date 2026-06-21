@@ -354,6 +354,7 @@ class MastrometryDotNet(SolverInterface):
                     if (
                         ret.solution.index_file
                         and self.unit is not None
+                        and self.unit.acquirer is not None
                         and self.unit.acquirer.latest_acquisition is not None
                     ):
                         self.unit.acquirer.latest_acquisition.solver_data = {

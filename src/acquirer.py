@@ -9,7 +9,7 @@ from astropy.coordinates import Angle, Latitude, Longitude
 from fastapi import Query
 
 import common.asi as asi
-from acquisition import Acquisition
+from acquisition import Acquisition, ApproachMode
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import FcuVersion, SkyRoiConfig
@@ -19,6 +19,7 @@ from common.notifications import Notifier
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.rois import SkyRoi
 from common.utils import Coord, boxed_log, function_name
+from mount import SettleMode
 from phd2.phd2 import PHD2Connector
 from solving import SolverId, SolvingTolerance
 from stage import StagePresetPosition
@@ -127,10 +128,9 @@ class Acquirer:
             #
             self.unit.stage.move_to_preset(StagePresetPosition.Sky)
 
-            while self.unit.stage.is_moving or self.unit.mount.is_moving:
+            while self.unit.stage.is_moving:
                 time.sleep(0.2)
-            logger.info("sleeping additional 3 seconds to let the mount really stop moving ...")
-            time.sleep(3)
+            self.unit.mount.wait_until_settled(SettleMode.SLEW)
 
             self.unit.end_activity(UnitActivities.Positioning)
 
@@ -321,7 +321,7 @@ class Acquirer:
     def start_acquisition_and_guiding_for_assignment(
         self, assignment: UnitAssignment
     ):
-        approach_mode: int = 2
+        approach_mode: ApproachMode = ApproachMode.GRADUAL_BY_RATE
         make_corrections = True
         ra_j2000_hours = assignment.plan.target.ra_hours
         dec_j2000_degs = assignment.plan.target.dec_degrees
@@ -396,7 +396,7 @@ class Acquirer:
             int | None,
             Query(ge=0, le=100)
         ] = None,
-        approach_mode: int = 2,
+        approach_mode: ApproachMode = ApproachMode.GRADUAL_BY_RATE,
         make_corrections: bool = True,
         skip_sky: bool = False,
         use_set_limit_frame: bool = True,

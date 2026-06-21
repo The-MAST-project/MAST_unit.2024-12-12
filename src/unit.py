@@ -55,7 +55,7 @@ from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers
 from focuser import Focuser
 from imagers import Imager
-from mount import Mount
+from mount import Mount, SettleMode
 from phd2.phd2 import PHD2Connector
 from PlaneWave import pwi4_client
 from solving import Solver
@@ -629,14 +629,13 @@ class Unit(Component):
             elif isinstance(dec_j2000_degs, float):
                 pass
 
+        assert self.mount is not None
         if (ra_j2000_hours is not None and isinstance(ra_j2000_hours, float)) and (
             dec_j2000_degs is not None and isinstance(dec_j2000_degs, float)
         ):
             logger.info(f"slewing mount to ra={ra_j2000_hours}, dec={dec_j2000_degs}")
             self.mount.goto_ra_dec_j2000(ra=ra_j2000_hours, dec=dec_j2000_degs)
-            while self.mount.is_moving:
-                logger.info("waiting for mount to stop moving ...")
-                time.sleep(1)
+            self.mount.wait_until_settled(SettleMode.SLEW)
 
         if ra_offsets is not None:
             if isinstance(ra_offsets, str):
@@ -714,6 +713,9 @@ class Unit(Component):
         gain: int = asi.ASI_294MM_DEFAULT_GAIN,
     ) -> CanonicalResponse:
 
+        assert self.mount is not None
+        assert self.imager is not None
+
         op = function_name()
         seconds = exposure_seconds
 
@@ -776,9 +778,7 @@ class Unit(Component):
                 elif dec_offsets is not None:
                     logger.info(f"offsetting mount dec={dec_offsets[repeat]}")
                     self.mount.pw.mount_offset(dec_add_arcsec=dec_offsets[repeat])
-                while self.mount.is_moving:
-                    logger.info("waiting for mount to stop moving ...")
-                    time.sleep(1)
+                self.mount.wait_until_settled(SettleMode.OFFSET_STEP)
 
         self.imager.end_exposure_series(exposure_series)
         self.mount.stop_tracking()
@@ -1050,6 +1050,9 @@ class Unit(Component):
         Defines a new spiral path<br>
         **NOTE**: Remember to call `spiral_end_path()` when done with the spiral path
         """
+        assert self.mount is not None
+        assert self.imager is not None
+
         self.mount.pw.mount_spiral_offset_new(
             x_step_arcsec=x_step_arcsec, y_step_arcsec=y_step_arcsec
         )
@@ -1074,10 +1077,12 @@ class Unit(Component):
         """
         Takes the next step in the currently defined spiral path
         """
+        assert self.mount is not None
+        assert self.imager is not None
+
         logger.info("calling mount_spiral_offset_next() ...")
         self.mount.pw.mount_spiral_offset_next()
-        while self.mount.is_moving:
-            time.sleep(1)
+        self.mount.wait_until_settled(SettleMode.OFFSET_STEP)
         logger.info("mount stopped moving")
 
         if self.spirals_folder is not None:
@@ -1098,10 +1103,12 @@ class Unit(Component):
         """
         Goes back one step in the currently defined spiral path
         """
+        assert self.mount is not None
+        assert self.imager is not None
+
         logger.info("calling mount_spiral_offset_previous() ...")
         self.mount.pw.mount_spiral_offset_previous()
-        while self.mount.is_moving:
-            time.sleep(1)
+        self.mount.wait_until_settled(SettleMode.OFFSET_STEP)
         logger.info("mount stopped moving")
 
         if self.spirals_folder is not None:
@@ -1123,7 +1130,7 @@ class Unit(Component):
         Ends the currently defined spiral path
         """
         assert (
-            self.spiral_exposure_series is not None
+            self.spiral_exposure_series is not None and self.imager is not None
         ), "No spiral exposure series defined"
         self.imager.end_exposure_series(self.spiral_exposure_series)
         return CanonicalResponse_Ok
