@@ -203,7 +203,9 @@ class Stage(Component, SwitchedOutlet):
         self.device = ximclib.open_device(self.device_uri)
 
         if not self.detected:
-            logger.error(f"{op}: no device detected ({self.device=}")
+            self._currently_operational = False
+            self._why_not_currently_operational = ["No device detected"]
+            logger.error(f"{op}: no device detected ({self.device=})")
             return
 
         # these two are set by the ontimer() method
