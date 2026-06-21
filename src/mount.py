@@ -1,6 +1,7 @@
 import logging
 import math
 import time
+from enum import Enum
 from logging import Logger
 from typing import TYPE_CHECKING
 
@@ -47,6 +48,30 @@ init_log(logger)
 #     fans: bool = False
 #     spiral: SpiralSettings | None = None
 #     date: str | None = None
+
+
+class SettleMode(str, Enum):
+    SLEW = "slew"                      # goto / find_home / park  (large move)
+    OFFSET_STEP = "offset_step"        # discrete ra/dec_add_arcsec, spiral steps
+    OFFSET_GRADUAL = "offset_gradual"  # ra/dec_add_gradual_offset_*
+
+
+_OFFSET_CHANNELS = ("ra", "dec", "axis0", "axis1", "path", "transverse")
+
+
+def _max_dist_to_target_arcsec(st) -> float:
+    """Largest absolute axis following-distance, in arcsec."""
+    d0 = st.mount.axis0.dist_to_target_arcsec or 0.0
+    d1 = st.mount.axis1.dist_to_target_arcsec or 0.0
+    return max(abs(d0), abs(d1))
+
+
+def _offset_channel(st, name: str):
+    """Return the mount.offsets.<name>_arcsec section, or None if unavailable."""
+    offsets = getattr(st.mount, "offsets", None)
+    if offsets is None:  # PWI4 too old (offsets added in 4.0.11b5), or not reported
+        return None
+    return getattr(offsets, f"{name}_arcsec", None)
 
 
 class Mount(Component, SwitchedOutlet, AscomDispatcher):
@@ -292,9 +317,10 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         status = self.pw.status()
 
         was_moving = self.is_moving
+        assert status.mount is not None
         self.is_moving = (
-            status.mount.axis0.rms_error_arcsec > 1.0  # type: ignore
-            or status.mount.axis1.rms_error_arcsec > 1.0  # type: ignore
+            status.mount.axis0.rms_error_arcsec > 3.0  # type: ignore   # was 1.0, TODO: make it a configurable parameter
+            or status.mount.axis1.rms_error_arcsec > 1.0  # type: ignore  # TODO: make it a configurable parameter
         )
         if was_moving and not self.is_moving:
             self.end_activity(MountActivities.Moving)
@@ -330,6 +356,169 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             return False
         st = self.pw.status()
         return st.mount.is_tracking # type: ignore
+
+    def wait_until_settled(
+        self,
+        mode: SettleMode,
+        *,
+        channels: tuple[str, ...] = ("ra", "dec"),
+        dist_tolerance_arcsec: float = 0.5,
+        stable_samples: int = 2,
+        start_grace_seconds: float = 3.0,
+        poll_seconds: float = 1.0,
+        timeout_seconds: float = 120.0,
+    ) -> bool:
+        """
+        Block until the mount finishes the most recently commanded motion of the
+        given `mode`, then return True; return False on timeout (logged).
+
+        Replaces the ``while self.is_moving: sleep()`` idiom, which only detects
+        slew-class moves (axis rms_error > threshold) and cannot see gentle
+        gradual offsets or small discrete offsets -- so it must not be used as a
+        settle gate after ``mount_offset(...)``.
+
+        SLEW           -> wait for PWI4 mount.is_slewing to clear, then dist settle.
+        OFFSET_STEP    -> wait for dist_to_target to spike then settle (discrete
+                          add_arcsec / spiral steps).
+        OFFSET_GRADUAL -> wait for the COMMANDED `channels`' gradual_offset_progress
+                          to reach 1.0, with a start-of-ramp race guard.
+                          (dist_to_target can't see a ramp the servo follows.)
+
+        TODO: source dist_tolerance_arcsec / stable_samples from unit_conf.
+        """
+        op = "wait_until_settled"
+        if not self.connected:
+            logger.warning(f"{op}: mount not connected; nothing to wait for")
+            return True
+
+        deadline = time.monotonic() + timeout_seconds
+
+        def _timed_out() -> bool:
+            if time.monotonic() >= deadline:
+                logger.error(f"{op}({mode}): TIMEOUT after {timeout_seconds:.0f}s")
+                return True
+            return False
+
+        # ---------------- SLEW ----------------
+        if mode is SettleMode.SLEW:
+            # Phase A: confirm the slew actually started (guards stale is_slewing=False).
+            grace_end = time.monotonic() + start_grace_seconds
+            started = False
+            while time.monotonic() < grace_end:
+                if self.pw.status().mount.is_slewing:  # type: ignore
+                    started = True
+                    break
+                time.sleep(poll_seconds)
+            # Phase B: wait for the slew to clear.
+            if started:
+                while self.pw.status().mount.is_slewing:  # type: ignore
+                    if _timed_out():
+                        return False
+                    time.sleep(poll_seconds)
+            # Phase C: settle on following-distance.
+            return self._wait_dist_settle(
+                dist_tolerance_arcsec, stable_samples, poll_seconds, deadline, op
+            )
+
+        # ---------------- OFFSET_STEP ----------------
+        if mode is SettleMode.OFFSET_STEP:
+            # Phase A: confirm the step registered (dist spikes); else grace out
+            # so a tiny sub-tolerance step does not hang here.
+            grace_end = time.monotonic() + start_grace_seconds
+            while time.monotonic() < grace_end:
+                if _max_dist_to_target_arcsec(self.pw.status()) > dist_tolerance_arcsec:
+                    break
+                time.sleep(poll_seconds)
+            # Phase B: settle.
+            return self._wait_dist_settle(
+                dist_tolerance_arcsec, stable_samples, poll_seconds, deadline, op
+            )
+
+        # ---------------- OFFSET_GRADUAL ----------------
+        if mode is SettleMode.OFFSET_GRADUAL:
+            chans = [c for c in channels if c in _OFFSET_CHANNELS]
+            if not chans:
+                logger.warning(
+                    f"{op}: no valid gradual channels in {channels!r}; not waiting"
+                )
+                return True
+
+            st0 = self.pw.status()
+            if _offset_channel(st0, chans[0]) is None:
+                logger.warning(
+                    f"{op}: PWI4 does not report mount.offsets; falling back to dist settle"
+                )
+                return self._wait_dist_settle(
+                    dist_tolerance_arcsec, stable_samples, poll_seconds, deadline, op
+                )
+
+            baseline_total = {
+                c: (getattr(_offset_channel(st0, c), "total", 0.0) or 0.0) for c in chans
+            }
+
+            # Phase A: confirm each commanded channel's ramp has started
+            # (progress drops below 1, or total moved) -- guards the stale "1" race.
+            grace_end = time.monotonic() + start_grace_seconds
+            started = {c: False for c in chans}
+            while not all(started.values()) and time.monotonic() < grace_end:
+                st = self.pw.status()
+                for c in chans:
+                    if started[c]:
+                        continue
+                    ch = _offset_channel(st, c)
+                    prog = getattr(ch, "gradual_offset_progress", 1.0)
+                    total = getattr(ch, "total", 0.0) or 0.0
+                    if (prog is not None and prog < 1.0) or abs(
+                        total - baseline_total[c]
+                    ) > 1e-6:
+                        started[c] = True
+                time.sleep(poll_seconds)
+
+            # Phase B: wait for every commanded channel's ramp to complete.
+            while True:
+                if _timed_out():
+                    return False
+                st = self.pw.status()
+                done = True
+                for c in chans:
+                    ch = _offset_channel(st, c)
+                    prog = getattr(ch, "gradual_offset_progress", 1.0)
+                    if prog is not None and prog < 1.0:
+                        done = False
+                        break
+                if done:
+                    break
+                time.sleep(poll_seconds)
+
+            # Phase C: brief following-distance settle (catches residual servo lag).
+            return self._wait_dist_settle(
+                dist_tolerance_arcsec, stable_samples, poll_seconds, deadline, op
+            )
+
+        raise ValueError(f"{op}: unknown mode {mode!r}")
+
+    def _wait_dist_settle(
+        self,
+        tol_arcsec: float,
+        stable_samples: int,
+        poll_seconds: float,
+        deadline: float,
+        op: str,
+    ) -> bool:
+        """Wait until max axis dist_to_target stays < tol for `stable_samples` reads."""
+        in_tol = 0
+        while in_tol < stable_samples:
+            if time.monotonic() >= deadline:
+                logger.error(f"{op}: TIMEOUT during dist settle")
+                return False
+            dist = _max_dist_to_target_arcsec(self.pw.status())
+            logger.info(f"{op}: dist_to_target={dist:.3f} arcsec")
+            if dist < tol_arcsec:
+                in_tol += 1
+            else:
+                in_tol = 0
+            time.sleep(poll_seconds)
+        return True
 
     def endpoint_status(self) -> MountStatus:
         return self.status()
