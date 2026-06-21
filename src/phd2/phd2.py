@@ -27,6 +27,7 @@ from common.mast_logging import init_log
 from common.models.statuses import PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, Timeout, boxed_debug, function_name
+from phd2.phd2_locate import locate_phd2_exe
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 from stage import StagePresetPosition
 
@@ -334,8 +335,21 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
         self.sky_quality: SeeingQualityWhilePHD2Guiding = SeeingQualityWhilePHD2Guiding()
 
+        phd2_exe = locate_phd2_exe()
+        if phd2_exe is None:
+            # Fall back to the most common install location so WatchedProcess still has
+            # a command; log loudly since the launch will fail if this guess is wrong.
+            phd2_exe = r"C:\Program Files (x86)\PHDGuiding2\phd2.exe"
+            logger.error(
+                f"{function_name()}: phd2.exe not found in any known location; "
+                f"falling back to '{phd2_exe}' (set PHD2_EXE to override)"
+            )
+        else:
+            logger.info(f"{function_name()}: located phd2.exe at '{phd2_exe}'")
         self.watched_process = WatchedProcess(
-            command="C:/Program Files/PHDGuiding2/phd2.exe",
+            # Quote the path: WatchedProcess runs the command through cmd.exe (shell=True),
+            # which splits on spaces, so an unquoted "Program Files" path would not launch.
+            command=f'"{phd2_exe}"',
             # command = "C:/Users/mast/Documents/GitHub/phd2/tmp64/Debug/phd2.exe",
             logger=logger,
             shell=True,
