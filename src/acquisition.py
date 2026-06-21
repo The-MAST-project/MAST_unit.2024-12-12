@@ -2,6 +2,7 @@ import datetime
 import logging
 import os
 import time
+from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
 import common.asi as asi
@@ -21,12 +22,25 @@ filer = Filer(logger)
 init_log(logger)
 
 
+class ApproachMode(IntEnum):
+    """
+    How `solve_and_correct` applies a mount correction. IntEnum, so existing
+    integer values (config, API query params, stored acquisitions) remain valid
+    and `match`/`==` still work against a plain int subject.
+    """
+
+    DISCRETE_STEP = 1  # mount_offset(ra/dec_add_arcsec=…) — single discrete jump
+    GRADUAL_BY_RATE = 2  # add_gradual_offset_arcsec + gradual_offset_rate
+    GRADUAL_BY_TIME = 3  # add_gradual_offset_arcsec + gradual_offset_seconds (resets first)
+    STEP_WITH_TRACKING_RATE = 4  # add_arcsec + set_rate_arcsec_per_sec
+
+
 class Acquisition:
 
     def __init__(
         self,
         unit: "Unit",
-        approach_mode: int,
+        approach_mode: ApproachMode,
         solver_id: SolverId,
         make_corrections: bool = True,
         target_ra: float | None = None,
