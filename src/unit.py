@@ -350,6 +350,7 @@ class Unit(Component):
             corrections=all_corrections,
             date=time_stamp(),
         )
+        ret.type = StatusType.FULL  # Should already be set in the constructor, but WAS NOT, so setting it explicitly here.
 
         return CanonicalResponse(value=serialize_ip_addresses(ret))
 
