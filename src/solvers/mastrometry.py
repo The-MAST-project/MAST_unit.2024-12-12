@@ -24,6 +24,7 @@ from common.utils import Coord, boxed_log, function_name
 from imagers import ImagerSettings
 
 from .astrometry_dot_net import cygwin_to_win, generate_random_string, parse_solver_output, win_to_cygwin
+from .pixel_grid import roi_center_to_crpix
 
 logger = logging.getLogger("mastrometry_dot_net")
 init_log(logger)
@@ -158,7 +159,7 @@ class MastrometryDotNet(SolverInterface):
             #
             # NOTE: the values are in downsampled pixel units
             #
-            refpix: tuple[int, int] | None = None
+            refpix: tuple[float, float] | None = None  # (--crpix-x, --crpix-y), fractional; see pixel_grid.py
 
             downsample_factor: int = 2   # simulated binning factor (2x2), to speed up solving by reducing the image size
 
@@ -209,11 +210,19 @@ class MastrometryDotNet(SolverInterface):
                     )
                 assert imager_roi._center is not None
 
-                # Crop to the ROI, then refpix is expressed in the cropped+downsampled coord system
+                # Crop to the ROI, then refpix is expressed in the cropped+downsampled coord system.
+                #
+                # FRAGILE COORDINATE SURFACE -- see solvers/pixel_grid.py and solvers/CLAUDE.md.
+                # refpix becomes solve-field's --crpix-x/--crpix-y, i.e. the WCS reference pixel,
+                # i.e. where the solved RA/Dec is reported -- on the spec path that is the fiber
+                # pointing. The mapping from the original-frame ROI center to the cropped+binned
+                # grid MUST use the pixel-center-correct convention in pixel_grid; the old integer
+                # division ((center - start) // factor) silently biased it by ~0.4". Returns floats;
+                # solve-field accepts fractional CRPIX, so do NOT round.
                 data = data[imager_roi.y:imager_roi.y + imager_roi.height,
                             imager_roi.x:imager_roi.x + imager_roi.width]
-                refpix = ((imager_roi._center.x - imager_roi.x) // downsample_factor,
-                          (imager_roi._center.y - imager_roi.y) // downsample_factor)
+                refpix = (roi_center_to_crpix(imager_roi._center.x, imager_roi.x, downsample_factor),
+                          roi_center_to_crpix(imager_roi._center.y, imager_roi.y, downsample_factor))
 
                 logger.info(f"{function_name()}: Cropped to {imager_roi=}, {refpix=}")
             else:
@@ -287,10 +296,17 @@ class MastrometryDotNet(SolverInterface):
                     "--radius", "2.0",  # search radius in degrees
                 ]
 
-            # Additional recommended options
-            args += [
-                "--no-tweak",  # skip SIP distortion (faster)
-            ]
+            # Tweak (SIP distortion fit) is intentionally LEFT ENABLED.
+            #
+            # The reference solver (AstrometryDotNet) leaves tweak on, and the equivalence
+            # study found that --no-tweak over-constrains the WCS to a 4-parameter linear fit:
+            # different matched-source subsets then settle at slightly different rotation/scale,
+            # producing up to ~7" disagreement that vanishes (-> sub-arcsecond) once SIP is fit.
+            # SIP also models real optical distortion toward the frame corners, which matters
+            # for full-frame pixel-location consistency. We therefore do NOT pass --no-tweak.
+            #
+            # Re-add "--no-tweak" here ONLY if solve latency becomes binding AND the loss of
+            # corner accuracy / reference agreement is acceptable for the use case.
 
             if refpix is None:
                 args += ["--crpix-center"]
