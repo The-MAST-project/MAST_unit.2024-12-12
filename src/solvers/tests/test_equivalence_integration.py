@@ -1,0 +1,136 @@
+"""Integration drift test: numpy pre-downsample vs solve-field --downsample.
+
+SKIPPED unless astrometry.net, the index directory, and a sample full-frame FITS
+are present (see conftest for the env vars). When it runs it re-executes the core
+of the equivalence study: solve the same frame both ways, convert MASTrometry's
+binned-grid WCS back to original pixels via ``pixel_grid``, and assert the two
+solutions still agree to sub-arcsecond. It catches drift in the numpy kernel,
+the solve-field version/behavior, or the conversion -- the things the pure-math
+test cannot see.
+
+This intentionally replicates the numpy downsample kernel standalone (as the
+original study did) rather than driving the full MastrometryDotNet class, which
+needs the RAM-disk/Filer/unit-config plumbing. The fragile part -- the
+coordinate conversion -- IS the real ``pixel_grid`` code. An end-to-end ROI test
+that drives the real class is a worthwhile future addition (see README).
+"""
+
+import subprocess
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+import pixel_grid as pg
+
+astropy_fits = pytest.importorskip("astropy.io.fits")
+from astropy.coordinates import SkyCoord  # noqa: E402
+from astropy.wcs import WCS  # noqa: E402
+import astropy.units as u  # noqa: E402
+
+PIXELSCALE = 0.2616
+FACTOR = 2
+# Generous tolerances: this guards against kernel/solver drift, not the exact
+# convention (test_pixel_grid pins that to the milli-pixel). FINDINGS observed
+# 0.06" center / 0.13" corner with tweak on.
+CENTER_TOL_ARCSEC = 0.5
+CORNER_TOL_ARCSEC = 1.0
+
+
+def _win_to_cygwin(path: str) -> str:
+    if path[:2].lower() == "c:":
+        path = "/cygdrive/c" + path[2:]
+    elif path[:2].lower() == "d:":
+        path = "/cygdrive/d" + path[2:]
+    return path.replace("\\", "/")
+
+
+def _common_args(solve_field, index_dir, workdir):
+    return [
+        solve_field,
+        "--scale-units", "arcsecperpix",
+        "--index-dir", _win_to_cygwin(index_dir),
+        "--no-plots", "--overwrite", "--cpulimit", "60",
+        "--solved", "none", "--match", "none", "--rdls", "none", "--corr", "none",
+        "--dir", _win_to_cygwin(str(workdir)),
+        "--temp-dir", _win_to_cygwin(str(workdir)),
+        "--crpix-center",  # tweak left ON (no --no-tweak), matching production
+    ]
+
+
+def _run(args):
+    proc = subprocess.run(" ".join(args), capture_output=True, shell=True)
+    assert proc.returncode == 0, (
+        f"solve-field failed (rc={proc.returncode}):\n{proc.stderr.decode(errors='replace')}"
+    )
+
+
+def test_numpy_downsample_matches_native_downsample(astrometry_env, tmp_path):
+    solve_field = astrometry_env["solve_field"]
+    index_dir = astrometry_env["index_dir"]
+    test_fits = astrometry_env["test_fits"]
+
+    with astropy_fits.open(test_fits) as hdul:
+        header = hdul[0].header.copy()
+        data = hdul[0].data
+        height, width = data.shape
+        dtype = data.dtype
+
+    # --- Config A: numpy 2x2 block-mean pre-downsample, then solve -----------
+    dh, dw = height // FACTOR, width // FACTOR
+    downsampled = (
+        data[: dh * FACTOR, : dw * FACTOR]
+        .reshape(dh, FACTOR, dw, FACTOR)
+        .mean(axis=(1, 3))
+        .astype(dtype)
+    )
+    header["NAXIS1"], header["NAXIS2"] = dw, dh
+    a_in = tmp_path / "a_downsampled.fits"
+    astropy_fits.writeto(a_in, downsampled, header, overwrite=True)
+    a_out = tmp_path / "a_solved.fits"
+    eff = PIXELSCALE * FACTOR
+    args_a = _common_args(solve_field, index_dir, tmp_path) + [
+        "--scale-low", f"{0.9 * eff}", "--scale-high", f"{1.1 * eff}",
+        "--new-fits", _win_to_cygwin(str(a_out)), _win_to_cygwin(str(a_in)),
+    ]
+    _run(args_a)
+
+    # --- Config B: solve-field --downsample 2 on the original frame ----------
+    b_out = tmp_path / "b_solved.fits"
+    args_b = _common_args(solve_field, index_dir, tmp_path) + [
+        "--scale-low", f"{0.9 * PIXELSCALE}", "--scale-high", f"{1.1 * PIXELSCALE}",
+        "--downsample", str(FACTOR),
+        "--new-fits", _win_to_cygwin(str(b_out)), _win_to_cygwin(str(test_fits)),
+    ]
+    _run(args_b)
+
+    assert a_out.exists() and b_out.exists()
+    wcs_a = WCS(astropy_fits.getheader(a_out, 0))  # binned grid (factor 2)
+    wcs_b = WCS(astropy_fits.getheader(b_out, 0))  # original full-frame grid (factor 1)
+
+    points = {
+        "center": (width / 2.0, height / 2.0),
+        "BL": (1.0, 1.0), "BR": (float(width), 1.0),
+        "TL": (1.0, float(height)), "TR": (float(width), float(height)),
+    }
+    max_corner = 0.0
+    center_sep = None
+    for name, (xo, yo) in points.items():
+        # A lives in the binned grid -> map original pixel onto it via pixel_grid.
+        ra_a, dec_a = wcs_a.wcs_pix2world(
+            pg.orig_to_grid_fits(xo, FACTOR), pg.orig_to_grid_fits(yo, FACTOR), 1
+        )
+        # B lives in the original grid -> use the pixel directly (factor 1).
+        ra_b, dec_b = wcs_b.wcs_pix2world(xo, yo, 1)
+        sep = SkyCoord(float(ra_a) * u.deg, float(dec_a) * u.deg).separation(
+            SkyCoord(float(ra_b) * u.deg, float(dec_b) * u.deg)
+        ).arcsecond
+        if name == "center":
+            center_sep = sep
+        else:
+            max_corner = max(max_corner, sep)
+        print(f"{name:8s} {sep:.4f}\"")
+
+    print(f"center sep = {center_sep:.4f}\"  max corner = {max_corner:.4f}\"")
+    assert center_sep < CENTER_TOL_ARCSEC, f"center disagreement {center_sep:.3f}\" too large"
+    assert max_corner < CORNER_TOL_ARCSEC, f"corner disagreement {max_corner:.3f}\" too large"
