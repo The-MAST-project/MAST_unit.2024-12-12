@@ -15,14 +15,18 @@ coordinate conversion -- IS the real ``pixel_grid`` code. An end-to-end ROI test
 that drives the real class is a worthwhile future addition (see README).
 """
 
+import os
 import subprocess
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 import pixel_grid as pg
 
+# Heavy deps are only needed when this test actually runs; gate them through
+# importorskip so the module skips cleanly (rather than erroring at collection)
+# on a machine without the scientific stack.
+np = pytest.importorskip("numpy")
 astropy_fits = pytest.importorskip("astropy.io.fits")
 from astropy.coordinates import SkyCoord  # noqa: E402
 from astropy.wcs import WCS  # noqa: E402
@@ -45,6 +49,19 @@ def _win_to_cygwin(path: str) -> str:
     return path.replace("\\", "/")
 
 
+def _cygwin_env() -> dict:
+    """PATH that solve-field's cygwin sub-tools need (mirrors mastrometry.py).
+
+    Without ``C:\\cygwin64\\bin`` (to load cygwin1.dll) and the ``/usr/lib/lapack``
+    POSIX path (cygwin1.dll re-parses PATH at startup), image2pnm/removelines fail
+    with a confusing "image type not recognized" error. Setting this matches how
+    ``MastrometryDotNet`` actually invokes the solver in production.
+    """
+    env = os.environ.copy()
+    env["PATH"] = r"C:\cygwin64\bin" + os.pathsep + "/usr/lib/lapack" + os.pathsep + env.get("PATH", "")
+    return env
+
+
 def _common_args(solve_field, index_dir, workdir):
     return [
         solve_field,
@@ -59,7 +76,7 @@ def _common_args(solve_field, index_dir, workdir):
 
 
 def _run(args):
-    proc = subprocess.run(" ".join(args), capture_output=True, shell=True)
+    proc = subprocess.run(" ".join(args), capture_output=True, shell=True, env=_cygwin_env())
     assert proc.returncode == 0, (
         f"solve-field failed (rc={proc.returncode}):\n{proc.stderr.decode(errors='replace')}"
     )
