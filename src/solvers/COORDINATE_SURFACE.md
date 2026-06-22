@@ -67,6 +67,31 @@ also models corner distortion, which matters for full-frame pixel consistency.
 Re-add `--no-tweak` only if solve latency becomes binding and the accuracy loss
 is acceptable.
 
+## Off-center CRPIX behavior (matters for the ROI/spec path)
+
+The ROI path places CRPIX at the **fiber pixel** (`--crpix-x/--crpix-y` from
+`roi_center_to_crpix`), then reads `CRVAL` back as "where the fiber points". Two
+measured properties of that, both real astrometry.net behavior and **not** refpix
+bugs (the convention is exact — `test_pixel_grid` pins it to the milli-pixel):
+
+- **SIP re-anchoring (~0.5–1.5″).** With tweak on, moving CRPIX off-center
+  re-anchors the SIP fit. The `CRVAL` reported at an off-center CRPIX differs
+  from what a CRPIX-center solve of the *same image* predicts for that pixel by
+  ~0.5–1.5″, growing with distance from center. So the absolute fiber sky
+  position carries this much solve-dependent scatter.
+- **Small cropped field (~3–4″).** Solving a *cropped* ROI (e.g. 3000 px →
+  1500 binned) instead of the full frame shifts the solution by a further few
+  arcsec versus a full-frame solve at the same sky point — fewer stars and a
+  shorter distortion baseline. This is a property of small-field solves,
+  separate from (and larger than) the CRPIX effect above.
+
+Implication for whoever implements ROI in-house: the *grid/refpix math* is exact,
+but the *absolute* fiber pointing from a cropped, off-center solve is good only to
+a few arcsec. If tighter absolute pointing is needed, prefer a full-frame solve
+(CRVAL evaluated at the fiber pixel via this module) over a small cropped solve,
+or budget for the scatter. `test_offcenter_crpix_is_honored_and_lands_near_truth`
+guards the invocation (exact CRPIX) with a deliberately loose CRVAL bound.
+
 ## Tests / drift detection
 
 We have no CI. The tests in `solvers/tests/` are split so that the most

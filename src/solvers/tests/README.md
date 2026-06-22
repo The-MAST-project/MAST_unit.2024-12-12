@@ -46,15 +46,28 @@ pytest src/solvers/tests/test_equivalence_integration.py -v -s
 If solve-field, the index dir, or the fixture is missing the test reports
 *skipped* with the reason, not a failure. `-s` shows the per-point separations.
 
-## Known gap / future work
+## Coverage notes
 
-The integration test replicates the numpy downsample kernel standalone (as the
-original study did) to avoid the RAM-disk / `Filer` / unit-config plumbing
-needed to drive the real `MastrometryDotNet`. The fragile part — the coordinate
+`test_equivalence_integration.py` has two tests:
+
+- `test_numpy_downsample_matches_native_downsample` — numpy pre-downsample vs
+  `--downsample`, both CRPIX-center, agreement at center and corners.
+- `test_offcenter_crpix_is_honored_and_lands_near_truth` — the ROI/spec path:
+  an explicit fractional off-center `--crpix-x/--crpix-y` (from
+  `roi_center_to_crpix`) is applied exactly, and `CRVAL` lands near truth. Its
+  CRVAL bound is deliberately loose because off-center CRPIX re-anchors SIP
+  (~0.5–1.5″ scatter — see `COORDINATE_SURFACE.md`, "Off-center CRPIX
+  behavior"). A *tight* end-to-end CRVAL assertion is not possible: it would
+  measure that scatter, not the convention. The convention is pinned exactly by
+  `test_pixel_grid`.
+
+Both integration tests replicate the numpy downsample kernel standalone (as the
+original study did) to avoid the RAM-disk / `Filer` / unit-config plumbing needed
+to drive the real `MastrometryDotNet`. The fragile part — the coordinate
 conversion — is the real `pixel_grid` code.
 
-The highest-value addition when ROI is implemented in-house: an **end-to-end ROI
-test** that drives the real class, sets `--crpix-x/--crpix-y` via
-`roi_center_to_crpix`, and asserts the solved `CRVAL` lands on the same sky point
-the full-frame solution gives for that ROI-center pixel — directly exercising the
-refpix path that the spec/fiber pointing depends on.
+## Future work
+
+When ROI is implemented in-house, add an **end-to-end test driving the real
+`MastrometryDotNet`** (RAM disk + unit config) so the production crop→downsample→
+`roi_center_to_crpix`→solve path is exercised as a unit, not reconstructed here.
