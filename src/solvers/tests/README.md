@@ -20,27 +20,31 @@ Pure-math tests (always):
 pytest src/solvers/tests/test_pixel_grid.py -v
 ```
 
-Integration test — only on a machine with astrometry.net. Point it at your
-setup (these are the defaults for the dev unit):
+Integration test — only on a machine with astrometry.net. The sample frame is
+bundled at `fixtures/full-frame.fits` via **git-lfs**, so run `git lfs pull`
+once to materialize it (otherwise it's a small pointer file and the test skips).
+The only thing not checked in is the index set on `D:\` (too large). Defaults
+target the dev unit; override via env vars if your paths differ:
 
 ```
-# bash
+# bash — defaults (solve-field on PATH/cygwin, indexes on D:\, bundled fixture)
+pytest src/solvers/tests/test_equivalence_integration.py -v -s
+
+# override any of them
 MAST_SOLVE_FIELD="C:/cygwin64/usr/local/astrometry/bin/solve-field" \
 MAST_INDEX_DIR="D:\mast-indexes" \
-MAST_TEST_FITS="C:\MAST\full-frame.fits" \
+MAST_TEST_FITS="C:\some\other.fits" \
 pytest src/solvers/tests/test_equivalence_integration.py -v -s
 ```
 
 ```
-# PowerShell
-$env:MAST_SOLVE_FIELD="C:/cygwin64/usr/local/astrometry/bin/solve-field"
+# PowerShell — override example
 $env:MAST_INDEX_DIR="D:\mast-indexes"
-$env:MAST_TEST_FITS="C:\MAST\full-frame.fits"
 pytest src/solvers/tests/test_equivalence_integration.py -v -s
 ```
 
-If any of the three is missing the test reports *skipped* with the reason, not a
-failure. `-s` shows the per-point separations.
+If solve-field, the index dir, or the fixture is missing the test reports
+*skipped* with the reason, not a failure. `-s` shows the per-point separations.
 
 ## Known gap / future work
 

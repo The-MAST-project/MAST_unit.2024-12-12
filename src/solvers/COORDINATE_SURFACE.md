@@ -5,8 +5,8 @@ why it exists, the bugs it has caused, and how the tests guard it.
 
 ## What it is
 
-`MastrometryDotNet` does not hand the raw image to astrometry.net. It first, in
-numpy:
+`MastrometryDotNet` does not hand the raw image to astrometry.net. It first
+preprocesses the image in numpy:
 
 1. (optionally) **crops** to an ROI, then
 2. **downsamples** 2×2 (block-mean).
