@@ -28,7 +28,9 @@ SOLVE_FIELD = os.environ.get(
     "MAST_SOLVE_FIELD", r"C:/cygwin64/usr/local/astrometry/bin/solve-field"
 )
 INDEX_DIR = os.environ.get("MAST_INDEX_DIR", r"D:\mast-indexes")
-TEST_FITS = os.environ.get("MAST_TEST_FITS", r"C:\MAST\full-frame.fits")
+# Default fixture is bundled in-repo (via git-lfs); override with MAST_TEST_FITS.
+_BUNDLED_FITS = Path(__file__).resolve().parent / "fixtures" / "full-frame.fits"
+TEST_FITS = os.environ.get("MAST_TEST_FITS", str(_BUNDLED_FITS))
 
 
 def astrometry_available() -> tuple[bool, str]:
