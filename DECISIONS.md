@@ -2,6 +2,54 @@
 
 ---
 
+## [2026-06-22] Keep MASTrometry's numpy pre-downsample/ROI-crop surface; fix its bugs rather than switch to bare astrometry.net
+
+**Why:** MASTrometry pre-downsamples (2x2) and optionally ROI-crops the image in numpy
+before calling astrometry.net, so the returned WCS lives in the binned/cropped grid, not
+the original full frame. Relating it back requires a coordinate transform, and that
+transform had produced silent sub-arcsecond bugs. A bare `solve-field --downsample` on the
+full frame would avoid the surface entirely (its WCS is already in full-frame pixels) and
+would satisfy the science requirement -- full-frame solving in full-frame pixel
+coordinates -- for free. We chose to KEEP the surface anyway, so ROI cropping stays
+implementable in-house without reopening the solver decision. The surface is the price of
+that flexibility; it is fenced and tested, not removed. Background study:
+`C:\MAST\mastrometry-equivalence` (`compare_solves.py`, `FINDINGS.md`).
+
+**What:**
+
+`src/solvers/pixel_grid.py` (new)
+- Single source of truth for the binned<->full-frame transform, with the validated
+  pixel-center convention `g = (o + (f-1)/2) / f`. Pure module, no heavy imports, so its
+  unit tests run with no astrometry.net / MAST runtime.
+
+`src/solvers/mastrometry.py`
+- ROI `refpix` now uses `pixel_grid.roi_center_to_crpix` (fractional) instead of integer
+  `(center - start) // factor`. The old code biased `--crpix-x/--crpix-y` by ~0.4", a
+  constant pointing offset on the spec/fiber path.
+- Dropped `--no-tweak` so SIP is fit, matching the reference solver (AstrometryDotNet) and
+  the equivalence study, which found `--no-tweak` over-constrains the WCS and causes up to
+  ~7" disagreement. This is the one runtime/perf-affecting change; reversible (documented
+  inline).
+
+`src/solvers/CLAUDE.md`, `src/solvers/COORDINATE_SURFACE.md` (new): warning signs for the
+fragile surface.
+
+`src/solvers/tests/` (new): `test_pixel_grid.py` (pure math, runs anywhere -- the primary
+drift canary) and `test_equivalence_integration.py` (skipped unless astrometry.net +
+indexes + fixture present). Sample frame bundled via git-lfs at
+`tests/fixtures/full-frame.fits`.
+
+**Implications:** All original<->binned and ROI-refpix coordinate math must go through
+`pixel_grid.py` -- do not reintroduce `orig/factor` or `(center - start) // factor` inline;
+those are the exact bugs. `--crpix-x/--crpix-y` are FITS 1-based. After any change to that
+module, the mastrometry downsample/crop/refpix logic, or the solve-field flags, run
+`src/solvers/tests/` (the pure-math tests catch convention drift with no astrometry.net; the
+integration test needs `git lfs pull` plus a solver + indexes). Keep tweak on unless solve
+latency becomes binding. If the ROI path is ever permanently abandoned, the surface and
+`pixel_grid.py` can go with it.
+
+---
+
 ## [2026-06-10] ps3cli runs as a persistent --server; locate by largest exe (supersedes 2026-05-14)
 
 **Why:** The 2026-05-14 entry ("ps3cli is a one-shot tool, not a persistent process")
