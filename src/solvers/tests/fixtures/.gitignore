@@ -1,3 +1,0 @@
-# The repo-wide *.fits ignore (root .gitignore) excludes images, but this
-# directory holds the checked-in test fixture on purpose. Re-include it.
-!*.fits

@@ -2,6 +2,33 @@
 
 ---
 
+## [2026-06-23] Host the solver test fixture as a GitHub Release asset, not in-repo git-lfs
+
+**Why:** The previous day's commit bundled the ~90 MB `full-frame.fits` integration
+fixture in-repo via git-lfs. Even via LFS this bloats the unit: every clone pays the
+LFS download for a file only the astrometry.net integration test (skipped on most
+machines) ever needs, and it consumes the repo's LFS storage/bandwidth quota. The unit
+must stay lean.
+
+**What:** Removed the file from history (the LFS pointer was excised from the four
+commits that carried it and `main` was force-pushed) and republished the frame as a
+GitHub Release asset on `The-MAST-project/MAST_unit.2024-12-12`, tag `fixtures-v1`.
+`src/solvers/tests/conftest.py` now resolves the fixture lazily: it uses `MAST_TEST_FITS`
+if set, else a git-ignored local cache at `tests/fixtures/full-frame.fits`, else it
+downloads the release asset on first use and verifies its sha256
+(`fd8618de…e526`). The pure-math tests never trigger a download; only a machine that
+already has solve-field + indexes (i.e. actually running the integration test) fetches it.
+The scoped `fixtures/.gitattributes` LFS rule and the `fixtures/.gitignore` re-include
+were removed; the repo-wide `*.fits` ignore now keeps the cached frame untracked.
+
+**Implications:** Fresh clones no longer carry the fixture. Collaborators who pulled
+`main` on/after 2026-06-22 must re-sync the rewritten history (`git fetch` then reset their
+`main`). The orphaned 90 MB LFS object remains in GitHub's LFS store until a repo admin
+prunes it (history rewriting alone does not reclaim server-side LFS storage). Supersedes
+the "bundled via git-lfs" mechanism noted in the 2026-06-22 entry below.
+
+---
+
 ## [2026-06-22] Keep MASTrometry's numpy pre-downsample/ROI-crop surface; fix its bugs rather than switch to bare astrometry.net
 
 **Why:** MASTrometry pre-downsamples (2x2) and optionally ROI-crops the image in numpy
@@ -36,8 +63,8 @@ fragile surface.
 
 `src/solvers/tests/` (new): `test_pixel_grid.py` (pure math, runs anywhere -- the primary
 drift canary) and `test_equivalence_integration.py` (skipped unless astrometry.net +
-indexes + fixture present). Sample frame bundled via git-lfs at
-`tests/fixtures/full-frame.fits`.
+indexes + fixture present). Sample frame fetched on demand from a GitHub Release asset
+(see the 2026-06-23 entry above; originally bundled via git-lfs).
 
 **Implications:** All original<->binned and ROI-refpix coordinate math must go through
 `pixel_grid.py` -- do not reintroduce `orig/factor` or `(center - start) // factor` inline;
