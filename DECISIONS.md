@@ -15,9 +15,12 @@ commits that carried it and `main` was force-pushed) and republished the frame a
 GitHub Release asset on `The-MAST-project/MAST_unit.2024-12-12`, tag `fixtures-v1`.
 `src/solvers/tests/conftest.py` now resolves the fixture lazily: it uses `MAST_TEST_FITS`
 if set, else a git-ignored local cache at `tests/fixtures/full-frame.fits`, else it
-downloads the release asset on first use and verifies its sha256
-(`fd8618de…e526`). The pure-math tests never trigger a download; only a machine that
-already has solve-field + indexes (i.e. actually running the integration test) fetches it.
+fetches the release asset on first use and verifies its sha256 (`fd8618de…e526`). Because
+the repo is private the asset is not anonymously downloadable, so the fetch shells out to
+the authenticated `gh` CLI (`gh release download fixtures-v1`); absent `gh`, the test
+skips with a message pointing at `MAST_TEST_FITS`. The pure-math tests never trigger a
+download; only a machine that already has solve-field + indexes (i.e. actually running the
+integration test) fetches it.
 The scoped `fixtures/.gitattributes` LFS rule and the `fixtures/.gitignore` re-include
 were removed; the repo-wide `*.fits` ignore now keeps the cached frame untracked.
 

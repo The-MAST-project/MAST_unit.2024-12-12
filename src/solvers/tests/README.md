@@ -22,12 +22,14 @@ pytest src/solvers/tests/test_pixel_grid.py -v
 
 Integration test — only on a machine with astrometry.net. The ~90 MB sample
 frame is **not** in the repo (it would bloat every clone). It lives as a GitHub
-Release asset (tag `fixtures-v1`) and `conftest.py` downloads it on demand the
-first time the test runs, caching it under `fixtures/full-frame.fits`
-(git-ignored) and verifying its sha256. No `git lfs pull` needed. If you already
-have a frame on disk, point `MAST_TEST_FITS` at it to skip the download. The
-index set on `D:\` is the only thing you must supply yourself (too large to
-host). Defaults target the dev unit; override via env vars if your paths differ:
+Release asset (tag `fixtures-v1`). The first time the test runs, `conftest.py`
+fetches it via the **`gh` CLI** (the repo is private, so the asset is not
+anonymously downloadable — `gh` must be installed and `gh auth login`'d),
+caching it under `fixtures/full-frame.fits` (git-ignored) and verifying its
+sha256. No `git lfs pull` needed. If you already have a frame on disk — or don't
+want to use `gh` — point `MAST_TEST_FITS` at it to skip the download. The index
+set on `D:\` is the only thing you must supply yourself (too large to host).
+Defaults target the dev unit; override via env vars if your paths differ:
 
 ```
 # bash — defaults (solve-field on PATH/cygwin, indexes on D:\, fixture auto-downloaded)
