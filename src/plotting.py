@@ -5,7 +5,6 @@ import math
 import os
 import re
 import sys
-import time
 from typing import NamedTuple, get_args
 
 import astropy.units as u
@@ -176,7 +175,6 @@ def plot_autofocus_analysis(
         file: str = os.path.join(folder, "vcurve.png")
         logger.info(f"{op}: saved plot in {file}")
         plt.savefig(file, format="png")
-        time.sleep(2)
         filer.move_ram_to_shared(folder)
 
     plt.show()

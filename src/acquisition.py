@@ -1,7 +1,6 @@
 import datetime
 import logging
 import os
-import time
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
@@ -112,9 +111,7 @@ class Acquisition:
                 file=path,
                 ends_of_phases=[datetime.datetime.now(datetime.UTC)],
             )
-            time.sleep(2)
-            filer.move_ram_to_shared(path)
-            filer.move_ram_to_shared(path.replace("json", "png"))
+            filer.move_ram_to_shared([path, path.replace("json", "png")])
 
     def post_process(self):
         if filer.ram and filer.ram.root is not None:
