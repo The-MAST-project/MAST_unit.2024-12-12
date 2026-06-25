@@ -99,9 +99,10 @@ class Acquisition:
             path = os.path.join(self.folder, phase, "corrections.json")
             for _ in range(3):
                 try:
-                    with open(path, "w") as fp:
-                        fp.write(self.corrections[phase].model_dump_json(indent=2))
-                        break
+                    with filer.atomic_path(path) as tmp:
+                        with open(tmp, "w") as fp:
+                            fp.write(self.corrections[phase].model_dump_json(indent=2))
+                    break
                 except Exception as e:
                     logger.error(f"failed to write {path} (error: {e})")
                     continue

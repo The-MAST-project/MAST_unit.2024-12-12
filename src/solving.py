@@ -301,8 +301,9 @@ class Solver(SolverInterface):
                 ".fits", "-solver_result.json"
             )
             os.makedirs(os.path.dirname(result_file_name), exist_ok=True)
-            with open(result_file_name, "w") as fp:
-                fp.write(json.dumps(result.to_dict(), indent=2))
+            with filer.atomic_path(result_file_name) as tmp:
+                with open(tmp, "w") as fp:
+                    fp.write(json.dumps(result.to_dict(), indent=2))
             filer.move_ram_to_shared(result_file_name)
 
             #
@@ -406,8 +407,9 @@ class Solver(SolverInterface):
                             f"{function_name()}: empty imager_settings.folder"
                         )
                     file_name = str(Path(imager_settings.folder) / "corrections.json")
-                    with open(file_name, "w") as f:
-                        f.write(latest_corrections.model_dump_json(indent=2))
+                    with filer.atomic_path(file_name) as tmp:
+                        with open(tmp, "w") as f:
+                            f.write(latest_corrections.model_dump_json(indent=2))
                     filer.move_ram_to_shared(file_name)
 
                     self.unit.end_activity(UnitActivities.Solving)

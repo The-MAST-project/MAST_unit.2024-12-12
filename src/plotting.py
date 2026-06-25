@@ -174,7 +174,8 @@ def plot_autofocus_analysis(
     if folder:
         file: str = os.path.join(folder, "vcurve.png")
         logger.info(f"{op}: saved plot in {file}")
-        plt.savefig(file, format="png")
+        with filer.atomic_path(file) as tmp:
+            plt.savefig(tmp, format="png")
         filer.move_ram_to_shared(folder)
 
     plt.show()
@@ -319,7 +320,8 @@ def plot_phase_corrections(  # noqa: C901
     plt.grid()
 
     file = file.replace(".json", ".png")
-    plt.savefig(file, format="png")
+    with filer.atomic_path(file) as tmp:
+        plt.savefig(tmp, format="png")
     # plt.close()
     logger.info(f"plot saved to '{file}'")
 

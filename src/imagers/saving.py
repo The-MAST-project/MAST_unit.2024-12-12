@@ -6,6 +6,7 @@ from pathlib import Path
 import astropy.io.fits as fits
 
 from common.activities import ImagerActivities
+from common.filer import Filer
 from common.mast_logging import init_log
 from common.utils import function_name
 from imagers import ImagerInterface
@@ -73,7 +74,8 @@ def save_to_fits_file(imager_backend: ImagerInterface):
     hdu_list = fits.HDUList([hdu])
     logger.info(f"{op}: saving image to {Path(settings.image_path).as_posix()} ...")
     try:
-        hdu_list.writeto(settings.image_path, checksum=True, overwrite=True)
+        with Filer.atomic_path(settings.image_path) as tmp:
+            hdu_list.writeto(tmp, checksum=True, overwrite=True)
     except Exception as ex:
         logger.error(f"failed to save to '{settings.image_path}', {ex=}")
 
