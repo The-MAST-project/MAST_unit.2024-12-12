@@ -2,6 +2,40 @@
 
 ---
 
+## [2026-06-25] Producers write acquisition products via `Filer.atomic_path`
+
+**Why:** Acquisition products (FITS frames, corrections/result JSON, plots, autofocus
+status) are written to the volatile RAM disk and then moved to the shared store by
+`Filer.move_ram_to_shared`. The 2026-06-24 session showed the mover racing the producers --
+it swept files that were not finished being written -- and a frame missed that way is lost
+when the RAM disk is wiped (issue #18). The fix is an explicit completion contract in
+`common` (`Filer.atomic_path`; see the MAST_common DECISIONS entry of the same date): a
+product is written to `<name>.part` and atomically renamed only once the writer closes, so
+"the final name exists" means "it is complete". The producers must adopt it; size-based
+guessing in the mover is not robust enough (operator/Arie feedback).
+
+**What:** Every product write now goes through `Filer.atomic_path(path)`:
+- `imagers/saving.py` -- the FITS frame (`hdu_list.writeto`);
+- `acquisition.py` -- `corrections.json`;
+- `solving.py` -- `*-solver_result.json` and the within-tolerance `corrections.json`;
+- `plotting.py` -- `vcurve.png` and the phase-corrections `.png` (`savefig`);
+- `autofocusing.py` -- autofocus `status.json`.
+The earlier `time.sleep(2)` "settle" hacks before moves were removed (the contract makes
+them unnecessary); `acquisition` batches its `corrections.json`+`.png` into one
+`move_ram_to_shared` call; `solving` calls `filer.clean_ram_tmp()` at the top of each solve
+attempt to clear the previous attempt's `<ram>/tmp/tmp_*` scratch. `src/common` is bumped
+to the `.part`-aware `Filer`.
+
+**Implications:** `solve-field`'s outputs are the one deliberate exception -- written by the
+external process and complete once it exits, so they are moved without `atomic_path`. Any
+*new* producer that writes a product to the RAM disk MUST use `Filer.atomic_path` (a raw
+direct write is no longer size-guarded) -- see the File storage section in
+`src/common/CLAUDE.md`. Separately noted for follow-up: `solvers/mastrometry.py` invokes its
+`cleanup()` with a 2-arg tuple against a 3-parameter signature, so its own `rmtree` never
+ran; `clean_ram_tmp()` now covers that scratch leak, but the solver bug itself remains.
+
+---
+
 ## [2026-06-23] Host the solver test fixture as a GitHub Release asset, not in-repo git-lfs
 
 **Why:** The previous day's commit bundled the ~90 MB `full-frame.fits` integration
