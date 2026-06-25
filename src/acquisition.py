@@ -10,6 +10,7 @@ from common.corrections import Corrections
 from common.filer import Filer
 from common.mast_logging import init_log
 from common.paths import PathMaker
+from common.transfer import TransferTracker
 from common.solving import SolverId
 from plotting import plot_acquisition_corrections, plot_phase_corrections
 
@@ -90,6 +91,9 @@ class Acquisition:
                 "target": f"{target_ra},{target_dec}",
             }
         )
+        # Tag this acquisition's transfers so the tracker can reconcile/await them
+        # as a group (see post_process). Observability only, not a source of truth.
+        self._transfer_tag = os.path.basename(self.folder)
         self.skip_sky = skip_sky
         self.use_set_limit_frame = use_set_limit_frame
         self.solver_data: Any = None  # May be set by the solver, to remember something
@@ -99,7 +103,7 @@ class Acquisition:
             path = os.path.join(self.folder, phase, "corrections.json")
             for _ in range(3):
                 try:
-                    with filer.atomic_path(path) as tmp:
+                    with filer.atomic_path(path, tag=self._transfer_tag) as tmp:
                         with open(tmp, "w") as fp:
                             fp.write(self.corrections[phase].model_dump_json(indent=2))
                     break
@@ -112,10 +116,15 @@ class Acquisition:
                 file=path,
                 ends_of_phases=[datetime.datetime.now(datetime.UTC)],
             )
-            filer.move_ram_to_shared([path, path.replace("json", "png")])
+            filer.move_ram_to_shared([path, path.replace("json", "png")], tag=self._transfer_tag)
 
     def post_process(self):
         if filer.ram and filer.ram.root is not None:
+            # Await this acquisition's products being persisted to the shared store
+            # (and log a per-sequence reconciliation) instead of racing the move,
+            # then plot from there. The filesystem stays the truth -- plotting reads
+            # the shared copy regardless of the tracker.
+            TransferTracker.instance().wait_for_tag(self._transfer_tag, timeout=60)
             plot_acquisition_corrections(
                 self.folder.replace(filer.ram.root, filer.shared.root)
             )

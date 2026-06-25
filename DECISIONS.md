@@ -2,6 +2,24 @@
 
 ---
 
+## [2026-06-25] Acquisition tags its transfers and awaits persistence
+
+**Why:** With the `TransferTracker` (MAST_common) we can group an acquisition's products
+and await/reconcile them as a unit instead of racing the background move. `post_process`
+previously plotted from the shared copy immediately after enqueuing the move, racing it.
+
+**What:** `Acquisition` computes a per-sequence transfer tag (the acquisition folder name)
+and passes it to `filer.atomic_path` / `filer.move_ram_to_shared` for its corrections
+products. `post_process` calls `TransferTracker.instance().wait_for_tag(tag)` -- which also
+logs a `tag=...: X/N persisted` reconciliation -- before plotting from the shared store.
+
+**Implications:** Observability/QoL only: plotting reads the shared filesystem regardless,
+and the tracker is not a source of truth; the await just removes the race and yields a
+per-sequence summary. Other producers (the FITS frame in `imagers/saving.py`, solver
+outputs) can adopt the same tag later for full per-sequence frame reconciliation.
+
+---
+
 ## [2026-06-25] Producers write acquisition products via `Filer.atomic_path`
 
 **Why:** Acquisition products (FITS frames, corrections/result JSON, plots, autofocus
