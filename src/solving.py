@@ -2,7 +2,6 @@ import datetime
 import json
 import logging
 import os.path
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -274,6 +273,11 @@ class Solver(SolverInterface):
             )
             boxed_log(lines=["Plate solving", f"{phase.upper()} [{try_number}_of_{max_tries}]"], center=True, logger=logger)
 
+            # Clear leftover solve-field scratch (<ram>/tmp/tmp_*) from the
+            # previous attempt before starting a new one; never touches the
+            # in-flight solve, whose tmp dir is created inside self.solve below.
+            filer.clean_ram_tmp()
+
             # run the plate solver
             try:
                 result = self.solve(imager_settings=imager_settings, target=target,
@@ -297,9 +301,9 @@ class Solver(SolverInterface):
                 ".fits", "-solver_result.json"
             )
             os.makedirs(os.path.dirname(result_file_name), exist_ok=True)
-            with open(result_file_name, "w") as fp:
-                fp.write(json.dumps(result.to_dict(), indent=2))
-            time.sleep(2)
+            with filer.atomic_path(result_file_name) as tmp:
+                with open(tmp, "w") as fp:
+                    fp.write(json.dumps(result.to_dict(), indent=2))
             filer.move_ram_to_shared(result_file_name)
 
             #
@@ -403,9 +407,9 @@ class Solver(SolverInterface):
                             f"{function_name()}: empty imager_settings.folder"
                         )
                     file_name = str(Path(imager_settings.folder) / "corrections.json")
-                    with open(file_name, "w") as f:
-                        f.write(latest_corrections.model_dump_json(indent=2))
-                    time.sleep(2)
+                    with filer.atomic_path(file_name) as tmp:
+                        with open(tmp, "w") as f:
+                            f.write(latest_corrections.model_dump_json(indent=2))
                     filer.move_ram_to_shared(file_name)
 
                     self.unit.end_activity(UnitActivities.Solving)

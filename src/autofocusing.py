@@ -429,8 +429,9 @@ class Autofocuser:
                         status.errors = []
                     status.errors.extend(errors)
 
-            with open(filename, "w") as f:
-                f.write(status.model_dump_json(indent=4))
+            with filer.atomic_path(filename) as tmp:
+                with open(tmp, "w") as f:
+                    f.write(status.model_dump_json(indent=4))
 
     def start_pwi4_autofocus(self):
         """
