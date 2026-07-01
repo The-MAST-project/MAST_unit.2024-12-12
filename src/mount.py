@@ -1,7 +1,7 @@
 import logging
 import math
 import time
-from enum import Enum
+from enum import StrEnum
 from logging import Logger
 from typing import TYPE_CHECKING
 
@@ -50,7 +50,7 @@ init_log(logger)
 #     date: str | None = None
 
 
-class SettleMode(str, Enum):
+class SettleMode(StrEnum):
     SLEW = "slew"                      # goto / find_home / park  (large move)
     OFFSET_STEP = "offset_step"        # discrete ra/dec_add_arcsec, spiral steps
     OFFSET_GRADUAL = "offset_gradual"  # ra/dec_add_gradual_offset_*

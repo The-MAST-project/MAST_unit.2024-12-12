@@ -21,6 +21,8 @@ src/test.out2
 *.pyo
 *.pyd
 PlaneWave Instruments/
+docs/*.pdf
+docs/*.zip
 
 # Claude Code settings (machine/identity-scoped — never commit)
 .claude/settings.json
