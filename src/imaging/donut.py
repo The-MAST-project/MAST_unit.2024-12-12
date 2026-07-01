@@ -171,7 +171,7 @@ def detect_donuts(
     if open_iter > 0:
         mask = ndi.binary_opening(mask, iterations=int(open_iter))
 
-    labels, n = ndi.label(mask)
+    labels, n = ndi.label(mask)  # type: ignore[misc]
     if n == 0:
         return []
     slices = ndi.find_objects(labels)
@@ -185,6 +185,7 @@ def detect_donuts(
         y0, x0 = sl[0].start, sl[1].start
         sub = labels[sl] == i
         filled = ndi.binary_fill_holes(sub)
+        assert filled is not None  # None only when an output array is passed
         ring_area = float(sub.sum())
         filled_area = float(filled.sum())
         outer_diameter = 2.0 * np.sqrt(filled_area / np.pi)
@@ -296,18 +297,19 @@ def plan_donut_jump(
 def plot_donuts(image, blobs: list[DonutBlob], vmin=None, vmax=None):
     """Show the frame with detected donuts circled (inspection helper)."""
     import matplotlib.pyplot as plt
+    from matplotlib.patches import Circle
 
     data = _load(image)
     if vmin is None:
-        vmin = np.percentile(data, 5)
+        vmin = float(np.percentile(data, 5))
     if vmax is None:
-        vmax = np.percentile(data, 99)
+        vmax = float(np.percentile(data, 99))
     fig, ax = plt.subplots(figsize=(8, 8))
     ax.imshow(data, origin="lower", cmap="gray", vmin=vmin, vmax=vmax)
     ax.set_title(f"{len(blobs)} donut(s)")
     for bl in blobs:
-        circ = plt.Circle((bl.x, bl.y), bl.outer_diameter / 2.0,
-                          fill=False, color="cyan", lw=1.0)
+        circ = Circle((bl.x, bl.y), bl.outer_diameter / 2.0,
+                      fill=False, color="cyan", lw=1.0)
         ax.add_patch(circ)
         ax.plot(bl.x, bl.y, "+", color="magenta", ms=8)
     ax.set_xlabel("X (pix)")
