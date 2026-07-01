@@ -21,3 +21,6 @@ src/test.out2
 *.pyo
 *.pyd
 PlaneWave Instruments/
+docs/*.pdf
+docs/*.zip
+.claude/settings.local.json
