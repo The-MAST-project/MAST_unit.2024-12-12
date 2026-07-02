@@ -2,6 +2,53 @@
 
 ---
 
+## [2026-07-02] Guiding limit frame comes from `phd2.limit_frame` config, not code toggles
+
+**Why:** Two things about the PHD2 limit frame (the sub-frame PHD2 confines
+guide-star selection to) were hard-wired: whether it is applied at all was a code
+path Oren hand-toggled on the production machine (the `# oren` branches in
+`src/phd2/phd2.py`), and the rectangle itself was derived at guiding time by
+`Guider.make_guiding_settings()` from the fiber position/margins in
+`guiding.rois`. Both need to be operator-tunable without editing deployed code.
+
+**What:** `PHD2Connector.start_guiding()` still calls `make_guiding_settings()`
+for exposure/gain/binning (and as the ROI fallback), but the limit frame is now
+governed by the DB-persisted `phd2.limit_frame` section (see `LimitFrameConfig`
+in MAST_common, bumped here):
+
+- `enabled: false` → `guide()` resets the limit frame (`set_limit_frame(None)`,
+  full-frame star selection) — the behavior Oren previously got by editing code.
+- `enabled: true` with a configured rectangle → that rectangle (unbinned camera
+  pixels, conditioned through `ImagerRoi`) is the limit frame.
+- `enabled: true` without a rectangle (section absent, or width/height 0) → the
+  fiber/margin-derived guiding ROI is used, exactly as before.
+
+The `# oren` hand-toggle markers were removed: the "reset the limit frame"
+branch is now a legitimate, configuration-selected path. Acquisition-time limit
+frame control (`use_set_limit_frame` on the acquisition API and the fcu_v2
+override in `acquirer.py`) is untouched — this change only re-sources the
+guiding-time decision.
+
+To set the frame for all units (Mongo on `mast-ns-control`, db `mast`):
+
+```js
+db.units.updateOne(
+  { name: "common" },
+  { $set: { "phd2.limit_frame": { enabled: true, x: 3031, y: 2692, width: 2000, height: 400 } } }
+)
+```
+
+(or per-unit by matching its name; values above are an example). The unit
+service reads its configuration snapshot at startup, so restart the unit
+service after changing it.
+
+**Implications:** With no DB change, behavior is identical to the pre-change
+default (`use_set_limit_frame=True`, derived ROI). Operators flip/tune guiding
+limit-frame behavior in the configuration DB (GUI-exposable via the fields' UI
+metadata) instead of patching `phd2.py` on the machine.
+
+---
+
 ## [2026-06-23] Host the solver test fixture as a GitHub Release asset, not in-repo git-lfs
 
 **Why:** The previous day's commit bundled the ~90 MB `full-frame.fits` integration

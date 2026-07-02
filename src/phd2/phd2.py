@@ -947,7 +947,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if not self.connected:
             logger.error(f"{function_name()}: not connected")
 
-        if roi is not None: # oren
+        if roi is not None:
             logger.debug(f"{function_name()}: setting {roi=}")
             self.call("set_limit_frame", params={
                 "roi": [
@@ -1022,11 +1022,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     ],
                 )
             else:
-                # self.set_limit_frame(roi=imager_settings.roi.binned(imager_settings.binning))
                 if imager_settings.use_set_limit_frame:
                     self.set_limit_frame(roi=imager_settings.roi)
-                else: # oren
-                    self.set_limit_frame(roi=None) # oren
+                else:
+                    self.set_limit_frame(roi=None)
 
                 self.call(
                     method="guide",
@@ -1332,6 +1331,21 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             + "cannot make_guiding_settings"
         guiding_settings: ImagerSettings = self.parent.unit.guider.make_guiding_settings(save=False)
 
+        # the limit frame is governed by the persisted phd2.limit_frame configuration,
+        # not by the fiber/margin-derived guiding ROI (which remains the fallback)
+        limit_frame = self.conf.limit_frame
+        guiding_settings.use_set_limit_frame = limit_frame.enabled
+        if limit_frame.enabled and limit_frame.has_roi:
+            guiding_settings.roi = ImagerRoi(
+                x=limit_frame.x,
+                y=limit_frame.y,
+                width=limit_frame.width,
+                height=limit_frame.height,
+            )
+        logger.info(
+            f"{function_name()}: limit frame: enabled={limit_frame.enabled}, roi={guiding_settings.roi}"
+        )
+
         requested_binning: Literal[1, 2] = guiding_settings.binning if guiding_settings and guiding_settings.binning else 1
         if requested_binning != self.profile_binning:
             msg = f"{function_name()}: {requested_binning=} does not match {self.profile_binning=}, cannot guide"
@@ -1527,11 +1541,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
             try:
                 assert settings.roi
-                # self.set_limit_frame(roi=settings.roi.binned(settings.binning))
                 if settings.use_set_limit_frame:
                     self.set_limit_frame(roi=settings.roi)
-                else: # oren
-                    self.set_limit_frame(roi=None) # oren
+                else:
+                    self.set_limit_frame(roi=None)
 
                 self.call(
                     "capture_single_frame",
