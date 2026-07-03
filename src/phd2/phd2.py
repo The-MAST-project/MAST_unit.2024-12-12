@@ -941,6 +941,53 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.call("set_limit_frame", params={"roi": None})
             self.need_to_reset_limit_frame = False
 
+    def set_exclude_region(self, roi: ImagerRoi | None = None):
+        """Set (or reset, with roi=None) the PHD2 guide-star exclusion region.
+
+        The region (unbinned camera pixels) is excluded from guide-star
+        auto-selection so guiding locks only on stars the fold mirror will not
+        occult. Requires the set_exclude_region PHD2 API (2.6.14dev1mast04+);
+        setting a region on an older build fails loudly, but a reset failure is
+        ignored — an older build has no exclusion state to reset.
+        """
+        if not self.connected:
+            logger.error(f"{function_name()}: not connected")
+
+        if roi is not None:
+            logger.info(f"{function_name()}: setting {roi=}")
+            self.call("set_exclude_region", params={
+                "roi": [
+                    roi.x, roi.y,
+                    roi.width, roi.height
+                ]
+            })
+        else:
+            logger.debug(f"{function_name()}: resetting exclusion region")
+            try:
+                self.call("set_exclude_region", params={"roi": None})
+            except PHD2ConnectorError as ex:
+                logger.debug(f"{function_name()}: reset not supported by this PHD2 build (nothing to reset): {ex=}")
+
+    def _apply_configured_exclude_region(self):
+        """Set-or-reset the exclusion region from phd2.exclude_region before every
+        guide, like the limit frame: the region is runtime-only in PHD2 but survives
+        across guide sessions within one PHD2 process."""
+        exclude_region = self.conf.exclude_region
+        if exclude_region.enabled and exclude_region.has_roi:
+            self.set_exclude_region(roi=ImagerRoi(
+                x=exclude_region.x,
+                y=exclude_region.y,
+                width=exclude_region.width,
+                height=exclude_region.height,
+            ))
+            # the exclusion only filters *auto-selection*: a star already selected
+            # (e.g. left over from the previous guide session) survives it and the
+            # guide RPC would lock on it without re-selecting. Force a fresh
+            # selection so the region is honored.
+            self.call("deselect_star")
+        else:
+            self.set_exclude_region(roi=None)
+
     def guide(
         self,
         imager_settings: ImagerSettings | None = None,
@@ -983,6 +1030,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 self.cooler_on = True
 
             assert imager_settings and imager_settings.roi
+            self._apply_configured_exclude_region()
             if new_interface:
                 # roi = imager_settings.roi.binned(imager_settings.binning)
                 roi = imager_settings.roi
@@ -1329,6 +1377,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     height=limit_frame.height,
                 )
         logger.info(f"{function_name()}: limit frame: mode={limit_frame.mode}, roi={guiding_settings.roi}")
+        exclude_region = self.conf.exclude_region
+        logger.info(
+            f"{function_name()}: exclusion region: enabled={exclude_region.enabled}, "
+            f"roi=({exclude_region.x}, {exclude_region.y}, {exclude_region.width}, {exclude_region.height})"
+        )
 
         requested_binning: Literal[1, 2] = guiding_settings.binning if guiding_settings and guiding_settings.binning else 1
         if requested_binning != self.profile_binning:

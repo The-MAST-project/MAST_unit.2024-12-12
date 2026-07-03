@@ -93,6 +93,41 @@ TEST-MIGRATION plan; the common-side half lives in `src/common/tests/`.
 
 ---
 
+## [2026-07-03] Guiding excludes the fold-mirror region via `phd2.exclude_region` (guide-first, then insert mirror)
+
+**Why:** Guiding must lock *before* the FCU fold mirror is inserted: in the gap
+between mirror insertion and guiding lock, tracking can slip enough to move the
+fiber off its calibrated pixel, and with the mirror out the viable guide-star
+candidates (those passing PHD2's selection gates — unsaturated, SNR/mass minimums,
+HFD window — which MAST's strong coma confines to the low-coma center of the frame)
+sit exactly in the zone the mirror covers. The custom PHD2 `set_exclude_region` API
+(build `2.6.14dev1mast04`, branch `eli/exclude-region` off upstream master) excludes
+a configured rectangle from guide-star auto-selection, so stars are selected as if
+the mirror were already in.
+
+**What:** `guide()` now applies the DB-persisted `phd2.exclude_region` section
+(`ExcludeRegionConfig` in common, default **disabled** — the rectangle is per-unit
+measured geometry) before every guide RPC, mirroring the limit-frame set-or-reset
+discipline, via `set_exclude_region()` / `_apply_configured_exclude_region()`:
+
+- enabled + configured → `set_exclude_region(rect)` **then `deselect_star`** — the
+  exclusion only filters *auto-selection*, and a star already selected (left over
+  from a previous session) survives it; verified live against the mast04 build
+  (guide locked inside the region without the deselect, outside it with).
+- otherwise → explicit reset (`roi: null`), tolerating "method not found" from
+  older PHD2 builds (nothing to reset there); a *set* on an older build fails loudly.
+
+**Implications:** No behavior change until ops measures the mirror shadow and
+enables the section in Mongo. The acquisition flow already overlaps the stage move
+to SPEC with the guiding bring-up (`acquirer.py`, gated on stage-at-SPEC by
+`_wait_for_fcu_v2_at_spec`); with the exclusion enabled that concurrency becomes
+deterministic — nothing the mirror covers was ever selected — so gating the stage
+move on settle is an optional refinement, not a prerequisite. Validated on the
+PHD2 camera simulator end-to-end (select → calibrate → guide → settle with the
+region honored); real-sky validation on a provisioned unit rig is still pending.
+
+---
+
 ## [2026-07-02] Guiding limit frame comes from `phd2.limit_frame` config, not code toggles
 
 **Why:** Two things about the PHD2 limit frame (the sub-frame PHD2 confines
