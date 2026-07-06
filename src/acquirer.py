@@ -363,7 +363,10 @@ class Acquirer:
                 x=spec_imager_settings.roi.width // 2, y=spec_imager_settings.roi.height // 2
             )
 
-            # spec_imager_settings.use_set_limit_frame = True
+            # imaging/solving path only (capture_single_frame + astrometry):
+            # acquisition exposures want the full frame, so no limit frame while
+            # solving. The *guiding* limit frame is not governed by this flag -
+            # it comes from the persisted phd2.limit_frame configuration.
             spec_imager_settings.use_set_limit_frame = False
             spec_imager_settings.binning = 1
 
@@ -402,12 +405,14 @@ class Acquirer:
             )
             self.unit.imager.disconnect()
 
-        # Move the stage to SPEC (FCU v2 was left at Sky by the solve; v1 is already there)
-        # and wait for it to settle -- needed by BOTH the auto-handover and the manual
-        # acquisition-tuning paths, so guiding always starts with the stage at SPEC.
+        # FCU v2 is deliberately left at Sky here: its fold mirror is inserted by the
+        # guider's SPEC handover (settle -> pause -> stage to SPEC -> resume), on both
+        # the auto-handover and the manual /start_guiding paths. Inserting it now would
+        # sweep the mirror's shadow across the field while guiding is still selecting
+        # and locking stars. v1 has no fold mirror and is already at SPEC from the solve
+        # phase; either way, wait for the stage to settle before going on.
         if self.unit.fcu_version == FcuVersion.v2:
-            self.unit.stage.move_to_preset(StagePresetPosition.Spec)
-            lines.append("moving stage to SPEC")
+            lines.append("leaving stage at SKY; fold-mirror insertion deferred to the guiding handover")
         if not self._await_stage():
             self._abandon(op)
             return

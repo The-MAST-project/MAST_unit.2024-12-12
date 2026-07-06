@@ -62,9 +62,6 @@ KNOWN_UNBALANCED = {
     # retiring it; that reversed once #43's inventory showed start_tracking blocks -- this is
     # the flag fire-and-flag tracking needs, so #159 drives it properly instead.
     ("MountActivities", "Tracking: declared, never started or ended"): "MAST_unit#159",
-    # Genuinely unused. Whoever declares the guider chain's completion signals will either use
-    # it or delete it; deciding in isolation now would be guessing.
-    ("UnitActivities", "PreGuiding: declared, never started or ended"): "MAST_unit#43",
     # CORRECT AS IS: the unit's stage shutdown is synchronous (disconnect, return), so nothing
     # is ever "shutting down" asynchronously and `is_shutting_down` returning False is honest.
     # MAST_spec shares this enum and DOES use the flag asynchronously (spec/stage/stage.py:317).
