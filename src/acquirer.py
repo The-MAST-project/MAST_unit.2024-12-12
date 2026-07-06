@@ -251,7 +251,10 @@ class Acquirer:
                 x=spec_imager_settings.roi.width // 2, y=spec_imager_settings.roi.height // 2
             )
 
-            # spec_imager_settings.use_set_limit_frame = True
+            # imaging/solving path only (capture_single_frame + astrometry):
+            # acquisition exposures want the full frame, so no limit frame while
+            # solving. The *guiding* limit frame is not governed by this flag -
+            # it comes from the persisted phd2.limit_frame configuration.
             spec_imager_settings.use_set_limit_frame = False
             spec_imager_settings.binning = 1
 
@@ -293,8 +296,11 @@ class Acquirer:
         if self.latest_acquisition.handover_automatically_to_guider:
             lines.append("starting PHD2 guiding")
             if self.unit.fcu_version == FcuVersion.v2:
-                self.unit.stage.move_to_preset(StagePresetPosition.Spec)
-                lines.append("started moving stage to SPEC")
+                # the fold mirror is inserted by the guider's SPEC handover
+                # (settle -> pause -> stage to SPEC -> resume), not here: moving
+                # it concurrently with the guiding bring-up races star selection
+                # and sweeps its shadow across settled guide stars
+                lines.append("fold-mirror insertion deferred to the guiding handover")
             boxed_log(logger, lines)
             self.unit.start_activity(UnitActivities.PreGuiding)
             self.unit.guider.start_guiding()
