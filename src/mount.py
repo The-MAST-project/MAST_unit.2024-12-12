@@ -1,7 +1,7 @@
 import logging
 import math
 import time
-from enum import Enum
+from enum import StrEnum
 from logging import Logger
 from typing import TYPE_CHECKING
 
@@ -50,7 +50,7 @@ init_log(logger)
 #     date: str | None = None
 
 
-class SettleMode(str, Enum):
+class SettleMode(StrEnum):
     SLEW = "slew"                      # goto / find_home / park  (large move)
     OFFSET_STEP = "offset_step"        # discrete ra/dec_add_arcsec, spiral steps
     OFFSET_GRADUAL = "offset_gradual"  # ra/dec_add_gradual_offset_*
@@ -72,6 +72,18 @@ def _offset_channel(st, name: str):
     if offsets is None:  # PWI4 too old (offsets added in 4.0.11b5), or not reported
         return None
     return getattr(offsets, f"{name}_arcsec", None)
+
+
+def _gradual_ramp_complete(prog) -> bool:
+    """True when a gradual offset's ramp has finished.
+
+    PWI4 reports ``gradual_offset_progress`` *signed by the offset direction*:
+    a positive offset ramps 0 -> +1.0, a negative offset ramps 0 -> -1.0 (and may
+    overshoot past |1| afterward). So completion is |progress| >= 1.0, not
+    progress >= 1.0 -- the latter never fires for a negative-direction channel.
+    A missing field (None) is treated as complete (nothing to wait for).
+    """
+    return prog is None or abs(prog) >= 1.0
 
 
 class Mount(Component, SwitchedOutlet, AscomDispatcher):
@@ -391,111 +403,204 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             logger.warning(f"{op}: mount not connected; nothing to wait for")
             return True
 
+        logger.info(
+            f"{op}: start mode={mode} channels={channels} "
+            f"tol={dist_tolerance_arcsec:.3f}\" stable_samples={stable_samples} "
+            f"grace={start_grace_seconds:.1f}s poll={poll_seconds:.1f}s "
+            f"timeout={timeout_seconds:.0f}s"
+        )
+
         deadline = time.monotonic() + timeout_seconds
 
-        def _timed_out() -> bool:
-            if time.monotonic() >= deadline:
-                logger.error(f"{op}({mode}): TIMEOUT after {timeout_seconds:.0f}s")
-                return True
-            return False
-
-        # ---------------- SLEW ----------------
         if mode is SettleMode.SLEW:
-            # Phase A: confirm the slew actually started (guards stale is_slewing=False).
-            grace_end = time.monotonic() + start_grace_seconds
-            started = False
-            while time.monotonic() < grace_end:
-                if self.pw.status().mount.is_slewing:  # type: ignore
-                    started = True
-                    break
-                time.sleep(poll_seconds)
-            # Phase B: wait for the slew to clear.
-            if started:
-                while self.pw.status().mount.is_slewing:  # type: ignore
-                    if _timed_out():
-                        return False
-                    time.sleep(poll_seconds)
-            # Phase C: settle on following-distance.
-            return self._wait_dist_settle(
-                dist_tolerance_arcsec, stable_samples, poll_seconds, deadline, op
+            return self._wait_slew(
+                dist_tolerance_arcsec, stable_samples,
+                start_grace_seconds, poll_seconds, deadline, op,
             )
-
-        # ---------------- OFFSET_STEP ----------------
         if mode is SettleMode.OFFSET_STEP:
-            # Phase A: confirm the step registered (dist spikes); else grace out
-            # so a tiny sub-tolerance step does not hang here.
-            grace_end = time.monotonic() + start_grace_seconds
-            while time.monotonic() < grace_end:
-                if _max_dist_to_target_arcsec(self.pw.status()) > dist_tolerance_arcsec:
-                    break
-                time.sleep(poll_seconds)
-            # Phase B: settle.
-            return self._wait_dist_settle(
-                dist_tolerance_arcsec, stable_samples, poll_seconds, deadline, op
+            return self._wait_offset_step(
+                dist_tolerance_arcsec, stable_samples,
+                start_grace_seconds, poll_seconds, deadline, op,
             )
-
-        # ---------------- OFFSET_GRADUAL ----------------
         if mode is SettleMode.OFFSET_GRADUAL:
-            chans = [c for c in channels if c in _OFFSET_CHANNELS]
-            if not chans:
-                logger.warning(
-                    f"{op}: no valid gradual channels in {channels!r}; not waiting"
-                )
-                return True
+            return self._wait_offset_gradual(
+                channels, dist_tolerance_arcsec, stable_samples,
+                start_grace_seconds, poll_seconds, deadline, op,
+            )
+        raise ValueError(f"{op}: unknown mode {mode!r}")
 
-            st0 = self.pw.status()
-            if _offset_channel(st0, chans[0]) is None:
-                logger.warning(
-                    f"{op}: PWI4 does not report mount.offsets; falling back to dist settle"
-                )
-                return self._wait_dist_settle(
-                    dist_tolerance_arcsec, stable_samples, poll_seconds, deadline, op
-                )
+    def _deadline_passed(self, deadline: float, op: str) -> bool:
+        if time.monotonic() >= deadline:
+            logger.error(f"{op}: TIMEOUT")
+            return True
+        return False
 
-            baseline_total = {
-                c: (getattr(_offset_channel(st0, c), "total", 0.0) or 0.0) for c in chans
-            }
-
-            # Phase A: confirm each commanded channel's ramp has started
-            # (progress drops below 1, or total moved) -- guards the stale "1" race.
-            grace_end = time.monotonic() + start_grace_seconds
-            started = {c: False for c in chans}
-            while not all(started.values()) and time.monotonic() < grace_end:
-                st = self.pw.status()
-                for c in chans:
-                    if started[c]:
-                        continue
-                    ch = _offset_channel(st, c)
-                    prog = getattr(ch, "gradual_offset_progress", 1.0)
-                    total = getattr(ch, "total", 0.0) or 0.0
-                    if (prog is not None and prog < 1.0) or abs(
-                        total - baseline_total[c]
-                    ) > 1e-6:
-                        started[c] = True
-                time.sleep(poll_seconds)
-
-            # Phase B: wait for every commanded channel's ramp to complete.
-            while True:
-                if _timed_out():
+    def _wait_slew(
+        self,
+        dist_tolerance_arcsec: float,
+        stable_samples: int,
+        start_grace_seconds: float,
+        poll_seconds: float,
+        deadline: float,
+        op: str,
+    ) -> bool:
+        # Phase A: confirm the slew actually started (guards stale is_slewing=False).
+        grace_end = time.monotonic() + start_grace_seconds
+        started = False
+        while time.monotonic() < grace_end:
+            if self.pw.status().mount.is_slewing:  # type: ignore
+                started = True
+                break
+            time.sleep(poll_seconds)
+        # Phase B: wait for the slew to clear.
+        if started:
+            logger.info(f"{op}(SLEW): slew detected; waiting for it to clear")
+            while self.pw.status().mount.is_slewing:  # type: ignore
+                if self._deadline_passed(deadline, f"{op}(SLEW)"):
                     return False
-                st = self.pw.status()
-                done = True
-                for c in chans:
-                    ch = _offset_channel(st, c)
-                    prog = getattr(ch, "gradual_offset_progress", 1.0)
-                    if prog is not None and prog < 1.0:
-                        done = False
-                        break
-                if done:
-                    break
                 time.sleep(poll_seconds)
+            logger.info(f"{op}(SLEW): is_slewing cleared")
+        else:
+            logger.warning(
+                f"{op}(SLEW): slew not observed within "
+                f"{start_grace_seconds:.1f}s grace; proceeding to dist settle"
+            )
+        # Phase C: settle on following-distance.
+        return self._wait_dist_settle(
+            dist_tolerance_arcsec, stable_samples, poll_seconds, deadline, op
+        )
 
-            # Phase C: brief following-distance settle (catches residual servo lag).
+    def _wait_offset_step(
+        self,
+        dist_tolerance_arcsec: float,
+        stable_samples: int,
+        start_grace_seconds: float,
+        poll_seconds: float,
+        deadline: float,
+        op: str,
+    ) -> bool:
+        # Phase A: confirm the step registered (dist spikes); else grace out
+        # so a tiny sub-tolerance step does not hang here.
+        grace_end = time.monotonic() + start_grace_seconds
+        spiked = False
+        while time.monotonic() < grace_end:
+            dist = _max_dist_to_target_arcsec(self.pw.status())
+            if dist > dist_tolerance_arcsec:
+                logger.info(
+                    f"{op}(OFFSET_STEP): step registered "
+                    f"(dist_to_target={dist:.3f}\" > tol)"
+                )
+                spiked = True
+                break
+            time.sleep(poll_seconds)
+        if not spiked:
+            logger.info(
+                f"{op}(OFFSET_STEP): no dist spike within "
+                f"{start_grace_seconds:.1f}s grace (sub-tolerance step); "
+                f"proceeding to settle"
+            )
+        # Phase B: settle.
+        return self._wait_dist_settle(
+            dist_tolerance_arcsec, stable_samples, poll_seconds, deadline, op
+        )
+
+    def _wait_offset_gradual(
+        self,
+        channels: tuple[str, ...],
+        dist_tolerance_arcsec: float,
+        stable_samples: int,
+        start_grace_seconds: float,
+        poll_seconds: float,
+        deadline: float,
+        op: str,
+    ) -> bool:
+        chans = [c for c in channels if c in _OFFSET_CHANNELS]
+        if not chans:
+            logger.warning(
+                f"{op}: no valid gradual channels in {channels!r}; not waiting"
+            )
+            return True
+
+        st0 = self.pw.status()
+        if _offset_channel(st0, chans[0]) is None:
+            logger.warning(
+                f"{op}: PWI4 does not report mount.offsets; falling back to dist settle"
+            )
             return self._wait_dist_settle(
                 dist_tolerance_arcsec, stable_samples, poll_seconds, deadline, op
             )
 
-        raise ValueError(f"{op}: unknown mode {mode!r}")
+        baseline_total = {
+            c: (getattr(_offset_channel(st0, c), "total", 0.0) or 0.0) for c in chans
+        }
+
+        # Phase A: confirm each commanded channel's ramp has started.
+        self._wait_gradual_ramp_start(
+            chans, baseline_total, start_grace_seconds, poll_seconds, op
+        )
+
+        # Phase B: wait for every commanded channel's ramp to complete.
+        while True:
+            if self._deadline_passed(deadline, f"{op}(OFFSET_GRADUAL)"):
+                return False
+            st = self.pw.status()
+            progresses = {
+                c: getattr(_offset_channel(st, c), "gradual_offset_progress", 1.0)
+                for c in chans
+            }
+            logger.debug(
+                f"{op}(OFFSET_GRADUAL): progress "
+                + ", ".join(
+                    f"{c}={(p if p is not None else 1.0):.2f}"
+                    for c, p in progresses.items()
+                )
+            )
+            done = all(_gradual_ramp_complete(p) for p in progresses.values())
+            if done:
+                break
+            time.sleep(poll_seconds)
+        logger.info(f"{op}(OFFSET_GRADUAL): all ramps complete")
+
+        # Phase C: brief following-distance settle (catches residual servo lag).
+        return self._wait_dist_settle(
+            dist_tolerance_arcsec, stable_samples, poll_seconds, deadline, op
+        )
+
+    def _wait_gradual_ramp_start(
+        self,
+        chans: list[str],
+        baseline_total: dict[str, float],
+        start_grace_seconds: float,
+        poll_seconds: float,
+        op: str,
+    ) -> None:
+        """Wait until each channel's gradual ramp starts (|progress| < 1 or total moved).
+
+        Guards the stale "|progress| == 1" race right after commanding the offset.
+        Logs a warning for any channel whose ramp was never observed within grace.
+        """
+        grace_end = time.monotonic() + start_grace_seconds
+        started = {c: False for c in chans}
+        while not all(started.values()) and time.monotonic() < grace_end:
+            st = self.pw.status()
+            for c in chans:
+                if started[c]:
+                    continue
+                ch = _offset_channel(st, c)
+                prog = getattr(ch, "gradual_offset_progress", 1.0)
+                total = getattr(ch, "total", 0.0) or 0.0
+                if not _gradual_ramp_complete(prog) or abs(
+                    total - baseline_total[c]
+                ) > 1e-6:
+                    started[c] = True
+                    logger.info(f"{op}(OFFSET_GRADUAL): ramp started on '{c}'")
+            time.sleep(poll_seconds)
+        not_started = [c for c, ok in started.items() if not ok]
+        if not_started:
+            logger.warning(
+                f"{op}(OFFSET_GRADUAL): ramp not observed on {not_started} "
+                f"within {start_grace_seconds:.1f}s grace; proceeding anyway"
+            )
 
     def _wait_dist_settle(
         self,
@@ -512,12 +617,19 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                 logger.error(f"{op}: TIMEOUT during dist settle")
                 return False
             dist = _max_dist_to_target_arcsec(self.pw.status())
-            logger.info(f"{op}: dist_to_target={dist:.3f} arcsec")
             if dist < tol_arcsec:
                 in_tol += 1
             else:
                 in_tol = 0
+            logger.debug(
+                f"{op}: dist_to_target={dist:.3f} arcsec, "
+                f"in_tol={in_tol}/{stable_samples}"
+            )
             time.sleep(poll_seconds)
+        logger.info(
+            f"{op}: dist_to_target settled (< {tol_arcsec:.3f} arcsec "
+            f"for {stable_samples} samples)"
+        )
         return True
 
     def endpoint_status(self) -> MountStatus:

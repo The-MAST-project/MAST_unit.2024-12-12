@@ -1093,7 +1093,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         # value as if Guide had been called
         res = self.call("get_settling")
         val = res["result"]
-        if val:
+        if isinstance(val, bool) and val:
             s = PHD2SettleProgress()
             s.done = False
             s.distance = -1.0

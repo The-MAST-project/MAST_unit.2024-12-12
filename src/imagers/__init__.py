@@ -8,9 +8,9 @@ from pydantic import BaseModel
 from common.canonical import CanonicalResponse
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerSettings, ImagerTypes
+from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerTypes
 from common.mast_logging import init_log
-from common.models.statuses import ImagerStatus
+from common.models.statuses import ImagerSettings, ImagerStatus
 
 logger = logging.Logger("mast." + __name__)
 init_log(logger)
@@ -242,10 +242,10 @@ class Imager(ImagerInterface, SwitchedOutlet):
         backend_status = self._backend.status(capacity="imager") # type: ignore
 
         ret = ImagerStatus(
-            detected=self.detected,
+            # detected=self.detected,
             connected=self.connected,
-            operational=self.operational,
-            why_not_operational=self.why_not_operational,
+            # operational=self.operational,
+            # why_not_operational=self.why_not_operational,
             camera_x_size=self.camera_x_size,
             camera_y_size=self.camera_y_size,
             temperature=self.temperature,
