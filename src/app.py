@@ -1,6 +1,7 @@
 import logging
 import os
 import socket
+import sys
 import time
 from contextlib import asynccontextmanager
 
@@ -12,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, ORJSONResponse, RedirectResponse
 from pydantic import ValidationError
 
-from common.config import Config
+from common.config import Config, ConfigError
 from common.mast_logging import init_log
 from common.process import ensure_process_is_running
 from PlaneWave import pwi4_client
@@ -72,10 +73,11 @@ while time.monotonic() < _pwi4_deadline:
 if not _pwi4_ok:
     logger.warning("PWI4 unavailable at startup - unit will start with mount unavailable")
 
+# PWShutter now ships inside the PWI4 install directory (it used to live under
+# a separate "PlaneWave Shutter Control" folder, which no longer exists).
 ensure_process_is_running(
     name="PWShutter.exe",
-    cmd="C:\\Program Files (x86)\\PlaneWave Instruments\\"
-    + "PlaneWave Shutter Control\\PWShutter.exe",
+    cmd="C:\\Program Files (x86)\\PlaneWave Instruments\\PlaneWave Interface 4\\PWShutter.exe",
     logger=logger,
     shell=True,
 )
@@ -178,6 +180,16 @@ app.add_middleware(
 )
 
 if __name__ == "__main__":
+    # Validate the configuration before doing anything else. A missing or invalid
+    # config file (or a config that disagrees with the DB 'sites' document) must
+    # fail startup loudly with a detailed reason, not limp along with bad values.
+    try:
+        Config()
+    except ConfigError as ex:
+        logger.error(f"Configuration error, cannot start:\n{ex}")
+        app_quit(reason=f"configuration error: {ex}")
+        sys.exit(1)
+
     service_conf = Config().get_service(service_name="unit")
     if service_conf is None:
         logger.error("No server configuration found for 'unit', exiting ...")
