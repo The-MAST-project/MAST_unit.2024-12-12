@@ -8,7 +8,9 @@ Per-unit telescope-hardware backend. Runs on each unit machine (`mast01`…`mast
 
 ```bash
 cd src
-MAST_PROJECT=unit python app.py
+python app.py   # role + identity come from the bootstrap config file
+                # (/etc/wis/config.toml, or C:\WIS\config.toml on Windows);
+                # set MAST_CONFIG to point elsewhere for dev/tests
 ```
 
 ## Gotchas
