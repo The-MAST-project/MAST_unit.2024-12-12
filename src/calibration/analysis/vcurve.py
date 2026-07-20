@@ -1,14 +1,18 @@
-"""Self-contained HFD focus analysis -- a parallel alternative to the ps3cli
-analyzer in ``focus_analysis.py``.
+"""Self-contained HFD focus analysis -- the analyzer behind ``/calibrate/focuser``.
 
-It returns the **same** ``PS3AutofocusStatus`` / ``PS3FocusAnalysisResult``
-schema, so it is a drop-in for the autofocus orchestrator and the replay harness
-(``tests/autofocus/validate_autofocus_solve.py``) -- but needs no external
-``ps3cli`` server and no star catalog.
+The alternative to the external ps3cli analyzer in ``focus_analysis.py``: it
+needs no ``ps3cli`` server and no star catalog, and its metric (half-flux
+diameter over near-axis stars) tolerates the asymmetric PSFs an f/3 parabola
+produces, where a catalog-matched RMS diameter does not.
+
+It returns :class:`calibration.analysis.models.HFDAutofocusStatus`, which
+satisfies :mod:`calibration.analysis.protocols` -- so a consumer typed against
+``FocusAnalysisResultLike`` (the V-curve plotter, report generators) accepts this
+and the ps3cli result interchangeably, with no cast.
 
 For each ``FOCUSnnnnn.fits`` image (the focuser position is encoded in the file
 name) it measures the median Half-Flux Diameter of the near-axis stars
-(``imaging.hfd.frame_hfd``), then fits the V-curve as
+(``calibration.analysis.hfd.frame_hfd``), then fits the V-curve as
 
     D^2 = a*x^2 + b*x + c      (linear least-squares, error-weighted)
 
@@ -27,14 +31,14 @@ from pathlib import Path
 import numpy as np
 from astropy.io import fits
 
-from common.mast_logging import init_log
-from focus_analysis import (
-    PS3AutofocusStatus,
-    PS3FocusAnalysisResult,
-    PS3FocusSample,
+from calibration.analysis.donut import DonutJump, frame_donut_metric, plan_donut_jump
+from calibration.analysis.hfd import measure_sweep_hfd
+from calibration.analysis.models import (
+    HFDAutofocusResult,
+    HFDAutofocusStatus,
+    HFDFocusSample,
 )
-from imaging.donut import DonutJump, frame_donut_metric, plan_donut_jump
-from imaging.hfd import measure_sweep_hfd
+from common.mast_logging import init_log
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
@@ -78,23 +82,23 @@ def _fit_vcurve(positions, diameters, tolerance_frac):
     return float(a), float(b), float(c), float(xstar), dmin, tol
 
 
-def _result(samples, errors, fit=None) -> PS3AutofocusStatus:
+def _result(samples, errors, fit=None, n_consistent: int = 0) -> HFDAutofocusStatus:
     if fit is None:
-        ar = PS3FocusAnalysisResult(
+        ar = HFDAutofocusResult(
             has_solution=False, best_focus_position=None, best_focus_star_diameter=None,
             tolerance=None, vcurve_a=None, vcurve_b=None, vcurve_c=None,
-            focus_samples=samples, errors=errors,
+            n_consistent_stars=n_consistent, focus_samples=samples, errors=errors,
         )
         msg = errors[-1] if errors else "no solution"
     else:
         a, b, c, xstar, dmin, tol = fit
-        ar = PS3FocusAnalysisResult(
+        ar = HFDAutofocusResult(
             has_solution=True, best_focus_position=xstar, best_focus_star_diameter=dmin,
             tolerance=tol, vcurve_a=a, vcurve_b=b, vcurve_c=c,
-            focus_samples=samples, errors=errors,
+            n_consistent_stars=n_consistent, focus_samples=samples, errors=errors,
         )
         msg = f"HFD V-curve: best={xstar:.1f}, Dmin={dmin:.2f}, tol={tol:.1f}"
-    return PS3AutofocusStatus(is_running=False, last_log_message=msg, errors=errors, analysis_result=ar)
+    return HFDAutofocusStatus(message=msg, errors=errors, analysis_result=ar)
 
 
 def analyze_focus_samples(
@@ -104,17 +108,16 @@ def analyze_focus_samples(
     min_valid: int = 3,
     require_bracketed: bool = True,  # only solve when the sweep straddles focus
     **hfd_kw,
-) -> PS3AutofocusStatus:
+) -> HFDAutofocusStatus:
     """HFD V-curve analysis of an **in-memory** focus sweep.
 
     ``samples`` is a list of ``(focuser_position, image)`` pairs, ``image`` being
     a 2D array -- e.g. ``imager.image_array`` after ``wait_for_image_ready()`` on
     an imager whose ``can_image_to_memory`` is True (the ZWO) -- or a FITS path.
     This is the array-native core behind :func:`analyze_focus_files_hfd`, so the
-    orchestrator can feed frames straight from memory with no ``FOCUSnnnnn``
-    round-trip through disk.  Output is the same ``PS3AutofocusStatus`` schema as
-    ``focus_analysis.analyze_focus_files``, so it drops into the same orchestrator.
-    ``hfd_kw`` is forwarded to :func:`imaging.hfd.measure_sweep_hfd` (e.g.
+    Calibrator can feed frames straight from memory with no ``FOCUSnnnnn``
+    round-trip through disk.
+    ``hfd_kw`` is forwarded to :func:`calibration.analysis.hfd.measure_sweep_hfd` (e.g.
     ``nsigma``, ``r_factor``, ``near_axis_frac``).  Autofocus runs on FULL frames,
     which include the coma-heavy margins, so restrict the metric to the calibrated
     low-coma zone by forwarding ``center`` + ``radius``: the stored
@@ -137,31 +140,31 @@ def analyze_focus_samples(
         logger.error(f"measure_sweep_hfd failed: {ex}")
         per_frame, n_consistent = [(float("nan"), 0)] * len(images), 0
 
-    ps3_samples: list[PS3FocusSample] = []
+    hfd_samples: list[HFDFocusSample] = []
     for pos, (hfd, n) in zip(positions, per_frame, strict=True):
         valid = pos is not None and n > 0 and np.isfinite(hfd)
-        ps3_samples.append(
-            PS3FocusSample(
+        hfd_samples.append(
+            HFDFocusSample(
                 is_valid=bool(valid),
                 focus_position=pos,
                 num_stars=int(n),
-                star_rms_diameter_pixels=(float(hfd) if np.isfinite(hfd) else None),
+                hfd_pixels=(float(hfd) if np.isfinite(hfd) else None),
             )
         )
 
-    good = [s for s in ps3_samples if s.is_valid]
+    good = [s for s in hfd_samples if s.is_valid]
     if len(good) < min_valid:
         errors.append(f"only {len(good)} valid HFD samples (consistent stars={n_consistent}); need >= {min_valid}")
-        return _result(ps3_samples, errors)
+        return _result(hfd_samples, errors, n_consistent=n_consistent)
 
     fit = _fit_vcurve(
         [s.focus_position for s in good],
-        [s.star_rms_diameter_pixels for s in good],
+        [s.hfd_pixels for s in good],
         tolerance_frac,
     )
     if fit is None:
         errors.append("V-curve fit failed (non-concave / degenerate)")
-        return _result(ps3_samples, errors)
+        return _result(hfd_samples, errors, n_consistent=n_consistent)
 
     # Trust the vertex only if the sweep actually BRACKETS focus -- the
     # smallest-HFD sample must be interior, not at an edge.  A monotonic ramp
@@ -171,15 +174,15 @@ def analyze_focus_samples(
     # report a confident focus.
     if require_bracketed:
         pairs = sorted(
-            (float(s.focus_position), float(s.star_rms_diameter_pixels))
+            (float(s.focus_position), float(s.hfd_pixels))
             for s in good
-            if s.focus_position is not None and s.star_rms_diameter_pixels is not None
+            if s.focus_position is not None and s.hfd_pixels is not None
         )
         diam = [d for _, d in pairs]
         if not diam or int(np.argmin(diam)) in (0, len(diam) - 1):
             errors.append("focus not bracketed: minimum HFD at a sweep edge -- shift/extend the sweep")
-            return _result(ps3_samples, errors)
-    return _result(ps3_samples, errors, fit)
+            return _result(hfd_samples, errors, n_consistent=n_consistent)
+    return _result(hfd_samples, errors, fit, n_consistent=n_consistent)
 
 
 def analyze_focus_files_hfd(
@@ -192,7 +195,7 @@ def analyze_focus_files_hfd(
     port=None,
     timeout=None,  # host/port/timeout accepted (ignored) for signature parity
     **hfd_kw,
-) -> PS3AutofocusStatus:
+) -> HFDAutofocusStatus:
     """HFD V-curve analysis of a ``FOCUSnnnnn.fits`` sweep on disk.
 
     Thin file-based wrapper over :func:`analyze_focus_samples`: it reads each
@@ -222,13 +225,13 @@ def analyze_donut_samples(
 
     Array-native core behind :func:`analyze_donut_files`; ``image`` is a 2D array
     (``imager.image_array``) or a FITS path.  For each frame it measures the median
-    donut outer diameter (:func:`imaging.donut.frame_donut_metric`) and fits
+    donut outer diameter (:func:`calibration.analysis.donut.frame_donut_metric`) and fits
     diameter-vs-position, weighting by donut *count* so richer frames pull harder.
-    ``detect_kw`` is forwarded to :func:`imaging.donut.detect_donuts` (e.g.
+    ``detect_kw`` is forwarded to :func:`calibration.analysis.donut.detect_donuts` (e.g.
     ``nsigma``, ``min_diameter``).  Only frames with a position and at least
-    ``min_donuts`` donuts feed the fit.  Returns a :class:`imaging.donut.DonutJump`;
+    ``min_donuts`` donuts feed the fit.  Returns a :class:`calibration.analysis.donut.DonutJump`;
     check ``has_solution``.  Position ordering is handled by
-    :func:`imaging.donut.plan_donut_jump`, so ``samples`` need not be sorted.
+    :func:`calibration.analysis.donut.plan_donut_jump`, so ``samples`` need not be sorted.
     """
     positions, diameters, weights = [], [], []
     for pos, img in samples:

@@ -15,6 +15,7 @@ idna
 numpy
 orjson
 packaging
+photutils
 psutil
 pydantic
 pyerfa

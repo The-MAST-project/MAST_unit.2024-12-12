@@ -219,6 +219,8 @@ if __name__ == "__main__":
             app.include_router(unit.stage.api_router)
         if unit.imager:
             app.include_router(unit.imager.api_router)
+        if unit.calibrator:
+            app.include_router(unit.calibrator.api_router)
 
         logger.info(f"The MAST Unit server is starting on {host}:{port} ...")
 

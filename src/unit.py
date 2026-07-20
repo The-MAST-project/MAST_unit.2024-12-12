@@ -23,6 +23,7 @@ import common.asi as asi
 from acquirer import Acquirer
 from acquisition import Acquisition
 from autofocusing import Autofocuser, AutofocusResult
+from calibration.calibrator import Calibrator
 from common.activities import (
     CoverActivities,
     FocuserActivities,
@@ -169,6 +170,7 @@ class Unit(Component):
         self.focuser: Focuser | None = _try_init("focuser", lambda: Focuser(self))
         self.pw: pwi4_client.PWI4 | None = _try_init("pw", pwi4_client.PWI4)
         self.autofocuser: Autofocuser | None = _try_init("autofocuser", lambda: Autofocuser(self))
+        self.calibrator: Calibrator | None = _try_init("calibrator", lambda: Calibrator(self))
         self.solver: Solver | None = _try_init("solver", lambda: Solver(self))
         self.acquirer: Acquirer | None = _try_init("acquirer", lambda: Acquirer(self))
         self.guider: Guider | None = _try_init("guider", lambda: Guider(self))

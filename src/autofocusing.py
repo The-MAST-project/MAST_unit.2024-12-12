@@ -403,7 +403,9 @@ class Autofocuser:
             Thread(
                 name="autofocus-analysis-plotter",
                 target=plot_autofocus_analysis,
-                args=[self.latest_result, autofocus_folder, pixel_scale],
+                # ps3cli's metric is a star RMS diameter -- name it, so an HFD
+                # V-curve over the same sweep is tellable apart at a glance.
+                args=[self.latest_result, autofocus_folder, pixel_scale, "Star RMS diameter"],
             ).start()
 
             break  # the tries loop

@@ -160,23 +160,23 @@ def find_optical_center(
     data_sub = data - bkg.background
 
     # 3) Detect sources (excluding masked regions, e.g. the shadow band)
-    threshold = detect_threshold(data_sub, nsigma=nsigma, mask=exclude_mask)
-    segm = detect_sources(data_sub, threshold, npixels=npixels, mask=exclude_mask)
+    threshold = detect_threshold(data_sub, n_sigma=nsigma, mask=exclude_mask)
+    segm = detect_sources(data_sub, threshold, n_pixels=npixels, mask=exclude_mask)
     if segm is None:
         print("No sources detected. Consider lowering nsigma or npixels.")
         return None
 
     # 4) Measure source properties
     cat = SourceCatalog(data_sub, segm, background=bkg.background)
-    x = np.asarray(cat.xcentroid, dtype=float)
-    y = np.asarray(cat.ycentroid, dtype=float)
+    x = np.asarray(cat.x_centroid, dtype=float)
+    y = np.asarray(cat.y_centroid, dtype=float)
     theta = np.asarray(cat.orientation.to("rad").value, dtype=float)
     ellip = np.asarray(cat.ellipticity, dtype=float)
     area = np.asarray(cat.area.value, dtype=float)
     flux = np.asarray(cat.segment_flux, dtype=float)
     # peak pixel (for coma's spin-1 centroid-vs-peak offset)
-    peak_x = np.asarray(cat.maxval_xindex, dtype=float)
-    peak_y = np.asarray(cat.maxval_yindex, dtype=float)
+    peak_x = np.asarray(cat.max_value_xindex, dtype=float)
+    peak_y = np.asarray(cat.max_value_yindex, dtype=float)
     n_detected = len(x)
 
     # 4a) Filter spurious / unusable sources.  (coma.py filtered on the row

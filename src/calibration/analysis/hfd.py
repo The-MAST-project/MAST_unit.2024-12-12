@@ -47,14 +47,14 @@ def _bg_subtract(data, box_size=64):
 
 
 def _detect(data_sub, nsigma, npixels, min_area, max_area=1e9):
-    """Return (x, y, semimajor_sigma) arrays of detected sources, or empty."""
-    segm = detect_sources(data_sub, detect_threshold(data_sub, nsigma=nsigma), npixels=npixels)
+    """Return (x, y, semimajor_axis) arrays of detected sources, or empty."""
+    segm = detect_sources(data_sub, detect_threshold(data_sub, n_sigma=nsigma), n_pixels=npixels)
     if segm is None:
         return np.empty(0), np.empty(0), np.empty(0)
     cat = SourceCatalog(data_sub, segm)
-    x = np.asarray(cat.xcentroid, dtype=float)
-    y = np.asarray(cat.ycentroid, dtype=float)
-    s = np.asarray(cat.semimajor_sigma.value, dtype=float)
+    x = np.asarray(cat.x_centroid, dtype=float)
+    y = np.asarray(cat.y_centroid, dtype=float)
+    s = np.asarray(cat.semimajor_axis.value, dtype=float)
     a = np.asarray(cat.area.value, dtype=float)
     ok = np.isfinite(x) & np.isfinite(y) & np.isfinite(s) & (a >= min_area) & (a <= max_area)
     return x[ok], y[ok], s[ok]
