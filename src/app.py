@@ -126,7 +126,7 @@ async def websocket_disconnect_handler(websocket: WebSocket, exc: WebSocketDisco
 
 # The unit attributes that carry a component router, in mounting order. A component is
 # None when it failed to build, and a unit still serves the ones it has.
-COMPONENT_ATTRIBUTES = ("mount", "covers", "focuser", "stage", "imager")
+COMPONENT_ATTRIBUTES = ("mount", "covers", "focuser", "stage", "imager", "calibrator")
 
 #: The operator areas in display order, each with its Swagger group description (#207). An area
 #: is the path segment `common.endpoints.area_of` derives, so naming one no route produces

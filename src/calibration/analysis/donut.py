@@ -26,7 +26,7 @@ real optics, so `plan_donut_jump` calibrates it from the differential move itsel
 
 Design reference: docs/autofocus_design.md sec. 2.5 (donuts / sign ambiguity),
 sec. 3 Phase 2; unit self-calibration design sec. 1 (autofocus).  Parallel to
-`imaging.hfd` (Phase 1, near focus) and routed to by `hfd.assess_focus_regime`
+`calibration.analysis.hfd` (Phase 1, near focus) and routed to by `hfd.assess_focus_regime`
 returning ``"far"``.
 """
 

@@ -50,7 +50,7 @@ def _bg_subtract(data, box_size=64):
 
 
 def _detect(data_sub, nsigma, npixels, min_area, max_area=1e9):
-    """Return (x, y, semimajor_sigma) arrays of detected sources, or empty."""
+    """Return (x, y, semimajor_axis) arrays of detected sources, or empty."""
     segm = detect_sources(data_sub, detect_threshold(data_sub, n_sigma=nsigma), n_pixels=npixels)
     if segm is None:
         return np.empty(0), np.empty(0), np.empty(0)
