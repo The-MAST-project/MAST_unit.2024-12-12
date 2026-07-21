@@ -20,18 +20,19 @@ from calibration.analysis.stage_geometry import (
     StageGeometryResult,
     find_spec_stage_position,
 )
+from calibration.logging_context import init_calibration_log
+from calibration.phases.slewing import slew_and_settle
 from common.activities import StageActivities, UnitActivities
 from common.config import Config
 from common.config.calibration import CalibrationConfig, StageCalibrationConfig
 from common.interfaces.imager import ImagerSettings
-from common.mast_logging import init_log
 from common.utils import time_stamp
 
 if TYPE_CHECKING:
     from unit import Unit  # type: ignore[import-untyped]
 
 logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
+init_calibration_log(logger)
 
 
 class StageCalibrator:
@@ -120,13 +121,9 @@ class StageCalibrator:
             # stars (a dawn/twilight flat is the exception).  With no target given we
             # assume the caller / orchestrator already positioned the mount.
             if target_ra_j2000_hours is not None and target_dec_j2000_degs is not None:
-                logger.info(f"{op}: slewing mount to ra={target_ra_j2000_hours}h dec={target_dec_j2000_degs}deg")
-                mount.goto_ra_dec_j2000(target_ra_j2000_hours, target_dec_j2000_degs)
-                time.sleep(0.5)  # let the slew register before polling
-                while mount.is_moving:
-                    if not self._still_calibrating():
-                        return self._abort(f"{op}: calibration stopped during slew")
-                    time.sleep(0.5)
+                slew_and_settle(mount, target_ra_j2000_hours, target_dec_j2000_degs, op)
+                if not self._still_calibrating():
+                    return self._abort(f"{op}: calibration stopped during slew")
             else:
                 logger.info(f"{op}: no target supplied -- calibrating at the current pointing")
 

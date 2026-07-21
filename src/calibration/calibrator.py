@@ -1,15 +1,21 @@
 """The unit self-calibration orchestrator and its API surface.
 
-One :class:`Calibrator` singleton owns all four endpoints::
+One :class:`Calibrator` singleton owns the whole surface::
 
     POST /calibrate                 ?force=false                  # all three, in order
     POST /calibrate/focuser         ?force=false&ra=&dec=
     POST /calibrate/optical_center  ?force=false&ra=&dec=
     POST /calibrate/stage           ?force=false&ra=&dec=&move_to_spec=false
+    POST /calibrate/abort
+    GET  /calibrate/status
+    GET  /calibrate/config          ?refresh=true
 
-Each returns a ``CanonicalResponse`` **immediately**; the work runs on a
+Each ``POST`` returns a ``CanonicalResponse`` **immediately**; the work runs on a
 background thread under a ``UnitActivities.Calibrating*`` flag, is visible via
-``/calibrate/status``, and is abortable.
+``/calibrate/status``, and is abortable.  ``/status`` reports the *run*
+(what is active, which products exist, how the last one ended); ``/config``
+reports the *stored block* -- the settings the phases read and the full
+products they wrote.
 
 **Logging convention -- the debug log is the decision trace.**  Every decision
 point goes to ``logger.debug``: phase order, skip-because-present, prerequisite
@@ -44,26 +50,30 @@ Design reference: mast-claude-config ``plans/calibration_orchestration.md``.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import logging
 import threading
 from typing import TYPE_CHECKING, Annotated
 
+import numpy as np
 from fastapi import Query
 from fastapi.routing import APIRouter
+from pydantic import BaseModel
 
+from calibration.logging_context import init_calibration_log, phase_logging
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config.calibration import CalibrationSettings
+from common.config import Config
+from common.config.calibration import CalibrationConfig, CalibrationSettings
 from common.const import Const
-from common.mast_logging import init_log
 from common.paths import PathMaker
 
 if TYPE_CHECKING:
     from unit import Unit  # type: ignore[import-untyped]
 
 logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
+init_calibration_log(logger)
 
 #: The phase order the physics fixes.  Do not reorder.
 PHASE_ORDER = ("focuser", "optical_center", "stage")
@@ -77,6 +87,46 @@ PHASE_ACTIVITY = {
 
 #: Every calibration flag -- the single-flight guard tests all of them.
 ALL_CALIBRATION_ACTIVITIES = (UnitActivities.Calibrating, *PHASE_ACTIVITY.values())
+
+
+def _jsonable(obj):
+    """Project a phase result into something ``CanonicalResponse`` can serialize.
+
+    ``/calibrate/status`` is the ONLY channel through which a background run's
+    outcome is observable, so it must never be the thing that fails.  It used
+    to: ``latest["stage"]`` is a ``StageGeometryResult`` -- a plain dataclass
+    whose ``stage_positions`` / ``distances`` are ``np.ndarray``.  Pydantic has
+    no serializer for those and *raises* rather than skipping, so once a stage
+    run had happened every ``GET /calibrate/status`` returned 500.  The trap is
+    that ``latest[phase]`` is assigned before the ``has_solution`` check, so a
+    **failed** run broke status too -- exactly when the errors it carries are
+    what you need to read.
+
+    Hence a projection here rather than a fix at the one assignment site: it
+    holds for ``optical_center`` when that phase goes live, and for any future
+    result type, instead of relying on each phase to remember.  The raw objects
+    stay in ``self.latest`` for in-process inspection and plotting.
+
+    ``ndarray`` becomes a list (these are per-frame arrays of ``n_positions``
+    points -- five or so, so the payload cost is nil) and NaN/Infinity survive,
+    because a NaN sample is real data: it is how a frame with no usable star is
+    recorded, and dropping it would silently shorten the sweep.
+    """
+    if isinstance(obj, np.ndarray):
+        return [_jsonable(x) for x in obj.tolist()]
+    if isinstance(obj, np.generic):  # np.float64 & friends -> Python scalars
+        return obj.item()
+    if isinstance(obj, BaseModel):
+        return obj.model_dump(mode="json")
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        # Field-by-field, NOT dataclasses.asdict(): asdict deep-copies every
+        # value, and on an ndarray field that copy is pointless work.
+        return {f.name: _jsonable(getattr(obj, f.name)) for f in dataclasses.fields(obj)}
+    if isinstance(obj, dict):
+        return {k: _jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_jsonable(v) for v in obj]
+    return obj
 
 
 class CalibrationError(Exception):
@@ -214,8 +264,57 @@ class Calibrator:
             ),
             "phase": self.active_phase,
             "products": {p: self.product(p) is not None for p in PHASE_ORDER},
-            "latest": self.latest,
+            "latest": _jsonable(self.latest),
             "errors": self.errors,
+        }
+
+    def config(self, refresh: bool = True) -> dict:
+        """The unit's stored ``calibration`` block -- settings *and* products.
+
+        The counterpart to :meth:`status`: that one reports the run, this one
+        reports what is persisted -- the inputs each phase reads and the full
+        product records (values, provenance, quality), where ``status`` only
+        answers present/absent.
+
+        ``refresh=True`` (default) goes through ``Config().get_unit()``, which
+        re-runs the common+unit merge and validation; ``refresh=False`` returns
+        ``unit.unit_conf``, the copy bound at startup that the phases actually
+        read.
+
+        **Neither re-reads MongoDB.**  ``Config.config_db()`` returns a snapshot
+        cached in the process (behind an ``lru_cache``), so an edit made to the
+        DB after startup -- by hand, or by another machine -- is invisible to
+        both until the service restarts.  This is documented rather than fixed
+        because forcing a reload means reaching into ``common/config``, which is
+        submoduled into four checkouts.  So: after changing a calibration
+        setting in the DB, RESTART the unit before expecting a run to use it.
+        ``source`` reports which of the two in-process views you got.
+
+        ``present=False`` means the unit's DB entry carries no ``calibration``
+        block at all; ``calibration`` then holds the model defaults -- the same
+        ones :attr:`settings` falls back to, so the payload shows the values the
+        phases would really use rather than a bare ``null``.
+        """
+        conf = None
+        source = "config-merge"
+        if refresh:
+            try:
+                conf = Config().get_unit()
+            except Exception as ex:
+                logger.error(f"config: DB read failed ({ex!r}) -- falling back to the loaded config")
+        if conf is None:
+            source = "memory"
+            conf = getattr(self.unit, "unit_conf", None)
+        if conf is None:
+            raise CalibrationError("no unit configuration available (neither the DB nor the loaded config)")
+
+        cal = getattr(conf, "calibration", None)
+        logger.debug(f"config: source={source} unit={conf.name} present={cal is not None}")
+        return {
+            "source": source,
+            "unit": conf.name,
+            "present": cal is not None,
+            "calibration": (cal if cal is not None else CalibrationConfig()).model_dump(mode="json"),
         }
 
     # -------------------------------------------------------------- launching
@@ -234,7 +333,14 @@ class Calibrator:
             return CanonicalResponse(
                 errors=[f"a calibration is already running (phase={self.active_phase})"]
             )
+        # Clear BOTH, not just errors.  `latest` used to survive into the next
+        # run, so while a run was in flight `/calibrate/status` served the
+        # PREVIOUS run's result as if it were current -- during run 0004 it
+        # reported run 0003's sweep positions and "0 consistent stars", which
+        # reads exactly like a finished, failed run.  Status is the only channel
+        # a background run has; it must never show a stale result as live.
         self.errors = []
+        self.latest = {}
         logger.debug(f"launching {target.__name__}{args}")
 
         def run():
@@ -300,6 +406,20 @@ class Calibrator:
 
     def endpoint_status(self):
         return CanonicalResponse(value=self.status())
+
+    def endpoint_config(
+        self,
+        refresh: Annotated[
+            bool, Query(description="Re-merge via Config (false: the copy bound at startup). Neither re-reads MongoDB -- restart to pick up DB edits.")
+        ] = True,
+    ):
+        """The unit's stored calibration settings + products."""
+        try:
+            return CanonicalResponse(value=self.config(refresh))
+        except CalibrationError as ex:
+            # A read, not a run: report it in this response rather than parking it
+            # in self.errors, which belongs to the last calibration run.
+            return CanonicalResponse(errors=[f"config: {ex}"])
 
     def endpoint_abort(self):
         """Clear every calibration flag; running phases poll these and bail."""
@@ -384,23 +504,24 @@ class Calibrator:
                      f"binning={st.binning} max_tries={st.max_tries}")
 
         self.unit.start_activity(UnitActivities.CalibratingFocus)
-        try:
-            calibrator = FocuserCalibrator(self.unit)
-            status = calibrator.calibrate(
-                settings=st, ra_j2000_hours=ra, dec_j2000_degs=dec, folder=folder,
-            )
-            self.latest["focuser"] = status
-            self.errors.extend(calibrator.errors)
-            result = status.analysis_result if status else None
-            if result is None or not result.has_solution:
-                self._fail(f"{op}: no focus solution")
-            else:
-                logger.info(f"{op}: best_position={result.best_focus_position:.1f} "
-                            f"Dmin={result.best_focus_star_diameter:.2f}px "
-                            f"tolerance={result.tolerance:.1f}")
-            return status
-        finally:
-            self.unit.end_activity(UnitActivities.CalibratingFocus)
+        with phase_logging("focuser"):
+            try:
+                calibrator = FocuserCalibrator(self.unit)
+                status = calibrator.calibrate(
+                    settings=st, ra_j2000_hours=ra, dec_j2000_degs=dec, folder=folder,
+                )
+                self.latest["focuser"] = status
+                self.errors.extend(calibrator.errors)
+                result = status.analysis_result if status else None
+                if result is None or not result.has_solution:
+                    self._fail(f"{op}: no focus solution")
+                else:
+                    logger.info(f"{op}: best_position={result.best_focus_position:.1f} "
+                                f"Dmin={result.best_focus_star_diameter:.2f}px "
+                                f"tolerance={result.tolerance:.1f}")
+                return status
+            finally:
+                self.unit.end_activity(UnitActivities.CalibratingFocus)
 
     @not_implemented("the coma-slope fit and optical-center drive are not built yet")
     def do_calibrate_optical_center(self, force=False, ra=None, dec=None, _umbrella=False):
@@ -441,37 +562,38 @@ class Calibrator:
                      f"epoch={oc.mechanical_epoch}, focus={focus.best_position}")
 
         self.unit.start_activity(UnitActivities.CalibratingStage)
-        try:
-            # Hardware the phase makes happen: the focuser goes to the calibrated
-            # best focus (no inter-phase carry-over is assumed).
-            logger.debug(f"{op}: setting focuser.position = {focus.best_position} (calibrated best focus)")
-            self.unit.focuser.position = focus.best_position
+        with phase_logging("stage"):
+            try:
+                # Hardware the phase makes happen: the focuser goes to the calibrated
+                # best focus (no inter-phase carry-over is assumed).
+                logger.debug(f"{op}: setting focuser.position = {focus.best_position} (calibrated best focus)")
+                self.unit.focuser.position = focus.best_position
 
-            st = self.settings.stage
-            ra, dec = self.resolve_coord(ra, dec)
-            logger.debug(f"{op}: settings n_positions={st.n_positions} span_steps={st.span_steps} "
-                         f"exposure={st.exposure} settle={st.settle_seconds} "
-                         f"require_bracketed={st.require_bracketed}")
-            result = StageCalibrator(self.unit).calibrate(
-                target_ra_j2000_hours=ra,
-                target_dec_j2000_degs=dec,
-                n_positions=st.n_positions,
-                span_steps=st.span_steps,
-                exposure=st.exposure,
-                settle_seconds=st.settle_seconds,
-                require_bracketed=st.require_bracketed,
-                # explicit argument wins; otherwise the configured default
-                move_to_spec=move_to_spec or st.move_to_spec,
-            )
-            self.latest["stage"] = result
-            if result is None or not result.has_solution:
-                self._fail(f"{op}: no solution")
-            else:
-                logger.info(f"{op}: spec_position={result.spec_position:.1f} "
-                            f"(bracketed={result.bracketed}, residual_rms={result.residual_rms:.2f}px)")
-            return result
-        finally:
-            self.unit.end_activity(UnitActivities.CalibratingStage)
+                st = self.settings.stage
+                ra, dec = self.resolve_coord(ra, dec)
+                logger.debug(f"{op}: settings n_positions={st.n_positions} span_steps={st.span_steps} "
+                             f"exposure={st.exposure} settle={st.settle_seconds} "
+                             f"require_bracketed={st.require_bracketed}")
+                result = StageCalibrator(self.unit).calibrate(
+                    target_ra_j2000_hours=ra,
+                    target_dec_j2000_degs=dec,
+                    n_positions=st.n_positions,
+                    span_steps=st.span_steps,
+                    exposure=st.exposure,
+                    settle_seconds=st.settle_seconds,
+                    require_bracketed=st.require_bracketed,
+                    # explicit argument wins; otherwise the configured default
+                    move_to_spec=move_to_spec or st.move_to_spec,
+                )
+                self.latest["stage"] = result
+                if result is None or not result.has_solution:
+                    self._fail(f"{op}: no solution")
+                else:
+                    logger.info(f"{op}: spec_position={result.spec_position:.1f} "
+                                f"(bracketed={result.bracketed}, residual_rms={result.residual_rms:.2f}px)")
+                return result
+            finally:
+                self.unit.end_activity(UnitActivities.CalibratingStage)
 
     # ---------------------------------------------------------------- helpers
     def _fail(self, msg: str):
@@ -499,6 +621,7 @@ class Calibrator:
             endpoint=self.endpoint_calibrate_stage,
         )
         router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
+        router.add_api_route(base_path + "/config", tags=[tag], endpoint=self.endpoint_config)
         router.add_api_route(
             base_path + "/abort", methods=["POST"], tags=[tag], endpoint=self.endpoint_abort
         )
