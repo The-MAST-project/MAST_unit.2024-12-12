@@ -1,3 +1,20 @@
+[tool.pytest.ini_options]
+# `pythonpath` (not a conftest sys.path hack) because the app is run as
+# `cd src; python app.py` -- src IS the import root, so tests import
+# `calibration.calibrator`, exactly as the running code does.
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+# Hardware and the config DB are NOT available in a plain checkout, so the
+# default run must stay pure: anything touching a mount, camera, focuser or
+# MongoDB is marked and deselected here, and opted into explicitly with
+#   pytest -m hardware      /  pytest -m db
+addopts = "-m 'not hardware and not db'"
+markers = [
+    "hardware: needs a live unit (mount/camera/focuser/stage)",
+    "db: needs a reachable config database",
+]
+
 [tool.ruff]
 line-length = 125
 target-version = "py312"

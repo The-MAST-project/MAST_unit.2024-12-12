@@ -52,3 +52,4 @@ pyserial
 python-ulid
 rich
 astroplan
+pytest

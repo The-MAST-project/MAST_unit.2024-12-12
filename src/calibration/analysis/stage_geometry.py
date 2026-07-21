@@ -41,10 +41,10 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from calibration.analysis.mirror_shadow import ShadowModel
-from common.mast_logging import init_log
+from calibration.logging_context import init_calibration_log
 
 logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
+init_calibration_log(logger)
 
 
 @dataclass

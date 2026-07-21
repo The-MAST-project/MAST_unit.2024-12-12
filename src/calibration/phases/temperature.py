@@ -28,10 +28,10 @@ from __future__ import annotations
 
 import logging
 
-from common.mast_logging import init_log
+from calibration.logging_context import init_calibration_log
 
 logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
+init_calibration_log(logger)
 
 NO_SENSOR = -999.0
 _ENDPOINT = "/temperatures/pw1000"  # despite the name, the general temperature endpoint

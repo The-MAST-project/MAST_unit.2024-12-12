@@ -35,6 +35,58 @@ def _load(image) -> np.ndarray:
     return data
 
 
+def _disk_crop_box(shape, center, radius, pad, box_size):
+    """Pixel box enclosing the low-coma disk, or ``None`` to use the whole frame.
+
+    The HFD metric only ever uses stars inside the ``(center, radius)`` disk, but
+    background estimation and detection are the expensive steps and were running
+    over the ENTIRE frame first -- on a full 47 MP sweep frame the fallback disk
+    (``0.6 * min(nx,ny)/2``) covers about a fifth of the area, so roughly 80% of
+    that work was thrown away immediately afterwards.
+
+    Cropping first is purely a speed change: the pixel scale is untouched, so
+    every threshold in this module keeps its meaning (unlike downsampling, which
+    silently halves measured HFD and with it the ``near_hfd_max_px`` /
+    ``max_best_hfd_px`` gates).
+
+    ``pad`` must cover the measurement aperture, or stars just inside the disk
+    edge would have their stamps clipped by the crop and measure too small --
+    changing the result rather than just speeding it up.  Returns ``None`` when
+    the box would not be meaningfully smaller than the frame, or would be too
+    small for ``Background2D``'s box size.
+    """
+    if center is None or radius is None:
+        return None
+    ny, nx = shape
+    cx, cy = center
+    half = float(radius) + float(pad)
+    x0, x1 = int(np.floor(cx - half)), int(np.ceil(cx + half)) + 1
+    y0, y1 = int(np.floor(cy - half)), int(np.ceil(cy + half)) + 1
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(nx, x1), min(ny, y1)
+    if x1 - x0 < 2 * box_size or y1 - y0 < 2 * box_size:
+        return None  # too small to estimate a background on; not worth it
+    if (x1 - x0) * (y1 - y0) > 0.9 * nx * ny:
+        return None  # saves nothing; skip the bookkeeping
+    return x0, x1, y0, y1
+
+
+def _apply_crop(data, box):
+    """Crop ``data`` to ``box``; ``None`` box returns the array unchanged."""
+    if box is None:
+        return data
+    x0, x1, y0, y1 = box
+    return data[y0:y1, x0:x1]
+
+
+def _shift_center(center, box):
+    """Express ``center`` in the cropped frame's coordinates."""
+    if box is None or center is None:
+        return center
+    x0, _, y0, _ = box
+    return (center[0] - x0, center[1] - y0)
+
+
 def _bg_subtract(data, box_size=64):
     try:
         bkg = Background2D(
@@ -195,6 +247,13 @@ def frame_hfd(
     caller marks such a sample invalid rather than failing the run.
     """
     data = _load(image)
+    # Crop to the low-coma disk BEFORE background + detection -- they are the
+    # expensive steps and only stars inside the disk can contribute.  Everything
+    # below then works in the cropped frame; only aggregates are returned, so no
+    # coordinate has to be mapped back.
+    box = _disk_crop_box(data.shape, center, radius, r_max + stamp_pad, box_size)
+    data = _apply_crop(data, box)
+    center = _shift_center(center, box)
     ny, nx = data.shape
     data_sub = _bg_subtract(data, box_size)
     x, y, smaj = _detect(data_sub, nsigma, npixels, min_area, max_area)
@@ -241,6 +300,12 @@ def measure_sweep_hfd(
     aligned with ``images[i]``.
     """
     loaded = [_load(im) for im in images]
+    # One box for the whole sweep, computed from the first frame: the frames
+    # share pointing and shape, and cross-matching below relies on a star sitting
+    # at the SAME pixel in every frame -- a per-frame box could shift that.
+    box = _disk_crop_box(loaded[0].shape, center, radius, r_max + stamp_pad, box_size)
+    loaded = [_apply_crop(d, box) for d in loaded]
+    center = _shift_center(center, box)
     subs = [_bg_subtract(d, box_size) for d in loaded]
     detections = [list(zip(*_detect(ds, nsigma, npixels, min_area, max_area))) for ds in subs]
     stars = _consistent_stars(detections, len(images), match_tol, min_frac)

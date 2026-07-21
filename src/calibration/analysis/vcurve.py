@@ -38,10 +38,10 @@ from calibration.analysis.models import (
     HFDAutofocusStatus,
     HFDFocusSample,
 )
-from common.mast_logging import init_log
+from calibration.logging_context import init_calibration_log
 
 logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
+init_calibration_log(logger)
 
 _POS_RE = re.compile(r"FOCUS(-?\d+)", re.IGNORECASE)
 
