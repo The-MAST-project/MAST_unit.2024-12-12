@@ -33,6 +33,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_log(logger)
+
+#: Cap on the pre-sweep wait for stage/mount/focuser to settle.  Generous -- the
+#: focuser move that precedes it is a few thousand ticks at most -- so it only
+#: fires when something is genuinely stuck, rather than hanging the run.
+COMPONENTS_SETTLE_TIMEOUT_SECONDS = 180.0
 filer = Filer(logger)
 
 
@@ -226,11 +231,36 @@ class Autofocuser:
         logger.debug(
             f"{op}: Waiting for components (stage, mount, focuser) to stop moving ..."
         )
+        # NOT `mount.is_moving`.  That is axis rms following-error (axis0>3.0",
+        # axis1>1.0"), which mirrors PWI4's GUI tracking-quality colouring -- so
+        # in wind it reads True while the mount sits ON target and this loop
+        # never exits.  Measured on mast02 2026-07-21 while tracking on target
+        # with is_slewing=False: axis0 rms 1.36-3.81", axis1 1.00-6.40", i.e.
+        # True in 6 of 7 samples.  The question here is "is a move still under
+        # way", and PWI4's is_slewing answers exactly that.  See CLAUDE.md.
+        #
+        # Bounded as well: at this point the focuser has been commanded and
+        # Focuser.ontimer re-commands a stalled move forever, so an unbounded
+        # wait here can hang the whole autofocus run with no way out.
+        deadline = time.monotonic() + COMPONENTS_SETTLE_TIMEOUT_SECONDS
         while (
             self.unit.stage.is_moving
-            or self.unit.mount.is_moving
+            or self.unit.mount.is_slewing
             or self.unit.focuser.is_active(FocuserActivities.Moving)
         ):
+            if time.monotonic() >= deadline:
+                logger.error(
+                    f"{op}: components did not settle within "
+                    f"{COMPONENTS_SETTLE_TIMEOUT_SECONDS:.0f}s "
+                    f"(stage.is_moving={self.unit.stage.is_moving}, "
+                    f"mount.is_slewing={self.unit.mount.is_slewing}, "
+                    f"focuser={self.unit.focuser.position}->{self.unit.focuser.target}); "
+                    f"aborting autofocus"
+                )
+                return
+            if not self.unit.is_active(UnitActivities.Autofocusing):
+                logger.info("activity 'Autofocusing' was stopped while settling")
+                return
             time.sleep(0.5)
         logger.debug(f"{op}: Components (stage, mount, focuser) stopped moving ...")
         if not self.unit.is_active(UnitActivities.Autofocusing):
