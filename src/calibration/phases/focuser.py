@@ -47,6 +47,7 @@ from calibration.analysis.hfd import assess_focus_regime
 from calibration.analysis.models import HFDAutofocusStatus
 from calibration.analysis.vcurve import analyze_donut_samples, analyze_focus_samples
 from calibration.logging_context import init_calibration_log
+from calibration.phases.artifacts import move_to_shared, plot_vcurve, save_status
 from calibration.phases.slewing import slew_and_settle
 from calibration.phases.temperature import get_ambient_temperature, get_mirror_temperature
 from common.activities import FocuserActivities, StageActivities, UnitActivities
@@ -136,6 +137,10 @@ class FocuserCalibrator:
         else:
             logger.debug(f"{op}: no PWI4 -- temperature unavailable (recorded as None)")
 
+        # Bound BEFORE the try so the finally can always read it: several exit
+        # paths inside (failed slew, aborted acquisition) return before the
+        # sweep ever assigns a status, and the artifacts must still be written.
+        status: HFDAutofocusStatus | None = None
         series = imager.start_exposure_series(purpose="focus-calibration")
         try:
             # --- hardware the phase makes happen -----------------------------
@@ -260,6 +265,17 @@ class FocuserCalibrator:
             return status
         finally:
             imager.end_exposure_series(series)
+            # Artifacts on EVERY exit path -- success, failure, or abort.  A
+            # failed run's frames are precisely the ones worth replaying (every
+            # diagnosis of 2026-07-21 came from saved frames, not from logs), so
+            # the plot, the result file and the move off the volatile RAM disk
+            # must not be conditional on solving.
+            final = status or HFDAutofocusStatus(
+                message="run produced no analysis", errors=list(self.errors)
+            )
+            plot_vcurve(folder, final.analysis_result)
+            save_status(folder, final)
+            move_to_shared(folder)
 
     # ------------------------------------------------------- Phase 0 / Phase 2
     def _acquire_near_focus(self, seed, st, folder) -> int | None:
