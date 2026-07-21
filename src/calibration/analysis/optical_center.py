@@ -14,6 +14,7 @@ Design reference: unit self-calibration, section "Optical center
 (coma elongation null)".
 """
 
+import logging
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -21,6 +22,15 @@ from astropy.io import fits
 from astropy.stats import SigmaClip
 from photutils.background import Background2D, MedianBackground
 from photutils.segmentation import SourceCatalog, detect_sources, detect_threshold
+
+from calibration.logging_context import init_calibration_log
+
+logger = logging.getLogger("mast.unit." + __name__)
+init_calibration_log(logger)
+
+# NOTE: the pre-existing code below reports failures with bare `print()`, which
+# on the unit goes nowhere -- the service's output is not the rotating log.  New
+# code here logs instead; converting the old prints is a separate change.
 
 
 @dataclass
@@ -47,6 +57,61 @@ class OpticalCenterResult:
     @property
     def center(self) -> tuple:
         return (self.center_x, self.center_y)
+
+
+def extract_sources(image, nsigma=2.0, npixels=5, box_size=50, exclude_mask=None) -> dict | None:
+    """Detect and measure every source in one frame -- with NO filtering applied.
+
+    Split out of :func:`find_optical_center` so two consumers can share exactly
+    one detection code path.  The distinction matters: the centre fit *wants*
+    the aggressive cuts (``min_ellipticity``, ``min_field_radius``) because it
+    needs clean, unambiguous orientations from margin stars -- but a coma-slope
+    fit run on that same cut sample would be **biased**.  Truncating at a
+    minimum ellipticity removes exactly the low-``e`` sources that anchor the
+    origin end of an ``e = k*r`` relation, so the surviving sample is
+    e-truncated and the fitted slope comes out too steep, which in turn makes
+    ``low_coma_radius = coma_tolerance / k`` too small.  So the slope fit
+    re-extracts with its own (looser) cuts rather than reusing the centre fit's
+    sample.
+
+    Returns raw per-source arrays plus the background-subtracted image, or
+    ``None`` when nothing was detected.
+    """
+    raw = image if isinstance(image, np.ndarray) else fits.getdata(image)
+    data = np.asarray(raw, dtype=float)
+    ny, nx_img = data.shape
+
+    bkg = Background2D(
+        data,
+        box_size=(box_size, box_size),
+        filter_size=(3, 3),
+        sigma_clip=SigmaClip(sigma=3.0),
+        bkg_estimator=MedianBackground(),  # type: ignore[arg-type]  (valid BackgroundBase)
+    )
+    data_sub = data - bkg.background
+
+    threshold = detect_threshold(data_sub, n_sigma=nsigma, mask=exclude_mask)
+    segm = detect_sources(data_sub, threshold, n_pixels=npixels, mask=exclude_mask)
+    if segm is None:
+        logger.warning("no sources detected; consider lowering nsigma or npixels")
+        return None
+
+    cat = SourceCatalog(data_sub, segm, background=bkg.background)
+    x = np.asarray(cat.x_centroid, dtype=float)
+    return {
+        "data_sub": data_sub,
+        "shape": (ny, nx_img),
+        "x": x,
+        "y": np.asarray(cat.y_centroid, dtype=float),
+        "theta": np.asarray(cat.orientation.to("rad").value, dtype=float),
+        "ellipticity": np.asarray(cat.ellipticity, dtype=float),
+        "area": np.asarray(cat.area.value, dtype=float),
+        "flux": np.asarray(cat.segment_flux, dtype=float),
+        # peak pixel (for coma's spin-1 centroid-vs-peak offset)
+        "peak_x": np.asarray(cat.max_value_xindex, dtype=float),
+        "peak_y": np.asarray(cat.max_value_yindex, dtype=float),
+        "n_detected": len(x),
+    }
 
 
 def _solve_center(x, y, theta, weights):
@@ -144,40 +209,76 @@ def find_optical_center(
     coma (``radiality < min_radiality`` -- the frame has no usable coma signal,
     so the center is indeterminate rather than wrong-but-confident).
     """
-    # 1) Load image
-    raw = image if isinstance(image, np.ndarray) else fits.getdata(image)
-    data = np.asarray(raw, dtype=float)
-    ny, nx_img = data.shape
-
-    # 2) Background subtraction
-    bkg = Background2D(
-        data,
-        box_size=(box_size, box_size),
-        filter_size=(3, 3),
-        sigma_clip=SigmaClip(sigma=3.0),
-        bkg_estimator=MedianBackground(),  # type: ignore[arg-type]  (valid BackgroundBase)
+    extracted = extract_sources(
+        image, nsigma=nsigma, npixels=npixels, box_size=box_size, exclude_mask=exclude_mask
     )
-    data_sub = data - bkg.background
-
-    # 3) Detect sources (excluding masked regions, e.g. the shadow band)
-    threshold = detect_threshold(data_sub, n_sigma=nsigma, mask=exclude_mask)
-    segm = detect_sources(data_sub, threshold, n_pixels=npixels, mask=exclude_mask)
-    if segm is None:
-        print("No sources detected. Consider lowering nsigma or npixels.")
+    if extracted is None:
         return None
+    return solve_optical_center(
+        [extracted],
+        min_area=min_area,
+        max_area=max_area,
+        min_ellipticity=min_ellipticity,
+        min_field_radius=min_field_radius,
+        middle_third=middle_third,
+        clip_sigma=clip_sigma,
+        max_iter=max_iter,
+        min_sources=min_sources,
+        min_radiality=min_radiality,
+        plot_results=plot_results,
+    )
 
-    # 4) Measure source properties
-    cat = SourceCatalog(data_sub, segm, background=bkg.background)
-    x = np.asarray(cat.x_centroid, dtype=float)
-    y = np.asarray(cat.y_centroid, dtype=float)
-    theta = np.asarray(cat.orientation.to("rad").value, dtype=float)
-    ellip = np.asarray(cat.ellipticity, dtype=float)
-    area = np.asarray(cat.area.value, dtype=float)
-    flux = np.asarray(cat.segment_flux, dtype=float)
-    # peak pixel (for coma's spin-1 centroid-vs-peak offset)
-    peak_x = np.asarray(cat.max_value_xindex, dtype=float)
-    peak_y = np.asarray(cat.max_value_yindex, dtype=float)
-    n_detected = len(x)
+
+def solve_optical_center(
+    extractions: list[dict],
+    *,
+    min_area=10,
+    max_area=1e5,
+    min_ellipticity=0.05,
+    min_field_radius=0.4,
+    middle_third=False,
+    clip_sigma=3.0,
+    max_iter=5,
+    min_sources=12,
+    min_radiality=0.25,
+    plot_results=False,
+) -> OpticalCenterResult | None:
+    """Fit the optical center from one or more frames' extracted sources.
+
+    ``extractions`` are :func:`extract_sources` outputs.  With several frames
+    their sources are **pooled into a single weighted fit** rather than fitting
+    each frame and averaging centres -- per-frame centres scatter by ~10^2 px
+    (the design's motivation for N frames in the first place), and an average of
+    scattered centres inherits that scatter, while pooling lets every source
+    constrain one solution.
+
+    Pooling is legitimate even across *different pointings*: the optical center
+    is a property of the optics and detector, not of the sky, so each star --
+    wherever the mount was aimed -- contributes one line through the same
+    detector point.  The frames must share a detector geometry, though; mixed
+    shapes are refused rather than silently mixing coordinate frames.
+
+    Single-frame behaviour is IDENTICAL to the pre-refactor
+    ``find_optical_center`` (verified against real frames to 9 decimals).
+    """
+    if not extractions:
+        return None
+    shapes = {tuple(e["shape"]) for e in extractions}
+    if len(shapes) > 1:
+        logger.error(f"solve_optical_center: mixed frame shapes {sorted(shapes)}; refusing to pool")
+        return None
+    ny, nx_img = extractions[0]["shape"]
+
+    x = np.concatenate([e["x"] for e in extractions])
+    y = np.concatenate([e["y"] for e in extractions])
+    theta = np.concatenate([e["theta"] for e in extractions])
+    ellip = np.concatenate([e["ellipticity"] for e in extractions])
+    area = np.concatenate([e["area"] for e in extractions])
+    flux = np.concatenate([e["flux"] for e in extractions])
+    peak_x = np.concatenate([e["peak_x"] for e in extractions])
+    peak_y = np.concatenate([e["peak_y"] for e in extractions])
+    n_detected = int(sum(e["n_detected"] for e in extractions))
+    data_sub = extractions[0]["data_sub"]  # for plotting only
 
     # 4a) Filter spurious / unusable sources.  (coma.py filtered on the row
     # *count* by mistake -- `tbl["area"].size` -- so its mask was all-or-nothing.)
@@ -266,6 +367,86 @@ def find_optical_center(
         _plot(data_sub, result, mask)
 
     return result
+
+
+@dataclass
+class ComaSlope:
+    """The measured coma gradient and the low-coma disk it implies."""
+
+    slope: float  # k: ellipticity per pixel of field radius
+    low_coma_radius: float | None  # coma_tolerance / k, px; None when k is untrustworthy
+    coma_tolerance: float  # the ellipticity budget the radius was derived from
+    n_sources: int
+    residual_rms: float  # of (e - k*r), in ellipticity units
+    r_max: float  # largest field radius sampled -- the radius is EXTRAPOLATED beyond this
+
+
+def fit_coma_slope(
+    x, y, ellipticity, weights, center, coma_tolerance: float,
+    min_sources: int = 12,
+    max_radius_factor: float = 3.0,
+) -> ComaSlope | None:
+    """Fit ``e = k*r`` through the origin and derive the low-coma radius.
+
+    Coma elongation grows ~linearly with field radius and vanishes on axis, so
+    the fit is **forced through the origin** -- an intercept would be fitting
+    seeing and centroid noise, not coma.  Weighted the same way the centre fit
+    is (flux x ellipticity), because the same sources carry the signal.
+
+    ``low_coma_radius = coma_tolerance / k`` is then the radius at which coma
+    elongation reaches the tolerance budget -- the disk autofocus should stay
+    inside.
+
+    Returns ``None`` rather than a fabricated number when the slope cannot be
+    trusted (non-positive, non-finite, or too few sources).  That is deliberate:
+    ``OpticalCenterCalibration.low_coma_radius`` is nullable precisely so focus
+    can fall back to its geometric disk instead of being handed a bogus one.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    e = np.asarray(ellipticity, dtype=float)
+    w = np.asarray(weights, dtype=float)
+
+    cx, cy = center
+    r = np.hypot(x - cx, y - cy)
+    good = np.isfinite(r) & np.isfinite(e) & np.isfinite(w) & (w > 0) & (r > 0)
+    r, e, w = r[good], e[good], w[good]
+    if len(r) < min_sources:
+        logger.warning(f"coma slope: only {len(r)} usable sources; need >= {min_sources}")
+        return None
+
+    # Weighted least squares through the origin: k = sum(w*r*e) / sum(w*r^2).
+    denom = float(np.sum(w * r * r))
+    if denom <= 0:
+        return None
+    k = float(np.sum(w * r * e) / denom)
+    if not np.isfinite(k) or k <= 0:
+        logger.warning(f"coma slope: k={k} is not a usable gradient (expected > 0)")
+        return None
+
+    residual_rms = float(np.sqrt(np.average((e - k * r) ** 2, weights=w)))
+    r_max = float(r.max())
+    radius = coma_tolerance / k
+
+    # A radius far beyond the sampled field is an extrapolation, not a
+    # measurement: with a shallow k the formula happily returns a disk larger
+    # than the detector.  Report it as unknown rather than as a huge number that
+    # would silently disable the low-coma restriction it exists to impose.
+    if radius > max_radius_factor * r_max:
+        logger.warning(
+            f"coma slope: low_coma_radius={radius:.0f}px exceeds "
+            f"{max_radius_factor}x the sampled field radius ({r_max:.0f}px) -- "
+            f"coma is too shallow to place the disk; recording None"
+        )
+        return ComaSlope(
+            slope=k, low_coma_radius=None, coma_tolerance=coma_tolerance,
+            n_sources=len(r), residual_rms=residual_rms, r_max=r_max,
+        )
+
+    return ComaSlope(
+        slope=k, low_coma_radius=float(radius), coma_tolerance=coma_tolerance,
+        n_sources=len(r), residual_rms=residual_rms, r_max=r_max,
+    )
 
 
 def _plot(data_sub, result, mask):

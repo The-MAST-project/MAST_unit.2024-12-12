@@ -523,20 +523,65 @@ class Calibrator:
             finally:
                 self.unit.end_activity(UnitActivities.CalibratingFocus)
 
-    @not_implemented("the coma-slope fit and optical-center drive are not built yet")
     def do_calibrate_optical_center(self, force=False, ra=None, dec=None, _umbrella=False):
-        """NOT IMPLEMENTED -- the optical-center drive.
+        """Coma-null optical center + low-coma radius; writes
+        ``calibration.products.optical_center``.
 
-        ``calibration.analysis.optical_center.find_optical_center`` is built and
-        validated.  Missing: the **coma-slope fit** ``k`` (ellipticity vs. field
-        radius, forced through the origin) that yields ``low_coma_radius =
-        coma_tolerance / k``; pooling sources across N frames into one weighted
-        fit (per-frame centers scatter ~10^2 px, so one frame is untrustworthy);
-        and the ``calibration.optical_center`` write.
-
-        Requires ``calibration.focuser.best_position`` -- coma is only clean at
-        best focus.
+        Requires ``calibration.products.focuser`` -- coma is only clean at best
+        focus (defocused, a star is a pupil donut with no usable coma) -- and
+        commands the focuser there on entry: a *hardware* precondition the phase
+        makes happen, versus the *product* precondition it requires.
         """
+        op = "do_calibrate_optical_center"
+        from calibration.phases.optical_center import OpticalCenterCalibrator
+
+        if self._skip_if_present("optical_center", force):
+            return None
+
+        logger.debug(f"{op}: standalone={not _umbrella}; checking required products")
+        focus = self.product("focuser")
+        if focus is None:
+            raise CalibrationError("no calibration.products.focuser -- run 'focuser' first")
+        logger.debug(f"{op}: prerequisite met -- focus={focus.best_position}")
+
+        self.unit.start_activity(UnitActivities.CalibratingOpticalCenter)
+        with phase_logging("optical_center"):
+            try:
+                # Hardware the phase makes happen: coma is only clean at best
+                # focus, so command it here; the phase itself waits (bounded)
+                # for the move to finish before exposing.
+                logger.debug(f"{op}: setting focuser.position = {focus.best_position} (calibrated best focus)")
+                self.unit.focuser.position = focus.best_position
+
+                st = self.settings.optical_center
+                ra, dec = self.resolve_coord(ra, dec)
+                # Same tolerance as the other phases: a memory imager never
+                # needs the folder, so failing to create one must not abort.
+                try:
+                    folder = PathMaker().make_calibration_folder("optical_center")
+                except Exception as ex:
+                    folder = None
+                    logger.warning(f"{op}: could not create the run folder ({ex}); "
+                                   f"continuing without one (memory imager only)")
+                logger.debug(f"{op}: folder={folder}; settings exposure={st.exposure} "
+                             f"number_of_frames={st.number_of_frames} "
+                             f"coma_tolerance={st.coma_tolerance} "
+                             f"min_frames_passing={st.min_frames_passing}")
+                calibrator = OpticalCenterCalibrator(self.unit)
+                result = calibrator.calibrate(
+                    settings=st, ra_j2000_hours=ra, dec_j2000_degs=dec, folder=folder,
+                )
+                self.latest["optical_center"] = result
+                self.errors.extend(calibrator.errors)
+                if result is None:
+                    self._fail(f"{op}: no optical-center solution")
+                else:
+                    logger.info(f"{op}: center=({result.center_x:.1f}, {result.center_y:.1f}) "
+                                f"radiality={result.radiality:.2f} "
+                                f"residual_rms={result.residual_rms:.1f}px")
+                return result
+            finally:
+                self.unit.end_activity(UnitActivities.CalibratingOpticalCenter)
 
     def do_calibrate_stage(self, force=False, ra=None, dec=None, move_to_spec=False, _umbrella=False):
         """Pick-off stage geometry -- the one phase whose drive already exists.
