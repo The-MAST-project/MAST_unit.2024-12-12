@@ -83,7 +83,7 @@ FOCUSER_SETTLE_TIMEOUT_SECONDS = 120.0
 class OpticalCenterCalibrator:
     """Drives the optical-center calibration loop on a live unit."""
 
-    def __init__(self, unit: "Unit"):
+    def __init__(self, unit: Unit):
         self.unit = unit
         self.errors: list[str] = []
         #: Frames exposed this run -- prefixes the filename to keep it unique.
