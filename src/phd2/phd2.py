@@ -25,7 +25,8 @@ from common.interfaces.imager import ImagerExposureSeries, ImagerInterface
 from common.mast_logging import get_logger
 from common.models.statuses import ImagerRoi, ImagerSettings, PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
 from common.process import WatchedProcess
-from common.utils import Coord, RepeatTimer, boxed_debug, function_name
+from common.utils import Coord, RepeatTimer, Timeout, boxed_debug, function_name
+from phd2.fits_header import stamp_cooling
 from phd2.phd2_locate import locate_phd2_exe
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 
@@ -362,6 +363,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         # timer exists at all, so a later edit reaches guiding validation at the next
         # restart however this is written. A property would advertise otherwise.
         validation_interval = self.conf.validation_interval
+        # Bracketed cooler sampling for the FITS header (see phd2.fits_header).
+        # Held between start_exposure and wait_for_image_saved, which run on the
+        # SAME caller thread; they must never be sampled from the worker thread,
+        # because `call()` waits on `self.cond` for that very thread to deliver
+        # the reply and would deadlock against itself.
+        self._cooler_before: dict | None = None
+        self._exposure_image_path: str | None = None
+
         self.guiding_verification_timer: RepeatTimer | None = None
         if validation_interval != 0:
             logger.info(f"{function_name()}: guiding validation every {validation_interval} seconds")
@@ -1603,6 +1612,12 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         # An abort sets this to release a waiter. Cleared here so a set left over from the
         # previous frame cannot end this one's wait before the image exists.
         self.image_saved_event.clear()
+        # Sample the cooler BEFORE the capture starts, while the camera is idle;
+        # the matching post-exposure sample and the header write happen in
+        # wait_for_image_saved().  Both branches below (save_image while guiding,
+        # capture_single_frame otherwise) write this same path.
+        self._exposure_image_path = settings.image_path
+        self._cooler_before = self.cooler_status
         if self.parent is not None:
             self.parent.start_activity(ImagerActivities.Exposing, details=[f"{settings.seconds} seconds"])
             self.parent.start_activity(
@@ -1676,6 +1691,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.image_saved_event.clear()
         self.reset_limit_frame_if_needed()
 
+        # The frame is on disk now.  Sample the cooler again -- still on the
+        # CALLER's thread, camera idle -- and stamp both readings into the
+        # header PHD2 wrote without them.  Best-effort throughout: a frame that
+        # was saved must never be failed by a missing temperature.
+        stamp_cooling(self._exposure_image_path, self._cooler_before, self.cooler_status)
+        self._cooler_before = None
+        self._exposure_image_path = None
+
     def reset_limit_frame_if_needed(self):
         """Put PHD2's limit frame back once the exposure that needed it has been saved.
 
@@ -1694,6 +1717,25 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.set_limit_frame(roi=None)
         except Exception as e:  # noqa: BLE001 -- tidying up must not fail the exposure
             logger.error(f"{function_name()}: could not reset the limit frame ({e})")
+    @property
+    def cooler_status(self) -> dict | None:
+        """The whole cooler state in ONE round trip.
+
+        ``get_cooler_status`` returns temperature, coolerOn, setpoint and power
+        together, whereas ``temperature`` / ``cooler_on`` / ``cooler_power``
+        below each issue their own RPC -- three calls for one snapshot, and three
+        moments in time, which is wrong when the reading is meant to describe a
+        single exposure.  Returns ``None`` (never raises) if PHD2 is unreachable
+        or the camera has no cooler, so a caller can record what it got and carry
+        on: a missing temperature must never fail an exposure.
+        """
+        try:
+            reply = self.call("get_cooler_status")
+            if reply and "result" in reply:
+                return reply["result"]
+        except Exception as ex:
+            logger.error(f"{function_name()}: could not get cooler status {ex=}")
+        return None
 
     @property
     def temperature(self) -> float | None:
