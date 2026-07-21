@@ -243,20 +243,71 @@ class Calibrator:
         settings = getattr(cal, "settings", None) if cal else None
         return settings if settings is not None else CalibrationSettings()
 
-    def resolve_coord(self, ra: float | None, dec: float | None) -> tuple[float | None, float]:
-        """Pointing for a phase: explicit argument -> config -> runtime default.
+    def resolve_coord(
+        self, ra: float | None, dec: float | None
+    ) -> tuple[float | None, float | None]:
+        """Pointing for a phase -- **the zenith** by default.
 
-        ``ra=None`` is returned as ``None`` and means *transit* -- the caller
-        substitutes the current LST, which is only knowable at run time (a fixed
-        RA in config would be unobservable for much of the year).
+        Explicit argument -> config -> observatory.  The two axes resolve at
+        different moments, deliberately:
+
+        * ``ra=None`` is returned as ``None``, meaning *transit*.  The caller
+          substitutes the current LST at slew time, because LST advances while
+          the phase does its hardware preparation (stage home, focuser move).
+        * ``dec=None`` resolves **here** to the site latitude -- the zenith.
+          Latitude does not change, so there is nothing to gain by deferring
+          it, and resolving centrally means all three phases get a concrete
+          number without each re-implementing the lookup.
+
+        ``dec`` may still come back ``None`` if neither the mount nor the config
+        can supply a latitude; every phase already treats a missing coordinate
+        as "calibrate at the current pointing", which is a better outcome than
+        failing a run over a default.
         """
         coord = self.settings.coord
         ra = ra if ra is not None else coord.ra
         dec = dec if dec is not None else coord.dec
         if dec is None:
-            dec = 20.0
-        logger.debug(f"resolved pointing: ra={ra if ra is not None else 'LST (transit)'} dec={dec}")
-        return ra, float(dec)
+            dec = self._zenith_dec()
+        logger.debug(
+            f"resolved pointing: ra={ra if ra is not None else 'LST (transit)'} "
+            f"dec={dec if dec is not None else 'unknown (no slew)'}"
+        )
+        return ra, (float(dec) if dec is not None else None)
+
+    def _zenith_dec(self) -> float | None:
+        """The declination of the zenith: the observatory's latitude.
+
+        Taken from the **mount** first.  PWI4 reports it in the very status
+        object the phases already read for the LST
+        (``pw.status().site.latitude_degs``), and the mount is the thing that
+        actually points -- so its own site setting is authoritative for where
+        zenith is.  The MAST config carries a latitude too, and the two differ
+        in the 4th decimal (~2 m, harmless), but preferring the mount avoids
+        pointing by one source of truth while slewing by another.
+
+        Falls back to the configured site latitude, then to ``None``.
+        """
+        pw = getattr(self.unit, "pw", None)
+        if pw is not None:
+            try:
+                latitude = pw.status().site.latitude_degs
+                if latitude is not None:
+                    return float(latitude)
+            except Exception as ex:
+                logger.warning(f"could not read the mount's latitude: {ex}")
+        try:
+            site = Config().local_site
+            location = getattr(site, "location", None) if site is not None else None
+            latitude = getattr(location, "latitude", None) if location is not None else None
+            if latitude is not None:
+                logger.debug("zenith dec: falling back to the configured site latitude")
+                return float(latitude)
+        except Exception as ex:
+            logger.warning(f"could not read the configured site latitude: {ex}")
+        logger.warning("no latitude available -- pointing is unresolved; "
+                       "the phase will calibrate at the current pointing")
+        return None
 
     def _skip_if_present(self, phase: str, force: bool) -> bool:
         """Whether ``phase`` should be skipped because its product already exists.
