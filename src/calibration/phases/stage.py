@@ -34,6 +34,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger("mast.unit." + __name__)
 init_calibration_log(logger)
 
+#: Cap on a single stage move.  The full travel takes far less; this fires only
+#: on a genuine stall, never on a slow-but-working move.
+STAGE_MOVE_TIMEOUT_SECONDS = 120.0
+
+
+class StageMoveError(Exception):
+    """The stage did not reach a commanded position (refused, stalled, or aborted)."""
+
+
 
 class StageCalibrator:
     """Drives the pick-off stage calibration loop on a live unit.
@@ -56,6 +65,8 @@ class StageCalibrator:
     def __init__(self, unit: Unit):
         self.unit = unit
         self.errors: list[str] = []
+        #: Frames exposed this run -- prefixes the filename to keep it unique.
+        self._frame_seq: int = 0
 
     def calibrate(  # noqa: C901
         self,
@@ -187,14 +198,36 @@ class StageCalibrator:
         return self.unit.is_active(UnitActivities.Calibrating)
 
     def _move_stage(self, position: int):
+        """Command the stage and wait for it to arrive; raise on any failure.
+
+        Raising -- not the old append-error-and-return -- because the caller is
+        a sweep that pairs each *commanded* position with the shadow measured
+        there.  Silently continuing after a failed or stalled move exposes at
+        the WRONG stage position and feeds a lying (position, offset) pair into
+        the linear fit: a corrupted solution, not a failed one.  The geometry
+        solver cannot detect that; only the move layer can.
+
+        Bounded and abort-aware for the same reason every other wait in this
+        package is: an unbounded ``while is_moving`` pinned the focus phase
+        on-sky for 10+ minutes with ``/calibrate/abort`` powerless (2026-07-21).
+        The exception unwinds through ``calibrate()``'s ``finally``, so the
+        exposure series and activity flag are still released.
+        """
         stage = self.unit.stage
         assert stage is not None
         resp = stage.move_absolute(int(position))
         if resp is not None and getattr(resp, "failed", False):
-            self.errors.append(f"stage move to {position} failed: {resp.errors}")
-            return
+            raise StageMoveError(f"stage move to {position} refused: {resp.errors}")
         time.sleep(0.5)  # let the stage timer register the move before we poll
+        deadline = time.monotonic() + STAGE_MOVE_TIMEOUT_SECONDS
         while stage.is_active(StageActivities.Moving) or stage.is_moving:
+            if not self._still_calibrating():
+                raise StageMoveError(f"aborted while moving to {position}")
+            if time.monotonic() >= deadline:
+                raise StageMoveError(
+                    f"stage did not reach {position} within "
+                    f"{STAGE_MOVE_TIMEOUT_SECONDS:.0f}s -- stuck at {stage.position}"
+                )
             time.sleep(0.5)
 
     def _expose(self, exposure: float, folder: str | None, tag: str):
@@ -203,7 +236,12 @@ class StageCalibrator:
         imager, conf = self.unit.imager, self.unit.unit_conf
         assert imager is not None and conf is not None
         memory = imager.can_image_to_memory and imager.can_send_image_ready_event
-        image_path = None if memory else os.path.join(folder, f"{tag}.fits")  # type: ignore[arg-type]
+        # Sequence prefix, as in the focuser phase: unique names by construction
+        # (PHD2 refuses to overwrite) and a chronologically-sorted folder.
+        self._frame_seq += 1
+        image_path = (
+            None if memory else os.path.join(folder, f"{self._frame_seq:03d}_{tag}.fits")  # type: ignore[arg-type]
+        )
         settings = ImagerSettings(
             seconds=exposure,
             binning=1,  # bin 1 so the frame matches the stored (bin-1) optical center
@@ -212,12 +250,20 @@ class StageCalibrator:
             image_path=image_path,
             save=image_path is not None,
         )
-        imager.start_exposure(settings)
-        if memory:
-            imager.wait_for_image_ready()
-            return imager.image_array
-        imager.wait_for_image_saved()
-        return image_path
+        try:
+            imager.start_exposure(settings)
+            if memory:
+                imager.wait_for_image_ready()
+                return imager.image_array
+            imager.wait_for_image_saved()
+            return image_path
+        except Exception as ex:
+            # Callers already treat None as "no frame here" and let the
+            # min-frames/solver gates decide; a raw exception would instead
+            # abandon the whole sweep for one bad exposure.
+            logger.error(f"_expose({tag}): {ex}")
+            self.errors.append(f"_expose({tag}): {ex}")
+            return None
 
     def _persist(self, result: StageGeometryResult, optical_center, image_shape, mech_epoch: int):
         if image_shape is None:
