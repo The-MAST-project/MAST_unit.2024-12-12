@@ -46,6 +46,8 @@ from astropy.io import fits
 from calibration.analysis.hfd import assess_focus_regime
 from calibration.analysis.models import HFDAutofocusStatus
 from calibration.analysis.vcurve import analyze_donut_samples, analyze_focus_samples
+from calibration.logging_context import init_calibration_log
+from calibration.phases.slewing import slew_and_settle
 from calibration.phases.temperature import get_ambient_temperature, get_mirror_temperature
 from common.activities import FocuserActivities, StageActivities, UnitActivities
 from common.config import Config
@@ -55,14 +57,22 @@ from common.config.calibration import (
     FocuserCalibrationSettings,
 )
 from common.interfaces.imager import ImagerSettings
-from common.mast_logging import init_log
 from common.utils import time_stamp
 
 if TYPE_CHECKING:
     from unit import Unit  # type: ignore[import-untyped]
 
 logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
+init_calibration_log(logger)
+
+#: Cap on a single focuser move.  Generous -- the widest sweep moves seen on sky
+#: (~1000-4000 ticks) complete well inside 30s -- so this only fires on a genuine
+#: stall, never on a slow-but-working move.
+FOCUSER_MOVE_TIMEOUT_SECONDS = 120.0
+
+
+class FocuserMoveError(Exception):
+    """The focuser did not reach a commanded position (stalled, or aborted)."""
 
 
 class FocuserCalibrator:
@@ -73,6 +83,8 @@ class FocuserCalibrator:
         self.errors: list[str] = []
         self.regime: str | None = None
         self.tries_used: int = 0
+        #: Frames exposed this run -- prefixes the filename to keep it unique.
+        self._frame_seq: int = 0
 
     # ------------------------------------------------------------------ entry
     def calibrate(  # noqa: C901
@@ -558,11 +570,40 @@ class FocuserCalibrator:
         return clamped
 
     def _move_focuser(self, position: int, st):
+        """Command the focuser and wait for it to arrive.
+
+        Raises :class:`FocuserMoveError` on a stall or an operator abort -- the
+        wait is NOT open-ended, because `Focuser.ontimer` re-commands a move that
+        went stationary short of target and never gives up.  A focuser that
+        cannot reach the target therefore pins this loop forever: observed
+        2026-07-21, commanded 27499 -> 26649, stalled after ~14 ticks, and the
+        phase hung for 10+ minutes with `/calibrate/abort` powerless because this
+        loop did not consult the flag either.
+
+        Raising (rather than returning False) is deliberate: there are six call
+        sites, and a bool would have to be checked at every one.  The exception
+        unwinds through the `finally` in :meth:`calibrate`, so the exposure
+        series and the activity flag are still released.
+        """
         position = self._clamp(position, st)
         logger.debug(f"focuser -> {position}")
         self.unit.focuser.position = position
         time.sleep(0.5)  # let the activity register before polling
+        deadline = time.monotonic() + FOCUSER_MOVE_TIMEOUT_SECONDS
         while self.unit.focuser.is_active(FocuserActivities.Moving):
+            if not self._still_calibrating():
+                raise FocuserMoveError(f"aborted while moving to {position}")
+            if time.monotonic() >= deadline:
+                # Report where it actually got to: that is the difference between
+                # "the focuser is stalled" and "the target was unreachable", and
+                # it is what had to be dug out of PWI4 by hand the first time.
+                raise FocuserMoveError(
+                    f"focuser did not reach {position} within "
+                    f"{FOCUSER_MOVE_TIMEOUT_SECONDS:.0f}s -- stuck at "
+                    f"{self.unit.focuser.position} (target={self.unit.focuser.target}). "
+                    f"Focuser.ontimer keeps re-commanding a stalled move, so this "
+                    f"never clears on its own; check the focuser in PWI4."
+                )
             time.sleep(0.2)
 
     def _wait_stage(self):
@@ -586,13 +627,9 @@ class FocuserCalibrator:
             except Exception as ex:
                 logger.warning(f"could not read LST: {ex}")
         if ra is not None and dec is not None and mount is not None:
-            logger.info(f"slewing to ra={ra}h dec={dec}deg")
-            mount.goto_ra_dec_j2000(ra, dec)
-            time.sleep(0.5)
-            while mount.is_moving:
-                if not self._still_calibrating():
-                    return False
-                time.sleep(0.5)
+            slew_and_settle(mount, ra, dec, "_goto")
+            if not self._still_calibrating():
+                return False
         if pw is not None:
             try:
                 if not pw.status().mount.is_tracking:
@@ -607,7 +644,18 @@ class FocuserCalibrator:
         imager, conf = self.unit.imager, self.unit.unit_conf
         assert imager is not None and conf is not None
         memory = imager.can_image_to_memory and imager.can_send_image_ready_event
-        image_path = None if memory else os.path.join(folder, f"{tag}.fits")  # type: ignore[arg-type]
+        # The sequence prefix is what makes the name unique.  A tag is only
+        # position + kind, and a run legitimately exposes the SAME position more
+        # than once -- re-acquisition after a thin sweep re-probes the same seed,
+        # and a re-centred sweep re-visits positions of the previous one.  PHD2's
+        # capture_single_frame REFUSES to overwrite ("destination file already
+        # exists"), so identical names abort the run outright.  Numbering here,
+        # at the one place every frame passes through, also puts the folder in
+        # chronological order, which position-named files were not.
+        self._frame_seq += 1
+        image_path = (
+            None if memory else os.path.join(folder, f"{self._frame_seq:03d}_{tag}.fits")  # type: ignore[arg-type]
+        )
         settings = ImagerSettings(
             seconds=st.exposure,
             binning=st.binning,
