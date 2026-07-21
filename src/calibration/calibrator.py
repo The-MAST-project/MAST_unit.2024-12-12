@@ -494,7 +494,7 @@ class Calibrator:
         # run.  Only a file-only imager genuinely requires it, and the phase
         # itself fails clearly in that case.
         try:
-            folder = PathMaker().make_autofocus_folder()
+            folder = PathMaker().make_calibration_folder("focuser")
         except Exception as ex:
             folder = None
             logger.warning(f"{op}: could not create the run folder ({ex}); "
@@ -571,10 +571,23 @@ class Calibrator:
 
                 st = self.settings.stage
                 ra, dec = self.resolve_coord(ra, dec)
-                logger.debug(f"{op}: settings n_positions={st.n_positions} span_steps={st.span_steps} "
+                # Same tolerance as the focus phase: a memory-capable imager
+                # never needs the folder, so failing to create one must not
+                # abort the run -- but a file-only imager (PHD2) fails its first
+                # precondition without it, which is why this phase could not run
+                # at all before: the folder was simply never passed.
+                try:
+                    folder = PathMaker().make_calibration_folder("stage")
+                except Exception as ex:
+                    folder = None
+                    logger.warning(f"{op}: could not create the run folder ({ex}); "
+                                   f"continuing without one (memory imager only)")
+                logger.debug(f"{op}: folder={folder}; settings n_positions={st.n_positions} "
+                             f"span_steps={st.span_steps} "
                              f"exposure={st.exposure} settle={st.settle_seconds} "
                              f"require_bracketed={st.require_bracketed}")
                 result = StageCalibrator(self.unit).calibrate(
+                    folder=folder,
                     target_ra_j2000_hours=ra,
                     target_dec_j2000_degs=dec,
                     n_positions=st.n_positions,
