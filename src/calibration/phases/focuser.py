@@ -78,7 +78,7 @@ class FocuserMoveError(Exception):
 class FocuserCalibrator:
     """Drives the HFD focus calibration loop on a live unit."""
 
-    def __init__(self, unit: "Unit"):
+    def __init__(self, unit: Unit):
         self.unit = unit
         self.errors: list[str] = []
         self.regime: str | None = None

@@ -152,7 +152,10 @@ def not_implemented(reason: str):
         def wrapper(*args, **kwargs):
             raise NotImplementedError(f"{fn.__name__}: {reason}")
 
-        wrapper.not_implemented_reason = reason
+        # setattr, not `wrapper.not_implemented_reason = ...`: attributes cannot
+        # be declared on a function object, so direct assignment is a type-check
+        # error.  Runtime-identical; `_start` reads it back with getattr.
+        setattr(wrapper, "not_implemented_reason", reason)  # noqa: B010
         return wrapper
 
     return decorator
@@ -171,7 +174,7 @@ class Calibrator:
                 cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self, unit: "Unit" | None = None):
+    def __init__(self, unit: Unit | None = None):
         if self._initialized:
             # Re-constructing with a unit re-binds it; otherwise keep the binding.
             if unit is not None:
@@ -199,6 +202,21 @@ class Calibrator:
             if self.unit.is_active(activity):
                 return name
         return None
+
+    def _require_unit(self) -> Unit:
+        """The bound unit, for the phase methods -- raise rather than crash.
+
+        ``_start`` refuses to launch an unbound calibrator, but the ``do_*``
+        methods are also directly callable (the umbrella calls them, and so can
+        anything else) -- and Pylance cannot see a cross-method invariant.  One
+        explicit check, bound to a local, narrows ``Unit | None`` to ``Unit``
+        for the whole method and turns the unbound case into a
+        ``CalibrationError`` that ``_start``'s wrapper funnels into
+        ``/calibrate/status`` instead of an ``AttributeError`` traceback.
+        """
+        if self.unit is None:
+            raise CalibrationError("calibrator is not bound to a unit")
+        return self.unit
 
     def product(self, phase: str):
         """The persisted calibration product for ``phase``, or ``None``.
@@ -435,18 +453,19 @@ class Calibrator:
     def do_calibrate(self, force: bool = False, ra=None, dec=None):
         """Orchestrate ``focuser -> optical_center -> stage`` under the umbrella."""
         op = "do_calibrate"
+        unit = self._require_unit()
         runners = {
             "focuser": self.do_calibrate_focuser,
             "optical_center": self.do_calibrate_optical_center,
             "stage": self.do_calibrate_stage,
         }
-        self.unit.start_activity(UnitActivities.Calibrating)
+        unit.start_activity(UnitActivities.Calibrating)
         logger.info(f"{op}: starting, order={' -> '.join(PHASE_ORDER)}, {force=}")
         logger.debug(f"{op}: coord ra={ra} dec={dec}; existing products: "
                      f"{ {p: self.product(p) is not None for p in PHASE_ORDER} }")
         try:
             for phase in PHASE_ORDER:
-                if not self.unit.is_active(UnitActivities.Calibrating):
+                if not unit.is_active(UnitActivities.Calibrating):
                     logger.info(f"{op}: aborted before '{phase}'")
                     return
                 # The skip-when-present decision belongs to the phase itself, so
@@ -468,7 +487,7 @@ class Calibrator:
                     return
             logger.info(f"{op}: finished")
         finally:
-            self.unit.end_activity(UnitActivities.Calibrating)
+            unit.end_activity(UnitActivities.Calibrating)
 
     def do_calibrate_focuser(self, force=False, ra=None, dec=None, _umbrella=False):
         """HFD autofocus; writes ``calibration.products.focuser``.
@@ -482,6 +501,7 @@ class Calibrator:
         owns that, and promoting a calibrated focus into it is a later decision.
         """
         op = "do_calibrate_focuser"
+        unit = self._require_unit()
         from calibration.phases.focuser import FocuserCalibrator
 
         if self._skip_if_present("focuser", force):
@@ -503,10 +523,10 @@ class Calibrator:
                      f"settings images={st.images} spacing={st.spacing} exposure={st.exposure} "
                      f"binning={st.binning} max_tries={st.max_tries}")
 
-        self.unit.start_activity(UnitActivities.CalibratingFocus)
+        unit.start_activity(UnitActivities.CalibratingFocus)
         with phase_logging("focuser"):
             try:
-                calibrator = FocuserCalibrator(self.unit)
+                calibrator = FocuserCalibrator(unit)
                 status = calibrator.calibrate(
                     settings=st, ra_j2000_hours=ra, dec_j2000_degs=dec, folder=folder,
                 )
@@ -521,7 +541,7 @@ class Calibrator:
                                 f"tolerance={result.tolerance:.1f}")
                 return status
             finally:
-                self.unit.end_activity(UnitActivities.CalibratingFocus)
+                unit.end_activity(UnitActivities.CalibratingFocus)
 
     def do_calibrate_optical_center(self, force=False, ra=None, dec=None, _umbrella=False):
         """Coma-null optical center + low-coma radius; writes
@@ -533,6 +553,7 @@ class Calibrator:
         makes happen, versus the *product* precondition it requires.
         """
         op = "do_calibrate_optical_center"
+        unit = self._require_unit()
         from calibration.phases.optical_center import OpticalCenterCalibrator
 
         if self._skip_if_present("optical_center", force):
@@ -544,14 +565,16 @@ class Calibrator:
             raise CalibrationError("no calibration.products.focuser -- run 'focuser' first")
         logger.debug(f"{op}: prerequisite met -- focus={focus.best_position}")
 
-        self.unit.start_activity(UnitActivities.CalibratingOpticalCenter)
+        unit.start_activity(UnitActivities.CalibratingOpticalCenter)
         with phase_logging("optical_center"):
             try:
                 # Hardware the phase makes happen: coma is only clean at best
                 # focus, so command it here; the phase itself waits (bounded)
                 # for the move to finish before exposing.
+                if unit.focuser is None:
+                    raise CalibrationError("unit has no focuser -- cannot go to best focus")
                 logger.debug(f"{op}: setting focuser.position = {focus.best_position} (calibrated best focus)")
-                self.unit.focuser.position = focus.best_position
+                unit.focuser.position = focus.best_position
 
                 st = self.settings.optical_center
                 ra, dec = self.resolve_coord(ra, dec)
@@ -567,7 +590,7 @@ class Calibrator:
                              f"number_of_frames={st.number_of_frames} "
                              f"coma_tolerance={st.coma_tolerance} "
                              f"min_frames_passing={st.min_frames_passing}")
-                calibrator = OpticalCenterCalibrator(self.unit)
+                calibrator = OpticalCenterCalibrator(unit)
                 result = calibrator.calibrate(
                     settings=st, ra_j2000_hours=ra, dec_j2000_degs=dec, folder=folder,
                 )
@@ -581,7 +604,7 @@ class Calibrator:
                                 f"residual_rms={result.residual_rms:.1f}px")
                 return result
             finally:
-                self.unit.end_activity(UnitActivities.CalibratingOpticalCenter)
+                unit.end_activity(UnitActivities.CalibratingOpticalCenter)
 
     def do_calibrate_stage(self, force=False, ra=None, dec=None, move_to_spec=False, _umbrella=False):
         """Pick-off stage geometry -- the one phase whose drive already exists.
@@ -591,6 +614,7 @@ class Calibrator:
         coordinate placing the centerline on the optical center.
         """
         op = "do_calibrate_stage"
+        unit = self._require_unit()
         from calibration.phases.stage import StageCalibrator
 
         if self._skip_if_present("stage", force):
@@ -606,13 +630,15 @@ class Calibrator:
         logger.debug(f"{op}: prerequisites met -- optical_center=({oc.center_x:.1f}, {oc.center_y:.1f}) "
                      f"epoch={oc.mechanical_epoch}, focus={focus.best_position}")
 
-        self.unit.start_activity(UnitActivities.CalibratingStage)
+        unit.start_activity(UnitActivities.CalibratingStage)
         with phase_logging("stage"):
             try:
                 # Hardware the phase makes happen: the focuser goes to the calibrated
                 # best focus (no inter-phase carry-over is assumed).
+                if unit.focuser is None:
+                    raise CalibrationError("unit has no focuser -- cannot go to best focus")
                 logger.debug(f"{op}: setting focuser.position = {focus.best_position} (calibrated best focus)")
-                self.unit.focuser.position = focus.best_position
+                unit.focuser.position = focus.best_position
 
                 st = self.settings.stage
                 ra, dec = self.resolve_coord(ra, dec)
@@ -631,7 +657,7 @@ class Calibrator:
                              f"span_steps={st.span_steps} "
                              f"exposure={st.exposure} settle={st.settle_seconds} "
                              f"require_bracketed={st.require_bracketed}")
-                result = StageCalibrator(self.unit).calibrate(
+                result = StageCalibrator(unit).calibrate(
                     folder=folder,
                     target_ra_j2000_hours=ra,
                     target_dec_j2000_degs=dec,
@@ -651,7 +677,7 @@ class Calibrator:
                                 f"(bracketed={result.bracketed}, residual_rms={result.residual_rms:.2f}px)")
                 return result
             finally:
-                self.unit.end_activity(UnitActivities.CalibratingStage)
+                unit.end_activity(UnitActivities.CalibratingStage)
 
     # ---------------------------------------------------------------- helpers
     def _fail(self, msg: str):
