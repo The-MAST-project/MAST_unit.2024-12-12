@@ -25,7 +25,16 @@
             "cwd": "${workspaceFolder}/src",
             // "jinja": true,
             "env": {
+                "MAST_PROJECT": "unit",
                 "PYTHONPATH": "${workspaceFolder}/src",
+                // pydevd's Cython accelerator crashes while unwinding a frame
+                // during astropy's import under Python 3.12 sys.monitoring
+                // ("AttributeError: Not the same exception" from
+                // _get_unhandled_exception_frame).  The pure-Python tracer is
+                // slower but does not hit it.  Only needed because
+                // justMyCode=false makes the debugger trace into site-packages.
+                "PYDEVD_USE_CYTHON": "NO",
+                "PYDEVD_USE_FRAME_EVAL": "NO",
                 "PATH": "C:\\Users\\mast\\PycharmProjects\\MAST_unit.2024-12-12\\external\\libusb-1.0.29\\VS2022\\MS64\\dll;${env:PATH}"
             },
             "justMyCode": false,
