@@ -22,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import socket
 import sys
@@ -64,10 +65,8 @@ class Phd2Rpc:
         raise TimeoutError(f"no response to {method}")
 
     def close(self):
-        try:
+        with contextlib.suppress(OSError):
             self.sock.close()
-        except OSError:
-            pass
 
 
 def _get_limit_frame(rpc: Phd2Rpc):
