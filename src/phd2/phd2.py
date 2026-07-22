@@ -1336,12 +1336,21 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         limit_frame = self.conf.limit_frame
         guiding_settings.use_set_limit_frame = limit_frame.enabled
         if limit_frame.enabled and limit_frame.has_roi:
-            guiding_settings.roi = ImagerRoi(
+            configured = (limit_frame.x, limit_frame.y, limit_frame.width, limit_frame.height)
+            roi = ImagerRoi(
                 x=limit_frame.x,
                 y=limit_frame.y,
                 width=limit_frame.width,
                 height=limit_frame.height,
             )
+            applied = (roi.x, roi.y, roi.width, roi.height)
+            if applied != configured:
+                logger.warning(
+                    f"{function_name()}: configured phd2.limit_frame rect {configured} (x, y, width, height) "
+                    f"applied as {applied} -- ImagerRoi conditioning (center-preserving shrink to camera "
+                    f"constraints); the configured value is NOT what PHD2 receives"
+                )
+            guiding_settings.roi = roi
         logger.info(
             f"{function_name()}: limit frame: enabled={limit_frame.enabled}, roi={guiding_settings.roi}"
         )

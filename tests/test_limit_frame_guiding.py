@@ -18,6 +18,7 @@ Runs in the unit venv (Windows): the import chain is Windows-only today
 
 from __future__ import annotations
 
+import logging
 import threading
 from unittest.mock import MagicMock
 
@@ -129,6 +130,29 @@ class TestStartGuidingLimitFrame:
         p.start_guiding()
         assert limit_frame_rois(p) == [wire_form(DERIVED_ROI)]
         assert guiding_settings_of(p).use_set_limit_frame is True
+
+    def test_conditioning_is_never_silent(self):
+        """When ImagerRoi mutates the configured rect, a WARNING must name both values."""
+        import phd2.phd2 as phd2_module
+
+        records: list[logging.LogRecord] = []
+        handler = logging.Handler()
+        handler.emit = records.append  # the module logger is a bare Logger (no propagation)
+        phd2_module.logger.addHandler(handler)
+        try:
+            p = make_connector(LimitFrameConfig(enabled=True, **EXPLICIT_RECT))
+            p.start_guiding()
+        finally:
+            phd2_module.logger.removeHandler(handler)
+
+        warnings = [
+            r for r in records
+            if r.levelno == logging.WARNING and "applied as" in r.getMessage()
+        ]
+        assert warnings, "conditioning mutated the configured rect with no warning"
+        configured = (EXPLICIT_RECT["x"], EXPLICIT_RECT["y"], EXPLICIT_RECT["width"], EXPLICIT_RECT["height"])
+        assert str(configured) in warnings[0].getMessage()
+        assert str(tuple(wire_form(EXPLICIT_RECT))) in warnings[0].getMessage()
 
     def test_limit_frame_set_before_guide_rpc(self):
         """PHD2 must have the frame before star selection starts."""
