@@ -2,6 +2,40 @@
 
 ---
 
+## [2026-07-22] Establish a pytest `tests/` harness; first suite guards the limit-frame RPC contract
+
+**Why:** The `phd2.limit_frame` work (#29, issue #51) was validated by one-off
+bench scripts on labcomp2 (2026-07-07); those runs proved the behavior once but
+protect nothing against regressions. The repo had no test harness at all.
+
+**What:** `tests/` with a pytest suite that drives the **real**
+`PHD2Connector` methods with mocked collaborators — no PHD2 process, no
+hardware, no Mongo — asserting on the exact RPC stream
+(`set_limit_frame` / `guide` / `capture_single_frame`):
+
+- The four `phd2.limit_frame` states: disabled -> `roi: None` (full frame);
+  enabled + rectangle -> sent verbatim; enabled without rectangle -> the
+  derived guiding ROI; **no DB section -> identical to deployed behavior**
+  (the safe-to-land invariant).
+- Ordering: the limit frame is set before the `guide` RPC.
+- Scope pin: acquisition-time `start_exposure()` keys off
+  `ImagerSettings.use_set_limit_frame` alone — the config section must play
+  no role there.
+
+Connectors are built via `object.__new__` (bypassing the heavy `__init__`)
+with a real `PHD2Config` — the pattern proven on the 2026-07-07 bench.
+`tests/conftest.py` bootstraps `sys.path` to `src/` and shims `Filer` on
+Darwin (unsupported there). The import chain is Windows-only today
+(`stage.py` uses pyximc names at module level), so the suite runs in the unit
+venv and skips cleanly elsewhere. `requirements-dev.txt` declares pytest.
+
+**Implications:** Guiding/config changes should extend this suite rather than
+add bench one-offs; the labcomp2 bench remains for what needs a live PHD2 or a
+real camera. This executes the unit-side half of the 2026-07-07 bench's
+TEST-MIGRATION plan; the common-side half lives in `src/common/tests/`.
+
+---
+
 ## [2026-07-02] Guiding limit frame comes from `phd2.limit_frame` config, not code toggles
 
 **Why:** Two things about the PHD2 limit frame (the sub-frame PHD2 confines
