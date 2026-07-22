@@ -14,9 +14,11 @@ hardware, no Mongo — asserting on the exact RPC stream
 (`set_limit_frame` / `guide` / `capture_single_frame`):
 
 - The four `phd2.limit_frame` states: disabled -> `roi: None` (full frame);
-  enabled + rectangle -> sent verbatim; enabled without rectangle -> the
-  derived guiding ROI; **no DB section -> identical to deployed behavior**
-  (the safe-to-land invariant).
+  enabled + rectangle -> applied after `ImagerRoi` conditioning (mod-8 width /
+  mod-2 height at all binnings, optical-axis centering — caught by the first
+  Windows run: (3031, 2692, 2000, 400) reaches the wire as (3038, 2693, 1984,
+  396)); enabled without rectangle -> the derived guiding ROI; **no DB section
+  -> identical to deployed behavior** (the safe-to-land invariant).
 - Ordering: the limit frame is set before the `guide` RPC.
 - Scope pin: acquisition-time `start_exposure()` keys off
   `ImagerSettings.use_set_limit_frame` alone — the config section must play

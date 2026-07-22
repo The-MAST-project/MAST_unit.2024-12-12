@@ -5,7 +5,7 @@ process, no hardware, no Mongo — and asserts on the exact RPC stream the
 connector emits, per the ``phd2.limit_frame`` contract:
 
 - ``enabled: false``       -> ``set_limit_frame`` with ``roi: None`` (full frame)
-- ``enabled`` + rectangle  -> that rectangle, verbatim, in unbinned pixels
+- ``enabled`` + rectangle  -> that rectangle (after ImagerRoi conditioning)
 - ``enabled``, no rectangle -> the fiber/margin-derived guiding ROI, as before
 - no DB section at all     -> identical to today's deployed behavior
 
@@ -32,6 +32,9 @@ from common.config.phd2 import LimitFrameConfig, PHD2Config
 from common.interfaces.imager import ImagerRoi, ImagerSettings
 from phd2.phd2 import SettleModel
 
+# Every rectangle is conditioned by ImagerRoi.model_post_init (mod-8 width /
+# mod-2 height at all supported binnings, optical-axis centering), so the wire
+# value is the CONDITIONED form of the configured numbers -- see wire_form().
 # The fiber/margin-derived guiding ROI make_guiding_settings() produces today
 # (values from the 2026-07-08 labcomp2 ZWO bench).
 DERIVED_ROI = {"x": 1144, "y": 822, "width": 6000, "height": 4000}
@@ -78,6 +81,12 @@ def make_connector(limit_frame: LimitFrameConfig | None = None) -> PHD2Connector
     return p
 
 
+def wire_form(rect: dict) -> list[int]:
+    """What the connector puts on the wire: the rect after ImagerRoi conditioning."""
+    r = ImagerRoi(**rect)
+    return [r.x, r.y, r.width, r.height]
+
+
 def rpc_methods(p: PHD2Connector) -> list[str]:
     return [c.args[0] if c.args else c.kwargs.get("method") for c in p.call.call_args_list]
 
@@ -103,25 +112,22 @@ class TestStartGuidingLimitFrame:
         assert guiding_settings_of(p).use_set_limit_frame is False
         assert "guide" in rpc_methods(p)
 
-    def test_explicit_rectangle_sent_verbatim(self):
+    def test_explicit_rectangle_applied_with_conditioning(self):
         p = make_connector(LimitFrameConfig(enabled=True, **EXPLICIT_RECT))
         p.start_guiding()
-        r = EXPLICIT_RECT
-        assert limit_frame_rois(p) == [[r["x"], r["y"], r["width"], r["height"]]]
+        assert limit_frame_rois(p) == [wire_form(EXPLICIT_RECT)]
         assert guiding_settings_of(p).use_set_limit_frame is True
 
     def test_enabled_without_rectangle_uses_derived_roi(self):
         p = make_connector(LimitFrameConfig(enabled=True))
         p.start_guiding()
-        r = DERIVED_ROI
-        assert limit_frame_rois(p) == [[r["x"], r["y"], r["width"], r["height"]]]
+        assert limit_frame_rois(p) == [wire_form(DERIVED_ROI)]
 
     def test_absent_db_section_preserves_deployed_behavior(self):
         """The safe-to-land invariant: no DB entry == today's default exactly."""
         p = make_connector()  # legacy doc, no limit_frame section
         p.start_guiding()
-        r = DERIVED_ROI
-        assert limit_frame_rois(p) == [[r["x"], r["y"], r["width"], r["height"]]]
+        assert limit_frame_rois(p) == [wire_form(DERIVED_ROI)]
         assert guiding_settings_of(p).use_set_limit_frame is True
 
     def test_limit_frame_set_before_guide_rpc(self):
@@ -136,8 +142,7 @@ class TestSetLimitFrameRpc:
     def test_roi_encodes_as_flat_list_and_arms_reset(self):
         p = make_connector()
         p.set_limit_frame(roi=ImagerRoi(**EXPLICIT_RECT))
-        r = EXPLICIT_RECT
-        assert limit_frame_rois(p) == [[r["x"], r["y"], r["width"], r["height"]]]
+        assert limit_frame_rois(p) == [wire_form(EXPLICIT_RECT)]
         assert p.need_to_reset_limit_frame is True
 
     def test_none_resets_and_disarms(self):
@@ -170,5 +175,4 @@ class TestAcquisitionPathUntouched:
     def test_exposure_uses_settings_roi_not_config_rect(self):
         p = make_connector(LimitFrameConfig(enabled=True, **EXPLICIT_RECT))
         self._expose(p, use_set_limit_frame=True)
-        r = DERIVED_ROI
-        assert limit_frame_rois(p) == [[r["x"], r["y"], r["width"], r["height"]]]
+        assert limit_frame_rois(p) == [wire_form(DERIVED_ROI)]
