@@ -19,6 +19,7 @@ import common.asi as asi
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
+from common.config.phd2 import LimitFrameMode
 from common.config.rois import FcuVersion
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
@@ -1332,27 +1333,32 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         guiding_settings: ImagerSettings = self.parent.unit.guider.make_guiding_settings(save=False)
 
         # the limit frame is governed by the persisted phd2.limit_frame configuration,
-        # not by the fiber/margin-derived guiding ROI (which remains the fallback)
+        # not by the fiber/margin-derived guiding ROI (which remains the 'derived' mode)
         limit_frame = self.conf.limit_frame
-        guiding_settings.use_set_limit_frame = limit_frame.enabled
-        if limit_frame.enabled and limit_frame.has_roi:
-            configured = (limit_frame.x, limit_frame.y, limit_frame.width, limit_frame.height)
-            roi = ImagerRoi(
-                x=limit_frame.x,
-                y=limit_frame.y,
-                width=limit_frame.width,
-                height=limit_frame.height,
-            )
-            applied = (roi.x, roi.y, roi.width, roi.height)
-            if applied != configured:
-                logger.warning(
-                    f"{function_name()}: configured phd2.limit_frame rect {configured} (x, y, width, height) "
-                    f"applied as {applied} -- ImagerRoi conditioning (center-preserving shrink to camera "
-                    f"constraints); the configured value is NOT what PHD2 receives"
+        match limit_frame.mode:
+            case LimitFrameMode.FULL_FRAME:
+                guiding_settings.use_set_limit_frame = False
+            case LimitFrameMode.DERIVED:
+                guiding_settings.use_set_limit_frame = True
+            case LimitFrameMode.FIXED:
+                guiding_settings.use_set_limit_frame = True
+                configured = (limit_frame.x, limit_frame.y, limit_frame.width, limit_frame.height)
+                roi = ImagerRoi(
+                    x=limit_frame.x,
+                    y=limit_frame.y,
+                    width=limit_frame.width,
+                    height=limit_frame.height,
                 )
-            guiding_settings.roi = roi
+                applied = (roi.x, roi.y, roi.width, roi.height)
+                if applied != configured:
+                    logger.warning(
+                        f"{function_name()}: configured phd2.limit_frame rect {configured} (x, y, width, height) "
+                        f"applied as {applied} -- ImagerRoi conditioning (center-preserving shrink to camera "
+                        f"constraints); the configured value is NOT what PHD2 receives"
+                    )
+                guiding_settings.roi = roi
         logger.info(
-            f"{function_name()}: limit frame: enabled={limit_frame.enabled}, roi={guiding_settings.roi}"
+            f"{function_name()}: limit frame: mode={limit_frame.mode}, roi={guiding_settings.roi}"
         )
 
         requested_binning: Literal[1, 2] = guiding_settings.binning if guiding_settings and guiding_settings.binning else 1

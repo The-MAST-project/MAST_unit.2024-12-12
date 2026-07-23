@@ -2,6 +2,27 @@
 
 ---
 
+## [2026-07-23] Limit-frame config selects by `mode`; `start_guiding()` dispatches on it
+
+**Why:** Companion to MAST_common's same-day rename of `phd2.limit_frame` from an
+enabled-flag to a `mode` discriminator (`derived | full_frame | fixed`) — the flag
+read backwards (`enabled: false` was the state operators actually want) and an
+incomplete rectangle degraded silently to the derived ROI. Renamed before any
+merge/deploy, so no migration.
+
+**What:** `start_guiding()` replaces the boolean + `has_roi` conditionals with a
+three-arm `match` on `LimitFrameMode`: `full_frame` → `use_set_limit_frame=False`
+(reset to full frame), `derived` → the fiber/margin-derived guiding ROI as before,
+`fixed` → the configured rectangle through `ImagerRoi` (the conditioning WARNING
+from the 2026-07-22 entry below stays on the `fixed` arm). Tests updated to the
+mode vocabulary; the no-DB-section safe-to-land invariant is unchanged.
+
+**Implications:** Deploy-time DB docs use `{ mode: "full_frame" }` for hand-patch
+parity, `{ mode: "fixed", x, y, width, height }` for an explicit band. A rectangle
+under a non-`fixed` mode now fails config parse loudly instead of being ignored.
+
+---
+
 ## [2026-07-22] Establish a pytest `tests/` harness; first suite guards the limit-frame RPC contract
 
 **Why:** The `phd2.limit_frame` work (#29, issue #51) was validated by one-off
