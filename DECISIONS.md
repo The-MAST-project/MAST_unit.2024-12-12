@@ -2,6 +2,40 @@
 
 ---
 
+## [2026-07-23] Fixed limit frame sent verbatim; per-call endpoint override dropped
+
+**Why (verbatim):** The `fixed` arm routed the DB rectangle through `ImagerRoi`,
+whose `model_post_init` conditioning shifts and shrinks it (−1 center bias, mod-16 /
+mod-4 trim for the max supported binning — see MAST_common#17). That conditioning is
+unnecessary for the limit frame: PHD2 applies the camera alignment constraints
+itself (upstream PRs #1374–#1376, present in the deployed MAST build), and
+`set_limit_frame` takes unbinned full-sensor coordinates. A deliberately placed
+frame must not move.
+
+**What (verbatim):** The `fixed` arm now builds the ROI with
+`ImagerRoi.verbatim(...)` (MAST_common, same day) — the configured rectangle IS the
+wire value. The interim configured-vs-applied WARNING is removed (nothing mutates
+anymore). Tests pin verbatim pass-through, including a rect conditioning would
+demonstrably have mutated and one with camera-illegal odd dimensions.
+
+**Why (dropped):** A per-call override — `limit_frame_mode` (+ rect) parameters on
+`endpoint_start_acquisition_and_guiding`, threaded through `Acquisition` into
+`start_guiding()` — was considered as an alternative to DB updates. Dropped because
+of forgotten-on-restart: `validate_guiding()` stops and restarts guiding internally
+via a bare `self.start_guiding()`, so a pass-through override would silently revert
+to the DB mode mid-session; stashing the override on the connector would fix that
+but reintroduces exactly the sticky hidden state (PHD2's registry-persisted limit
+frame) this feature exists to escape.
+
+**Implications:** The DB `phd2.limit_frame` document remains the single source of
+truth for the guiding-phase limit frame; per-call experimentation means editing the
+DB doc. If the endpoint override is ever revisited, the internal-restart path must
+carry the override explicitly (e.g. on `Acquisition`) before it is trustworthy. The
+existing `use_set_limit_frame` endpoint parameter is unaffected — it governs only
+the acquisition-phase (sky/spec) exposures.
+
+---
+
 ## [2026-07-23] Limit-frame config selects by `mode`; `start_guiding()` dispatches on it
 
 **Why:** Companion to MAST_common's same-day rename of `phd2.limit_frame` from an

@@ -12,10 +12,8 @@ from enum import IntFlag, auto
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from astropy.coordinates import Angle
-from pydantic import BaseModel
-
 import common.asi as asi
+from astropy.coordinates import Angle
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
@@ -28,6 +26,8 @@ from common.mast_logging import init_log
 from common.models.statuses import PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, Timeout, boxed_debug, function_name
+from pydantic import BaseModel
+
 from phd2.phd2_locate import locate_phd2_exe
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 from stage import StagePresetPosition
@@ -1342,21 +1342,15 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 guiding_settings.use_set_limit_frame = True
             case LimitFrameMode.FIXED:
                 guiding_settings.use_set_limit_frame = True
-                configured = (limit_frame.x, limit_frame.y, limit_frame.width, limit_frame.height)
-                roi = ImagerRoi(
+                # verbatim: PHD2 applies the camera alignment constraints itself
+                # (upstream PRs #1374-#1376); ImagerRoi conditioning would shift a
+                # deliberately placed frame (see MAST_common#17)
+                guiding_settings.roi = ImagerRoi.verbatim(
                     x=limit_frame.x,
                     y=limit_frame.y,
                     width=limit_frame.width,
                     height=limit_frame.height,
                 )
-                applied = (roi.x, roi.y, roi.width, roi.height)
-                if applied != configured:
-                    logger.warning(
-                        f"{function_name()}: configured phd2.limit_frame rect {configured} (x, y, width, height) "
-                        f"applied as {applied} -- ImagerRoi conditioning (center-preserving shrink to camera "
-                        f"constraints); the configured value is NOT what PHD2 receives"
-                    )
-                guiding_settings.roi = roi
         logger.info(
             f"{function_name()}: limit frame: mode={limit_frame.mode}, roi={guiding_settings.roi}"
         )

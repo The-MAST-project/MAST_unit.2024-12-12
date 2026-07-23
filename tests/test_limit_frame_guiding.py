@@ -5,7 +5,8 @@ process, no hardware, no Mongo — and asserts on the exact RPC stream the
 connector emits, per the ``phd2.limit_frame`` contract:
 
 - ``mode: full_frame``  -> ``set_limit_frame`` with ``roi: None`` (full frame)
-- ``mode: fixed``       -> the configured rectangle (after ImagerRoi conditioning)
+- ``mode: fixed``       -> the configured rectangle VERBATIM (PHD2 applies the
+  camera alignment constraints itself; upstream PRs #1374-#1376)
 - ``mode: derived``     -> the fiber/margin-derived guiding ROI, as before
 - no DB section at all  -> identical to today's deployed behavior
 
@@ -31,16 +32,22 @@ except (ImportError, NameError) as ex:  # NameError: stage.py off-Windows
 
 from common.config.phd2 import LimitFrameConfig, LimitFrameMode, PHD2Config
 from common.interfaces.imager import ImagerRoi, ImagerSettings
+
 from phd2.phd2 import SettleModel
 
-# Every rectangle is conditioned by ImagerRoi.model_post_init (mod-8 width /
-# mod-2 height at all supported binnings, optical-axis centering), so the wire
-# value is the CONDITIONED form of the configured numbers -- see wire_form().
+# The derived ROI is conditioned by ImagerRoi.model_post_init (mod-8 width /
+# mod-2 height at all supported binnings, center-preserving shrink), so its
+# wire value is the CONDITIONED form -- see wire_form(). A fixed rect bypasses
+# conditioning (ImagerRoi.verbatim) and goes on the wire exactly as configured.
 # The fiber/margin-derived guiding ROI make_guiding_settings() produces today
 # (values from the 2026-07-08 labcomp2 ZWO bench).
 DERIVED_ROI = {"x": 1144, "y": 822, "width": 6000, "height": 4000}
-# The explicit rectangle from PR #29's deployment example.
+# The explicit rectangle from PR #29's deployment example. Conditioning WOULD
+# mutate it (to 1984x396@3038,2693) -- which is exactly what must not happen.
 EXPLICIT_RECT = {"x": 3031, "y": 2692, "width": 2000, "height": 400}
+# A rect no camera would accept as a readout ROI (odd width and height):
+# PHD2 owns that concern, the connector must still pass it through untouched.
+ODD_RECT = {"x": 100, "y": 200, "width": 1999, "height": 401}
 
 LEGACY_PHD2_DOC = {
     "profile": "PWI4+ASI-native,binning=1,bpp=16",
@@ -83,9 +90,13 @@ def make_connector(limit_frame: LimitFrameConfig | None = None) -> PHD2Connector
 
 
 def wire_form(rect: dict) -> list[int]:
-    """What the connector puts on the wire: the rect after ImagerRoi conditioning."""
+    """The rect after ImagerRoi conditioning (the derived path's wire value)."""
     r = ImagerRoi(**rect)
     return [r.x, r.y, r.width, r.height]
+
+
+def rect_list(rect: dict) -> list[int]:
+    return [rect["x"], rect["y"], rect["width"], rect["height"]]
 
 
 def rpc_methods(p: PHD2Connector) -> list[str]:
@@ -113,11 +124,22 @@ class TestStartGuidingLimitFrame:
         assert guiding_settings_of(p).use_set_limit_frame is False
         assert "guide" in rpc_methods(p)
 
-    def test_fixed_rectangle_applied_with_conditioning(self):
+    @pytest.mark.parametrize("rect", [EXPLICIT_RECT, ODD_RECT], ids=["deploy-example", "odd-dims"])
+    def test_fixed_rectangle_applied_verbatim(self, rect):
+        """The configured rect IS the wire value -- no ImagerRoi conditioning."""
+        p = make_connector(LimitFrameConfig(mode=LimitFrameMode.FIXED, **rect))
+        p.start_guiding()
+        assert limit_frame_rois(p) == [rect_list(rect)]
+        assert guiding_settings_of(p).use_set_limit_frame is True
+
+    def test_fixed_rectangle_bypasses_conditioning_that_would_mutate(self):
+        """EXPLICIT_RECT is chosen so conditioning would change it; prove it didn't."""
+        assert wire_form(EXPLICIT_RECT) != rect_list(EXPLICIT_RECT), (
+            "test rect no longer exercises conditioning -- pick one that does"
+        )
         p = make_connector(LimitFrameConfig(mode=LimitFrameMode.FIXED, **EXPLICIT_RECT))
         p.start_guiding()
-        assert limit_frame_rois(p) == [wire_form(EXPLICIT_RECT)]
-        assert guiding_settings_of(p).use_set_limit_frame is True
+        assert limit_frame_rois(p) == [rect_list(EXPLICIT_RECT)]
 
     def test_derived_mode_uses_derived_roi(self):
         p = make_connector(LimitFrameConfig(mode=LimitFrameMode.DERIVED))
@@ -131,8 +153,8 @@ class TestStartGuidingLimitFrame:
         assert limit_frame_rois(p) == [wire_form(DERIVED_ROI)]
         assert guiding_settings_of(p).use_set_limit_frame is True
 
-    def test_conditioning_is_never_silent(self):
-        """When ImagerRoi mutates the configured rect, a WARNING must name both values."""
+    def test_fixed_mode_emits_no_conditioning_warning(self):
+        """The rect is verbatim now, so the old mutation WARNING must be gone."""
         import phd2.phd2 as phd2_module
 
         records: list[logging.LogRecord] = []
@@ -145,14 +167,8 @@ class TestStartGuidingLimitFrame:
         finally:
             phd2_module.logger.removeHandler(handler)
 
-        warnings = [
-            r for r in records
-            if r.levelno == logging.WARNING and "applied as" in r.getMessage()
-        ]
-        assert warnings, "conditioning mutated the configured rect with no warning"
-        configured = (EXPLICIT_RECT["x"], EXPLICIT_RECT["y"], EXPLICIT_RECT["width"], EXPLICIT_RECT["height"])
-        assert str(configured) in warnings[0].getMessage()
-        assert str(tuple(wire_form(EXPLICIT_RECT))) in warnings[0].getMessage()
+        warnings = [r for r in records if r.levelno >= logging.WARNING]
+        assert not warnings, f"unexpected warnings: {[r.getMessage() for r in warnings]}"
 
     def test_limit_frame_set_before_guide_rpc(self):
         """PHD2 must have the frame before star selection starts."""
