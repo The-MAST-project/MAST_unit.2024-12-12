@@ -5,7 +5,6 @@ import math
 import os
 import re
 import sys
-import time
 from typing import NamedTuple, get_args
 
 import astropy.units as u
@@ -18,6 +17,7 @@ from matplotlib.patches import Patch
 from common.const import Const
 from common.corrections import Corrections
 from common.mast_logging import init_log
+from common.filer import MoveGuardian
 from common.utils import Filer, fromisoformat_zulu, function_name
 
 logger = logging.Logger("mast.unit." + __name__)
@@ -175,9 +175,11 @@ def plot_autofocus_analysis(
     if folder:
         file: str = os.path.join(folder, "vcurve.png")
         logger.info(f"{op}: saved plot in {file}")
-        plt.savefig(file, format="png")
-        time.sleep(2)
-        filer.move_ram_to_shared(folder)
+        # Protect the file until it's written and the folder move is scheduled, so the
+        # mover waits for the write instead of racing it (replaces sleep(2)).
+        with MoveGuardian().protect(file):
+            plt.savefig(file, format="png")
+            filer.move_ram_to_shared(folder)
 
     plt.show()
 

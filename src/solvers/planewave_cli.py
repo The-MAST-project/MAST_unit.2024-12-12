@@ -8,7 +8,7 @@ from astropy.coordinates import Angle
 from astropy.io import fits
 
 from common.extended_basemodel import ExtendedBaseModel
-from common.filer import Filer
+from common.filer import Filer, MoveGuardian
 from common.interfaces.solving import (SolverInterface, SolvingResult,
                                        SolvingSolution)
 from common.mast_logging import init_log
@@ -71,19 +71,25 @@ class PlaneWaveCli(SolverInterface):
         # result = None
         completed_process: subprocess.CompletedProcess | None = None
         try:
-            completed_process = subprocess.run(
-                command,
-                capture_output=True,
-                check=True,
-                shell=True,
-            )
+            # ps3cli writes result_path during the run; protect it so a concurrent
+            # ram->shared move can't grab a half-written result.txt.
+            with MoveGuardian().protect(result_path):
+                completed_process = subprocess.run(
+                    command,
+                    capture_output=True,
+                    check=True,
+                    shell=True,
+                )
             filer.move_ram_to_shared(image_path)
         except subprocess.CalledProcessError as e:
             logger.error(
                 f"{op}: solver return code: {PlaneWaveCliSolverExitCode(e.returncode).__repr__()}"
             )
-            with open(result_path, "w") as file:
-                file.write(e.stdout.decode())
+            # Write + close result.txt, THEN move it (protected). The move was previously
+            # inside the open() block, which risked moving a still-open file.
+            with MoveGuardian().protect(result_path):
+                with open(result_path, "w") as file:
+                    file.write(e.stdout.decode())
                 filer.move_ram_to_shared(result_path)
 
             # if it's a HARD error (not just NoStarMatch), cannot continue
