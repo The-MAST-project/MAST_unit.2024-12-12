@@ -31,7 +31,7 @@ import os
 from pathlib import Path
 
 from calibration.logging_context import init_calibration_log
-from common.filer import Filer
+from common.filer import Filer, MoveGuardian
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_calibration_log(logger)
@@ -55,7 +55,7 @@ def save_status(folder: str | None, status, errors: list[str] | None = None) -> 
             import json
 
             payload = json.dumps(status, indent=4, default=str)
-        with open(path, "w", encoding="utf-8") as f:
+        with MoveGuardian().protect(path), open(path, "w", encoding="utf-8") as f:
             f.write(payload)
         logger.debug(f"wrote {path}")
     except Exception as ex:
@@ -125,7 +125,8 @@ def plot_vcurve(folder: str | None, result, best_position=None) -> None:
         ax.grid(alpha=0.3)
         ax.legend()
         fig.tight_layout()
-        fig.savefig(path, dpi=110)
+        with MoveGuardian().protect(path):
+            fig.savefig(path, dpi=110)
         plt.close(fig)
         logger.info(f"wrote {path}")
     except Exception as ex:
