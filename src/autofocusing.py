@@ -12,7 +12,7 @@ from common.activities import FocuserActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.config.rois import SkyRoiConfig
-from common.filer import Filer
+from common.filer import Filer, MoveGuardian
 from common.interfaces.imager import ImagerRoi, ImagerSettings
 from common.mast_logging import init_log
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
@@ -363,18 +363,20 @@ class Autofocuser:
                 self.log_and_store_error(
                     f"{op}: focus analyser stopped working but empty analysis_result"
                 )
-                self.save_analysis(autofocus_folder, status=status,
-                                   errors=["focus analyser stopped working but empty analysis_result"])
-                filer.move_ram_to_shared(autofocus_folder)
+                with MoveGuardian().protect(autofocus_folder):
+                    self.save_analysis(autofocus_folder, status=status,
+                                       errors=["focus analyser stopped working but empty analysis_result"])
+                    filer.move_ram_to_shared(autofocus_folder)
                 continue  # next try_number
 
             if not status.analysis_result.has_solution:
                 self.log_and_store_error(
                     f"{op}: focus analyser did not find a solution"
                 )
-                self.save_analysis(autofocus_folder, status=status,
-                                   errors=["focus analyser did not find a solution"])
-                filer.move_ram_to_shared(autofocus_folder)
+                with MoveGuardian().protect(autofocus_folder):
+                    self.save_analysis(autofocus_folder, status=status,
+                                       errors=["focus analyser did not find a solution"])
+                    filer.move_ram_to_shared(autofocus_folder)
                 continue  # next try_number
 
             #

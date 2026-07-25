@@ -2,7 +2,6 @@ import datetime
 import json
 import logging
 import os.path
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,7 +16,7 @@ from common.config.rois import RoisConfig, SkyRoiConfig
 from common.config.unit import AcquisitionConfig, ToleranceConfig
 from common.const import Const
 from common.corrections import Correction, Corrections
-from common.filer import Filer
+from common.filer import Filer, MoveGuardian
 from common.interfaces.imager import ImagerSettings
 from common.interfaces.solving import SolverInterface, SolvingResult, SolvingTolerance
 from common.mast_logging import init_log
@@ -297,10 +296,10 @@ class Solver(SolverInterface):
                 ".fits", "-solver_result.json"
             )
             os.makedirs(os.path.dirname(result_file_name), exist_ok=True)
-            with open(result_file_name, "w") as fp:
-                fp.write(json.dumps(result.to_dict(), indent=2))
-            time.sleep(2)
-            filer.move_ram_to_shared(result_file_name)
+            with MoveGuardian().protect(result_file_name):
+                with open(result_file_name, "w") as fp:
+                    fp.write(json.dumps(result.to_dict(), indent=2))
+                filer.move_ram_to_shared(result_file_name)
 
             #
             # From "PlateSolve3 server documentation"
@@ -403,10 +402,10 @@ class Solver(SolverInterface):
                             f"{function_name()}: empty imager_settings.folder"
                         )
                     file_name = str(Path(imager_settings.folder) / "corrections.json")
-                    with open(file_name, "w") as f:
-                        f.write(latest_corrections.model_dump_json(indent=2))
-                    time.sleep(2)
-                    filer.move_ram_to_shared(file_name)
+                    with MoveGuardian().protect(file_name):
+                        with open(file_name, "w") as f:
+                            f.write(latest_corrections.model_dump_json(indent=2))
+                        filer.move_ram_to_shared(file_name)
 
                     self.unit.end_activity(UnitActivities.Solving)
                     return True
