@@ -1,14 +1,13 @@
 import datetime
 import logging
 import os
-import time
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
 import common.asi as asi
 from common.config.unit import AcquisitionConfig
 from common.corrections import Corrections
-from common.filer import Filer
+from common.filer import Filer, MoveGuardian
 from common.mast_logging import init_log
 from common.paths import PathMaker
 from common.solving import SolverId
@@ -98,23 +97,26 @@ class Acquisition:
     def save_corrections(self, phase: str):
         if phase in self.corrections:
             path = os.path.join(self.folder, phase, "corrections.json")
-            for _ in range(3):
-                try:
-                    with open(path, "w") as fp:
-                        fp.write(self.corrections[phase].model_dump_json(indent=2))
-                        break
-                except Exception as e:
-                    logger.error(f"failed to write {path} (error: {e})")
-                    continue
-            plot_phase_corrections(
-                phase=phase,
-                corrections=self.corrections[phase],
-                file=path,
-                ends_of_phases=[datetime.datetime.now(datetime.UTC)],
-            )
-            time.sleep(2)
-            filer.move_ram_to_shared(path)
-            filer.move_ram_to_shared(path.replace("json", "png"))
+            png = path.replace("json", "png")
+            # Protect both artifacts until they are fully written AND handed to the mover,
+            # so the ram->shared move can't copy a half-written file (replaces sleep(2)).
+            with MoveGuardian().protect(path, png):
+                for _ in range(3):
+                    try:
+                        with open(path, "w") as fp:
+                            fp.write(self.corrections[phase].model_dump_json(indent=2))
+                            break
+                    except Exception as e:
+                        logger.error(f"failed to write {path} (error: {e})")
+                        continue
+                plot_phase_corrections(
+                    phase=phase,
+                    corrections=self.corrections[phase],
+                    file=path,
+                    ends_of_phases=[datetime.datetime.now(datetime.UTC)],
+                )
+                filer.move_ram_to_shared(path)
+                filer.move_ram_to_shared(png)
 
     def post_process(self):
         if filer.ram and filer.ram.root is not None:

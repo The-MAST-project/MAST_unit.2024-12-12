@@ -12,7 +12,7 @@ from astropy.coordinates import Angle
 
 from common.config.rois import SkyRoiConfig, SpecRoiConfig
 from common.const import Const
-from common.filer import Filer
+from common.filer import Filer, MoveGuardian
 from common.interfaces.solving import (SolverInterface, SolvingConfidenceLevel,
                                        SolvingResult, SolvingSolution)
 from common.mast_logging import init_log
@@ -231,7 +231,10 @@ class AstrometryDotNet(SolverInterface):
         command = " ".join([cmd] + args)
         # logger.info(f"AstrometryDotNet.solve: {command=}")
 
-        completed_process = subprocess.run(command, capture_output=True, shell=True)
+        # The astrometry.net subprocess writes new_fits_path (the solved FITS); protect it
+        # so a ram->shared move can't grab a partially-written solved frame.
+        with MoveGuardian().protect(new_fits_path):
+            completed_process = subprocess.run(command, capture_output=True, shell=True)
         stdout_lines = completed_process.stdout.decode().strip().splitlines()
         stderr_lines = completed_process.stderr.decode().strip().splitlines()
         elapsed = datetime.datetime.now() - start
@@ -241,7 +244,7 @@ class AstrometryDotNet(SolverInterface):
         )
 
         result_file = cygwin_to_win(new_fits_path).replace(".fits", "-result.txt")
-        with open(result_file, "w") as file:
+        with MoveGuardian().protect(result_file), open(result_file, "w") as file:
             file.write("--- command ---\n")
             file.write(" ".join([cmd] + args) + "\n")
             file.write("\n--- stdout ---\n")
