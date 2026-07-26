@@ -1,24 +1,19 @@
 {
   "terminal.integrated.accessibleViewFocusOnCommandExecution": false,
   "terminal.integrated.defaultProfile.windows": "PowerShell",
-  // Linting
-  "python.linting.enabled": true,
-  "python.linting.ruffEnabled": true,
-  "python.linting.flake8Enabled": false,
-  "python.linting.pylintEnabled": false,
-  "python.formatting.provider": "none",
-  // Formatting
+  // Formatting (fleet standard: ruff formatter; only reformat CHANGED lines on
+  // save, so diffs stay small — see ruff.toml for the rules).
   "editor.formatOnSave": true,
-  // Optional: isort to sort imports on save
-  "editor.codeActionsOnSave": {
-    "source.organizeImports": "explicit",
-    "source.fixAll": "always"
+  "editor.formatOnSaveMode": "modifications",
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit",
+      "source.fixAll": "explicit"
+    }
   },
   "ruff.enable": true,
   "ruff.organizeImports": true,
-  "[python]": {
-    "editor.defaultFormatter": null
-  },
   "editor.accessibilitySupport": "off",
   "terminal.integrated.accessibilitySupport": false,
   "files.eol": "\n",
@@ -27,5 +22,5 @@
   "python.analysis.typeCheckingMode": "basic",
   "python.analysis.extraPaths": [
     "./src/Standa/ximc-2.13.6/ximc/crossplatform/wrappers/python"
-  ],
+  ]
 }
