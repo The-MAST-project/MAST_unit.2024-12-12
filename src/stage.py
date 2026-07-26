@@ -31,13 +31,13 @@ init_log(logger)
 
 # os.environ["XILOG"] = "C:/temp/ximc.log"  # Enables logging for ximc library.
 
-XIMC_VERSION = '2.13.6'
+XIMC_VERSION = "2.13.6"
 ximc_top_dir = Path(__file__).parent / "Standa" / f"ximc-{XIMC_VERSION}" / "ximc"
 
 for path in [
-        ximc_top_dir / "crossplatform" / "wrappers" / "python", # examples
-        ximc_top_dir / "python-profiles" / "STANDA"             # profiles
-        ]:
+    ximc_top_dir / "crossplatform" / "wrappers" / "python",  # examples
+    ximc_top_dir / "python-profiles" / "STANDA",  # profiles
+]:
     sys.path.append(str(path))
 
 if platform.system() == "Windows":
@@ -98,6 +98,7 @@ stage_direction_str2int_dict: dict = {
     "Down": StageDirection.Down,
 }
 
+
 class Stage(Component, SwitchedOutlet):
     _instance = None
     _initialized = False
@@ -106,10 +107,8 @@ class Stage(Component, SwitchedOutlet):
         StateFlags.STATE_ERRC: "STATE_ERRC",
         StateFlags.STATE_ERRV: "STATE_ERRV",
         StateFlags.STATE_ERRD: "STATE_ERRD",
-
         StateFlags.STATE_IS_HOMED: "STATE_IS_HOMED",
         StateFlags.STATE_EEPROM_CONNECTED: "STATE_EEPROM_CONNECTED",
-
         StateFlags.STATE_ALARM: "STATE_ALARM",
         StateFlags.STATE_CTP_ERROR: "STATE_CTP_ERROR",
         StateFlags.STATE_POWER_OVERHEAT: "STATE_POWER_OVERHEAT",
@@ -188,9 +187,7 @@ class Stage(Component, SwitchedOutlet):
         self.device = -1
         try:
             with Timeout(10) as timeout:
-                dev_enum = timeout.run(
-                    ximclib.enumerate_devices, probe_flags, enum_hints
-                )
+                dev_enum = timeout.run(ximclib.enumerate_devices, probe_flags, enum_hints)
         except TimeoutError as ex:
             logger.error(f"{op}: timeout while enumerating devices: {ex}")
             return
@@ -252,21 +249,15 @@ class Stage(Component, SwitchedOutlet):
         # self.set_profile()  # FUTURE: set motion profile parameters for known stage models
 
         x_device_information = device_information_t()
-        result = ximclib.get_device_information(
-            self.device, byref(x_device_information)
-        )
+        result = ximclib.get_device_information(self.device, byref(x_device_information))
 
         if result == Result.Ok:
             comport = str(self.device_uri)
             comport = comport[comport.find("COM") :].removesuffix("'")
 
             self.info["port"] = comport
-            self.info["controller"] = repr(
-                string_at(x_device_information.Manufacturer).decode()
-            ).replace("'", "")
-            self.info["product"] = repr(
-                string_at(x_device_information.ProductDescription).decode()
-            ).replace("'", "")
+            self.info["controller"] = repr(string_at(x_device_information.Manufacturer).decode()).replace("'", "")
+            self.info["product"] = repr(string_at(x_device_information.ProductDescription).decode()).replace("'", "")
             self.info["version"] = (
                 f"{repr(x_device_information.Major)}.{repr(x_device_information.Minor)}"
                 + f".{repr(x_device_information.Release)}"
@@ -317,9 +308,7 @@ class Stage(Component, SwitchedOutlet):
         if self.min_travel is not None and self.max_travel is not None:
             self.presets[StagePresetPosition.Min] = self.min_travel
             self.presets[StagePresetPosition.Max] = self.max_travel
-            self.presets[StagePresetPosition.Middle] = int(
-                (self.max_travel - self.min_travel) / 2
-            )
+            self.presets[StagePresetPosition.Middle] = int((self.max_travel - self.min_travel) / 2)
 
         # get initial values from the hardware
         hw_status = status_t()
@@ -410,11 +399,14 @@ from pyximc import *
 
         try:
             result = profile_setter(ximclib, self.device)
-            logger.info(f"set profile for stage model '{self.stage_model}' from file '{file_path.as_posix()}', "
-                        + f"result: {RESULT_MAP.get(result, result)}")
+            logger.info(
+                f"set profile for stage model '{self.stage_model}' from file '{file_path.as_posix()}', "
+                + f"result: {RESULT_MAP.get(result, result)}"
+            )
         except Exception as e:
-            logger.error(f"error setting profile for stage model '{self.stage_model}' "
-                         + f"from file '{file_path.as_posix()}': {e}")
+            logger.error(
+                f"error setting profile for stage model '{self.stage_model}' " + f"from file '{file_path.as_posix()}': {e}"
+            )
 
     def position_sampler(self):
         return self.position
@@ -523,9 +515,7 @@ from pyximc import *
             raise Exception("Not connected")
 
         if self.close_enough(value):
-            logger.info(
-                f"Not changing position ({self.position} is close enough to {value}"
-            )
+            logger.info(f"Not changing position ({self.position} is close enough to {value}")
             return
 
         self.target = value
@@ -599,8 +589,8 @@ from pyximc import *
             if result == Result.Ok:
                 if status.CurT > secure_settings.CriticalT:
                     logger.warning(
-                        f"{op}: WARNING: controller temperature {(status.CurT/10):.2f}C "
-                        + f"exceeds critical temperature {(secure_settings.CriticalT/10):.2f}C"
+                        f"{op}: WARNING: controller temperature {(status.CurT / 10):.2f}C "
+                        + f"exceeds critical temperature {(secure_settings.CriticalT / 10):.2f}C"
                     )
                     logger.debug(f"{op}: secure settings: {secure_settings:x}")
             else:
@@ -645,15 +635,14 @@ from pyximc import *
 
             if (security_error & StateFlags.STATE_ALARM) != 0:
                 if (security_error & (StateFlags.STATE_POWER_OVERHEAT | StateFlags.STATE_CONTROLLER_OVERHEAT)) != 0:
-
                     if status.CurT > self.secure_settings.CriticalT:
                         logger.error(
-                            f"{op}: controller temperature {(status.CurT/10):.2f}C exceeds critical temperature "
-                            + f"{(self.secure_settings.CriticalT/10):.2f}C"
+                            f"{op}: controller temperature {(status.CurT / 10):.2f}C exceeds critical temperature "
+                            + f"{(self.secure_settings.CriticalT / 10):.2f}C"
                         )
                         self.start_activity(StageActivities.Overheating, existing_ok=True)
                     else:
-                        pass # TODO: Check other ALARM conditions
+                        pass  # TODO: Check other ALARM conditions
             else:
                 # STATE_ALARM was set but is no longer. If we were previously in Overheating activity, end it.
                 if self.is_active(StageActivities.Overheating):
@@ -722,9 +711,7 @@ from pyximc import *
                     )
                     with self.stage_lock:
                         for i in range(3):
-                            logger.error(
-                                f"attempt #{i} (of 3): attempting to clear MVCMD_ERROR by calling command_stop()"
-                            )
+                            logger.error(f"attempt #{i} (of 3): attempting to clear MVCMD_ERROR by calling command_stop()")
                             ximclib.command_stop(self.device)
                             time.sleep(0.2)
                             result = ximclib.get_status(self.device, byref(hw_status))
@@ -737,14 +724,10 @@ from pyximc import *
                                 f"{op}: attempt #{i} (of 3): status after command_stop(): {hw_status.MvCmdSts=:08X}"
                             )
                             if (hw_status.MvCmdSts & MvcmdStatus.MVCMD_ERROR) != 0:
-                                logger.error(
-                                    f"{op}: attempt #{i} (of 3): successfully cleared MVCMD_ERROR"
-                                )
+                                logger.error(f"{op}: attempt #{i} (of 3): successfully cleared MVCMD_ERROR")
                                 break
 
-            if self.is_active(StageActivities.StartingUp) and self.close_enough(
-                self.presets[StagePresetPosition.StartUp]
-            ):
+            if self.is_active(StageActivities.StartingUp) and self.close_enough(self.presets[StagePresetPosition.StartUp]):
                 self.end_activity(StageActivities.StartingUp)
 
             if self.is_active(StageActivities.Homing):
@@ -774,9 +757,7 @@ from pyximc import *
 
         preset_position = self.presets[preset]
         if self.close_enough(preset_position):
-            logger.info(
-                f"Not moving {self.position=} is close enough to {preset_position=}"
-            )
+            logger.info(f"Not moving {self.position=} is close enough to {preset_position=}")
             return
 
         return self.move_absolute(preset_position)
@@ -793,22 +774,14 @@ from pyximc import *
             position = int(position)
 
         if self.close_enough(position):
-            logger.info(
-                f"{op}: Not moving {self.position=} is close enough to {position=}"
-            )
+            logger.info(f"{op}: Not moving {self.position=} is close enough to {position=}")
             return
 
         if self.max_travel is None or self.min_travel is None:
-            return CanonicalResponse(
-                errors=["cannot move - min_travel or max_travel is None"]
-            )
+            return CanonicalResponse(errors=["cannot move - min_travel or max_travel is None"])
 
         if not (self.min_travel <= position < self.max_travel):
-            return CanonicalResponse(
-                errors=[
-                    f"out of range: {self.min_travel} <= position < {self.max_travel}"
-                ]
-            )
+            return CanonicalResponse(errors=[f"out of range: {self.min_travel} <= position < {self.max_travel}"])
         try:
             with self.stage_lock:
                 assert ximclib
@@ -825,9 +798,7 @@ from pyximc import *
         self.ticks_at_start = self.position
         self.target = position
         self.motion_start_time = datetime.datetime.now()
-        self.start_activity(
-            StageActivities.Moving, details=[f"from {self.position} to {self.target}"]
-        )
+        self.start_activity(StageActivities.Moving, details=[f"from {self.position} to {self.target}"])
 
         return CanonicalResponse_Ok
 
@@ -856,16 +827,12 @@ from pyximc import *
         amount *= 1 if direction == StageDirection.Up else -1
         try:
             self.target = current_position + amount
-            self.start_activity(
-                StageActivities.Moving, details=[f"from {self.position} to {self.target}"]
-            )
+            self.start_activity(StageActivities.Moving, details=[f"from {self.position} to {self.target}"])
             with self.stage_lock:
                 assert ximclib
                 response = ximclib.command_movr(self.device, amount, 0)
             if response != Result.Ok:
-                msg = (
-                    f"Failed to start stage move (command_movr({self.device}, {amount})"
-                )
+                msg = f"Failed to start stage move (command_movr({self.device}, {amount})"
                 logger.error(f"{op}: " + msg)
                 return CanonicalResponse(errors=[msg])
         except Exception as ex:
@@ -905,10 +872,7 @@ from pyximc import *
                 self.detected,
                 self.connected,
                 not self.was_shut_down,
-                (
-                    self.at_preset(StagePresetPosition.Spec)
-                    or self.at_preset(StagePresetPosition.Sky)
-                ),
+                (self.at_preset(StagePresetPosition.Spec) or self.at_preset(StagePresetPosition.Sky)),
                 self._currently_operational,
             ]
         )
@@ -926,10 +890,7 @@ from pyximc import *
                 ret.append(f"{label}: shut down")
             if not self.connected:
                 ret.append(f"{label}: not connected")
-            elif not (
-                self.at_preset(StagePresetPosition.Spec)
-                or self.at_preset(StagePresetPosition.Sky)
-            ):
+            elif not (self.at_preset(StagePresetPosition.Spec) or self.at_preset(StagePresetPosition.Sky)):
                 ret.append(
                     f"{label}: at {self.position}, not at 'Spec' "
                     + f"({self.presets[StagePresetPosition.Spec]}) or 'Sky' "
@@ -966,18 +927,10 @@ from pyximc import *
         tag = "Stage"
 
         router = APIRouter()
-        router.add_api_route(
-            base_stage_path + "/startup", tags=[tag], endpoint=self.endpoint_startup
-        )
-        router.add_api_route(
-            base_stage_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown
-        )
-        router.add_api_route(
-            base_stage_path + "/abort", tags=[tag], endpoint=self.endpoint_abort
-        )
-        router.add_api_route(
-            base_stage_path + "/status", tags=[tag], endpoint=self.endpoint_status
-        )
+        router.add_api_route(base_stage_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
+        router.add_api_route(base_stage_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown)
+        router.add_api_route(base_stage_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
+        router.add_api_route(base_stage_path + "/status", tags=[tag], endpoint=self.endpoint_status)
         router.add_api_route(
             base_stage_path + "/position",
             tags=[tag],
@@ -989,15 +942,9 @@ from pyximc import *
             tags=[tag],
             endpoint=self.endpoint_set_position,
         )
-        router.add_api_route(
-            base_stage_path + "/connect", tags=[tag], endpoint=self.connect
-        )
-        router.add_api_route(
-            base_stage_path + "/disconnect", tags=[tag], endpoint=self.disconnect
-        )
-        router.add_api_route(
-            base_stage_path + "/move", tags=[tag], endpoint=self.move_relative
-        )
+        router.add_api_route(base_stage_path + "/connect", tags=[tag], endpoint=self.connect)
+        router.add_api_route(base_stage_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
+        router.add_api_route(base_stage_path + "/move", tags=[tag], endpoint=self.move_relative)
         router.add_api_route(
             base_stage_path + "/move_to_preset",
             tags=[tag],
@@ -1008,7 +955,6 @@ from pyximc import *
 
 
 if __name__ == "__main__":
-
     stage = Stage(unit=None)  # type: ignore
 
     def move_between_presets():

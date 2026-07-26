@@ -76,8 +76,12 @@ def make_connector(limit_frame: LimitFrameConfig | None = None) -> PHD2Connector
     p.conf = PHD2Config(**doc)
 
     guiding_settings = ImagerSettings(
-        seconds=3.0, binning=1, gain=170, format="raw16",
-        roi=ImagerRoi(**DERIVED_ROI), image_path="unused",
+        seconds=3.0,
+        binning=1,
+        gain=170,
+        format="raw16",
+        roi=ImagerRoi(**DERIVED_ROI),
+        image_path="unused",
     )
     guider = MagicMock(name="guider")
     guider.make_guiding_settings.return_value = guiding_settings
@@ -104,11 +108,7 @@ def rpc_methods(p: PHD2Connector) -> list[str]:
 
 
 def limit_frame_rois(p: PHD2Connector) -> list[list[int] | None]:
-    return [
-        c.kwargs["params"]["roi"]
-        for c in p.call.call_args_list
-        if (c.args and c.args[0] == "set_limit_frame")
-    ]
+    return [c.kwargs["params"]["roi"] for c in p.call.call_args_list if (c.args and c.args[0] == "set_limit_frame")]
 
 
 def guiding_settings_of(p: PHD2Connector) -> ImagerSettings:
@@ -200,8 +200,12 @@ class TestAcquisitionPathUntouched:
         p.parent = None  # skip activity bookkeeping
         p.image_was_saved = False
         settings = ImagerSettings(
-            seconds=1.0, binning=1, gain=170, format="raw16",
-            roi=ImagerRoi(**DERIVED_ROI), image_path="unused",
+            seconds=1.0,
+            binning=1,
+            gain=170,
+            format="raw16",
+            roi=ImagerRoi(**DERIVED_ROI),
+            image_path="unused",
             use_set_limit_frame=use_set_limit_frame,
         )
         p.start_exposure(settings)

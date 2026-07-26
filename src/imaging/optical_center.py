@@ -126,7 +126,6 @@ def find_optical_center(
     max_iter=5,
     min_sources=12,  # need enough spread stars; a few clustered ones overfit a center
     min_radiality=0.25,  # coma signal floor; 19 real no-coma frames scattered up to 0.18
-
     exclude_mask=None,  # pixels to keep out of detection (e.g. folding-mirror shadow)
     plot_results=False,
 ) -> OpticalCenterResult | None:
@@ -181,10 +180,7 @@ def find_optical_center(
 
     # 4a) Filter spurious / unusable sources.  (coma.py filtered on the row
     # *count* by mistake -- `tbl["area"].size` -- so its mask was all-or-nothing.)
-    keep = (
-        (area >= min_area) & (area <= max_area)
-        & np.isfinite(theta) & (ellip >= min_ellipticity) & np.isfinite(flux)
-    )
+    keep = (area >= min_area) & (area <= max_area) & np.isfinite(theta) & (ellip >= min_ellipticity) & np.isfinite(flux)
     if min_field_radius > 0:
         # keep margin stars only, where coma (radial elongation) is pronounced
         rr = np.hypot(x - (nx_img - 1) / 2, y - (ny - 1) / 2)
@@ -237,8 +233,16 @@ def find_optical_center(
     # 6b) Radiality gate: confirm the inlier elongation field is genuinely
     # radial coma about the fitted center (see _coma_radiality).
     radiality, radiality_spin1, gate_val, gate_name = _coma_radiality(
-        x[mask], y[mask], theta[mask], flux[mask],
-        peak_x[mask], peak_y[mask], weights[mask], px, py, min_sources,
+        x[mask],
+        y[mask],
+        theta[mask],
+        flux[mask],
+        peak_x[mask],
+        peak_y[mask],
+        weights[mask],
+        px,
+        py,
+        min_sources,
     )
     if gate_val < min_radiality:
         print(
@@ -293,7 +297,6 @@ def _plot(data_sub, result, mask):
 
 
 if __name__ == "__main__":
-
     # here = os.path.dirname(os.path.abspath(__file__))
     # res = find_optical_center(os.path.join(here, "sample.fits"), plot_results=False)
     res = find_optical_center("D:/MAST/tmp/Samples/sample1.fits", plot_results=False)

@@ -30,7 +30,6 @@ class FocusDirection(IntEnum):
 
 
 class Focuser(Component, SwitchedOutlet, AscomDispatcher):
-
     _instance = None
     _initialized = False
     CLOSE_ENOUGH = 2
@@ -44,7 +43,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, unit = None):
+    def __init__(self, unit=None):
         if self._initialized:
             return
 
@@ -101,10 +100,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             self.connect()
         self.pw.focuser_enable()
         self._was_shut_down = False
-        if (
-            self.known_as_good_position is not None
-            and self.position != self.known_as_good_position
-        ):
+        if self.known_as_good_position is not None and self.position != self.known_as_good_position:
             self.position = self.known_as_good_position
         return CanonicalResponse_Ok
 
@@ -136,9 +132,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         ascom_run(self, "Connected = True")
         response = ascom_run(self, "Connected")
         if response.failed:
-            logger.error(
-                f"could not ASCOM Connected = True (failure={response.failure})"
-            )
+            logger.error(f"could not ASCOM Connected = True (failure={response.failure})")
             self.connected = False
         else:
             self.connected = True
@@ -273,8 +267,9 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
     @property
     def is_stationary(self) -> bool:
-        return self.latest_positions.count == self.latest_positions.maxlen and \
-            all(self.latest_positions[0] == pos for pos in self.latest_positions)
+        return self.latest_positions.count == self.latest_positions.maxlen and all(
+            self.latest_positions[0] == pos for pos in self.latest_positions
+        )
 
     def ontimer(self):
         if self.unit and self.unit.unit_shutdown_event.is_set():
@@ -286,12 +281,16 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
         if self.is_active(FocuserActivities.Moving):
             if self.is_stationary and not self.close_enough(self.target):
-                boxed_log(logger, [
-                    "Focuser is stationary but not close_enough to target",
-                    f"{self.target=}, {self.position=}, {self.CLOSE_ENOUGH=}",
-                    f"Moving it to {self.target} again"
-                    ], center=True)
-                assert(self.target is not None)
+                boxed_log(
+                    logger,
+                    [
+                        "Focuser is stationary but not close_enough to target",
+                        f"{self.target=}, {self.position=}, {self.CLOSE_ENOUGH=}",
+                        f"Moving it to {self.target} again",
+                    ],
+                    center=True,
+                )
+                assert self.target is not None
                 self.position = self.target
 
             elif self.close_enough(self.target):
@@ -305,9 +304,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         pw_stat = self.pw.status()
         ascom_response = ascom_run(self, "IsMoving")
         is_moving = (
-            ascom_response.value
-            if ascom_response.succeeded
-            else pw_stat.focuser.is_moving  # type: ignore
+            ascom_response.value if ascom_response.succeeded else pw_stat.focuser.is_moving  # type: ignore
         )
 
         return FocuserStatus(
@@ -378,15 +375,11 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
         router = APIRouter()
         router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
-        router.add_api_route(
-            base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown
-        )
+        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown)
         router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
         router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
         router.add_api_route(base_path + "/connect", tags=[tag], endpoint=self.connect)
-        router.add_api_route(
-            base_path + "/disconnect", tags=[tag], endpoint=self.disconnect
-        )
+        router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
         router.add_api_route(base_path + "/position", tags=[tag], endpoint=endpoint_get_position)
         router.add_api_route(
             base_path + "/position",
@@ -401,11 +394,10 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         )
         router.add_api_route(base_path + "/move", tags=[tag], endpoint=self.move)
         router.add_api_route(base_path + "/move_in", tags=[tag], endpoint=self.endpoint_move_in)
-        router.add_api_route(
-            base_path + "/move_out", tags=[tag], endpoint=self.endpoint_move_out
-        )
+        router.add_api_route(base_path + "/move_out", tags=[tag], endpoint=self.endpoint_move_out)
 
         return router
+
 
 if __name__ == "__main__":
     import time

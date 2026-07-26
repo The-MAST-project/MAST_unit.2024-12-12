@@ -212,13 +212,18 @@ Steps, numbered as in the source:
 ### `_solve_center` — the normal‑equation intersection
 
 ```python
-nx = -np.sin(theta); ny = np.cos(theta)         # line normals n_i
+nx = -np.sin(theta)
+ny = np.cos(theta)  # line normals n_i
 ndotp = nx * x + ny * y
-mxx = np.sum(weights*nx*nx); mxy = np.sum(weights*nx*ny); myy = np.sum(weights*ny*ny)
-vx  = np.sum(weights*nx*ndotp); vy = np.sum(weights*ny*ndotp)
-m = np.array([[mxx, mxy], [mxy, myy]]); v = np.array([vx, vy])
-px, py = np.linalg.solve(m, v)                  # M p = v
-residuals = nx*(px - x) + ny*(py - y)           # signed perpendicular distances
+mxx = np.sum(weights * nx * nx)
+mxy = np.sum(weights * nx * ny)
+myy = np.sum(weights * ny * ny)
+vx = np.sum(weights * nx * ndotp)
+vy = np.sum(weights * ny * ndotp)
+m = np.array([[mxx, mxy], [mxy, myy]])
+v = np.array([vx, vy])
+px, py = np.linalg.solve(m, v)  # M p = v
+residuals = nx * (px - x) + ny * (py - y)  # signed perpendicular distances
 ```
 
 This is exactly $M\mathbf p=\mathbf v$ from §3, in the stable normal‑vector form.
@@ -226,15 +231,16 @@ This is exactly $M\mathbf p=\mathbf v$ from §3, in the stable normal‑vector f
 ### `_coma_radiality` — spin‑2 and spin‑1 confirmation
 
 ```python
-rad = np.arctan2(y - py, x - px)                              # φ_i
-radiality = np.sum(weights*np.cos(2*(theta - rad)))/np.sum(weights)   # R2 (spin-2)
-ox, oy = x - peak_x, y - peak_y                              # centroid - peak = o
-omag = np.hypot(ox, oy); cp_ok = omag > 0.5                  # drop sub-pixel (quantization)
-if cp_ok.sum() >= min_sources and np.sum((flux*omag)[cp_ok]) > 0:
+rad = np.arctan2(y - py, x - px)  # φ_i
+radiality = np.sum(weights * np.cos(2 * (theta - rad))) / np.sum(weights)  # R2 (spin-2)
+ox, oy = x - peak_x, y - peak_y  # centroid - peak = o
+omag = np.hypot(ox, oy)
+cp_ok = omag > 0.5  # drop sub-pixel (quantization)
+if cp_ok.sum() >= min_sources and np.sum((flux * omag)[cp_ok]) > 0:
     theta_cp = np.arctan2(oy[cp_ok], ox[cp_ok])
-    spin1 = np.sum((flux*omag)[cp_ok]*np.cos(theta_cp - rad[cp_ok])) / ...   # R1 (spin-1)
-    return radiality, spin1, spin1, "spin-1 (centroid-peak)"   # gate on spin-1 when available
-return radiality, float("nan"), radiality, "spin-2 (ellipse)" # else fall back to spin-2
+    spin1 = np.sum((flux * omag)[cp_ok] * np.cos(theta_cp - rad[cp_ok])) / ...  # R1 (spin-1)
+    return radiality, spin1, spin1, "spin-1 (centroid-peak)"  # gate on spin-1 when available
+return radiality, float("nan"), radiality, "spin-2 (ellipse)"  # else fall back to spin-2
 ```
 
 ### Result object

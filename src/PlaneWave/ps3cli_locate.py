@@ -46,6 +46,7 @@ def locate_ps3cli_catalog() -> str | None:
     and NOT interchangeable with them. Without it, ``ps3cli --server`` validates
     the catalog at startup and exits. PS3CLI_CATALOG wins if present.
     """
+
     def _is_catalog(p: Path) -> bool:
         return (p / "UC4").is_dir() and (p / "Orca").is_dir()
 

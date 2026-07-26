@@ -71,21 +71,33 @@ def _cygwin_env() -> dict:
 def _common_args(solve_field, index_dir, workdir):
     return [
         solve_field,
-        "--scale-units", "arcsecperpix",
-        "--index-dir", _win_to_cygwin(index_dir),
-        "--no-plots", "--overwrite", "--cpulimit", "60",
-        "--solved", "none", "--match", "none", "--rdls", "none", "--corr", "none",
-        "--dir", _win_to_cygwin(str(workdir)),
-        "--temp-dir", _win_to_cygwin(str(workdir)),
+        "--scale-units",
+        "arcsecperpix",
+        "--index-dir",
+        _win_to_cygwin(index_dir),
+        "--no-plots",
+        "--overwrite",
+        "--cpulimit",
+        "60",
+        "--solved",
+        "none",
+        "--match",
+        "none",
+        "--rdls",
+        "none",
+        "--corr",
+        "none",
+        "--dir",
+        _win_to_cygwin(str(workdir)),
+        "--temp-dir",
+        _win_to_cygwin(str(workdir)),
         "--crpix-center",  # tweak left ON (no --no-tweak), matching production
     ]
 
 
 def _run(args):
     proc = subprocess.run(" ".join(args), capture_output=True, shell=True, env=_cygwin_env())
-    assert proc.returncode == 0, (
-        f"solve-field failed (rc={proc.returncode}):\n{proc.stderr.decode(errors='replace')}"
-    )
+    assert proc.returncode == 0, f"solve-field failed (rc={proc.returncode}):\n{proc.stderr.decode(errors='replace')}"
 
 
 def test_numpy_downsample_matches_native_downsample(astrometry_env, tmp_path):
@@ -101,29 +113,35 @@ def test_numpy_downsample_matches_native_downsample(astrometry_env, tmp_path):
 
     # --- Config A: numpy 2x2 block-mean pre-downsample, then solve -----------
     dh, dw = height // FACTOR, width // FACTOR
-    downsampled = (
-        data[: dh * FACTOR, : dw * FACTOR]
-        .reshape(dh, FACTOR, dw, FACTOR)
-        .mean(axis=(1, 3))
-        .astype(dtype)
-    )
+    downsampled = data[: dh * FACTOR, : dw * FACTOR].reshape(dh, FACTOR, dw, FACTOR).mean(axis=(1, 3)).astype(dtype)
     header["NAXIS1"], header["NAXIS2"] = dw, dh
     a_in = tmp_path / "a_downsampled.fits"
     astropy_fits.writeto(a_in, downsampled, header, overwrite=True)
     a_out = tmp_path / "a_solved.fits"
     eff = PIXELSCALE * FACTOR
     args_a = _common_args(solve_field, index_dir, tmp_path) + [
-        "--scale-low", f"{0.9 * eff}", "--scale-high", f"{1.1 * eff}",
-        "--new-fits", _win_to_cygwin(str(a_out)), _win_to_cygwin(str(a_in)),
+        "--scale-low",
+        f"{0.9 * eff}",
+        "--scale-high",
+        f"{1.1 * eff}",
+        "--new-fits",
+        _win_to_cygwin(str(a_out)),
+        _win_to_cygwin(str(a_in)),
     ]
     _run(args_a)
 
     # --- Config B: solve-field --downsample 2 on the original frame ----------
     b_out = tmp_path / "b_solved.fits"
     args_b = _common_args(solve_field, index_dir, tmp_path) + [
-        "--scale-low", f"{0.9 * PIXELSCALE}", "--scale-high", f"{1.1 * PIXELSCALE}",
-        "--downsample", str(FACTOR),
-        "--new-fits", _win_to_cygwin(str(b_out)), _win_to_cygwin(str(test_fits)),
+        "--scale-low",
+        f"{0.9 * PIXELSCALE}",
+        "--scale-high",
+        f"{1.1 * PIXELSCALE}",
+        "--downsample",
+        str(FACTOR),
+        "--new-fits",
+        _win_to_cygwin(str(b_out)),
+        _win_to_cygwin(str(test_fits)),
     ]
     _run(args_b)
 
@@ -133,30 +151,32 @@ def test_numpy_downsample_matches_native_downsample(astrometry_env, tmp_path):
 
     points = {
         "center": (width / 2.0, height / 2.0),
-        "BL": (1.0, 1.0), "BR": (float(width), 1.0),
-        "TL": (1.0, float(height)), "TR": (float(width), float(height)),
+        "BL": (1.0, 1.0),
+        "BR": (float(width), 1.0),
+        "TL": (1.0, float(height)),
+        "TR": (float(width), float(height)),
     }
     max_corner = 0.0
     center_sep = None
     for name, (xo, yo) in points.items():
         # A lives in the binned grid -> map original pixel onto it via pixel_grid.
-        ra_a, dec_a = wcs_a.wcs_pix2world(
-            pg.orig_to_grid_fits(xo, FACTOR), pg.orig_to_grid_fits(yo, FACTOR), 1
-        )
+        ra_a, dec_a = wcs_a.wcs_pix2world(pg.orig_to_grid_fits(xo, FACTOR), pg.orig_to_grid_fits(yo, FACTOR), 1)
         # B lives in the original grid -> use the pixel directly (factor 1).
         ra_b, dec_b = wcs_b.wcs_pix2world(xo, yo, 1)
-        sep = SkyCoord(float(ra_a) * u.deg, float(dec_a) * u.deg).separation(
-            SkyCoord(float(ra_b) * u.deg, float(dec_b) * u.deg)
-        ).arcsecond
+        sep = (
+            SkyCoord(float(ra_a) * u.deg, float(dec_a) * u.deg)
+            .separation(SkyCoord(float(ra_b) * u.deg, float(dec_b) * u.deg))
+            .arcsecond
+        )
         if name == "center":
             center_sep = sep
         else:
             max_corner = max(max_corner, sep)
-        print(f"{name:8s} {sep:.4f}\"")
+        print(f'{name:8s} {sep:.4f}"')
 
-    print(f"center sep = {center_sep:.4f}\"  max corner = {max_corner:.4f}\"")
-    assert center_sep < CENTER_TOL_ARCSEC, f"center disagreement {center_sep:.3f}\" too large"
-    assert max_corner < CORNER_TOL_ARCSEC, f"corner disagreement {max_corner:.3f}\" too large"
+    print(f'center sep = {center_sep:.4f}"  max corner = {max_corner:.4f}"')
+    assert center_sep < CENTER_TOL_ARCSEC, f'center disagreement {center_sep:.3f}" too large'
+    assert max_corner < CORNER_TOL_ARCSEC, f'corner disagreement {max_corner:.3f}" too large'
 
 
 def test_offcenter_crpix_is_honored_and_lands_near_truth(astrometry_env, tmp_path):
@@ -195,19 +215,22 @@ def test_offcenter_crpix_is_honored_and_lands_near_truth(astrometry_env, tmp_pat
     #  corner check above. Used only to confirm CRVAL isn't grossly misplaced.)
     ref_out = tmp_path / "ref_solved.fits"
     args_ref = _common_args(solve_field, index_dir, tmp_path) + [
-        "--scale-low", f"{0.9 * PIXELSCALE}", "--scale-high", f"{1.1 * PIXELSCALE}",
-        "--downsample", str(FACTOR),
-        "--new-fits", _win_to_cygwin(str(ref_out)), _win_to_cygwin(str(test_fits)),
+        "--scale-low",
+        f"{0.9 * PIXELSCALE}",
+        "--scale-high",
+        f"{1.1 * PIXELSCALE}",
+        "--downsample",
+        str(FACTOR),
+        "--new-fits",
+        _win_to_cygwin(str(ref_out)),
+        _win_to_cygwin(str(test_fits)),
     ]
     _run(args_ref)
     wcs_ref = WCS(astropy_fits.getheader(ref_out, 0))  # full-frame pixels (factor 1)
 
     # --- numpy 2x2 downsample (no crop), solved with an explicit off-center crpix
     dh, dw = height // FACTOR, width // FACTOR
-    downsampled = (
-        data[: dh * FACTOR, : dw * FACTOR]
-        .reshape(dh, FACTOR, dw, FACTOR).mean(axis=(1, 3)).astype(dtype)
-    )
+    downsampled = data[: dh * FACTOR, : dw * FACTOR].reshape(dh, FACTOR, dw, FACTOR).mean(axis=(1, 3)).astype(dtype)
     header["NAXIS1"], header["NAXIS2"] = dw, dh
     ds_in = tmp_path / "ds.fits"
     astropy_fits.writeto(ds_in, downsampled, header, overwrite=True)
@@ -222,14 +245,38 @@ def test_offcenter_crpix_is_honored_and_lands_near_truth(astrometry_env, tmp_pat
     eff = PIXELSCALE * FACTOR
     # Explicit --crpix-x/y (NOT --crpix-center), so build args without _common_args.
     args = [
-        solve_field, "--scale-units", "arcsecperpix",
-        "--scale-low", f"{0.9 * eff}", "--scale-high", f"{1.1 * eff}",
-        "--index-dir", _win_to_cygwin(index_dir),
-        "--no-plots", "--overwrite", "--cpulimit", "60",
-        "--solved", "none", "--match", "none", "--rdls", "none", "--corr", "none",
-        "--dir", _win_to_cygwin(str(tmp_path)), "--temp-dir", _win_to_cygwin(str(tmp_path)),
-        "--crpix-x", str(crpix_x), "--crpix-y", str(crpix_y),
-        "--new-fits", _win_to_cygwin(str(out)), _win_to_cygwin(str(ds_in)),
+        solve_field,
+        "--scale-units",
+        "arcsecperpix",
+        "--scale-low",
+        f"{0.9 * eff}",
+        "--scale-high",
+        f"{1.1 * eff}",
+        "--index-dir",
+        _win_to_cygwin(index_dir),
+        "--no-plots",
+        "--overwrite",
+        "--cpulimit",
+        "60",
+        "--solved",
+        "none",
+        "--match",
+        "none",
+        "--rdls",
+        "none",
+        "--corr",
+        "none",
+        "--dir",
+        _win_to_cygwin(str(tmp_path)),
+        "--temp-dir",
+        _win_to_cygwin(str(tmp_path)),
+        "--crpix-x",
+        str(crpix_x),
+        "--crpix-y",
+        str(crpix_y),
+        "--new-fits",
+        _win_to_cygwin(str(out)),
+        _win_to_cygwin(str(ds_in)),
     ]
     _run(args)
 
@@ -240,10 +287,12 @@ def test_offcenter_crpix_is_honored_and_lands_near_truth(astrometry_env, tmp_pat
 
     crval_ra, crval_dec = float(hdr["CRVAL1"]), float(hdr["CRVAL2"])
     ra_true, dec_true = wcs_ref.wcs_pix2world(px0 + 1, py0 + 1, 1)
-    sep = SkyCoord(crval_ra * u.deg, crval_dec * u.deg).separation(
-        SkyCoord(float(ra_true) * u.deg, float(dec_true) * u.deg)
-    ).arcsecond
+    sep = (
+        SkyCoord(crval_ra * u.deg, crval_dec * u.deg)
+        .separation(SkyCoord(float(ra_true) * u.deg, float(dec_true) * u.deg))
+        .arcsecond
+    )
     print(f"off-center pixel (0-based) = ({px0},{py0})  crpix = ({crpix_x},{crpix_y})")
-    print(f"CRVAL = ({crval_ra:.6f}, {crval_dec:.6f})  sep vs full-frame truth = {sep:.4f}\"")
+    print(f'CRVAL = ({crval_ra:.6f}, {crval_dec:.6f})  sep vs full-frame truth = {sep:.4f}"')
     # Loose: catches gross misplacement only (SIP re-anchoring dominates the residual).
-    assert sep < OFFCENTER_CRVAL_TOL_ARCSEC, f"off-center CRVAL grossly off by {sep:.3f}\""
+    assert sep < OFFCENTER_CRVAL_TOL_ARCSEC, f'off-center CRVAL grossly off by {sep:.3f}"'
