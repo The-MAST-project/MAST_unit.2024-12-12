@@ -12,13 +12,12 @@ from enum import IntFlag, auto
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from astropy.coordinates import Angle
-from pydantic import BaseModel
-
 import common.asi as asi
+from astropy.coordinates import Angle
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
+from common.config.phd2 import LimitFrameMode
 from common.config.rois import FcuVersion
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
@@ -29,6 +28,7 @@ from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, Timeout, boxed_debug, function_name
 from phd2.fits_header import stamp_cooling
 from phd2.phd2_locate import locate_phd2_exe
+from pydantic import BaseModel
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 from stage import StagePresetPosition
 
@@ -956,7 +956,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if not self.connected:
             logger.error(f"{function_name()}: not connected")
 
-        if roi is not None: # oren
+        if roi is not None:
             logger.debug(f"{function_name()}: setting {roi=}")
             self.call("set_limit_frame", params={
                 "roi": [
@@ -1031,11 +1031,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     ],
                 )
             else:
-                # self.set_limit_frame(roi=imager_settings.roi.binned(imager_settings.binning))
                 if imager_settings.use_set_limit_frame:
                     self.set_limit_frame(roi=imager_settings.roi)
-                else: # oren
-                    self.set_limit_frame(roi=None) # oren
+                else:
+                    self.set_limit_frame(roi=None)
 
                 self.call(
                     method="guide",
@@ -1341,6 +1340,29 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             + "cannot make_guiding_settings"
         guiding_settings: ImagerSettings = self.parent.unit.guider.make_guiding_settings(save=False)
 
+        # the limit frame is governed by the persisted phd2.limit_frame configuration,
+        # not by the fiber/margin-derived guiding ROI (which remains the 'derived' mode)
+        limit_frame = self.conf.limit_frame
+        match limit_frame.mode:
+            case LimitFrameMode.FULL_FRAME:
+                guiding_settings.use_set_limit_frame = False
+            case LimitFrameMode.DERIVED:
+                guiding_settings.use_set_limit_frame = True
+            case LimitFrameMode.FIXED:
+                guiding_settings.use_set_limit_frame = True
+                # verbatim: PHD2 applies the camera alignment constraints itself
+                # (upstream PRs #1374-#1376); ImagerRoi conditioning would shift a
+                # deliberately placed frame (see MAST_common#17)
+                guiding_settings.roi = ImagerRoi.verbatim(
+                    x=limit_frame.x,
+                    y=limit_frame.y,
+                    width=limit_frame.width,
+                    height=limit_frame.height,
+                )
+        logger.info(
+            f"{function_name()}: limit frame: mode={limit_frame.mode}, roi={guiding_settings.roi}"
+        )
+
         requested_binning: Literal[1, 2] = guiding_settings.binning if guiding_settings and guiding_settings.binning else 1
         if requested_binning != self.profile_binning:
             msg = f"{function_name()}: {requested_binning=} does not match {self.profile_binning=}, cannot guide"
@@ -1542,11 +1564,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
             try:
                 assert settings.roi
-                # self.set_limit_frame(roi=settings.roi.binned(settings.binning))
                 if settings.use_set_limit_frame:
                     self.set_limit_frame(roi=settings.roi)
-                else: # oren
-                    self.set_limit_frame(roi=None) # oren
+                else:
+                    self.set_limit_frame(roi=None)
 
                 self.call(
                     "capture_single_frame",

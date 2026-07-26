@@ -2,6 +2,144 @@
 
 ---
 
+## [2026-07-23] Fixed limit frame sent verbatim; per-call endpoint override dropped
+
+**Why (verbatim):** The `fixed` arm routed the DB rectangle through `ImagerRoi`,
+whose `model_post_init` conditioning shifts and shrinks it (−1 center bias, mod-16 /
+mod-4 trim for the max supported binning — see MAST_common#17). That conditioning is
+unnecessary for the limit frame: PHD2 applies the camera alignment constraints
+itself (upstream PRs #1374–#1376, present in the deployed MAST build), and
+`set_limit_frame` takes unbinned full-sensor coordinates. A deliberately placed
+frame must not move.
+
+**What (verbatim):** The `fixed` arm now builds the ROI with
+`ImagerRoi.verbatim(...)` (MAST_common, same day) — the configured rectangle IS the
+wire value. The interim configured-vs-applied WARNING is removed (nothing mutates
+anymore). Tests pin verbatim pass-through, including a rect conditioning would
+demonstrably have mutated and one with camera-illegal odd dimensions.
+
+**Why (dropped):** A per-call override — `limit_frame_mode` (+ rect) parameters on
+`endpoint_start_acquisition_and_guiding`, threaded through `Acquisition` into
+`start_guiding()` — was considered as an alternative to DB updates. Dropped because
+of forgotten-on-restart: `validate_guiding()` stops and restarts guiding internally
+via a bare `self.start_guiding()`, so a pass-through override would silently revert
+to the DB mode mid-session; stashing the override on the connector would fix that
+but reintroduces exactly the sticky hidden state (PHD2's registry-persisted limit
+frame) this feature exists to escape.
+
+**Implications:** The DB `phd2.limit_frame` document remains the single source of
+truth for the guiding-phase limit frame; per-call experimentation means editing the
+DB doc. If the endpoint override is ever revisited, the internal-restart path must
+carry the override explicitly (e.g. on `Acquisition`) before it is trustworthy. The
+existing `use_set_limit_frame` endpoint parameter is unaffected — it governs only
+the acquisition-phase (sky/spec) exposures.
+
+---
+
+## [2026-07-23] Limit-frame config selects by `mode`; `start_guiding()` dispatches on it
+
+**Why:** Companion to MAST_common's same-day rename of `phd2.limit_frame` from an
+enabled-flag to a `mode` discriminator (`derived | full_frame | fixed`) — the flag
+read backwards (`enabled: false` was the state operators actually want) and an
+incomplete rectangle degraded silently to the derived ROI. Renamed before any
+merge/deploy, so no migration.
+
+**What:** `start_guiding()` replaces the boolean + `has_roi` conditionals with a
+three-arm `match` on `LimitFrameMode`: `full_frame` → `use_set_limit_frame=False`
+(reset to full frame), `derived` → the fiber/margin-derived guiding ROI as before,
+`fixed` → the configured rectangle through `ImagerRoi` (the conditioning WARNING
+from the 2026-07-22 entry below stays on the `fixed` arm). Tests updated to the
+mode vocabulary; the no-DB-section safe-to-land invariant is unchanged.
+
+**Implications:** Deploy-time DB docs use `{ mode: "full_frame" }` for hand-patch
+parity, `{ mode: "fixed", x, y, width, height }` for an explicit band. A rectangle
+under a non-`fixed` mode now fails config parse loudly instead of being ignored.
+
+---
+
+## [2026-07-22] Establish a pytest `tests/` harness; first suite guards the limit-frame RPC contract
+
+**Why:** The `phd2.limit_frame` work (#29, issue #51) was validated by one-off
+bench scripts on labcomp2 (2026-07-07); those runs proved the behavior once but
+protect nothing against regressions. The repo had no test harness at all.
+
+**What:** `tests/` with a pytest suite that drives the **real**
+`PHD2Connector` methods with mocked collaborators — no PHD2 process, no
+hardware, no Mongo — asserting on the exact RPC stream
+(`set_limit_frame` / `guide` / `capture_single_frame`):
+
+- The four `phd2.limit_frame` states: disabled -> `roi: None` (full frame);
+  enabled + rectangle -> applied after `ImagerRoi` conditioning (mod-8 width /
+  mod-2 height at all binnings, optical-axis centering — caught by the first
+  Windows run: (3031, 2692, 2000, 400) reaches the wire as (3038, 2693, 1984,
+  396)); enabled without rectangle -> the derived guiding ROI; **no DB section
+  -> identical to deployed behavior** (the safe-to-land invariant).
+- Ordering: the limit frame is set before the `guide` RPC.
+- Scope pin: acquisition-time `start_exposure()` keys off
+  `ImagerSettings.use_set_limit_frame` alone — the config section must play
+  no role there.
+
+Connectors are built via `object.__new__` (bypassing the heavy `__init__`)
+with a real `PHD2Config` — the pattern proven on the 2026-07-07 bench.
+`tests/conftest.py` bootstraps `sys.path` to `src/` and shims `Filer` on
+Darwin (unsupported there). The import chain is Windows-only today
+(`stage.py` uses pyximc names at module level), so the suite runs in the unit
+venv and skips cleanly elsewhere. `requirements-dev.txt` declares pytest.
+
+**Implications:** Guiding/config changes should extend this suite rather than
+add bench one-offs; the labcomp2 bench remains for what needs a live PHD2 or a
+real camera. This executes the unit-side half of the 2026-07-07 bench's
+TEST-MIGRATION plan; the common-side half lives in `src/common/tests/`.
+
+---
+
+## [2026-07-02] Guiding limit frame comes from `phd2.limit_frame` config, not code toggles
+
+**Why:** Two things about the PHD2 limit frame (the sub-frame PHD2 confines
+guide-star selection to) were hard-wired: whether it is applied at all was a code
+path Oren hand-toggled on the production machine (the `# oren` branches in
+`src/phd2/phd2.py`), and the rectangle itself was derived at guiding time by
+`Guider.make_guiding_settings()` from the fiber position/margins in
+`guiding.rois`. Both need to be operator-tunable without editing deployed code.
+
+**What:** `PHD2Connector.start_guiding()` still calls `make_guiding_settings()`
+for exposure/gain/binning (and as the ROI fallback), but the limit frame is now
+governed by the DB-persisted `phd2.limit_frame` section (see `LimitFrameConfig`
+in MAST_common, bumped here):
+
+- `enabled: false` → `guide()` resets the limit frame (`set_limit_frame(None)`,
+  full-frame star selection) — the behavior Oren previously got by editing code.
+- `enabled: true` with a configured rectangle → that rectangle (unbinned camera
+  pixels, conditioned through `ImagerRoi`) is the limit frame.
+- `enabled: true` without a rectangle (section absent, or width/height 0) → the
+  fiber/margin-derived guiding ROI is used, exactly as before.
+
+The `# oren` hand-toggle markers were removed: the "reset the limit frame"
+branch is now a legitimate, configuration-selected path. Acquisition-time limit
+frame control (`use_set_limit_frame` on the acquisition API and the fcu_v2
+override in `acquirer.py`) is untouched — this change only re-sources the
+guiding-time decision.
+
+To set the frame for all units (Mongo on `mast-ns-control`, db `mast`):
+
+```js
+db.units.updateOne(
+  { name: "common" },
+  { $set: { "phd2.limit_frame": { enabled: true, x: 3031, y: 2692, width: 2000, height: 400 } } }
+)
+```
+
+(or per-unit by matching its name; values above are an example). The unit
+service reads its configuration snapshot at startup, so restart the unit
+service after changing it.
+
+**Implications:** With no DB change, behavior is identical to the pre-change
+default (`use_set_limit_frame=True`, derived ROI). Operators flip/tune guiding
+limit-frame behavior in the configuration DB (GUI-exposable via the fields' UI
+metadata) instead of patching `phd2.py` on the machine.
+
+---
+
 ## [2026-06-23] Host the solver test fixture as a GitHub Release asset, not in-repo git-lfs
 
 **Why:** The previous day's commit bundled the ~90 MB `full-frame.fits` integration

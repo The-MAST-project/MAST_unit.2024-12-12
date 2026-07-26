@@ -10,3 +10,18 @@ The software controls a **MAST** unit which includes:
 * A ZWO ASI294MM camera
 
 Provides (via FastAPI) `autofocus` and `acquisition` interfaces
+
+## Tests
+
+`tests/` holds a pytest suite that drives the real connector code with mocked
+collaborators — no PHD2 process, no hardware, no Mongo. The import chain is
+Windows-only today (`stage.py` needs pyximc), so the suite runs in the unit
+venv and skips cleanly elsewhere. Install `requirements-dev.txt` into the
+venv, then from the repo root:
+
+```
+python -m pytest tests/ -v
+```
+
+The `src/common` submodule carries its own platform-independent suite
+(`src/common/tests/`).
