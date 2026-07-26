@@ -44,9 +44,7 @@ class SolvingGuider(GuiderInterface):
         phase = "guiding"
         boxed_log(logger, [f"starting phase '{phase.upper()}'"])
 
-        assert (
-            self.unit.acquirer.latest_acquisition is not None
-        ), "self.unit.acquirer.latest_acquisition is None"
+        assert self.unit.acquirer.latest_acquisition is not None, "self.unit.acquirer.latest_acquisition is None"
 
         phase_conf = self.unit.unit_conf.guiding
         cadence = phase_conf.cadence_seconds

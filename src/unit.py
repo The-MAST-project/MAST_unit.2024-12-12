@@ -96,7 +96,6 @@ class GuideDirections(Enum):
 
 
 class Unit(Component):
-
     MAX_UNITS = 20
     MAX_AUTOFOCUS_TRIES = 3
 
@@ -173,14 +172,18 @@ class Unit(Component):
         self.acquirer: Acquirer | None = _try_init("acquirer", lambda: Acquirer(self))
         self.guider: Guider | None = _try_init("guider", lambda: Guider(self))
 
-        self.components: list[Component] = [c for c in [
-            self.power_switch,
-            self.mount,
-            self.imager,
-            self.covers,
-            self.focuser,
-            self.stage,
-        ] if c is not None]
+        self.components: list[Component] = [
+            c
+            for c in [
+                self.power_switch,
+                self.mount,
+                self.imager,
+                self.covers,
+                self.focuser,
+                self.stage,
+            ]
+            if c is not None
+        ]
 
         self.timer: RepeatTimer = RepeatTimer(2, function=self.ontimer)
         self.timer.name = "unit-timer-thread"
@@ -278,11 +281,16 @@ class Unit(Component):
         """
         Should connect/disconnect anything that needs connecting/disconnecting
         """
-        if self.mount: self.mount.connected = value
-        if self.imager: self.imager.connected = value
-        if self.covers: self.covers.connected = value
-        if self.stage: self.stage.connected = value
-        if self.focuser: self.focuser.connected = value
+        if self.mount:
+            self.mount.connected = value
+        if self.imager:
+            self.imager.connected = value
+        if self.covers:
+            self.covers.connected = value
+        if self.stage:
+            self.stage.connected = value
+        if self.focuser:
+            self.focuser.connected = value
 
     def connect(self):
         """
@@ -333,10 +341,7 @@ class Unit(Component):
         if self.acquirer and self.acquirer.latest_acquisition:
             corrections_list = (
                 self.acquirer.latest_acquisition.corrections
-                if (
-                    self.acquirer.latest_acquisition
-                    and self.acquirer.latest_acquisition.corrections
-                )
+                if (self.acquirer.latest_acquisition and self.acquirer.latest_acquisition.corrections)
                 else []
             )
 
@@ -390,13 +395,9 @@ class Unit(Component):
         Aborts any in-progress activities
         """
 
-        if self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(
-            UnitActivities.Autofocusing
-        ):
+        if self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing):
             self.autofocuser.stop_autofocus()
-            while self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(
-                UnitActivities.Autofocusing
-            ):
+            while self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing):
                 time.sleep(0.2)
 
         if self.guider:
@@ -450,9 +451,7 @@ class Unit(Component):
                     self.unit_conf.focuser.known_as_good_position = best_position
                     try:
                         Config().set_unit(site_name=None, unit_name=None, unit_conf=self.unit_conf)
-                        logger.info(
-                            f"autofocus: saved {best_position=} in the configuration for unit {self.hostname}."
-                        )
+                        logger.info(f"autofocus: saved {best_position=} in the configuration for unit {self.hostname}.")
                         if autofocus_status.tolerance > self.autofocus_max_tolerance:  # type: ignore
                             if self.autofocus_try < Unit.MAX_AUTOFOCUS_TRIES:
                                 self.autofocus_try += 1
@@ -641,17 +640,9 @@ class Unit(Component):
         if ra_offsets is not None:
             if isinstance(ra_offsets, str):
                 ra_offsets = ra_offsets.split()
-            if (
-                len(ra_offsets) != 1 and len(ra_offsets) != repeats
-            ):  # one element or the same number of elements as repeats
-                return CanonicalResponse(
-                    errors=[f"ra_offsets must have {repeats} elements"]
-                )
-            ra_offsets = (
-                [float(ra_offsets[0])] * repeats
-                if len(ra_offsets) == 1
-                else [float(val) for val in ra_offsets]
-            )
+            if len(ra_offsets) != 1 and len(ra_offsets) != repeats:  # one element or the same number of elements as repeats
+                return CanonicalResponse(errors=[f"ra_offsets must have {repeats} elements"])
+            ra_offsets = [float(ra_offsets[0])] * repeats if len(ra_offsets) == 1 else [float(val) for val in ra_offsets]
 
         if dec_offsets is not None:
             if isinstance(dec_offsets, str):
@@ -659,22 +650,14 @@ class Unit(Component):
             if (
                 len(dec_offsets) != 1 and len(dec_offsets) != repeats
             ):  # one element or the same number of elements as repeats
-                return CanonicalResponse(
-                    errors=[f"dec_offsets must have {repeats} elements"]
-                )
-            dec_offsets = (
-                [float(dec_offsets[0])] * repeats
-                if len(dec_offsets) == 1
-                else [float(val) for val in dec_offsets]
-            )
+                return CanonicalResponse(errors=[f"dec_offsets must have {repeats} elements"])
+            dec_offsets = [float(dec_offsets[0])] * repeats if len(dec_offsets) == 1 else [float(val) for val in dec_offsets]
 
         if fiber_x is None and fiber_y is None and width is None and height is None:
             width = self.imager.camera_x_size
             height = self.imager.camera_y_size
             if not width or not height:
-                return CanonicalResponse(
-                    errors=["cannot get width and height from the imager"]
-                )
+                return CanonicalResponse(errors=["cannot get width and height from the imager"])
             fiber_x = int(width / 2)
             fiber_y = int(height / 2)
 
@@ -730,9 +713,7 @@ class Unit(Component):
 
             unit_roi = UnitRoi(fiber_x, fiber_y, width, height)
             default_folder = PathMaker().make_exposures_folder()
-            base_folder = (
-                os.path.join(default_folder, subfolder) if subfolder else default_folder
-            )
+            base_folder = os.path.join(default_folder, subfolder) if subfolder else default_folder
             imager_settings = ImagerSettings(
                 seconds=seconds,
                 base_folder=base_folder,
@@ -748,10 +729,7 @@ class Unit(Component):
             logger.info(f"{op}: starting exposure #{repeat} (of {repeats})")
             self.imager.start_exposure(imager_settings)
 
-            if not (
-                self.imager.latest_settings is None
-                or self.imager.latest_settings.image_path is None
-            ):
+            if not (self.imager.latest_settings is None or self.imager.latest_settings.image_path is None):
                 self.imager.wait_for_image_saved()
                 filer.move_ram_to_shared(self.imager.latest_settings.image_path)
 
@@ -759,16 +737,12 @@ class Unit(Component):
                 now = datetime.datetime.now()
                 if now < end:
                     period = (end - now).seconds
-                    logger.info(
-                        f"{op}: sleeping {period} seconds till next exposure ..."
-                    )
+                    logger.info(f"{op}: sleeping {period} seconds till next exposure ...")
                     time.sleep(period)
 
             if ra_offsets is not None or dec_offsets is not None:
                 if ra_offsets is not None and dec_offsets is not None:
-                    logger.info(
-                        f"offsetting mount ra={ra_offsets[repeat]}, dec={dec_offsets[repeat]}"
-                    )
+                    logger.info(f"offsetting mount ra={ra_offsets[repeat]}, dec={dec_offsets[repeat]}")
                     self.mount.pw.mount_offset(
                         ra_add_arcsec=ra_offsets[repeat],
                         dec_add_arcsec=dec_offsets[repeat],
@@ -810,13 +784,14 @@ class Unit(Component):
         else:
             logger.info("not disconnecting imager camera")
 
-
         if self.guider is None or sequence.tell_guider_to_start is None or sequence.tell_guider_to_start == "nothing":
             return
 
         if sequence.delay_before_telling_guider is not None and sequence.delay_before_telling_guider != 0.0:
-            logger.info(f"delaying {sequence.delay_before_telling_guider}s " +
-                        f"before telling guider to '{sequence.tell_guider_to_start}'")
+            logger.info(
+                f"delaying {sequence.delay_before_telling_guider}s "
+                + f"before telling guider to '{sequence.tell_guider_to_start}'"
+            )
             time.sleep(sequence.delay_before_telling_guider)
 
         if not isinstance(self.guider._backend, PHD2Connector):
@@ -896,9 +871,7 @@ class Unit(Component):
 
         reference_position = start_position
 
-        repeatablility_exposure_series = self.imager.start_exposure_series(
-            "unit.do_test_stage_repeatability"
-        )
+        repeatablility_exposure_series = self.imager.start_exposure_series("unit.do_test_stage_repeatability")
 
         for position in range(start_position + step, end_position, step):
             logger.info(f"{op}: moving stage to {reference_position=}")
@@ -977,17 +950,15 @@ class Unit(Component):
             if not self.autofocuser.latest_result:
                 return  # should propagate errors as well
 
-            if (
-                assignment.plan.ulid is not None
-                and self.imager.latest_settings
-                and self.imager.latest_settings.image_path
-            ):
-                Notifier().assignment_notification(AssignmentNotification(
-                    assignment_id=assignment.plan.ulid,
-                    state="in-progress",
-                    shared_top=Path(self.imager.latest_settings.image_path).parent.name,
-                    shared_subpath="autofocus",
-                ))
+            if assignment.plan.ulid is not None and self.imager.latest_settings and self.imager.latest_settings.image_path:
+                Notifier().assignment_notification(
+                    AssignmentNotification(
+                        assignment_id=assignment.plan.ulid,
+                        state="in-progress",
+                        shared_top=Path(self.imager.latest_settings.image_path).parent.name,
+                        shared_subpath="autofocus",
+                    )
+                )
 
             #
             # At this point we have autofocused and can start acquisition
@@ -997,16 +968,15 @@ class Unit(Component):
                 dec_j2000_degs=assignment.plan.target.dec_degrees,
             )
 
-            if (
-                assignment.plan.ulid is not None
-                and self.acquirer.latest_acquisition is not None
-            ):
-                Notifier().assignment_notification(AssignmentNotification(
-                    assignment_id=assignment.plan.ulid,
-                    state="in-progress",
-                    shared_top=self.acquirer.latest_acquisition.folder,
-                    shared_subpath="acquisition",
-                ))
+            if assignment.plan.ulid is not None and self.acquirer.latest_acquisition is not None:
+                Notifier().assignment_notification(
+                    AssignmentNotification(
+                        assignment_id=assignment.plan.ulid,
+                        state="in-progress",
+                        shared_top=self.acquirer.latest_acquisition.folder,
+                        shared_subpath="acquisition",
+                    )
+                )
 
     async def endpoint_execute_assignment(self, assignment: UnitAssignment):
         if not self.operational:
@@ -1054,21 +1024,15 @@ class Unit(Component):
         assert self.mount is not None
         assert self.imager is not None
 
-        self.mount.pw.mount_spiral_offset_new(
-            x_step_arcsec=x_step_arcsec, y_step_arcsec=y_step_arcsec
-        )
+        self.mount.pw.mount_spiral_offset_new(x_step_arcsec=x_step_arcsec, y_step_arcsec=y_step_arcsec)
         self.spirals_folder = PathMaker().make_spirals_folder()
 
         image_path = os.path.join(
             self.spirals_folder,
             "step-" + PathMaker().make_seq(self.spirals_folder) + ".fits",
         )
-        self.imager.latest_settings = ImagerSettings(
-            seconds=5, save=True, image_path=image_path, binning=1
-        )
-        self.spiral_exposure_series = self.imager.start_exposure_series(
-            purpose="spiral_new_path"
-        )
+        self.imager.latest_settings = ImagerSettings(seconds=5, save=True, image_path=image_path, binning=1)
+        self.spiral_exposure_series = self.imager.start_exposure_series(purpose="spiral_new_path")
         self.imager.start_exposure(self.imager.latest_settings)
         self.imager.wait_for_image_saved()
         Filer().move_ram_to_shared(image_path)
@@ -1087,13 +1051,8 @@ class Unit(Component):
         logger.info("mount stopped moving")
 
         if self.spirals_folder is not None:
-            image_path = str(
-                Path(self.spirals_folder)
-                / Path("step-" + PathMaker().make_seq(self.spirals_folder) + ".fits")
-            )
-            self.imager.latest_settings = ImagerSettings(
-                seconds=5, save=True, image_path=image_path, binning=1
-            )
+            image_path = str(Path(self.spirals_folder) / Path("step-" + PathMaker().make_seq(self.spirals_folder) + ".fits"))
+            self.imager.latest_settings = ImagerSettings(seconds=5, save=True, image_path=image_path, binning=1)
             self.imager.start_exposure(self.imager.latest_settings)
             self.imager.wait_for_image_saved()
             Filer().move_ram_to_shared(image_path)
@@ -1113,13 +1072,8 @@ class Unit(Component):
         logger.info("mount stopped moving")
 
         if self.spirals_folder is not None:
-            image_path = str(
-                Path(self.spirals_folder)
-                / Path("step-" + PathMaker().make_seq(self.spirals_folder) + ".fits")
-            )
-            self.imager.latest_settings = ImagerSettings(
-                seconds=5, save=True, image_path=image_path, binning=1
-            )
+            image_path = str(Path(self.spirals_folder) / Path("step-" + PathMaker().make_seq(self.spirals_folder) + ".fits"))
+            self.imager.latest_settings = ImagerSettings(seconds=5, save=True, image_path=image_path, binning=1)
             self.imager.start_exposure(self.imager.latest_settings)
             self.imager.wait_for_image_saved()
             Filer().move_ram_to_shared(image_path)
@@ -1130,9 +1084,7 @@ class Unit(Component):
         """
         Ends the currently defined spiral path
         """
-        assert (
-            self.spiral_exposure_series is not None and self.imager is not None
-        ), "No spiral exposure series defined"
+        assert self.spiral_exposure_series is not None and self.imager is not None, "No spiral exposure series defined"
         self.imager.end_exposure_series(self.spiral_exposure_series)
         return CanonicalResponse_Ok
 
@@ -1148,9 +1100,7 @@ class Unit(Component):
         tag = "Unit"
 
         router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
-        router.add_api_route(
-            base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown
-        )
+        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown)
         router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
         router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
         if self.autofocuser:
@@ -1177,10 +1127,12 @@ class Unit(Component):
                 endpoint=self.guider.endpoint_stop_acquisition_and_guiding,
             )
         router.add_api_route(base_path + "/expose", tags=[tag], endpoint=self.expose)
-        router.add_api_route(base_path + "/start_sequence_of_exposures",
-                             methods=["PUT"],
-                             tags=[tag],
-                             endpoint=self.endpoint_start_sequence_of_exposures)
+        router.add_api_route(
+            base_path + "/start_sequence_of_exposures",
+            methods=["PUT"],
+            tags=[tag],
+            endpoint=self.endpoint_start_sequence_of_exposures,
+        )
         if self.guider:
             router.add_api_route(
                 base_path + "/stop_sequence_of_exposures",
@@ -1215,20 +1167,14 @@ class Unit(Component):
         # )
 
         tag = "PlaneWave mount - spiral path"
-        router.add_api_route(
-            base_path + "/spiral_new_path", tags=[tag], endpoint=self.endpoint_spiral_new_path
-        )
-        router.add_api_route(
-            base_path + "/spiral_next_step", tags=[tag], endpoint=self.endpoint_spiral_next_step
-        )
+        router.add_api_route(base_path + "/spiral_new_path", tags=[tag], endpoint=self.endpoint_spiral_new_path)
+        router.add_api_route(base_path + "/spiral_next_step", tags=[tag], endpoint=self.endpoint_spiral_next_step)
         router.add_api_route(
             base_path + "/spiral_previous_step",
             tags=[tag],
             endpoint=self.endpoint_spiral_previous_step,
         )
-        router.add_api_route(
-            base_path + "/spiral_end_path", tags=[tag], endpoint=self.endpoint_spiral_end_path
-        )
+        router.add_api_route(base_path + "/spiral_end_path", tags=[tag], endpoint=self.endpoint_spiral_end_path)
 
         return router
 

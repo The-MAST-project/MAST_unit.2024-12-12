@@ -125,9 +125,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if not prog_id:
             prog_id = self.conf.imager_type.replace("ascom:", "")
         if not prog_id:
-            raise Exception(
-                "ASCOMImager: no ASCOM driver specified either as parameter or in the configuration"
-            )
+            raise Exception("ASCOMImager: no ASCOM driver specified either as parameter or in the configuration")
         self.prog_id = prog_id
 
         if self.prog_id == "ASCOM.ASICamera2.Camera":
@@ -148,9 +146,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         self._is_exposing: bool = False
         self.operational_set_point: float = -25
-        self.warm_set_point: float = (
-            5  # temperature at which the camera is considered warm
-        )
+        self.warm_set_point: float = 5  # temperature at which the camera is considered warm
         self._image_width: int | None = None
         self._image_height: int | None = None
         self.PixelSizeX: int | None = None
@@ -193,16 +189,14 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
     @property
     def default_settings(self) -> ImagerSettings:
-        assert (
-            self.camera_x_size is not None and self.camera_y_size is not None
-        ), "don't have camera_x_size or camera_y_size yet!"
+        assert self.camera_x_size is not None and self.camera_y_size is not None, (
+            "don't have camera_x_size or camera_y_size yet!"
+        )
 
         imager_conf = self.conf
         return ImagerSettings(
             seconds=5,
-            roi=ImagerRoi(
-                x=0, y=0, width=self.camera_x_size, height=self.camera_y_size
-            ),
+            roi=ImagerRoi(x=0, y=0, width=self.camera_x_size, height=self.camera_y_size),
             binning=1,
             base_folder="c:/temp/ascom_images",
             dont_bump_sequence=True,
@@ -248,13 +242,9 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if self.cameraYSize and (0 > value.y > self.cameraYSize):
             raise Exception(f"bad {value.y=}, must be 0 > y > {self.cameraYSize=}")
         if self.cameraXSize and (0 > value.width > self.cameraXSize):
-            raise Exception(
-                f"bad {value.width=}, must be 0 > width > {self.cameraXSize=}"
-            )
+            raise Exception(f"bad {value.width=}, must be 0 > width > {self.cameraXSize=}")
         if self.cameraYSize and (0 > value.height > self.cameraYSize):
-            raise Exception(
-                f"bad {value.height=}, must be 0 > height > {self.cameraYSize=}"
-            )
+            raise Exception(f"bad {value.height=}, must be 0 > height > {self.cameraYSize=}")
         if self.cameraXSize and (value.x + value.width > self.cameraXSize):
             raise Exception(f"{value.x=} + {value.width=} exceeds {self.cameraXSize=}")
         if self.cameraYSize and (value.y + value.height > self.cameraYSize):
@@ -265,12 +255,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         response_width = ascom_run(self, f"NumX = {value.width}")
         response_height = ascom_run(self, f"NumY = {value.height}")
 
-        if (
-            response_x.failed
-            or response_y.failed
-            or response_height.failed
-            or response_width.failed
-        ):
+        if response_x.failed or response_y.failed or response_height.failed or response_width.failed:
             if self._roi:
                 ascom_run(self, f"StartX = {self._roi.x}")
                 ascom_run(self, f"StartY = {self._roi.y}")
@@ -282,9 +267,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 + f"{response_width.failure=}, {response_height.failure=}"
             )
         else:
-            self._roi = ImagerRoi(
-                x=value.x, y=value.y, width=value.width, height=value.height
-            )
+            self._roi = ImagerRoi(x=value.x, y=value.y, width=value.width, height=value.height)
 
     @property
     def connected(self) -> bool:
@@ -362,21 +345,13 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if not self.connected:
             raise Exception("cannot set gain, not connected")
 
-        if (
-            self.GainMin is not None
-            and self.GainMax is not None
-            and self.GainMin > value > self.GainMax
-        ):
-            logger.error(
-                f"Exception({value=} out of bounds [{self.GainMin=}, {self.GainMax=}]"
-            )
+        if self.GainMin is not None and self.GainMax is not None and self.GainMin > value > self.GainMax:
+            logger.error(f"Exception({value=} out of bounds [{self.GainMin=}, {self.GainMax=}]")
             return
 
         response = ascom_run(self, f"Gain = {value}")
         if response.failed:
-            logger.error(
-                f"Exception(failed to set Gain to {value}, error(s): {response.failure}"
-            )
+            logger.error(f"Exception(failed to set Gain to {value}, error(s): {response.failure}")
             return
         self._gain = value
 
@@ -413,9 +388,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     ):
 
         if self.cameraXSize is None or self.cameraYSize is None:
-            return CanonicalResponse(
-                errors=["cameraXSize or cameraYSize is not set, cannot start exposure"]
-            )
+            return CanonicalResponse(errors=["cameraXSize or cameraYSize is not set, cannot start exposure"])
         center_x = center_x if center_x is not None else int(self.cameraXSize / 2)
         center_y = center_y if center_y is not None else int(self.cameraYSize / 2)
         width = width if width is not None else self.cameraXSize
@@ -494,9 +467,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if response.value is None:
             if parent_imager:
                 parent_imager.start_activity(ImagerActivities.Exposing)
-            self.expected_mid_exposure = datetime.datetime.now() + datetime.timedelta(
-                seconds=settings.seconds / 2
-            )
+            self.expected_mid_exposure = datetime.datetime.now() + datetime.timedelta(seconds=settings.seconds / 2)
             self.image = None
             self.image_was_read = False
             self.latest_settings = settings
@@ -520,11 +491,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             if response.errors:
                 self.errors.extend(response.errors)
 
-        return (
-            CanonicalResponse(errors=self.errors)
-            if self.errors
-            else CanonicalResponse_Ok
-        )
+        return CanonicalResponse(errors=self.errors) if self.errors else CanonicalResponse_Ok
 
     def abort_exposure(self):
         """
@@ -546,11 +513,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 self.errors.append(f"failed to abort (failure='{response.failure}')")
         if parent_imager:
             parent_imager.end_activity(ImagerActivities.Exposing)
-        return (
-            CanonicalResponse(errors=self.errors)
-            if self.errors
-            else CanonicalResponse_Ok
-        )
+        return CanonicalResponse(errors=self.errors) if self.errors else CanonicalResponse_Ok
 
     def stop_exposure(self):
         """
@@ -568,17 +531,11 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         response = ascom_run(self, "StopExposure()")  # the timer will read the image
         if response.failed:
-            self.errors.append(
-                f"could not StopExposure(), (failure='{response.failure}')"
-            )
+            self.errors.append(f"could not StopExposure(), (failure='{response.failure}')")
         if parent_imager:
             parent_imager.end_activity(ImagerActivities.Exposing)
 
-        return (
-            CanonicalResponse(errors=self.errors)
-            if self.errors
-            else CanonicalResponse_Ok
-        )
+        return CanonicalResponse(errors=self.errors) if self.errors else CanonicalResponse_Ok
 
     def endpoint_status(self) -> ImagerStatus:
         return self.status()
@@ -628,7 +585,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             logger.error("cooler_on.setter: not connected")
             return
 
-        response = ascom_run(self, f"CoolerOn = {"True" if value else "False"}")
+        response = ascom_run(self, f"CoolerOn = {'True' if value else 'False'}")
         if response.errors:
             self.errors.append(f"cooler_on.setter: {response.errors}")
             logger.error(f"cooler_on.setter: {response.errors}")
@@ -648,11 +605,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         self.power_on()
         self.connect()
         self.cooler_on = True
-        return (
-            CanonicalResponse(errors=self.errors)
-            if self.errors
-            else CanonicalResponse_Ok
-        )
+        return CanonicalResponse(errors=self.errors) if self.errors else CanonicalResponse_Ok
 
     def cooldown(self):
         if not self.connected:
@@ -665,16 +618,10 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 parent_imager.start_activity(ImagerActivities.CoolingDown)
             response = ascom_run(self, "CanSetCCDTemperature")
             if response.succeeded:
-                logger.info(
-                    f"cool-down: setting set-point to {self.operational_set_point:.1f}"
-                )
-                response = ascom_run(
-                    self, f"SetCCDTemperature = {self.operational_set_point}"
-                )
+                logger.info(f"cool-down: setting set-point to {self.operational_set_point:.1f}")
+                response = ascom_run(self, f"SetCCDTemperature = {self.operational_set_point}")
                 if response.failed:
-                    logger.error(
-                        f"failed to set set-point (failure='{response.failure}')"
-                    )
+                    logger.error(f"failed to set set-point (failure='{response.failure}')")
 
             self.cooler_on = True
         return CanonicalResponse_Ok
@@ -711,9 +658,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 parent_imager.start_activity(ImagerActivities.WarmingUp)
             current_temp = self.temperature
             if current_temp is None:
-                logger.error(
-                    f"could not get current CCD temperature (failure='{response.failure}')"
-                )
+                logger.error(f"could not get current CCD temperature (failure='{response.failure}')")
 
             response = ascom_run(self, f"SetCCDTemperature({self.warm_set_point})")
             if response.succeeded:
@@ -757,11 +702,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         """
 
         parent_imager = cast(Imager, self.parent_imager) or None
-        if (
-            parent_imager
-            and parent_imager.unit
-            and parent_imager.unit.unit_shutdown_event.is_set()
-        ):
+        if parent_imager and parent_imager.unit and parent_imager.unit.unit_shutdown_event.is_set():
             assert self.timer is not None
             self.timer.cancel()
             return
@@ -780,9 +721,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         # previous_state = self.last_state
         if self.last_state is None and current_state is not None:
             self.last_state = current_state
-            logger.info(
-                f"state changed from None to {AscomCameraState(self.last_state).__repr__()}"
-            )
+            logger.info(f"state changed from None to {AscomCameraState(self.last_state).__repr__()}")
         else:
             if current_state is not None and current_state != self.last_state:
                 # percent = ''
@@ -807,7 +746,8 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 self.expected_mid_exposure = None
 
         # logger.info(f"is_active(CameraActivities.Exposing)={self.is_active(CameraActivities.Exposing)}, {current_state=}")
-        if (parent_imager
+        if (
+            parent_imager
             and parent_imager.is_active(ImagerActivities.Exposing)
             and current_state == AscomCameraState.Idle
             and (not self.image_lock.locked())
@@ -838,11 +778,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                         # download the image from the camera
                         response = ascom_run(self, "ImageArray")
                         assert self.latest_settings is not None
-                        dtype = (
-                            np.uint8
-                            if self.latest_settings.format == "raw8"
-                            else np.uint16
-                        )
+                        dtype = np.uint8 if self.latest_settings.format == "raw8" else np.uint16
                         assert self.latest_settings.roi
                         if not response.succeeded:
                             self.image = None
@@ -876,14 +812,12 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
                         self.save_to_file()  # in a separate thread, also informs everybody the file was saved
 
-        if self.latest_temperature_check and (
-            now - self.latest_temperature_check
-        ) >= datetime.timedelta(seconds=self.temp_check_interval):
+        if self.latest_temperature_check and (now - self.latest_temperature_check) >= datetime.timedelta(
+            seconds=self.temp_check_interval
+        ):
             ccd_temp = self.temperature
             if ccd_temp is None:
-                logger.error(
-                    f"failed to get CCDTemperature (failure='{response.failure}')"
-                )
+                logger.error(f"failed to get CCDTemperature (failure='{response.failure}')")
             self.latest_temperature_check = now
 
             # cooler_power = self.cooler_power
@@ -901,11 +835,11 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if self.is_active(ImagerActivities.WarmingUp):
             ccd_temp = self.temperature
             if ccd_temp >= self.warm_set_point:
-                ascom_run(self, 'CoolerOn = False')
-                logger.info('turned cooler OFF')
+                ascom_run(self, "CoolerOn = False")
+                logger.info("turned cooler OFF")
                 self.end_activity(ImagerActivities.WarmingUp)
                 self.end_activity(ImagerActivities.ShuttingDown)
-                logger.info(f'warm-up done (temperature={ccd_temp:.1f}, set-point={self.warm_set_point})')
+                logger.info(f"warm-up done (temperature={ccd_temp:.1f}, set-point={self.warm_set_point})")
 
     @property
     def is_shutting_down(self) -> bool:
@@ -1080,14 +1014,10 @@ def set_ASICamera2_ASCOM_profile_image_type():  # noqa: N802
 
     profile = win32com.client.Dispatch("ASCOM.Utilities.Profile")
     profile.DeviceType = "Camera"
-    profile_image_format = profile.GetValue(
-        prog_id, "ImageType", "", str(asi.OutputFormat.RAW16)
-    )
+    profile_image_format = profile.GetValue(prog_id, "ImageType", "", str(asi.OutputFormat.RAW16))
     unit_conf = Config().get_unit()
     assert unit_conf is not None
-    configured_image_format = str(
-        asi.OutputFormat.from_string(unit_conf.imager.format)
-    )
+    configured_image_format = str(asi.OutputFormat.from_string(unit_conf.imager.format))
 
     if int(profile_image_format) != configured_image_format:
         profile.WriteValue(prog_id, "ImageType", configured_image_format, "")
@@ -1097,9 +1027,7 @@ if __name__ == "__main__":
     imager = Imager(imager_type="ascom:ASCOM.ASICamera2.Camera")
     imager.startup()
     series = imager.start_exposure_series(purpose="ASCOM test exposure series")
-    imager.start_exposure(
-        ImagerSettings.model_validate({"seconds": 5}, context={"imager": imager})
-    )
+    imager.start_exposure(ImagerSettings.model_validate({"seconds": 5}, context={"imager": imager}))
     print(json.dumps(imager.status(), indent=2))
     if imager.can_send_image_ready_event:
         imager.wait_for_image_ready()

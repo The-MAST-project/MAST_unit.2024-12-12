@@ -54,8 +54,11 @@ def _load(image) -> np.ndarray:
 def _bg_subtract(data, box_size=64):
     try:
         bkg = Background2D(
-            data, box_size=box_size, filter_size=(3, 3),
-            sigma_clip=SigmaClip(sigma=3.0), bkg_estimator=MedianBackground(),  # type: ignore[arg-type]
+            data,
+            box_size=box_size,
+            filter_size=(3, 3),
+            sigma_clip=SigmaClip(sigma=3.0),
+            bkg_estimator=MedianBackground(),  # type: ignore[arg-type]
         )
         return data - bkg.background
     except Exception:
@@ -201,16 +204,21 @@ def detect_donuts(
         if filled_area / (bh * bw) < min_fill_fraction:
             continue
         cx, cy = x0 + cx_l, y0 + cy_l
-        if (cx < edge_margin or cx > nx - 1 - edge_margin
-                or cy < edge_margin or cy > ny - 1 - edge_margin):
+        if cx < edge_margin or cx > nx - 1 - edge_margin or cy < edge_margin or cy > ny - 1 - edge_margin:
             continue
 
         annularity = (filled_area - ring_area) / filled_area if filled_area > 0 else 0.0
-        blobs.append(DonutBlob(
-            x=float(cx), y=float(cy), outer_diameter=float(outer_diameter),
-            area=ring_area, annularity=float(annularity), axis_ratio=float(axis_ratio),
-            fill_fraction=float(filled_area / (bh * bw)),
-        ))
+        blobs.append(
+            DonutBlob(
+                x=float(cx),
+                y=float(cy),
+                outer_diameter=float(outer_diameter),
+                area=ring_area,
+                annularity=float(annularity),
+                axis_ratio=float(axis_ratio),
+                fill_fraction=float(filled_area / (bh * bw)),
+            )
+        )
     return blobs
 
 
@@ -289,8 +297,7 @@ def plan_donut_jump(
     x_near = float(x[int(np.argmin(d))])  # sample closest to focus = current best vantage
     target = float(x_star + undershoot_frac * (x_near - x_star))
     direction = int(np.sign(x_star - x_near))
-    msg = (f"donut jump: best~{x_star:.0f}, target {target:.0f} "
-           f"(dir {direction:+d}, slope {m:+.3f} pix/tick, n={n})")
+    msg = f"donut jump: best~{x_star:.0f}, target {target:.0f} (dir {direction:+d}, slope {m:+.3f} pix/tick, n={n})"
     return DonutJump(True, x_star, target, float(m), direction, n, rms, msg)
 
 
@@ -308,8 +315,7 @@ def plot_donuts(image, blobs: list[DonutBlob], vmin=None, vmax=None):
     ax.imshow(data, origin="lower", cmap="gray", vmin=vmin, vmax=vmax)
     ax.set_title(f"{len(blobs)} donut(s)")
     for bl in blobs:
-        circ = Circle((bl.x, bl.y), bl.outer_diameter / 2.0,
-                      fill=False, color="cyan", lw=1.0)
+        circ = Circle((bl.x, bl.y), bl.outer_diameter / 2.0, fill=False, color="cyan", lw=1.0)
         ax.add_patch(circ)
         ax.plot(bl.x, bl.y, "+", color="magenta", ms=8)
     ax.set_xlabel("X (pix)")
@@ -323,6 +329,8 @@ if __name__ == "__main__":
 
     path = sys.argv[1] if len(sys.argv) > 1 else "D:/MAST/tmp/Samples/sample1.fits"
     metric = frame_donut_metric(path)
-    print(f"{metric.n_donuts} donut(s), median outer diameter "
-          f"{metric.median_diameter:.1f} pix, area frac {metric.area_fraction:.4f}")
+    print(
+        f"{metric.n_donuts} donut(s), median outer diameter "
+        f"{metric.median_diameter:.1f} pix, area frac {metric.area_fraction:.4f}"
+    )
     plot_donuts(path, metric.blobs)

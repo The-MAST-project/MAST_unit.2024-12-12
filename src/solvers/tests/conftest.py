@@ -28,9 +28,7 @@ if str(SOLVERS_DIR) not in sys.path:
 # index files, and a sample full-frame FITS. Point it at your machine via env vars;
 # otherwise the test is skipped. Defaults match the dev unit.
 
-SOLVE_FIELD = os.environ.get(
-    "MAST_SOLVE_FIELD", r"C:/cygwin64/usr/local/astrometry/bin/solve-field"
-)
+SOLVE_FIELD = os.environ.get("MAST_SOLVE_FIELD", r"C:/cygwin64/usr/local/astrometry/bin/solve-field")
 INDEX_DIR = os.environ.get("MAST_INDEX_DIR", r"D:\mast-indexes")
 
 # The ~90 MB sample frame is intentionally NOT in the repo (it bloats clones and
@@ -84,10 +82,16 @@ def _resolve_test_fits() -> tuple[Path | None, str]:
     try:
         subprocess.run(
             [
-                gh, "release", "download", _FITS_RELEASE_TAG,
-                "--repo", _FITS_REPO,
-                "--pattern", _FITS_ASSET,
-                "--dir", str(_FITS_CACHE.parent),
+                gh,
+                "release",
+                "download",
+                _FITS_RELEASE_TAG,
+                "--repo",
+                _FITS_REPO,
+                "--pattern",
+                _FITS_ASSET,
+                "--dir",
+                str(_FITS_CACHE.parent),
                 "--clobber",
             ],
             check=True,

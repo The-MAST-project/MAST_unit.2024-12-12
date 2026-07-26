@@ -37,7 +37,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
     """
 
     @property
-    def ascom(self) -> win32com.client.Dispatch: # type: ignore
+    def ascom(self) -> win32com.client.Dispatch:  # type: ignore
         return self._ascom
 
     @property
@@ -45,7 +45,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         # return logger
         return logger
 
-    def __init__(self, unit: "Unit"): # type: ignore[name]
+    def __init__(self, unit: "Unit"):  # type: ignore[name]
         if self._initialized:
             return
 
@@ -145,7 +145,9 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             target_verbal=(
                 "Open"
                 if self.is_active(CoverActivities.Opening)
-                else "Close" if self.is_active(CoverActivities.Closing) else None
+                else "Close"
+                if self.is_active(CoverActivities.Closing)
+                else None
             ),
             date=time_stamp(),
         )
@@ -316,7 +318,6 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
     @property
     def was_shut_down(self) -> bool:
         return self._was_shut_down
-
 
     @property
     def api_router(self) -> APIRouter:

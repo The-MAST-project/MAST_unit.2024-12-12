@@ -32,6 +32,7 @@ init_log(logger)
 if TYPE_CHECKING:
     from unit import Unit  # type: ignore[import-untyped]
 
+
 class MastrometryDotNet(SolverInterface):
     """
     A PlateSolverInterface implementation that uses the astrometry.net solver
@@ -51,7 +52,6 @@ class MastrometryDotNet(SolverInterface):
 
     pixelscale: float = 0.2616  # arcsecs per pixel for full-frame unbinned
     f_number: float = 3.0
-
 
     def __init__(self):
         """
@@ -87,7 +87,6 @@ class MastrometryDotNet(SolverInterface):
 
         # logger.info(f"{function_name()}: RAM disk contains all needed index files")
         logger.warning(f"{function_name()}: Skipping RAM disk index file check (TODO: remove this after testing)")
-
 
     @property
     def name(self) -> str:
@@ -132,9 +131,7 @@ class MastrometryDotNet(SolverInterface):
 
         if full_frame_input_image_path is None:  # noqa: SIM102
             if settings is not None:
-                assert (
-                    settings.image_path is not None
-                ), f"{function_name()}: settings.image_path is None"
+                assert settings.image_path is not None, f"{function_name()}: settings.image_path is None"
                 full_frame_input_image_path = settings.image_path
 
         assert full_frame_input_image_path is not None, f"{function_name()}: full_frame_input_image_path is None"
@@ -144,8 +141,8 @@ class MastrometryDotNet(SolverInterface):
         # We don't really know that the input image is full frame and unbinned, but we assume it is.
         #
         with fits.open(full_frame_input_image_path) as hdul:
-            header = hdul[0].header # type: ignore
-            data = hdul[0].data # type: ignore
+            header = hdul[0].header  # type: ignore
+            data = hdul[0].data  # type: ignore
 
             # Get image dimensions and data type from header
             height, width = data.shape
@@ -161,7 +158,7 @@ class MastrometryDotNet(SolverInterface):
             #
             refpix: tuple[float, float] | None = None  # (--crpix-x, --crpix-y), fractional; see pixel_grid.py
 
-            downsample_factor: int = 2   # simulated binning factor (2x2), to speed up solving by reducing the image size
+            downsample_factor: int = 2  # simulated binning factor (2x2), to speed up solving by reducing the image size
 
             imager_roi: ImagerRoi | None = None
 
@@ -186,13 +183,14 @@ class MastrometryDotNet(SolverInterface):
                     assert fcu_version in unit_conf.guiding.rois
                     cfg = cast(SpecRoiConfig, unit_conf.guiding.rois[fcu_version])
 
-                    half_width = min(cfg.fiber_x - cfg.margin_horizontal,
-                                        camera_x_size - cfg.margin_horizontal - cfg.fiber_x)
-                    half_height = min(cfg.fiber_y - cfg.margin_vertical,
-                                        camera_y_size - cfg.margin_vertical - cfg.fiber_y)
+                    half_width = min(
+                        cfg.fiber_x - cfg.margin_horizontal, camera_x_size - cfg.margin_horizontal - cfg.fiber_x
+                    )
+                    half_height = min(cfg.fiber_y - cfg.margin_vertical, camera_y_size - cfg.margin_vertical - cfg.fiber_y)
 
-                    spec_roi = SpecRoi(fiber_x=cfg.fiber_x, fiber_y=cfg.fiber_y,
-                                        width=half_width*2, height=half_height*2)
+                    spec_roi = SpecRoi(
+                        fiber_x=cfg.fiber_x, fiber_y=cfg.fiber_y, width=half_width * 2, height=half_height * 2
+                    )
 
                     imager_roi = ImagerRoi.from_other(spec_roi)
 
@@ -219,10 +217,11 @@ class MastrometryDotNet(SolverInterface):
                 # grid MUST use the pixel-center-correct convention in pixel_grid; the old integer
                 # division ((center - start) // factor) silently biased it by ~0.4". Returns floats;
                 # solve-field accepts fractional CRPIX, so do NOT round.
-                data = data[imager_roi.y:imager_roi.y + imager_roi.height,
-                            imager_roi.x:imager_roi.x + imager_roi.width]
-                refpix = (roi_center_to_crpix(imager_roi._center.x, imager_roi.x, downsample_factor),
-                          roi_center_to_crpix(imager_roi._center.y, imager_roi.y, downsample_factor))
+                data = data[imager_roi.y : imager_roi.y + imager_roi.height, imager_roi.x : imager_roi.x + imager_roi.width]
+                refpix = (
+                    roi_center_to_crpix(imager_roi._center.x, imager_roi.x, downsample_factor),
+                    roi_center_to_crpix(imager_roi._center.y, imager_roi.y, downsample_factor),
+                )
 
                 logger.info(f"{function_name()}: Cropped to {imager_roi=}, {refpix=}")
             else:
@@ -233,26 +232,31 @@ class MastrometryDotNet(SolverInterface):
             downsampled_width = data.shape[1] // downsample_factor
 
             # Reshape and average downsample_factor x downsample_factor blocks
-            downsampled = data[:downsampled_height*downsample_factor, :downsampled_width*downsample_factor].reshape(
-                downsampled_height, downsample_factor, downsampled_width, downsample_factor
-            ).mean(axis=(1, 3)).astype(dtype)
+            downsampled = (
+                data[: downsampled_height * downsample_factor, : downsampled_width * downsample_factor]
+                .reshape(downsampled_height, downsample_factor, downsampled_width, downsample_factor)
+                .mean(axis=(1, 3))
+                .astype(dtype)
+            )
 
-            logger.info(f"{function_name()}: Downsampled by factor of {downsample_factor} to "
-                        + f"{downsampled_width}x{downsampled_height}")
+            logger.info(
+                f"{function_name()}: Downsampled by factor of {downsample_factor} to "
+                + f"{downsampled_width}x{downsampled_height}"
+            )
 
             # Update header for downsampled image
-            header['NAXIS1'] = downsampled_width
-            header['NAXIS2'] = downsampled_height
+            header["NAXIS1"] = downsampled_width
+            header["NAXIS2"] = downsampled_height
 
-            header['XBINNING'] = downsample_factor
-            header['YBINNING'] = downsample_factor
-            header['DOWNSAMP'] = (downsample_factor, "Downsampling factor applied to original image")
+            header["XBINNING"] = downsample_factor
+            header["YBINNING"] = downsample_factor
+            header["DOWNSAMP"] = (downsample_factor, "Downsampling factor applied to original image")
 
             if imager_roi is not None:
-                header['ROI_X'] = (imager_roi.x, "X coordinate of ROI in original image")
-                header['ROI_Y'] = (imager_roi.y, "Y coordinate of ROI in original image")
-                header['ROI_W'] = (imager_roi.width, "Width of ROI in original image")
-                header['ROI_H'] = (imager_roi.height, "Height of ROI in original image")
+                header["ROI_X"] = (imager_roi.x, "X coordinate of ROI in original image")
+                header["ROI_Y"] = (imager_roi.y, "Y coordinate of ROI in original image")
+                header["ROI_W"] = (imager_roi.width, "Width of ROI in original image")
+                header["ROI_H"] = (imager_roi.height, "Height of ROI in original image")
 
             # Save downsampled image to temporary directory
             assert full_frame_input_image_path is not None
@@ -265,35 +269,45 @@ class MastrometryDotNet(SolverInterface):
             effective_pixelscale = self.pixelscale * downsample_factor
 
             args = [
-
                 # Scale constraints (±10% tolerance)
-                "--scale-units", "arcsecperpix",
-                "--scale-low", f"{0.9 * effective_pixelscale}",  # ~0.47
-                "--scale-high", f"{1.1 * effective_pixelscale}",  # ~0.57
-
+                "--scale-units",
+                "arcsecperpix",
+                "--scale-low",
+                f"{0.9 * effective_pixelscale}",  # ~0.47
+                "--scale-high",
+                f"{1.1 * effective_pixelscale}",  # ~0.57
                 # Index file directory
-                "--index-dir", win_to_cygwin(str(self.index_dir)),
-
+                "--index-dir",
+                win_to_cygwin(str(self.index_dir)),
                 # Performance options
                 "--no-plots",
                 "--overwrite",
-                "--cpulimit", "30",  # timeout in seconds
-                "--solved", "none",
-                "--match", "none",
-                "--rdls", "none",
-                "--corr", "none",
-
+                "--cpulimit",
+                "30",  # timeout in seconds
+                "--solved",
+                "none",
+                "--match",
+                "none",
+                "--rdls",
+                "none",
+                "--corr",
+                "none",
                 # Output control
-                "--dir", win_to_cygwin(str(win_tmp_dir)),
-                "--temp-dir", win_to_cygwin(str(win_tmp_dir)),
+                "--dir",
+                win_to_cygwin(str(win_tmp_dir)),
+                "--temp-dir",
+                win_to_cygwin(str(win_tmp_dir)),
             ]
 
             # Add RA/Dec hint if target is provided (significantly speeds up solving)
             if target is not None:
                 args += [
-                    "--ra", f"{target.ra.deg}",
-                    "--dec", f"{target.dec.deg}",
-                    "--radius", "2.0",  # search radius in degrees
+                    "--ra",
+                    f"{target.ra.deg}",
+                    "--dec",
+                    f"{target.dec.deg}",
+                    "--radius",
+                    "2.0",  # search radius in degrees
                 ]
 
             # Tweak (SIP distortion fit) is intentionally LEFT ENABLED.
@@ -312,14 +326,18 @@ class MastrometryDotNet(SolverInterface):
                 args += ["--crpix-center"]
             else:
                 args += [
-                    "--crpix-x", str(refpix[0]),
-                    "--crpix-y", str(refpix[1]),
+                    "--crpix-x",
+                    str(refpix[0]),
+                    "--crpix-y",
+                    str(refpix[1]),
                 ]
 
-            new_fits_path = Path(str(downsampled_image_path).replace(
-                ".fits", f",solver={self.name}.fits").replace("downsampled_", ""))
+            new_fits_path = Path(
+                str(downsampled_image_path).replace(".fits", f",solver={self.name}.fits").replace("downsampled_", "")
+            )
             args += [
-                "--new-fits", win_to_cygwin(str(new_fits_path)),
+                "--new-fits",
+                win_to_cygwin(str(new_fits_path)),
                 win_to_cygwin(str(downsampled_image_path)),
             ]
 
@@ -358,35 +376,33 @@ class MastrometryDotNet(SolverInterface):
         if completed_process.returncode == 0:
             ret = parse_solver_output(stdout_lines)
             if ret is not None and ret.solution is not None and ret.succeeded:
-                    boxed_log(
-                        logger=logger,
-                        lines=[
-                            "FUTURE: image quality check",
-                            f"#sources {ret.solution.sources}",
-                            f"#matched {ret.solution.matched_stars}",
-                        ],
-                        center=True,
-                    )
-                    if (
-                        ret.solution.index_file
-                        and self.unit is not None
-                        and self.unit.acquirer is not None
-                        and self.unit.acquirer.latest_acquisition is not None
-                    ):
-                        self.unit.acquirer.latest_acquisition.solver_data = {
-                            "index_file": ret.solution.index_file
-                        }
+                boxed_log(
+                    logger=logger,
+                    lines=[
+                        "FUTURE: image quality check",
+                        f"#sources {ret.solution.sources}",
+                        f"#matched {ret.solution.matched_stars}",
+                    ],
+                    center=True,
+                )
+                if (
+                    ret.solution.index_file
+                    and self.unit is not None
+                    and self.unit.acquirer is not None
+                    and self.unit.acquirer.latest_acquisition is not None
+                ):
+                    self.unit.acquirer.latest_acquisition.solver_data = {"index_file": ret.solution.index_file}
 
-                    # override solved RA/Dec from FITS header
-                    header = fits.getheader(new_fits_path, 0)  # type: ignore
-                    if "CRVAL1" in header and "CRVAL2" in header:
-                        ret.solution.ra_hours = header["CRVAL1"] / 15.0
-                        ret.solution.dec_degs = header["CRVAL2"]
+                # override solved RA/Dec from FITS header
+                header = fits.getheader(new_fits_path, 0)  # type: ignore
+                if "CRVAL1" in header and "CRVAL2" in header:
+                    ret.solution.ra_hours = header["CRVAL1"] / 15.0
+                    ret.solution.dec_degs = header["CRVAL2"]
 
-                        ret.solution.ra_rads = float(Angle(ret.solution.ra_hours * 15.0, unit="deg").radian)  # type: ignore[assignment]
-                        ret.solution.dec_rads = float(Angle(ret.solution.dec_degs, unit="deg").radian)  # type: ignore[assignment]
-                    else:
-                        logger.warning(f"no CRVAL1/CRVAL2 in solved FITS header of '{new_fits_path}'")
+                    ret.solution.ra_rads = float(Angle(ret.solution.ra_hours * 15.0, unit="deg").radian)  # type: ignore[assignment]
+                    ret.solution.dec_rads = float(Angle(ret.solution.dec_degs, unit="deg").radian)  # type: ignore[assignment]
+                else:
+                    logger.warning(f"no CRVAL1/CRVAL2 in solved FITS header of '{new_fits_path}'")
         else:
             ret = SolvingResult(
                 succeeded=False,
@@ -415,7 +431,9 @@ class MastrometryDotNet(SolverInterface):
     def solve_and_correct(self):
         pass
 
+
 if __name__ == "__main__":
+
     def test_solver():
         solver = MastrometryDotNet()
         result = solver.solve(

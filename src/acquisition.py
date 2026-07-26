@@ -35,7 +35,6 @@ class ApproachMode(IntEnum):
 
 
 class Acquisition:
-
     def __init__(
         self,
         unit: "Unit",
@@ -71,15 +70,11 @@ class Acquisition:
             if st.ra_j2000_hours is not None:
                 self.target_ra = st.ra_j2000_hours
             else:
-                raise ValueError(
-                    "Acquisition: target_ra is None and mount status does not provide RA"
-                )
+                raise ValueError("Acquisition: target_ra is None and mount status does not provide RA")
             if st.dec_j2000_degs is not None:
                 self.target_dec = st.dec_j2000_degs
             else:
-                raise ValueError(
-                    "Acquisition: target_dec is None and mount status does not provide DEC"
-                )
+                raise ValueError("Acquisition: target_dec is None and mount status does not provide DEC")
 
         self.conf = conf
         self.ra_tolerance = conf.tolerance.ra_arcsec
@@ -120,6 +115,4 @@ class Acquisition:
 
     def post_process(self):
         if filer.ram and filer.ram.root is not None:
-            plot_acquisition_corrections(
-                self.folder.replace(filer.ram.root, filer.shared.root)
-            )
+            plot_acquisition_corrections(self.folder.replace(filer.ram.root, filer.shared.root))

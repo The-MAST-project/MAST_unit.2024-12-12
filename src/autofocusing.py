@@ -49,7 +49,6 @@ class AutofocusResult:
 
 
 class Autofocuser:
-
     def __init__(self, unit: "Unit"):  # type: ignore[name]
         self.unit = unit  # type: ignore[name]
         self.latest_result: PS3FocusAnalysisResult | None = None
@@ -63,8 +62,7 @@ class Autofocuser:
             return False
 
         return self.unit.is_active(UnitActivities.Autofocusing) or (
-            self.unit.is_active(UnitActivities.AutofocusingPWI4)
-            and self.unit.pw.status().autofocus.is_running  # type: ignore[union-attr]
+            self.unit.is_active(UnitActivities.AutofocusingPWI4) and self.unit.pw.status().autofocus.is_running  # type: ignore[union-attr]
         )
 
     def start_autofocus(  # noqa: C901
@@ -96,9 +94,7 @@ class Autofocuser:
             ),
         ] = None,
         exposure: float | None = 5,  # seconds
-        start_position: (
-            int | None
-        ) = None,  # when None, start from know-as-good position
+        start_position: (int | None) = None,  # when None, start from know-as-good position
         ticks_per_step: int | None = 50,  # focuser ticks per step
         number_of_images: int | None = 5,
     ):
@@ -169,9 +165,7 @@ class Autofocuser:
         target_ra: float | None = None,  # center of ROI
         target_dec: float | None = None,  # center of ROI
         exposure: float = 5,  # seconds
-        start_position: (
-            int | None
-        ) = None,  # when None, start from the known-as-good position
+        start_position: (int | None) = None,  # when None, start from the known-as-good position
         ticks_per_step: int = 50,  # focuser ticks per step
         number_of_images: int = 5,
     ):
@@ -215,21 +209,13 @@ class Autofocuser:
             logger.info(f"{op}: moving mount to {target_ra=}, {target_dec=} ...")
             self.unit.mount.goto_ra_dec_j2000(target_ra, target_dec)
 
-        start_position = (
-            start_position or self.unit.unit_conf.focuser.known_as_good_position
-        )
-        focuser_position: int = int(
-            start_position - ((number_of_images / 2) * ticks_per_step)
-        )
+        start_position = start_position or self.unit.unit_conf.focuser.known_as_good_position
+        focuser_position: int = int(start_position - ((number_of_images / 2) * ticks_per_step))
         self.unit.focuser.position = focuser_position
 
-        logger.debug(
-            f"{op}: Waiting for components (stage, mount, focuser) to stop moving ..."
-        )
+        logger.debug(f"{op}: Waiting for components (stage, mount, focuser) to stop moving ...")
         while (
-            self.unit.stage.is_moving
-            or self.unit.mount.is_moving
-            or self.unit.focuser.is_active(FocuserActivities.Moving)
+            self.unit.stage.is_moving or self.unit.mount.is_moving or self.unit.focuser.is_active(FocuserActivities.Moving)
         ):
             time.sleep(0.5)
         logger.debug(f"{op}: Components (stage, mount, focuser) stopped moving ...")
@@ -253,12 +239,9 @@ class Autofocuser:
         max_tolerance: float = self.unit.unit_conf.autofocus.max_tolerance
         try_number: int = 0
 
-        autofocus_exposure_series = self.unit.imager.start_exposure_series(
-            purpose="autofocus"
-        )
+        autofocus_exposure_series = self.unit.imager.start_exposure_series(purpose="autofocus")
 
         for try_number in range(max_tries):
-
             autofocus_folder = PathMaker().make_autofocus_folder()
             logger.info(f"{op}: starting autofocus try #{try_number} (of {max_tries}) in '{autofocus_folder}' ...")
             #
@@ -271,9 +254,7 @@ class Autofocuser:
                     binning=_binning,
                     roi=ImagerRoi.from_other(roi=unit_roi),
                     gain=acquisition_conf.gain,
-                    image_path=os.path.join(
-                        autofocus_folder, f"FOCUS{int(focuser_position):05}.fits"
-                    ),
+                    image_path=os.path.join(autofocus_folder, f"FOCUS{int(focuser_position):05}.fits"),
                     save=True,
                 )
 
@@ -281,32 +262,24 @@ class Autofocuser:
                     f"{op}: starting exposure #{image_no} of {number_of_images} at {focuser_position=} {autofocus_settings.roi=}..."
                 )
                 self.unit.imager.start_exposure(autofocus_settings)
-                logger.info(
-                    f"{op}: waiting for exposure #{image_no} of {number_of_images} ..."
-                )
+                logger.info(f"{op}: waiting for exposure #{image_no} of {number_of_images} ...")
                 self.unit.imager.wait_for_image_saved()
-                assert(autofocus_settings.image_path)
+                assert autofocus_settings.image_path
                 files.append(autofocus_settings.image_path)
 
-                if not self.unit.is_active(
-                    UnitActivities.Autofocusing
-                ):  # have we been stopped?
+                if not self.unit.is_active(UnitActivities.Autofocusing):  # have we been stopped?
                     logger.info(f"{op}: activity 'Autofocusing' was stopped")
                     self.unit.imager.end_exposure_series(autofocus_exposure_series)
                     return
 
                 focuser_position += ticks_per_step
-                logger.info(
-                    f"{op}: moving focuser by {ticks_per_step} ticks (to {focuser_position}) ..."
-                )
+                logger.info(f"{op}: moving focuser by {ticks_per_step} ticks (to {focuser_position}) ...")
                 self.unit.focuser.position = focuser_position
                 while self.unit.focuser.is_active(FocuserActivities.Moving):
                     time.sleep(0.5)
                 logger.info(f"{op}: focuser stopped moving")
 
-                if not self.unit.is_active(
-                    UnitActivities.Autofocusing
-                ):  # have we been stopped?
+                if not self.unit.is_active(UnitActivities.Autofocusing):  # have we been stopped?
                     logger.info(f"{op}: activity 'Autofocusing' was stopped")
                     self.unit.imager.end_exposure_series(autofocus_exposure_series)
                     return
@@ -330,22 +303,18 @@ class Autofocuser:
             self.unit.end_activity(UnitActivities.AutofocusAnalysis)
 
             if not status or not status.analysis_result:
-                self.log_and_store_error(
-                    f"{op}: focus analyser stopped working but empty analysis_result"
-                )
+                self.log_and_store_error(f"{op}: focus analyser stopped working but empty analysis_result")
                 with MoveGuardian().protect(autofocus_folder):
-                    self.save_analysis(autofocus_folder, status=status,
-                                       errors=["focus analyser stopped working but empty analysis_result"])
+                    self.save_analysis(
+                        autofocus_folder, status=status, errors=["focus analyser stopped working but empty analysis_result"]
+                    )
                     filer.move_ram_to_shared(autofocus_folder)
                 continue  # next try_number
 
             if not status.analysis_result.has_solution:
-                self.log_and_store_error(
-                    f"{op}: focus analyser did not find a solution"
-                )
+                self.log_and_store_error(f"{op}: focus analyser did not find a solution")
                 with MoveGuardian().protect(autofocus_folder):
-                    self.save_analysis(autofocus_folder, status=status,
-                                       errors=["focus analyser did not find a solution"])
+                    self.save_analysis(autofocus_folder, status=status, errors=["focus analyser did not find a solution"])
                     filer.move_ram_to_shared(autofocus_folder)
                 continue  # next try_number
 
@@ -377,9 +346,7 @@ class Autofocuser:
                 self.save_analysis(autofocus_folder, status=status)
 
                 position: int = int(self.latest_result.best_focus_position)
-                logger.info(
-                    f"{op}: moving focuser to best focus position {position} ..."
-                )
+                logger.info(f"{op}: moving focuser to best focus position {position} ...")
                 self.unit.focuser.known_as_good_position = position
                 self.unit.focuser.position = self.unit.focuser.known_as_good_position
 
@@ -418,21 +385,21 @@ class Autofocuser:
         self.unit.mount.stop_tracking()
         self.unit.end_activity(UnitActivities.Autofocusing)
 
-    def save_analysis(self, folder: str, status: PS3AutofocusStatus  | None = None, errors: list[str] | None = None):
-            filename = os.path.join(folder, "status.json")
-            if status is None:
-                status = PS3AutofocusStatus(
-                    is_running=False,
-                    errors=errors,
-                )
-            else:
-                if errors:
-                    if not status.errors:
-                        status.errors = []
-                    status.errors.extend(errors)
+    def save_analysis(self, folder: str, status: PS3AutofocusStatus | None = None, errors: list[str] | None = None):
+        filename = os.path.join(folder, "status.json")
+        if status is None:
+            status = PS3AutofocusStatus(
+                is_running=False,
+                errors=errors,
+            )
+        else:
+            if errors:
+                if not status.errors:
+                    status.errors = []
+                status.errors.extend(errors)
 
-            with open(filename, "w") as f:
-                f.write(status.model_dump_json(indent=4))
+        with open(filename, "w") as f:
+            f.write(status.model_dump_json(indent=4))
 
     def start_pwi4_autofocus(self):
         """

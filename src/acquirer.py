@@ -70,14 +70,10 @@ class Acquirer:
         # - if they were supplied as Longitude and Latitude, transform to float
         # - pass them on to solve_and_correct() as a Coord
         #
-        if not hasattr(acquisition, "target_ra") or not hasattr(
-            acquisition, "target_dec"
-        ):
+        if not hasattr(acquisition, "target_ra") or not hasattr(acquisition, "target_dec"):
             st = self.unit.mount.status()
             if st.ra_j2000_hours is None or st.dec_j2000_degs is None:
-                self.unit.errors.append(
-                    "cannot get coordinates from mount (mount not connected)"
-                )
+                self.unit.errors.append("cannot get coordinates from mount (mount not connected)")
                 self.unit.end_activity(UnitActivities.Acquiring)
                 return
 
@@ -85,15 +81,11 @@ class Acquirer:
             acquisition.target_dec = st.dec_j2000_degs
 
         target_ra_j2000_hours: float = (
-            acquisition.target_ra.value
-            if isinstance(acquisition.target_ra, Longitude)
-            else acquisition.target_ra
+            acquisition.target_ra.value if isinstance(acquisition.target_ra, Longitude) else acquisition.target_ra
         )
 
         target_dec_j2000_degs: float = (
-            acquisition.target_dec.value
-            if isinstance(acquisition.target_dec, Latitude)
-            else acquisition.target_dec
+            acquisition.target_dec.value if isinstance(acquisition.target_dec, Latitude) else acquisition.target_dec
         )
 
         target = Coord(
@@ -111,15 +103,11 @@ class Acquirer:
         self.unit.mount.start_tracking()
         self.unit.start_activity(UnitActivities.Positioning)
         if self.latest_acquisition.slew_to_target:
-            self.unit.mount.goto_ra_dec_j2000(
-                target_ra_j2000_hours, target_dec_j2000_degs
-            )
+            self.unit.mount.goto_ra_dec_j2000(target_ra_j2000_hours, target_dec_j2000_degs)
 
-        acquisition_exposure_series = self.unit.imager.start_exposure_series(
-            purpose="acquisition"
-        )
+        acquisition_exposure_series = self.unit.imager.start_exposure_series(purpose="acquisition")
 
-        if  self.unit.fcu_version == FcuVersion.v1 and not acquisition.skip_sky:
+        if self.unit.fcu_version == FcuVersion.v1 and not acquisition.skip_sky:
             phase = "sky"
             boxed_log(logger, [f"starting phase '{phase.upper()}'"])
 
@@ -138,14 +126,16 @@ class Acquirer:
 
             assert isinstance(sky_roi_conf, SkyRoiConfig)
             sky_roi = SkyRoi(
-                sky_x=sky_roi_conf.sky_x,
-                sky_y=sky_roi_conf.sky_y,
-                width=sky_roi_conf.width,
-                height=sky_roi_conf.height)
+                sky_x=sky_roi_conf.sky_x, sky_y=sky_roi_conf.sky_y, width=sky_roi_conf.width, height=sky_roi_conf.height
+            )
 
-            gain = acquisition.gain_absolute if acquisition.gain_absolute is not None \
-                else asi.gain_percent_to_absolute(acquisition.gain_percent) if acquisition.gain_percent is not None \
-                    else None
+            gain = (
+                acquisition.gain_absolute
+                if acquisition.gain_absolute is not None
+                else asi.gain_percent_to_absolute(acquisition.gain_percent)
+                if acquisition.gain_percent is not None
+                else None
+            )
 
             from common.interfaces.imager import ImagerRoi, ImagerSettings
 
@@ -253,8 +243,9 @@ class Acquirer:
             spec_imager_settings.roi.y = 0
             spec_imager_settings.roi.width = ASI_294MM_WIDTH
             spec_imager_settings.roi.height = ASI_294MM_HEIGHT
-            spec_imager_settings.roi._center = \
-                ImagerPixel(x=spec_imager_settings.roi.width // 2, y=spec_imager_settings.roi.height // 2)
+            spec_imager_settings.roi._center = ImagerPixel(
+                x=spec_imager_settings.roi.width // 2, y=spec_imager_settings.roi.height // 2
+            )
 
             # spec_imager_settings.use_set_limit_frame = True
             spec_imager_settings.use_set_limit_frame = False
@@ -318,9 +309,7 @@ class Acquirer:
         if self.unit.acquirer.latest_acquisition is not None:
             self.unit.acquirer.latest_acquisition.post_process()
 
-    def start_acquisition_and_guiding_for_assignment(
-        self, assignment: UnitAssignment
-    ):
+    def start_acquisition_and_guiding_for_assignment(self, assignment: UnitAssignment):
         approach_mode: ApproachMode = ApproachMode.GRADUAL_BY_RATE
         make_corrections = True
         ra_j2000_hours = assignment.plan.target.ra_hours
@@ -352,12 +341,14 @@ class Acquirer:
          the products are.
         """
         if assignment.plan.ulid is not None:
-            Notifier().assignment_notification(AssignmentNotification(
-                assignment_id=assignment.plan.ulid,
-                state="in-progress",
-                shared_top=acquisition.folder,
-                shared_subpath="acquisition",
-            ))
+            Notifier().assignment_notification(
+                AssignmentNotification(
+                    assignment_id=assignment.plan.ulid,
+                    state="in-progress",
+                    shared_top=acquisition.folder,
+                    shared_subpath="acquisition",
+                )
+            )
 
     def endpoint_start_acquisition_and_guiding(  # noqa: C901
         self,
@@ -389,13 +380,9 @@ class Acquirer:
             ),
         ] = None,
         gain_absolute: Annotated[
-            int | None,
-            Query(ge=asi.ControlDict[asi.Control.Gain].min_value, le=asi.ControlDict[asi.Control.Gain].max_value)
+            int | None, Query(ge=asi.ControlDict[asi.Control.Gain].min_value, le=asi.ControlDict[asi.Control.Gain].max_value)
         ] = asi.ASI_294MM_DEFAULT_GAIN,
-        gain_percent: Annotated[
-            int | None,
-            Query(ge=0, le=100)
-        ] = None,
+        gain_percent: Annotated[int | None, Query(ge=0, le=100)] = None,
         approach_mode: ApproachMode = ApproachMode.GRADUAL_BY_RATE,
         make_corrections: bool = True,
         skip_sky: bool = False,
@@ -428,9 +415,7 @@ class Acquirer:
                 pass
         else:
             if not pw_status.mount.is_connected:  # type: ignore
-                return CanonicalResponse(
-                    errors=["cannot get coordinates from mount (mount not connected)"]
-                )
+                return CanonicalResponse(errors=["cannot get coordinates from mount (mount not connected)"])
             ra_j2000_hours = pw_status.mount.ra_j2000_hours  # type: ignore
 
         if dec_j2000_degs:
@@ -443,33 +428,24 @@ class Acquirer:
                 pass
         else:
             if not pw_status.mount.is_connected:  # type: ignore
-                return CanonicalResponse(
-                    errors=["cannot get coordinates from mount (mount not connected)"]
-                )
+                return CanonicalResponse(errors=["cannot get coordinates from mount (mount not connected)"])
             dec_j2000_degs = pw_status.mount.dec_j2000_degs  # type: ignore
 
         assert self.unit.unit_conf is not None
         if seconds is not None:
             self.unit.unit_conf.acquisition.exposure = seconds
 
-        assert (
-            self.unit.unit_conf.solving.method
-            in self.unit.unit_conf.solving.valid_methods
-        ), "unit unit_conf.solving.method is not in allowed_methods"
+        assert self.unit.unit_conf.solving.method in self.unit.unit_conf.solving.valid_methods, (
+            "unit unit_conf.solving.method is not in allowed_methods"
+        )
 
         solver_name = self.unit.unit_conf.solving.method
 
         if all([gain_absolute, gain_percent]):
-            return CanonicalResponse(
-                errors=["supply only one of 'gain_absolute' or 'gain_percent', not both"]
-            )
+            return CanonicalResponse(errors=["supply only one of 'gain_absolute' or 'gain_percent', not both"])
 
         if ra_j2000_hours is None or dec_j2000_degs is None:
-            return CanonicalResponse(
-                errors=[
-                    "cannot start acquisition - no coordinates supplied and mount not connected"
-                ]
-            )
+            return CanonicalResponse(errors=["cannot start acquisition - no coordinates supplied and mount not connected"])
 
         assert self.unit.unit_conf is not None
         acquisition = Acquisition(
@@ -486,8 +462,6 @@ class Acquirer:
             use_set_limit_frame=use_set_limit_frame,
             handover_automatically_to_guider=handover_automatically_to_guider,
         )
-        Thread(
-            name="acquisition", target=self.do_acquire, args=[acquisition]
-        ).start()
+        Thread(name="acquisition", target=self.do_acquire, args=[acquisition]).start()
 
         return CanonicalResponse_Ok

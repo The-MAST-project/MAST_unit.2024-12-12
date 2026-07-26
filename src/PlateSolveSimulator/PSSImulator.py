@@ -90,9 +90,7 @@ def init_log(lg: logging.Logger):
     lg.setLevel(default_log_level)
     handler = logging.StreamHandler()
     handler.setLevel(default_log_level)
-    formatter = logging.Formatter(
-        "%(asctime)s - %(levelname)s - {%(name)s:%(threadName)s:%(thread)s} - %(message)s"
-    )
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - {%(name)s:%(threadName)s:%(thread)s} - %(message)s")
     handler.setFormatter(formatter)
     lg.addHandler(handler)
 
@@ -103,7 +101,6 @@ def init_log(lg: logging.Logger):
 
 
 if __name__ == "__main__":
-
     init_log(logger)
     logger.info("---------------")
     logger.info("New PSSimulator")
@@ -117,9 +114,7 @@ if __name__ == "__main__":
         try:
             image_shm = SharedMemory(name=PLATE_SOLVING_SHM_NAME)
         except FileNotFoundError:
-            logger.info(
-                "Waiting for the shared memory segment (not found, sleeping 2) ..."
-            )
+            logger.info("Waiting for the shared memory segment (not found, sleeping 2) ...")
             sleep(2)
 
     hello = {

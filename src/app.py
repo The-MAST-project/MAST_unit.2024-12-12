@@ -39,9 +39,7 @@ def app_quit(reason: str):
     logger.info(f"Quiting ({reason=}) !")
     parent_pid = os.getpid()
     parent = psutil.Process(parent_pid)
-    for child in parent.children(
-        recursive=True
-    ):  # or parent.children() for recursive=False
+    for child in parent.children(recursive=True):  # or parent.children() for recursive=False
         logger.info(f"killing process {child.pid=}, '{child.name()}'")
         child.kill()
     parent.kill()
@@ -145,16 +143,19 @@ app = FastAPI(
     # exception_handlers={WebSocketDisconnect: websocket_disconnect_handler},
 )
 
+
 @app.exception_handler(RequestValidationError)
 async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
     logger.error("Request validation error", exc_info=exc)
     # Optionally return the default structure so client still sees details
     return JSONResponse(status_code=422, content={"detail": exc.errors(), "body": exc.body})
 
+
 @app.exception_handler(ValidationError)
 async def pydantic_validation_exception_handler(request: Request, exc: ValidationError):
     logger.error("Pydantic validation error", exc_info=exc)
     return JSONResponse(status_code=400, content={"error": exc.errors()})
+
 
 @app.get("/favicon.ico")
 def read_favicon():

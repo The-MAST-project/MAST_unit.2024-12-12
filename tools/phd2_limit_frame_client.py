@@ -30,7 +30,7 @@ import time
 
 # The three rectangles the connector can send (see tests/test_limit_frame_guiding.py):
 EXPLICIT_RECT = [3031, 2692, 2000, 400]  # phd2.limit_frame configured rectangle
-DERIVED_ROI = [1144, 822, 6000, 4000]    # fiber/margin-derived guiding ROI
+DERIVED_ROI = [1144, 822, 6000, 4000]  # fiber/margin-derived guiding ROI
 
 
 class Phd2Rpc:

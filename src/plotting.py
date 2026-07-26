@@ -61,7 +61,7 @@ def plot_autofocus_analysis(
     positions: list[int] = []
     star_diameters: list[float] = []
 
-    assert(result and result.focus_samples)
+    assert result and result.focus_samples
     for sample in result.focus_samples:
         if not (sample and sample.is_valid):
             continue
@@ -85,18 +85,14 @@ def plot_autofocus_analysis(
     )
 
     # Calculate the diameters for each X value using the given equation
-    assert(result.vcurve_a and result.vcurve_b and result.vcurve_c)
-    star_diameter = np.sqrt(
-        result.vcurve_a * x**2 + result.vcurve_b * x + result.vcurve_c
-    )
+    assert result.vcurve_a and result.vcurve_b and result.vcurve_c
+    star_diameter = np.sqrt(result.vcurve_a * x**2 + result.vcurve_b * x + result.vcurve_c)
 
     # Calculate the X-coordinate of the minimum using the formula X_min = -B / (2 * A)
     x_min = -result.vcurve_b / (2 * result.vcurve_a)
 
     # Calculate the diameter at the minimum X position
-    diameter_min = np.sqrt(
-        result.vcurve_a * x_min**2 + result.vcurve_b * x_min + result.vcurve_c
-    )
+    diameter_min = np.sqrt(result.vcurve_a * x_min**2 + result.vcurve_b * x_min + result.vcurve_c)
 
     # Plot the V-curve
     plt.figure(figsize=(8, 6))
@@ -123,23 +119,13 @@ def plot_autofocus_analysis(
     )
 
     # Add green lines for tolerance
-    assert(result.tolerance)
+    assert result.tolerance
     x_left = x_min - result.tolerance
     x_right = x_min + result.tolerance
     y_max = np.max(star_diameter)
     # y_min = np.min(star_diameter)
-    y_left = (
-        np.sqrt(
-            result.vcurve_a * x_left**2 + result.vcurve_b * x_left + result.vcurve_c
-        )
-        / y_max
-    )
-    y_right = (
-        np.sqrt(
-            result.vcurve_a * x_right**2 + result.vcurve_b * x_right + result.vcurve_c
-        )
-        / y_max
-    )
+    y_left = np.sqrt(result.vcurve_a * x_left**2 + result.vcurve_b * x_left + result.vcurve_c) / y_max
+    y_right = np.sqrt(result.vcurve_a * x_right**2 + result.vcurve_b * x_right + result.vcurve_c) / y_max
     plt.axvline(
         x_left,
         ymin=0,
@@ -161,9 +147,7 @@ def plot_autofocus_analysis(
     plt.xlabel("Focuser Position")
     plt.ylabel("Star Diameter (px)")
 
-    tolerance_label = Patch(
-        color="none", label=f"Tolerance: {result.tolerance:.1f} microns"
-    )
+    tolerance_label = Patch(color="none", label=f"Tolerance: {result.tolerance:.1f} microns")
     # Show grid and legend
     plt.grid(True)
     plt.legend(
@@ -213,9 +197,7 @@ def plot_phase_corrections(  # noqa: C901
         acq_start_time = match.group("start_time")
         acq_target = match.group("target")
     else:
-        raise ValueError(
-            f"could not extract seq_number, start_time and target from path '{file}'"
-        )
+        raise ValueError(f"could not extract seq_number, start_time and target from path '{file}'")
 
     if not sequence:
         logger.info(f"Empty sequence ({phase=}), not plotting")
@@ -338,8 +320,10 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):  # noqa
     op = function_name()
 
     def has_corrections(_folder: str) -> bool:
-        return any(os.path.exists(os.path.join(_folder, _phase, "corrections.json")) \
-                   for _phase in list(get_args(Const.CorrectionPhase)))
+        return any(
+            os.path.exists(os.path.join(_folder, _phase, "corrections.json"))
+            for _phase in list(get_args(Const.CorrectionPhase))
+        )
 
     acquisition_top = None
     if acquisition_folder is not None:
@@ -347,13 +331,9 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):  # noqa
 
     if acquisition_top is None:
         while acquisition_top is None:
-            latest_acquisition_folders = filer.find_latest(
-                filer.shared.root, pattern="*,target=*"
-            )
+            latest_acquisition_folders = filer.find_latest(filer.shared.root, pattern="*,target=*")
             if not latest_acquisition_folders:
-                logger.error(
-                    f"{op}: Could not find acquisition folders under '{filer.shared.root}'"
-                )
+                logger.error(f"{op}: Could not find acquisition folders under '{filer.shared.root}'")
                 return
             for folder in latest_acquisition_folders:
                 if has_corrections(folder):
@@ -361,9 +341,7 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):  # noqa
                     break
 
     if acquisition_top is None:
-        logger.error(
-            f"{op}: Could not find an acquisition folder with corrections under '{filer.shared.root}'"
-        )
+        logger.error(f"{op}: Could not find an acquisition folder with corrections under '{filer.shared.root}'")
         return
 
     combined_corrections: Corrections | None = None
@@ -431,7 +409,6 @@ class FocusSample:
 
 
 class DummyResult:
-
     def __init__(self):
         self.has_solution: bool = True
         self.best_focus_position: int = 27444
@@ -469,12 +446,11 @@ class DummyResult:
 
 class Coord:
     def __init__(self, ra: float, dec: float):
-        self.ra = Angle(ra * u.hourangle) # type: ignore
-        self.dec = Angle(dec * u.deg) # type: ignore
+        self.ra = Angle(ra * u.hourangle)  # type: ignore
+        self.dec = Angle(dec * u.deg)  # type: ignore
 
 
 class DummyStatus:
-
     def __init__(self):
         self.is_running = False
         self.has_solution: bool = True

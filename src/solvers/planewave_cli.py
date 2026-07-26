@@ -9,8 +9,7 @@ from astropy.io import fits
 
 from common.extended_basemodel import ExtendedBaseModel
 from common.filer import Filer, MoveGuardian
-from common.interfaces.solving import (SolverInterface, SolvingResult,
-                                       SolvingSolution)
+from common.interfaces.solving import SolverInterface, SolvingResult, SolvingSolution
 from common.mast_logging import init_log
 from common.utils import Coord, function_name
 from imagers import ImagerSettings
@@ -21,6 +20,7 @@ filer = Filer(logger)
 
 if TYPE_CHECKING:
     from unit import Unit
+
 
 class PlaneWaveCliSolverExitCode(IntFlag):
     Success = 0
@@ -49,13 +49,14 @@ class PlaneWaveCli(SolverInterface):
 
         unit.imager.wait_for_image_saved()
 
-        assert(imager_settings.binning and imager_settings.binning.x is not None), (
-            f"{op}: imager_settings.binning is not set or has unset x binning")
+        assert imager_settings.binning and imager_settings.binning.x is not None, (
+            f"{op}: imager_settings.binning is not set or has unset x binning"
+        )
 
         pixel_scale = unit.unit_conf.imager.pixel_scale_at_bin1 * imager_settings.binning.x
 
         cmd = "C:\\Program Files (x86)\\PlaneWave Instruments\\ps3cli\\ps3cli"
-        assert(imager_settings.image_path), f"{op}: settings.image_path is not set"
+        assert imager_settings.image_path, f"{op}: settings.image_path is not set"
 
         image_path = imager_settings.image_path
         result_path = os.path.join(os.path.dirname(image_path), "result.txt")
@@ -82,9 +83,7 @@ class PlaneWaveCli(SolverInterface):
                 )
             filer.move_ram_to_shared(image_path)
         except subprocess.CalledProcessError as e:
-            logger.error(
-                f"{op}: solver return code: {PlaneWaveCliSolverExitCode(e.returncode).__repr__()}"
-            )
+            logger.error(f"{op}: solver return code: {PlaneWaveCliSolverExitCode(e.returncode).__repr__()}")
             # Write + close result.txt, THEN move it (protected). The move was previously
             # inside the open() block, which risked moving a still-open file.
             with MoveGuardian().protect(result_path):
@@ -100,14 +99,11 @@ class PlaneWaveCli(SolverInterface):
                 or e.returncode == PlaneWaveCliSolverExitCode.GeneralFailure
             ):
                 logger.error(
-                    f"{op}: solver returned {PlaneWaveCliSolverExitCode(e.returncode).__repr__()}, "
-                    + "guiding aborted."
+                    f"{op}: solver returned {PlaneWaveCliSolverExitCode(e.returncode).__repr__()}, " + "guiding aborted."
                 )
 
                 ret.succeeded = False
-                ret.errors = [
-                    f"solver failed with {PlaneWaveCliSolverExitCode(e.returncode).__repr__()}"
-                ]
+                ret.errors = [f"solver failed with {PlaneWaveCliSolverExitCode(e.returncode).__repr__()}"]
                 return ret
 
         # solving succeeded, parse output
@@ -118,9 +114,7 @@ class PlaneWaveCli(SolverInterface):
                 solver_output_lines = file.readlines()
 
         elif completed_process.returncode == PlaneWaveCliSolverExitCode.NoStarMatch:
-            logger.error(
-                f"{op}: solver did not find a match {completed_process.returncode=}"
-            )
+            logger.error(f"{op}: solver did not find a match {completed_process.returncode=}")
 
             ret.succeeded = False
             ret.errors = [f"solver did not find a match {completed_process.returncode=}"]
@@ -142,9 +136,7 @@ class PlaneWaveCli(SolverInterface):
 
         for key in ["ra_j2000_hours", "dec_j2000_degrees", "rot_angle_degs"]:
             if key not in solver_output:
-                logger.error(
-                    f"{op}: either 'ra_j2000_hours' or 'dec_j2000_degrees' missing in {solver_output=}"
-                )
+                logger.error(f"{op}: either 'ra_j2000_hours' or 'dec_j2000_degrees' missing in {solver_output=}")
                 continue
 
         ret = SolvingResult(succeeded=True)
@@ -152,21 +144,20 @@ class PlaneWaveCli(SolverInterface):
         ret.native_result = solver_output
         solution = SolvingSolution()
         solution.ra_hours = solver_output["ra_j2000_hours"]
-        solution.ra_rads = Angle(solution.ra_hours, unit="hour").radian # type: ignore[assignment]
+        solution.ra_rads = Angle(solution.ra_hours, unit="hour").radian  # type: ignore[assignment]
         solution.dec_degs = solver_output["dec_j2000_degrees"]
-        solution.dec_rads = Angle(solution.dec_degs, unit="degree").radian # type: ignore[assignment]
+        solution.dec_rads = Angle(solution.dec_degs, unit="degree").radian  # type: ignore[assignment]
         solution.rotation_angle_degs = solver_output["rot_angle_degs"]
         solution.matched_stars = solver_output["matched_stars"]
         ret.solution = solution
 
-        assert unit.imager.latest_settings is not None, (
-            f"{op}: unit.imager.latest_settings is None"
+        assert unit.imager.latest_settings is not None, f"{op}: unit.imager.latest_settings is None"
+        assert unit.imager.latest_settings.image_path is not None and unit.imager.latest_settings.roi is not None, (
+            f"{op}: unit.imager.latest_settings.image_path or roi is None"
         )
-        assert( unit.imager.latest_settings.image_path is not None and unit.imager.latest_settings.roi is not None), (
-            f"{op}: unit.imager.latest_settings.image_path or roi is None")
 
         # Update FITS headers
-        with fits.open(unit.imager.latest_settings.image_path, mode="update") as hdul: # type: ignore[misc]
+        with fits.open(unit.imager.latest_settings.image_path, mode="update") as hdul:  # type: ignore[misc]
             header = fits.Header()
 
             roi = unit.imager.latest_settings.roi

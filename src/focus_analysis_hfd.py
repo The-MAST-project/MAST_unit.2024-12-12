@@ -81,17 +81,29 @@ def _fit_vcurve(positions, diameters, tolerance_frac):
 def _result(samples, errors, fit=None) -> PS3AutofocusStatus:
     if fit is None:
         ar = PS3FocusAnalysisResult(
-            has_solution=False, best_focus_position=None, best_focus_star_diameter=None,
-            tolerance=None, vcurve_a=None, vcurve_b=None, vcurve_c=None,
-            focus_samples=samples, errors=errors,
+            has_solution=False,
+            best_focus_position=None,
+            best_focus_star_diameter=None,
+            tolerance=None,
+            vcurve_a=None,
+            vcurve_b=None,
+            vcurve_c=None,
+            focus_samples=samples,
+            errors=errors,
         )
         msg = errors[-1] if errors else "no solution"
     else:
         a, b, c, xstar, dmin, tol = fit
         ar = PS3FocusAnalysisResult(
-            has_solution=True, best_focus_position=xstar, best_focus_star_diameter=dmin,
-            tolerance=tol, vcurve_a=a, vcurve_b=b, vcurve_c=c,
-            focus_samples=samples, errors=errors,
+            has_solution=True,
+            best_focus_position=xstar,
+            best_focus_star_diameter=dmin,
+            tolerance=tol,
+            vcurve_a=a,
+            vcurve_b=b,
+            vcurve_c=c,
+            focus_samples=samples,
+            errors=errors,
         )
         msg = f"HFD V-curve: best={xstar:.1f}, Dmin={dmin:.2f}, tol={tol:.1f}"
     return PS3AutofocusStatus(is_running=False, last_log_message=msg, errors=errors, analysis_result=ar)
@@ -246,7 +258,13 @@ def analyze_donut_samples(
 
     if len(positions) < 2:
         return DonutJump(
-            False, None, None, None, 0, len(positions), float("nan"),
+            False,
+            None,
+            None,
+            None,
+            0,
+            len(positions),
+            float("nan"),
             f"only {len(positions)} frame(s) with donuts; need >=2 at distinct positions",
         )
     return plan_donut_jump(positions, diameters, weights=weights, undershoot_frac=undershoot_frac)
@@ -266,6 +284,4 @@ def analyze_donut_files(
     The memory-capable path is :func:`analyze_donut_samples`.
     """
     samples = [(focus_position_of(f), f) for f in files]
-    return analyze_donut_samples(
-        samples, min_donuts=min_donuts, undershoot_frac=undershoot_frac, **detect_kw
-    )
+    return analyze_donut_samples(samples, min_donuts=min_donuts, undershoot_frac=undershoot_frac, **detect_kw)
