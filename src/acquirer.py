@@ -59,6 +59,13 @@ class Acquirer:
         self.unit.errors = []
         self.unit.reference_image = None
 
+        assert self.unit.mount is not None, f"{op}: unit.mount is None"
+        assert self.unit.guider is not None, f"{op}: unit.guider is None"
+        assert self.unit.imager is not None, f"{op}: unit.imager is None"
+        assert self.unit.solver is not None, f"{op}: unit.solver is None"
+        assert self.unit.stage is not None, f"{op}: unit.stage is None"
+        assert self.unit.acquirer is not None, f"{op}: unit.acquirer is None"
+
         self.latest_acquisition = acquisition
         acquisition_conf = acquisition.conf
         sky_roi_conf = acquisition_conf.rois[self.unit.fcu_version]
@@ -295,7 +302,7 @@ class Acquirer:
             self.unit.start_activity(UnitActivities.PreGuiding)
             self.unit.guider.start_guiding()
         else:
-            lines.append("start manual PHD2 guiding")
+            lines.append("Use start_guiding endpoint to start PHD2 guiding")
             boxed_log(logger, lines)
             self.unit.start_activity(UnitActivities.PreGuiding)
 
@@ -402,6 +409,11 @@ class Acquirer:
         :param handover_automatically_to_guider: After acquisition, start PHD2 guiding automatically
         :return: The folder path on the MAST-SHARE with the acquisition's products
         """
+
+        op = function_name()
+
+        assert self.unit.mount is not None, f"{op}: unit.mount is None"
+        assert self.unit.mount.pw is not None, f"{op}: unit.mount.pw is None"
 
         pw_status = self.unit.mount.pw.status()
 
