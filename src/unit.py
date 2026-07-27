@@ -1122,6 +1122,11 @@ class Unit(Component):
             )
         if self.guider:
             router.add_api_route(
+                base_path + "/start_guiding",
+                tags=[tag],
+                endpoint=self.guider.endpoint_start_guiding,
+            )
+            router.add_api_route(
                 base_path + "/stop_acquisition_and_guiding",
                 tags=[tag],
                 endpoint=self.guider.endpoint_stop_acquisition_and_guiding,

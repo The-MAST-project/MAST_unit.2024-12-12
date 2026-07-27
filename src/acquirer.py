@@ -286,26 +286,35 @@ class Acquirer:
             )
             self.unit.imager.disconnect()
 
+        # Move the stage to SPEC (FCU v2 was left at Sky by the solve; v1 is already there)
+        # and wait for it to settle -- needed by BOTH the auto-handover and the manual
+        # acquisition-tuning paths, so guiding always starts with the stage at SPEC.
+        if self.unit.fcu_version == FcuVersion.v2:
+            self.unit.stage.move_to_preset(StagePresetPosition.Spec)
+            lines.append("moving stage to SPEC")
+        while self.unit.stage.is_moving:
+            time.sleep(0.2)
+        logger.info("sleeping additional 5 seconds to let the stage stop moving ...")
+        time.sleep(5)
+
         if self.latest_acquisition.handover_automatically_to_guider:
             lines.append("starting PHD2 guiding")
-            if self.unit.fcu_version == FcuVersion.v2:
-                self.unit.stage.move_to_preset(StagePresetPosition.Spec)
-                lines.append("started moving stage to SPEC")
             boxed_log(logger, lines)
-            self.unit.start_activity(UnitActivities.PreGuiding)
             self.unit.guider.start_guiding()
+
+            while self.unit.is_active(UnitActivities.Guiding):
+                time.sleep(1)
+
+            # Guiding was stopped
+            self.unit.end_activity(UnitActivities.Acquiring)
+            self.unit.mount.stop_tracking()
         else:
-            lines.append("start manual PHD2 guiding")
+            lines.append("acquisition tuning: guiding must be started manually via /start_guiding")
             boxed_log(logger, lines)
-            self.unit.start_activity(UnitActivities.PreGuiding)
+            # End the acquisition but KEEP the mount tracking: the operator fine-tunes the
+            # pointing with external tools, then starts guiding via the /start_guiding endpoint.
+            self.unit.end_activity(UnitActivities.Acquiring)
 
-        while self.unit.is_active(UnitActivities.PreGuiding) or self.unit.is_active(UnitActivities.Guiding):
-            time.sleep(1)
-
-        # Acquisition was stopped
-        self.unit.end_activity(UnitActivities.Acquiring)
-
-        self.unit.mount.stop_tracking()
         if self.unit.acquirer.latest_acquisition is not None:
             self.unit.acquirer.latest_acquisition.post_process()
 
@@ -333,6 +342,9 @@ class Acquirer:
             target_ra=float(ra_j2000_hours),
             target_dec=float(dec_j2000_degs),
             conf=self.unit.unit_conf.acquisition,
+            # Unattended assignments auto-hand-over to guiding; the Acquisition default is
+            # False (manual acquisition-tuning), which would stall the assignment at SPEC.
+            handover_automatically_to_guider=True,
         )
         Thread(name="acquisition", target=self.do_acquire, args=[acquisition]).start()
 
