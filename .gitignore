@@ -5,11 +5,9 @@
 /src/PlateSolveSimulator/images/
 __pycache__/
 /src/common.sav
-/src/dlipower.sav
 /src/powered_device-sav.py
 *.fits
 src/Standa/
-src/dlipower/
 external/
 charts/
 src/test.out
