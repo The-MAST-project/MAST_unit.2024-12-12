@@ -20,7 +20,15 @@
   "python.analysis.autoImportCompletions": true,
   "python.languageServer": "Pylance",
   "python.analysis.typeCheckingMode": "basic",
+  // ".." is the flat-layout top folder, where MAST_common is cloned as
+  // "common/" alongside this repo (see MAST_provisioning tools/mast-clone.*).
+  // The generated mast.code-workspace sets this at workspace level, but a
+  // folder-scoped extraPaths REPLACES the workspace value rather than merging
+  // with it -- so without ".." here, "from common.X import ..." fails to
+  // resolve in Pylance for this folder only. Harmless when the layout is not
+  // in use: a non-existent path is simply ignored.
   "python.analysis.extraPaths": [
+    "..",
     "./src/Standa/ximc-2.13.6/ximc/crossplatform/wrappers/python"
   ]
 }
