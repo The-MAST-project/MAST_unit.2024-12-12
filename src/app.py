@@ -10,7 +10,7 @@ import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, ORJSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import ValidationError
 
 from common.config import Config, ConfigError
@@ -139,7 +139,6 @@ app = FastAPI(
     lifespan=lifespan,
     openapi_url="/openapi.json",
     debug=True,
-    default_response_class=ORJSONResponse,
     # exception_handlers={WebSocketDisconnect: websocket_disconnect_handler},
 )
 
@@ -166,7 +165,7 @@ def read_favicon():
 async def generic_exception_handler(request, exc: Exception):
     from common.utils import function_name
 
-    return ORJSONResponse(
+    return JSONResponse(
         status_code=500,
         content={"message": f"{function_name()}: Exception occurred: {exc}"},
     )
