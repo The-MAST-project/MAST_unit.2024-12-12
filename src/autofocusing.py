@@ -14,7 +14,7 @@ from common.config import Config
 from common.config.rois import SkyRoiConfig
 from common.filer import Filer, MoveGuardian
 from common.interfaces.imager import ImagerRoi, ImagerSettings
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
 from common.rois import UnitRoi
@@ -31,8 +31,7 @@ from stage import StagePresetPosition
 if TYPE_CHECKING:
     from unit import Unit  # type: ignore[import-untyped]
 
-logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
+logger = get_logger(__name__)
 filer = Filer(logger)
 
 

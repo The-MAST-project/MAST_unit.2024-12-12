@@ -1,5 +1,4 @@
 import datetime
-import logging
 import os
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
@@ -8,7 +7,7 @@ import common.asi as asi
 from common.config.unit import AcquisitionConfig
 from common.corrections import Corrections
 from common.filer import Filer, MoveGuardian
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.paths import PathMaker
 from common.solving import SolverId
 from plotting import plot_acquisition_corrections, plot_phase_corrections
@@ -16,11 +15,8 @@ from plotting import plot_acquisition_corrections, plot_phase_corrections
 if TYPE_CHECKING:
     from unit import Unit
 
-logger = logging.getLogger("mast.unit." + __name__)
+logger = get_logger(__name__)
 filer = Filer(logger)
-init_log(logger)
-
-
 class ApproachMode(IntEnum):
     """
     How `solve_and_correct` applies a mount correction. IntEnum, so existing

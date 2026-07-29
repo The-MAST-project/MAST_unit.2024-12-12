@@ -20,14 +20,13 @@ Design reference: docs/autofocus_design.md.
 
 from __future__ import annotations
 
-import logging
 import re
 from pathlib import Path
 
 import numpy as np
 from astropy.io import fits
 
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from focus_analysis import (
     PS3AutofocusStatus,
     PS3FocusAnalysisResult,
@@ -36,9 +35,7 @@ from focus_analysis import (
 from imaging.donut import DonutJump, frame_donut_metric, plan_donut_jump
 from imaging.hfd import measure_sweep_hfd
 
-logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
-
+logger = get_logger(__name__)
 _POS_RE = re.compile(r"FOCUS(-?\d+)", re.IGNORECASE)
 
 

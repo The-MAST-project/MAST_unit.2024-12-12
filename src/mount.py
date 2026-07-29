@@ -1,4 +1,3 @@
-import logging
 import math
 import time
 from enum import StrEnum
@@ -15,7 +14,7 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.statuses import MountStatus, SpiralSettings
 from common.utils import RepeatTimer, caller_name, function_name, time_stamp
 from PlaneWave import pwi4_client
@@ -23,10 +22,7 @@ from PlaneWave import pwi4_client
 if TYPE_CHECKING:
     from unit import Unit
 
-logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
-
-
+logger = get_logger(__name__)
 # class SpiralSettings(BaseModel):
 #     x: float
 #     y: float

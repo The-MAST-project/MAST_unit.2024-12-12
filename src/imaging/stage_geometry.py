@@ -35,7 +35,6 @@ geometry).  Sits beside :mod:`imaging.mirror_shadow` and
 
 from __future__ import annotations
 
-import logging
 import os
 import time
 from dataclasses import dataclass, field
@@ -47,17 +46,14 @@ from common.activities import StageActivities, UnitActivities
 from common.config import Config
 from common.config.calibration import CalibrationConfig, StageCalibrationConfig
 from common.interfaces.imager import ImagerSettings
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.utils import time_stamp
 from imaging.mirror_shadow import ShadowModel, detect_mirror_shadow
 
 if TYPE_CHECKING:
     from unit import Unit  # type: ignore[import-untyped]
 
-logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
-
-
+logger = get_logger(__name__)
 @dataclass
 class StageGeometryResult:
     """The spec stage position and the quality behind it.
