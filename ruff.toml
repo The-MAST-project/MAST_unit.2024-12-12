@@ -10,9 +10,6 @@
 line-length = 125
 target-version = "py312"
 
-# Automatically fix on save (when the editor is configured to do so).
-fix = true
-
 # src/common is a submodule owned by MAST_common — never format it from here.
 # (ruff does NOT skip submodules automatically.)
 extend-exclude = ["src/common"]
