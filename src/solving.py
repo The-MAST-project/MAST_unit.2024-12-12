@@ -1,6 +1,5 @@
 import datetime
 import json
-import logging
 import os.path
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,14 +18,13 @@ from common.corrections import Correction, Corrections
 from common.filer import Filer, MoveGuardian
 from common.interfaces.imager import ImagerSettings
 from common.interfaces.solving import SolverInterface, SolvingResult, SolvingTolerance
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.safety import safety_get_sensor
 from common.solving import SolverId
 from common.utils import Coord, boxed_log, function_name, isoformat_zulu
 from mount import SettleMode
 
-logger = logging.Logger("mast.unit." + __name__)
-init_log(logger)
+logger = get_logger(__name__)
 filer = Filer(logger)
 
 

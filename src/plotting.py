@@ -16,14 +16,12 @@ from matplotlib.patches import Patch
 
 from common.const import Const
 from common.corrections import Corrections
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.filer import MoveGuardian
 from common.utils import Filer, fromisoformat_zulu, function_name
 
-logger = logging.Logger("mast.unit." + __name__)
+logger = get_logger(__name__)
 filer = Filer(logger)
-init_log(logger)
-
 logging.getLogger("matplotlib").setLevel(logging.WARNING)
 logging.getLogger("PIL").setLevel(logging.WARNING)
 

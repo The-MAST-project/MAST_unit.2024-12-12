@@ -1,4 +1,3 @@
-import logging
 import time
 
 import numpy as np
@@ -9,12 +8,10 @@ from common.canonical import CanonicalResponse
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerTypes
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.statuses import ImagerSettings, ImagerStatus
 
-logger = logging.Logger("mast." + __name__)
-init_log(logger)
-
+logger = get_logger(__name__)
 __all__ = ["Imager"]
 
 

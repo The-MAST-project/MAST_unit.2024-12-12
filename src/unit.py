@@ -1,7 +1,7 @@
+import logging
 import datetime
 import io
 import ipaddress
-import logging
 import os
 import socket
 import threading
@@ -43,7 +43,7 @@ from common.interfaces.components import Component
 
 # from guiding import Guider
 from common.interfaces.imager import ImagerExposureSeries, ImagerRoi, ImagerSequenceOfExposures, ImagerSettings, ImagerTypes
-from common.mast_logging import DailyFileHandler, init_log
+from common.mast_logging import DailyFileHandler, get_logger
 from common.models.assignments import AssignmentNotification, UnitAssignment
 from common.models.statuses import FullUnitStatus, StatusType
 from common.notifications import Notifier
@@ -59,12 +59,12 @@ from phd2.phd2 import PHD2Connector
 from PlaneWave import pwi4_client
 from solving import Solver
 from stage import Stage
+from common.mast_logging import get_logger
 
 RA_REGEX = r"^(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
 DEC_REGEX = r"^([+-]?)(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
 
-logger = logging.getLogger("mast.unit")
-init_log(logger)
+logger = get_logger(__name__)
 filer = Filer(logger)
 
 
@@ -122,8 +122,10 @@ class Unit(Component):
 
         self.was_tracking_before_guiding: bool = False
 
-        file_handler = [h for h in logger.handlers if isinstance(h, DailyFileHandler)]
-        logger.info(f"logging to '{file_handler[0].path}'")
+        # Handlers live on the root logger now, not on this one -- look there.
+        file_handlers = [h for h in logging.getLogger().handlers if isinstance(h, DailyFileHandler)]
+        if file_handlers:
+            logger.info(f"logging to '{file_handlers[0].path}'")
 
         self._init_errors: list[str] = []
 

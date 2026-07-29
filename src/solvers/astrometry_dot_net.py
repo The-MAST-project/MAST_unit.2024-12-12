@@ -1,5 +1,4 @@
 import datetime
-import logging
 import os
 import re
 import subprocess
@@ -14,15 +13,13 @@ from common.config.rois import SkyRoiConfig, SpecRoiConfig
 from common.const import Const
 from common.filer import Filer, MoveGuardian
 from common.interfaces.solving import SolverInterface, SolvingConfidenceLevel, SolvingResult, SolvingSolution
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.utils import Coord, boxed_log, function_name, generate_random_string
 from imagers import ImagerSettings
 
 # from unit import Unit  # type: ignore[import-untyped]
 
-logger = logging.Logger("astrometry_dot_net")
-init_log(logger)
-
+logger = get_logger(__name__)
 if TYPE_CHECKING:
     from unit import Unit  # type: ignore[import-untyped]
 

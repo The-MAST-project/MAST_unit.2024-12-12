@@ -9,13 +9,11 @@ from astropy.coordinates import Angle
 
 from common.activities import UnitActivities
 from common.interfaces.guiding import GuiderInterface
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.utils import Coord, boxed_log
 from solving import SolvingTolerance
 
-logger = Logger("mast-unit-solving-guider")
-init_log(logger)
-
+logger = get_logger(__name__)
 if TYPE_CHECKING:
     pass
 

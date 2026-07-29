@@ -12,7 +12,7 @@ from common.canonical import CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.statuses import CoversState, CoverStatus
 from common.utils import RepeatTimer, time_stamp
 
@@ -20,9 +20,6 @@ if TYPE_CHECKING:
     from unit import Unit
 
 logger: logging.Logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
-
-
 class Covers(Component, SwitchedOutlet, AscomDispatcher):
     _instance = None
     _initialized = False

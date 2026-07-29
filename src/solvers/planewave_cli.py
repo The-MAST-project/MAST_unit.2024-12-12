@@ -1,4 +1,3 @@
-import logging
 import os
 import subprocess
 from enum import IntFlag
@@ -10,12 +9,11 @@ from astropy.io import fits
 from common.extended_basemodel import ExtendedBaseModel
 from common.filer import Filer, MoveGuardian
 from common.interfaces.solving import SolverInterface, SolvingResult, SolvingSolution
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.utils import Coord, function_name
 from imagers import ImagerSettings
 
-logger = logging.Logger("planewave_cli")
-init_log(logger)
+logger = get_logger(__name__)
 filer = Filer(logger)
 
 if TYPE_CHECKING:

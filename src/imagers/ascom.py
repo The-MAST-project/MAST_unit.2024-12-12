@@ -1,6 +1,5 @@
 import datetime
 import json
-import logging
 import threading
 import time
 from collections.abc import Callable
@@ -22,7 +21,7 @@ from common.config.imager import ImagerConfig
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings, ImagerStatus
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.paths import PathMaker
 from common.utils import RepeatTimer, function_name, time_stamp
 from imagers import Imager
@@ -31,10 +30,7 @@ from imagers.saving import save_to_fits_file
 # if TYPE_CHECKING:
 #     from unit import Unit
 
-logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
-
-
+logger = get_logger(__name__)
 class Visualizer:
     def __init__(self, name: str, func: Callable):
         self.name = name

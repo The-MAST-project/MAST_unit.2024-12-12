@@ -1,6 +1,5 @@
 import copy
 import json
-import logging
 import math
 import selectors
 import socket
@@ -22,7 +21,7 @@ from common.config.rois import FcuVersion
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.statuses import PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, Timeout, boxed_debug, function_name
@@ -35,10 +34,7 @@ from stage import StagePresetPosition
 if TYPE_CHECKING:
     pass  # type: ignore[name-defined]
 
-logger = logging.Logger("mast.unit." + __name__)
-init_log(logger)
-
-
+logger = get_logger(__name__)
 class CoolerStatus(BaseModel):
     temperature: float
     coolerOn: bool  # noqa: N815
