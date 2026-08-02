@@ -20,8 +20,9 @@ from common.config import Config
 from common.config.imager import ImagerConfig
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings, ImagerStatus
+from common.interfaces.imager import ImagerExposureSeries, ImagerInterface
 from common.mast_logging import get_logger
+from common.models.statuses import ImagerRoi, ImagerSettings, ImagerStatus
 from common.paths import PathMaker
 from common.utils import RepeatTimer, function_name, time_stamp
 from imagers import Imager
