@@ -2,6 +2,42 @@
 
 ---
 
+## [2026-08-02] The endpoint-contract change does not reach `main` without hardware verification
+
+**Why:** The contract remediation (#42) is verified by ruff, by pytest suites, and by a smoke
+harness on labcomp2 -- and all three share one blind spot. Every component under test is built
+with `object.__new__` and handed a recording stand-in for the PWI4 client or the camera, because
+the real ones need a telescope. That setup answers *did the handler refuse*, *did it delegate*,
+and *what shape went on the wire*. It cannot answer whether the mount still slews, whether the
+focuser still reaches its target, or whether `/unit/status` still parses downstream. The two
+defects most likely to escape are precisely the ones a stand-in cannot see: a move that silently
+no-ops, and a status field consumers read positionally.
+
+The units make the gap easy to underestimate. `mast-unit` has been **stopped on all four since
+2026-07-08**, and they track `main` by `git pull`, so a merge looks inert -- right up until the
+next pull takes the entire set at once, on the first service start in weeks.
+
+**What:** Merging `eli/endpoint-contract` into `main` requires a hardware pass on one unit
+first, item by item, with evidence recorded on the integration PR (#77). Held as a **draft** so
+the requirement is mechanical rather than a note someone has to remember; leaving draft is the
+signal that the checklist is complete. The gate sits at that boundary only -- the tranche PRs
+merge *into* the integration branch on code review alone, which is what the branch is for.
+
+The checklist lives on #77 rather than here, since it is per-tranche and changes as tranches
+land. Two limits are worth recording as durable facts rather than checklist items:
+
+- **The imager verbs cannot be hardware-tested while `imager_type` is `phd2`.**
+  `units.common.imager.imager_type` is `phd2` fleet-wide with no unit overriding it, so the
+  ASCOM and ZWO code paths are never imported. Pointing a unit at `ascom:...` first requires the
+  stale-import fix (#71/#72) -- on `main` that backend does not import at all.
+- **The ZWO paths are out of reach entirely** until some unit is configured for that backend.
+  They stay stand-in-verified, and that should be stated rather than glossed.
+
+**Implications:** "Tests pass" is not a merge argument for this change, and neither is "it is
+only an API shape". Anything that cannot be exercised on hardware ships explicitly labelled as
+unverified, or does not ship. The same reasoning applies to the sibling epics when the contract
+extends to `MAST_control` and `MAST_spec`.
+
 ## [2026-07-23] Fixed limit frame sent verbatim; per-call endpoint override dropped
 
 **Why (verbatim):** The `fixed` arm routed the DB rectangle through `ImagerRoi`,
