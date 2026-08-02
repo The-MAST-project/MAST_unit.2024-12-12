@@ -274,12 +274,19 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.pw.mount_find_home()
         return CanonicalResponse_Ok
 
-    def goto(
+    def endpoint_goto(
         self,
-        primary_coord: float | str,
-        secondary_coord: float | str,
-        # frame: str = "icrs",
-    ):
+        ra_j2000_hours: float | None = None,
+        dec_j2000_degs: float | None = None,
+        alt_degs: float | None = None,
+        az_degs: float | None = None,
+    ) -> CanonicalResponse:
+        """
+        Slews the mount to either equatorial (J2000) or horizontal coordinates.
+
+        Supply exactly one complete pair: ``ra_j2000_hours`` + ``dec_j2000_degs``, or
+        ``alt_degs`` + ``az_degs``.
+        """
         op = function_name()
 
         if not self.connected:
@@ -287,30 +294,33 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             logger.error(msg)
             return CanonicalResponse(errors=[msg])
 
-        # frame_names = frame_transform_graph.get_names()
-        # if frame not in frame_names:
-        #     error = f"{op}: '{frame}' not in [{frame_names}]"
-        #     logger.error(error)
-        #     return CanonicalResponse(errors=[error])
+        equatorial = (ra_j2000_hours, dec_j2000_degs)
+        horizontal = (alt_degs, az_degs)
+        wants_equatorial = any(c is not None for c in equatorial)
+        wants_horizontal = any(c is not None for c in horizontal)
 
-        # if frame != "icrs" and primary_coord is not None and secondary_coord is not None:
-        #     try:
-        #         j2000_coord = SkyCoord(primary_coord, secondary_coord, frame)
-        #         primary_coord = j2000_coord.ra.hour
-        #         secondary_coord = j2000_coord.dec.deg
-        #     except Exception as e:
-        #         error = f"{op}: {e}"
-        #         logger.error(error)
-        #         return CanonicalResponse(errors=[error])
+        if wants_equatorial and wants_horizontal:
+            msg = f"{op}: supply either ra/dec or alt/az, not both"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
 
-        try:
-            self.pw.mount_goto_ra_dec_j2000(primary_coord, secondary_coord)
-        except Exception as e:
-            error = f"{op}: {e}"
-            logger.error(error)
-            return CanonicalResponse(errors=[error])
+        if wants_equatorial:
+            if None in equatorial:
+                msg = f"{op}: both ra_j2000_hours and dec_j2000_degs are required"
+                logger.error(msg)
+                return CanonicalResponse(errors=[msg])
+            return self.goto_ra_dec_j2000(ra_j2000_hours, dec_j2000_degs)  # type: ignore[arg-type]
 
-        return CanonicalResponse_Ok
+        if wants_horizontal:
+            if None in horizontal:
+                msg = f"{op}: both alt_degs and az_degs are required"
+                logger.error(msg)
+                return CanonicalResponse(errors=[msg])
+            return self.goto_alt_az(alt_degs, az_degs)  # type: ignore[arg-type]
+
+        msg = f"{op}: no coordinates supplied (ra/dec or alt/az)"
+        logger.error(msg)
+        return CanonicalResponse(errors=[msg])
 
     def ontimer(self):
         if self.unit.unit_shutdown_event.is_set():
@@ -606,15 +616,22 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def endpoint_status(self) -> MountStatus:
         return self.status()
 
-    def status(self) -> MountStatus:
-        target_verbal = None
+    def target_verbal(self) -> str | None:
+        """
+        Renders ``target`` for status: a tuple is (RA hours, Dec degrees) from
+        ``goto_ra_dec_j2000``; a string is already display-ready (``goto_alt_az``, "Home").
+        """
         if isinstance(self.target, str):
-            target_verbal = self.target
-        elif isinstance(self.target, tuple):
-            target_verbal = (
+            return self.target
+        if isinstance(self.target, tuple):
+            return (
                 f"[{Angle(self.target[0], unit='hour').to_string(unit='hour', sep=':', precision=3)}, "
-                + f"{Angle(self.target[1], unit='arcsec').to_string(unit='deg', sep=':', precision=3)}]"
+                + f"{Angle(self.target[1], unit='deg').to_string(unit='deg', sep=':', precision=3)}]"
             )
+        return None
+
+    def status(self) -> MountStatus:
+        target_verbal = self.target_verbal()
 
         activities = self.activities  # integrate activities we may have not started
         st = None
@@ -703,9 +720,18 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self.pw.mount_goto_ra_dec_j2000(ra, dec)
         return CanonicalResponse_Ok
 
-    def goto_ra_dec_apparent(self, ra: float, dec: float):
+    def goto_alt_az(self, alt_degs: float, az_degs: float) -> CanonicalResponse:
+        """
+        The horizontal counterpart of ``goto_ra_dec_j2000`` -- same activity and target
+        bookkeeping, so ``wait_until_settled(SettleMode.SLEW)`` tracks it identically.
+
+        ``target`` is recorded as text rather than a tuple: ``status()`` renders a tuple as
+        RA/Dec, which would mislabel a horizontal target.
+        """
         self.start_activity(MountActivities.Slewing)
-        self.pw.mount_goto_ra_dec_apparent(ra, dec)
+        self.target = f"alt={alt_degs}, az={az_degs}"
+        self.pw.mount_goto_alt_az(alt_degs, az_degs)
+        return CanonicalResponse_Ok
 
     def endpoint_abort(self):
         return self.abort()
@@ -830,7 +856,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         router.add_api_route(base_path + "/stop_tracking", tags=[tag], endpoint=self.stop_tracking)
         router.add_api_route(base_path + "/park", tags=[tag], endpoint=self.park)
         router.add_api_route(base_path + "/find_home", tags=[tag], endpoint=self.find_home)
-        router.add_api_route(base_path + "/goto", tags=[tag], endpoint=self.goto)
+        router.add_api_route(base_path + "/goto", methods=["PUT"], tags=[tag], endpoint=self.endpoint_goto)
         router.add_api_route(base_path + "/dance", tags=[tag], endpoint=self.dance)
 
         return router

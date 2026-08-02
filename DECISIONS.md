@@ -40,6 +40,65 @@ extends to `MAST_control` and `MAST_spec`.
 
 ---
 
+## [2026-08-02] /mount/goto delegates to the maintained slew and gains alt/az
+
+**Why:** `mount.goto()` was a second implementation of the slew. It called
+`pw.mount_goto_ra_dec_j2000` directly and skipped `start_activity(MountActivities.Slewing)` and
+`self.target`, which the maintained `goto_ra_dec_j2000` sets. So a slew commanded through the
+API was invisible to `wait_until_settled(SettleMode.SLEW)` and to mount status -- the mount
+looked idle while it moved. This is invariant 2 of the endpoint contract (#42), and this fork is
+the example that motivated the whole review.
+
+**What:** `endpoint_goto` is a thin handler over the maintained methods: check `connected`,
+validate the arguments, delegate. `goto_alt_az` is the horizontal counterpart of
+`goto_ra_dec_j2000`, with identical activity/target bookkeeping so both slews settle the same
+way. `mount.goto()` is gone, and so is `goto_ra_dec_apparent` -- unrouted, zero callers, and it
+carried the same missing-envelope defect.
+
+Four decisions inside that are worth recording:
+
+- **Argument shape: four optional floats, exactly one complete pair.** Named
+  `ra_j2000_hours` / `dec_j2000_degs` to match `unit.expose` rather than the old generic
+  `primary_coord` / `secondary_coord`, plus `alt_degs` / `az_degs`. The alternative was
+  `coord_system` + `coord0` / `coord1`, which is fewer parameters but reproduces exactly the
+  ambiguity PWI4's own `mount_goto_coord_pair` documents ("coord0 is the azimuth for altaz");
+  explicit names are self-documenting in Swagger. Mixed pairs, half a pair, and no coordinates
+  each refuse with `errors` rather than guessing which slew was meant.
+- **Decimal only, deliberately.** `/mount/goto` previously typed its coordinates `float | str`,
+  which was a lie: PWI4's client does `float(value)`, so a sexagesimal string raised inside the
+  client and surfaced as a 500. Typing them `float` makes that a clean 422 instead. Full
+  sexagesimal support is not included because it does not fit yet:
+  `common.parsers.sexagesimal_degrees_to_decimal` is built on `astropy` `Latitude`, bounded to
+  +/-90, so it cannot parse an **azimuth** (0-360). Supporting sexagesimal here needs a
+  longitude-style degree parser in `common` first; RA/Dec alone would leave the four parameters
+  asymmetric.
+- **`GET` -> `PUT` applied here, not deferred to #48.** Invariant 5, and safe to take now: the
+  only live cross-repo calls into the unit are `status`, `execute_assignment` and `abort`, and
+  `/mount/goto` has no automated caller. #48's risk lives in `abort` (called as `GET` from
+  `common`), not here. A slew is also the least defensible route to leave on `GET`, where a
+  caching proxy or a Swagger "try it out" can fire it.
+- **An alt/az target is recorded as text, not a tuple.** `status()` renders a tuple as
+  RA/Dec, so storing `(alt, az)` would mislabel a horizontal target in the operator's status
+  view. The string arm already exists for `"Home"`.
+
+**Implications:** `/mount/goto` is behavior-preserving from a caller's perspective except the
+verb and the parameter names, both of which are safe because nothing automated calls it; what
+changes is that a slew commanded through it is now tracked like any other. Sexagesimal input
+moves from 500 to 422 -- still rejected, but honestly.
+
+Two adjacent fixes came out of this and are in the same change, since both are in the status
+field an operator reads immediately after issuing a goto:
+
+- **`target_verbal` was rendering declination as arcseconds.** `Angle(self.target[1],
+  unit='arcsec')` on a value that is degrees: a target at Dec +30.5 displayed as `0:00:30.500`
+  instead of `30:30:00.000` -- off by 3600. Display-only, but the display an operator uses to
+  confirm where the telescope is going.
+- **The rendering moved out of `status()` into `Mount.target_verbal()`**, which is what makes it
+  testable without a live mount (`status()` needs `pw.status()`, the ASCOM dispatcher and the
+  power switch), and thins the status handler in the direction invariant 6 wants.
+
+---
+
 ## [2026-08-02] Response-envelope remediation, part 1: refusals are returned, not dropped
 
 **Why:** Invariant 4 of the endpoint contract (#42) says every routed handler returns a
