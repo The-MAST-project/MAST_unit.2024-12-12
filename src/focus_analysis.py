@@ -12,18 +12,14 @@ harness over a bundle of previously-captured FITS files (see
 """
 
 import datetime
-import logging
 import time
 from pathlib import Path
 
 from common.extended_basemodel import ExtendedBaseModel
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from PlaneWave.ps3cli_client import PS3CLIClient
 
-logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
-
-
+logger = get_logger(__name__)
 class PS3FocusSample(ExtendedBaseModel):
     is_valid: bool
     focus_position: float | None = None

@@ -1,4 +1,3 @@
-import logging
 import time
 
 import numpy as np
@@ -9,12 +8,10 @@ from common.canonical import CanonicalResponse
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerTypes
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.statuses import ImagerSettings, ImagerStatus
 
-logger = logging.Logger("mast." + __name__)
-init_log(logger)
-
+logger = get_logger(__name__)
 __all__ = ["Imager"]
 
 
@@ -55,7 +52,10 @@ class Imager(ImagerInterface, SwitchedOutlet):
         return cls._instance
 
     def __init__(
-        self, unit = None, imager_type: str | None = None, params: dict | None = None # type: ignore
+        self,
+        unit=None,
+        imager_type: str | None = None,
+        params: dict | None = None,  # type: ignore
     ):
         """
         Initializes the backend of an Imager instance according to the unit configuration.
@@ -68,14 +68,12 @@ class Imager(ImagerInterface, SwitchedOutlet):
             return  # already initialized, do not re-initialize
 
         SwitchedOutlet.group(
-            domain=OutletDomain.UnitOutlets,
-            group_name="Camera",
-            outlet_names=["Camera", "CameraUSB"]).transfer_attributes(self)
+            domain=OutletDomain.UnitOutlets, group_name="Camera", outlet_names=["Camera", "CameraUSB"]
+        ).transfer_attributes(self)
         if not self.is_on():
             self.power_on()
 
         ImagerInterface.__init__(self)
-
 
         self.unit = unit
         if unit and unit.unit_conf is None:
@@ -89,17 +87,11 @@ class Imager(ImagerInterface, SwitchedOutlet):
             self.conf = unit_conf.imager
 
         imager_type = imager_type or self.conf.imager_type.lower()
-        if not (
-            imager_type.startswith("ascom")
-            or (imager_type in Imager.valid_imager_types())
-        ):
-            raise ValueError(
-                f"bad imager type '{imager_type}', must be one of {Imager.valid_imager_types()}"
-            )
+        if not (imager_type.startswith("ascom") or (imager_type in Imager.valid_imager_types())):
+            raise ValueError(f"bad imager type '{imager_type}', must be one of {Imager.valid_imager_types()}")
 
         if imager_type.startswith("ascom:"):
             from imagers.ascom import ASCOMImager
-
 
             self._prog_id = imager_type[6:]
             self._backend = ASCOMImager(parent_imager=self, prog_id=self._prog_id, _from_imager=True)
@@ -239,7 +231,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         Returns the imager's current status.
         :return: ImagerStatus object containing the status information
         """
-        backend_status = self._backend.status(capacity="imager") # type: ignore
+        backend_status = self._backend.status(capacity="imager")  # type: ignore
 
         ret = ImagerStatus(
             # detected=self.detected,
@@ -256,7 +248,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
             latest_settings=self.latest_settings,
             activities=self.activities,
             activities_verbal=self.activities_verbal,
-            backend=backend_status if isinstance(backend_status, BaseModel) else backend_status.__dict__
+            backend=backend_status if isinstance(backend_status, BaseModel) else backend_status.__dict__,
         )
         return ret
 
@@ -273,8 +265,10 @@ class Imager(ImagerInterface, SwitchedOutlet):
         For example: the _`phd2`_ backend needs to stop/restart guiding if it was guiding when the series started
         """
         self.current_exposure_series = ImagerExposureSeries(purpose=purpose)
-        logger.info(f"Starting exposure series id='{self.current_exposure_series.series_id}' "
-                    + f"purpose='{self.current_exposure_series.purpose}'")
+        logger.info(
+            f"Starting exposure series id='{self.current_exposure_series.series_id}' "
+            + f"purpose='{self.current_exposure_series.purpose}'"
+        )
         return self.current_exposure_series
 
     def end_exposure_series(self, series: ImagerExposureSeries):
@@ -282,9 +276,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         Ends the exposure series and cleans up resources.
         :param series: The ImagerExposureSeries to end
         """
-        assert (
-            self.current_exposure_series is not None
-        ), "No current exposure series to end"
+        assert self.current_exposure_series is not None, "No current exposure series to end"
         if self.current_exposure_series.series_id != series.series_id:
             raise ValueError(
                 f"Cannot end exposure series {series.series_id}, "
@@ -395,42 +387,24 @@ class Imager(ImagerInterface, SwitchedOutlet):
             self.cooler_on = False
 
         router = APIRouter()
-        router.add_api_route(
-            base_imager_path + "/startup", tags=[tag], endpoint=self.endpoint_startup
-        )
-        router.add_api_route(
-            base_imager_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown
-        )
-        router.add_api_route(
-            base_imager_path + "/abort", tags=[tag], endpoint=self.endpoint_abort
-        )
-        router.add_api_route(
-            base_imager_path + "/status", tags=[tag], endpoint=self.endpoint_status
-        )
-        router.add_api_route(
-            base_imager_path + "/connect", tags=[tag], endpoint=self.connect
-        )
-        router.add_api_route(
-            base_imager_path + "/disconnect", tags=[tag], endpoint=self.disconnect
-        )
+        router.add_api_route(base_imager_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
+        router.add_api_route(base_imager_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown)
+        router.add_api_route(base_imager_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
+        router.add_api_route(base_imager_path + "/status", tags=[tag], endpoint=self.endpoint_status)
+        router.add_api_route(base_imager_path + "/connect", tags=[tag], endpoint=self.connect)
+        router.add_api_route(base_imager_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
         router.add_api_route(
             base_imager_path + "/start_exposure",
             tags=[tag],
             endpoint=self.start_exposure,
         )
-        router.add_api_route(
-            base_imager_path + "/stop_exposure", tags=[tag], endpoint=self.stop_exposure
-        )
+        router.add_api_route(base_imager_path + "/stop_exposure", tags=[tag], endpoint=self.stop_exposure)
         router.add_api_route(
             base_imager_path + "/abort_exposure",
             tags=[tag],
             endpoint=self.abort_exposure,
         )
-        router.add_api_route(
-            base_imager_path + "/cooler_on", tags=[tag], endpoint=cooler_on
-        )
-        router.add_api_route(
-            base_imager_path + "/cooler_off", tags=[tag], endpoint=cooler_off
-        )
+        router.add_api_route(base_imager_path + "/cooler_on", tags=[tag], endpoint=cooler_on)
+        router.add_api_route(base_imager_path + "/cooler_off", tags=[tag], endpoint=cooler_off)
 
         return router

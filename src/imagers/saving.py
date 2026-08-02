@@ -1,5 +1,4 @@
 import datetime
-import logging
 import socket
 from pathlib import Path
 
@@ -7,14 +6,11 @@ import astropy.io.fits as fits
 
 from common.activities import ImagerActivities
 from common.filer import MoveGuardian
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.utils import function_name
 from imagers import ImagerInterface
 
-logger = logging.getLogger("mast.unit.imagers." + __name__)
-init_log(logger)
-
-
+logger = get_logger(__name__)
 def save_to_fits_file(imager_backend: ImagerInterface):
     op = function_name()
 

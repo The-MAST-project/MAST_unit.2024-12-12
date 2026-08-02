@@ -1,5 +1,4 @@
 import datetime
-import logging
 import os
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
@@ -8,7 +7,7 @@ import common.asi as asi
 from common.config.unit import AcquisitionConfig
 from common.corrections import Corrections
 from common.filer import Filer, MoveGuardian
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.paths import PathMaker
 from common.solving import SolverId
 from plotting import plot_acquisition_corrections, plot_phase_corrections
@@ -16,11 +15,8 @@ from plotting import plot_acquisition_corrections, plot_phase_corrections
 if TYPE_CHECKING:
     from unit import Unit
 
-logger = logging.getLogger("mast.unit." + __name__)
+logger = get_logger(__name__)
 filer = Filer(logger)
-init_log(logger)
-
-
 class ApproachMode(IntEnum):
     """
     How `solve_and_correct` applies a mount correction. IntEnum, so existing
@@ -35,7 +31,6 @@ class ApproachMode(IntEnum):
 
 
 class Acquisition:
-
     def __init__(
         self,
         unit: "Unit",
@@ -71,15 +66,11 @@ class Acquisition:
             if st.ra_j2000_hours is not None:
                 self.target_ra = st.ra_j2000_hours
             else:
-                raise ValueError(
-                    "Acquisition: target_ra is None and mount status does not provide RA"
-                )
+                raise ValueError("Acquisition: target_ra is None and mount status does not provide RA")
             if st.dec_j2000_degs is not None:
                 self.target_dec = st.dec_j2000_degs
             else:
-                raise ValueError(
-                    "Acquisition: target_dec is None and mount status does not provide DEC"
-                )
+                raise ValueError("Acquisition: target_dec is None and mount status does not provide DEC")
 
         self.conf = conf
         self.ra_tolerance = conf.tolerance.ra_arcsec
@@ -120,6 +111,4 @@ class Acquisition:
 
     def post_process(self):
         if filer.ram and filer.ram.root is not None:
-            plot_acquisition_corrections(
-                self.folder.replace(filer.ram.root, filer.shared.root)
-            )
+            plot_acquisition_corrections(self.folder.replace(filer.ram.root, filer.shared.root))

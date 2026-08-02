@@ -23,9 +23,7 @@ def trim_fits(input_fits_path, x_dim, y_dim):
         x_start, x_end = center_x - x_dim, center_x + x_dim  # Column range (horizontal)
         y_start, y_end = center_y - y_dim, center_y + y_dim  # Row range (vertical)
 
-        print(
-            f"Central (x, y) = ({center_x}, {center_y}); trim-x: {x_start}-{x_end}; trim-y: {y_start}-{y_end}"
-        )
+        print(f"Central (x, y) = ({center_x}, {center_y}); trim-x: {x_start}-{x_end}; trim-y: {y_start}-{y_end}")
 
         # Trim the data array
         trimmed_data = data[y_start:y_end, x_start:x_end]
@@ -55,9 +53,7 @@ def load_fits_data(file_list):
 def find_shift_reg(image1, image2):
     # Use register_translation to find the shift between two images
     # (high upsample_factor value for obtaining sub-pixel accuracy)
-    shift, error, diffphase = phase_cross_correlation(
-        image1, image2, upsample_factor=100
-    )
+    shift, error, diffphase = phase_cross_correlation(image1, image2, upsample_factor=100)
     # error is always 1.0 for some reason
     return shift, error, diffphase
 

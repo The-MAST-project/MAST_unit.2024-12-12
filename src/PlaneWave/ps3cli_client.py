@@ -29,15 +29,16 @@ class PS3CLIClient:
     def platesolve_status(self):
         return self.send_receive("platesolve_status")
 
-    def begin_platesolve_file(self,
-                              image_file_path,
-                              arcsec_per_pixel_guess,
-                              enable_all_sky_match=None,
-                              enable_local_quad_match=None,
-                              enable_local_triangle_match=None,
-                              ra_guess_j2000_rads=None,
-                              dec_guess_j2000_rads=None
-                              ):
+    def begin_platesolve_file(
+        self,
+        image_file_path,
+        arcsec_per_pixel_guess,
+        enable_all_sky_match=None,
+        enable_local_quad_match=None,
+        enable_local_triangle_match=None,
+        ra_guess_j2000_rads=None,
+        dec_guess_j2000_rads=None,
+    ):
         params = {
             "arcsec_per_pixel": arcsec_per_pixel_guess,
             "image_file_path": image_file_path,
@@ -56,26 +57,23 @@ class PS3CLIClient:
 
         return self.send_receive("begin_platesolve", params)
 
-    def begin_platesolve_shm(self,
-                             shm_key,
-                             width_pixels,
-                             height_pixels,
-                             arcsec_per_pixel_guess,
-                             # Optional params; included in request message only if not None
-                             enable_all_sky_match=None,
-                             enable_local_quad_match=None,
-                             enable_local_triangle_match=None,
-                             ra_guess_j2000_rads=None,
-                             dec_guess_j2000_rads=None
-                             ):
+    def begin_platesolve_shm(
+        self,
+        shm_key,
+        width_pixels,
+        height_pixels,
+        arcsec_per_pixel_guess,
+        # Optional params; included in request message only if not None
+        enable_all_sky_match=None,
+        enable_local_quad_match=None,
+        enable_local_triangle_match=None,
+        ra_guess_j2000_rads=None,
+        dec_guess_j2000_rads=None,
+    ):
 
         params = {
             "arcsec_per_pixel": arcsec_per_pixel_guess,
-            "shm_image": {
-                "shm_key": shm_key,
-                "width_pixels": width_pixels,
-                "height_pixels": height_pixels
-            },
+            "shm_image": {"shm_key": shm_key, "width_pixels": width_pixels, "height_pixels": height_pixels},
         }
         if enable_all_sky_match is not None:
             params["enable_all_sky_match"] = enable_all_sky_match
@@ -97,9 +95,7 @@ class PS3CLIClient:
         return self.send_receive("focus_status")
 
     def begin_analyze_focus(self, file_list: list[str]):
-        params = {
-            "files": file_list
-        }
+        params = {"files": file_list}
 
         # Note: This method currently blocks until the focus analysis has finished.
         # It may change to an asynchronous method in a future version.
@@ -119,7 +115,7 @@ class PS3CLIClient:
             if self.log_exchanges:
                 print("SEND:", request)
             # Send the message followed by a blank line
-            self.sock.sendall((request + "\r\n\r\n").encode('utf-8'))
+            self.sock.sendall((request + "\r\n\r\n").encode("utf-8"))
         else:
             raise Exception("Not connected, cannot send request")
 
@@ -130,7 +126,7 @@ class PS3CLIClient:
         # Read data from the socket until a blank line is received
         data = ""
         while True:
-            chunk = self.sock.recv(4096).decode('utf-8')
+            chunk = self.sock.recv(4096).decode("utf-8")
             data += chunk
             if self.log_exchanges:
                 print("RECV:", repr(data))
@@ -162,6 +158,7 @@ class PS3CLIClient:
 
 # ##### Sample methods for using the PS3 client ######
 
+
 def test_ascom_status(ps3: PS3CLIClient):
     status = ps3.platesolve_status()
     print(status)
@@ -172,10 +169,7 @@ def test_platesolve_file(ps3: PS3CLIClient):
     arcsec_per_pixel_guess = input("Arcsec per pixel (guess): ")
     arcsec_per_pixel_guess = float(arcsec_per_pixel_guess)
 
-    ps3.begin_platesolve_file(
-        filename,
-        arcsec_per_pixel_guess
-    )
+    ps3.begin_platesolve_file(filename, arcsec_per_pixel_guess)
 
     monitor_solve_status(ps3)
 
@@ -210,7 +204,7 @@ def test_ascom_camera_shm(ps3: PS3CLIClient):
         print("Copying to shm")
         shared_image = np.ndarray((camera.NumX, camera.NumY), dtype=np.uint16, buffer=image_shm.buf)
         shared_image[:] = image_array[:]
-        print(time.time()-t0, "sec")
+        print(time.time() - t0, "sec")
 
         result = ps3.begin_platesolve_shm(image_shm.name, camera.NumX, camera.NumY, arcsec_per_pixel_guess)
         print("Result:", result)

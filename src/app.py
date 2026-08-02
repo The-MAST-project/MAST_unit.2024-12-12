@@ -1,3 +1,4 @@
+import argparse
 import logging
 import os
 import socket
@@ -14,16 +15,19 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import ValidationError
 
 from common.config import Config, ConfigError
-from common.mast_logging import init_log
+from common.mast_logging import configure_logging, get_logger
 from common.process import ensure_process_is_running
 from PlaneWave import pwi4_client
 from PlaneWave.ps3cli_locate import locate_ps3cli_catalog, locate_ps3cli_dir
 
-log_level = logging.WARNING
-logging.basicConfig(level=log_level)
-logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
+# Logging is configured once, here, before anything logs. Every 'mast.*' logger
+# inherits the handlers and level from root by propagation.
+# Precedence: --log-level > MAST_LOG_LEVEL > default.
+_parser = argparse.ArgumentParser(add_help=False)
+_parser.add_argument("--log-level", default=None, help="DEBUG, INFO, WARNING, ... (overrides MAST_LOG_LEVEL)")
+configure_logging(_parser.parse_known_args()[0].log_level)
 
+logger = get_logger(__name__)
 logger.info("+--------------+")
 logger.info("| Starting ... |")
 logger.info("+--------------+")
@@ -39,9 +43,7 @@ def app_quit(reason: str):
     logger.info(f"Quiting ({reason=}) !")
     parent_pid = os.getpid()
     parent = psutil.Process(parent_pid)
-    for child in parent.children(
-        recursive=True
-    ):  # or parent.children() for recursive=False
+    for child in parent.children(recursive=True):  # or parent.children() for recursive=False
         logger.info(f"killing process {child.pid=}, '{child.name()}'")
         child.kill()
     parent.kill()
@@ -144,16 +146,19 @@ app = FastAPI(
     # exception_handlers={WebSocketDisconnect: websocket_disconnect_handler},
 )
 
+
 @app.exception_handler(RequestValidationError)
 async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
     logger.error("Request validation error", exc_info=exc)
     # Optionally return the default structure so client still sees details
     return JSONResponse(status_code=422, content={"detail": exc.errors(), "body": exc.body})
 
+
 @app.exception_handler(ValidationError)
 async def pydantic_validation_exception_handler(request: Request, exc: ValidationError):
     logger.error("Pydantic validation error", exc_info=exc)
     return JSONResponse(status_code=400, content={"error": exc.errors()})
+
 
 @app.get("/favicon.ico")
 def read_favicon():
@@ -223,7 +228,7 @@ if __name__ == "__main__":
 
         logger.info(f"The MAST Unit server is starting on {host}:{port} ...")
 
-        uvicorn.run(app, host=host, port=port, log_level=log_level)
+        uvicorn.run(app, host=host, port=port)
     else:
         logger.error("Unit is not initialized, cannot start the server.")
         app_quit(reason="unit not initialized")

@@ -156,8 +156,8 @@ def detect_mirror_shadow(
         base = data / np.maximum(ref, 1.0)
     sup = ndi.median_filter(base[::ds, ::ds].astype(float), size=star_kernel)
     yyd, xxd = np.mgrid[0:ny:ds, 0:nx:ds]
-    xcd = (xxd.ravel() - cx)
-    ycd = (yyd.ravel() - cy)
+    xcd = xxd.ravel() - cx
+    ycd = yyd.ravel() - cy
     w = sup.ravel()
 
     # 2) Near-vertical sweep: project, reference to a wide-median sky continuum,
@@ -186,11 +186,7 @@ def detect_mirror_shadow(
     penumbra_half = 0.5 * (p_hi - p_lo) * bin_px
     score = float(best["score"])
 
-    present = (
-        depth >= min_depth
-        and score >= min_prominence
-        and penumbra_half >= min_penumbra_half_width
-    )
+    present = depth >= min_depth and score >= min_prominence and penumbra_half >= min_penumbra_half_width
 
     return ShadowModel(
         present=bool(present),
@@ -431,8 +427,7 @@ def plot_shadow(image, model: ShadowModel, vmin=None, vmax=None):
     fig, (ax, axp) = plt.subplots(1, 2, figsize=(13, 6))
     ax.imshow(data, origin="lower", cmap="gray", vmin=vmin, vmax=vmax)
     title = (
-        f"shadow {model.tilt_deg:+.1f} deg, depth {model.depth:.2f}, "
-        f"prom {model.prominence:.1f}"
+        f"shadow {model.tilt_deg:+.1f} deg, depth {model.depth:.2f}, prom {model.prominence:.1f}"
         if model.present
         else f"no shadow (depth {model.depth - model.baseline:.2f}, prom {model.prominence:.1f})"
     )
@@ -486,8 +481,5 @@ if __name__ == "__main__":
             f"depth={m.depth:.3f}  prominence={m.prominence:.1f}"
         )
     else:
-        print(
-            f"no shadow detected (depth={m.depth - m.baseline:.3f}, "
-            f"prominence={m.prominence:.1f})"
-        )
+        print(f"no shadow detected (depth={m.depth - m.baseline:.3f}, prominence={m.prominence:.1f})")
     plot_shadow(path, m)

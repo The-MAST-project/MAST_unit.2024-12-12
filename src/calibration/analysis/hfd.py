@@ -90,8 +90,11 @@ def _shift_center(center, box):
 def _bg_subtract(data, box_size=64):
     try:
         bkg = Background2D(
-            data, box_size=box_size, filter_size=(3, 3),
-            sigma_clip=SigmaClip(sigma=3.0), bkg_estimator=MedianBackground(),  # type: ignore[arg-type]
+            data,
+            box_size=box_size,
+            filter_size=(3, 3),
+            sigma_clip=SigmaClip(sigma=3.0),
+            bkg_estimator=MedianBackground(),  # type: ignore[arg-type]
         )
         return data - bkg.background
     except Exception:

@@ -1,0 +1,40 @@
+# Ruff configuration for MAST_unit.
+#
+# Mirrors the MAST fleet standard so every repo formats identically. The ruff
+# version is pinned in requirements-dev.txt (ruff==0.16.0); config alone is not
+# enough — formatter output can differ between ruff versions.
+#
+# Migrated from pyproject.toml [tool.ruff] (that file held only ruff config).
+# `extend-select` moved to [lint] (its top-level location is deprecated).
+
+line-length = 125
+target-version = "py312"
+
+# src/common is a submodule owned by MAST_common — never format it from here.
+# (ruff does NOT skip submodules automatically.)
+extend-exclude = ["src/common"]
+
+[lint]
+# Enable rules from common linters.
+extend-select = [
+    "F",   # Pyflakes (runtime errors)
+    "E",   # pycodestyle (formatting)
+    "W",   # pycodestyle warnings
+    "I",   # isort (import sorting)
+    "N",   # pep8-naming
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "C90", # mccabe complexity
+    "SIM", # flake8-simplify
+    "TID", # tidy imports
+]
+# Optionally ignore some rules:
+# ignore = ["E501"]  # example: disable line-length enforcement
+
+[format]
+# Ruff's Black-compatible formatter.
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "lf"
+docstring-code-format = true

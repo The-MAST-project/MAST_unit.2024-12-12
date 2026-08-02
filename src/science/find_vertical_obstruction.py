@@ -6,9 +6,7 @@ from astropy.stats import SigmaClip
 from photutils.background import Background2D, MedianBackground
 
 
-def detect_vertical_obstruction(
-    image_data, box_size=50, col_obstruction_factor=0.5, umbra_th=0.3, penumbra_th=0.6
-):
+def detect_vertical_obstruction(image_data, box_size=50, col_obstruction_factor=0.5, umbra_th=0.3, penumbra_th=0.6):
     """
     Detect a rectangular, nearly vertical obstruction in 'image_data'.
     Returns masks for umbra and penumbra.
@@ -36,9 +34,7 @@ def detect_vertical_obstruction(
     background = bkg_2d.background
 
     # 2. Create a ratio image: ratio < 1 => flux < background
-    ratio = np.divide(
-        image_data, background, out=np.zeros_like(image_data), where=(background != 0)
-    )
+    ratio = np.divide(image_data, background, out=np.zeros_like(image_data), where=(background != 0))
 
     # 3. Identify columns with low flux
     col_sums = ratio.sum(axis=0)  # sum over rows
@@ -59,9 +55,7 @@ def detect_vertical_obstruction(
 
     # 5. Threshold for umbra & penumbra
     umbra_mask_sub = slice_obstruction < umbra_th
-    penumbra_mask_sub = (slice_obstruction >= umbra_th) & (
-        slice_obstruction < penumbra_th
-    )
+    penumbra_mask_sub = (slice_obstruction >= umbra_th) & (slice_obstruction < penumbra_th)
 
     # 6. Morphological cleaning
     structure = np.ones((3, 3), dtype=bool)
@@ -100,9 +94,7 @@ def plot_obstruction(image_data, umbra_mask, penumbra_mask, vmin=None, vmax=None
     ax.contour(umbra_mask, levels=[0.5], colors="red", linewidths=1.2, label="Umbra")
 
     # Overlay contour for penumbra
-    ax.contour(
-        penumbra_mask, levels=[0.5], colors="yellow", linewidths=1.2, label="Penumbra"
-    )
+    ax.contour(penumbra_mask, levels=[0.5], colors="yellow", linewidths=1.2, label="Penumbra")
 
     ax.set_title("Image with Obstruction Contours")
     ax.set_xlabel("X (columns)")
