@@ -303,8 +303,8 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
                 self.end_activity(FocuserActivities.Moving)
                 self.target = None
 
-    def endpoint_status(self) -> FocuserStatus | None:
-        return self.status()
+    def endpoint_status(self) -> CanonicalResponse:
+        return CanonicalResponse(value=self.status())
 
     def status(self) -> FocuserStatus | None:
         pw_stat = self.pw.status()

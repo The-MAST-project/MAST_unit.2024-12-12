@@ -4,6 +4,7 @@
 
 ## [2026-08-02] The endpoint-contract change does not reach `main` without hardware verification
 
+
 **Why:** The contract remediation (#42) is verified by ruff, by pytest suites, and by a smoke
 harness on labcomp2 -- and all three share one blind spot. Every component under test is built
 with `object.__new__` and handed a recording stand-in for the PWI4 client or the camera, because
@@ -41,6 +42,7 @@ extends to `MAST_control` and `MAST_spec`.
 ---
 
 ## [2026-08-02] /mount/goto delegates to the maintained slew and gains alt/az
+
 
 **Why:** `mount.goto()` was a second implementation of the slew. It called
 `pw.mount_goto_ra_dec_j2000` directly and skipped `start_activity(MountActivities.Slewing)` and
@@ -96,6 +98,59 @@ field an operator reads immediately after issuing a goto:
 - **The rendering moved out of `status()` into `Mount.target_verbal()`**, which is what makes it
   testable without a live mount (`status()` needs `pw.status()`, the ASCOM dispatcher and the
   power switch), and thins the status handler in the direction invariant 6 wants.
+
+---
+
+## [2026-08-02] Response-envelope remediation, part 3: the envelope belongs to the endpoint, not to status()
+
+
+**Why:** `/unit/status` returned a `CanonicalResponse` while every component `/status` returned a
+bare typed model (`MountStatus`, `FocuserStatus`, `CoverStatus`, `StageStatus`, `ImagerStatus`),
+so a consumer could not write one status parser. The real cost is in `MAST_common`'s client:
+`BaseApi._common_get_put` unwraps a `1.0` envelope and hoists remote `errors` into the caller's
+error list, but a bare model takes the "NON canonical response" branch -- a warning on every
+poll, and **no error channel at all**, since a typed model has nowhere to put `errors`. Control's
+own idiom (`if not canonical_response.succeeded: ... abort()`, `common/models/plans.py`) is
+therefore dead code when pointed at a component `/status`: a powered-off or faulted component
+answers with a status model and the client scores it a success. That is a poor foundation for
+invariant 3 (#43), which makes `/status` the completion-detection surface.
+
+**What:** The wrapper moved to the endpoint boundary. All six routed `endpoint_status` handlers
+return `CanonicalResponse(value=self.status())`; every `status()` keeps returning its bare typed
+model. `Unit.status()` -- which wrapped *internally* -- now returns `FullUnitStatus`, and
+`Unit.endpoint_status()` does the wrapping (keeping the `serialize_ip_addresses` call at the
+boundary, where it always ran).
+
+**Why not the other two options:** #47 framed this as "components wrap up to match the unit, or
+the unit unwraps down to match the components." Both are wrong.
+
+- *Unwrapping down* standardizes on the broken half: it makes the warning branch the official
+  path for status, permanently forecloses an error channel on the completion surface, and needs
+  an explicit carve-out in invariant 4.
+- *Wrapping `status()` itself* cannot work. `FullUnitStatus`'s fields are **typed as** the
+  component status models and `Unit.status()` populates them by calling each component's
+  `status()` directly, so a `CanonicalResponse` cannot go in a field typed `MountStatus`. Forcing
+  it through would nest envelopes inside the payload, turning `mount.tracking` into
+  `mount.value.tracking` -- a field-path change in disguise, and every consumer of it fails
+  *silently*: `MAST_control`'s `status_from_dict` catches the validation failure and falls back to
+  `BaseStatus(detected=False, operational=False)` (so a healthy fleet reads as dead in the
+  dashboard, with only a log line), `MAST_gui` does `FullUnitStatus(**value)`, and the GUI's SSE
+  handler walks cache paths by field-name string and warns-and-continues on a miss. There are
+  also live internal typed consumers -- `acquisition.py` and `acquirer.py` read
+  `mount.status().ra_j2000_hours` as attributes.
+
+`status()` has two callers with different needs -- the route wants an envelope, internal
+composition and logic want the typed model. Serving both is not a compromise; it is invariant 6,
+and every component already had the `endpoint_status` / `status` split to hang it on.
+
+**Implications:** `FullUnitStatus` is untouched -- no field renamed, nothing nested -- so the
+GUI, control's cache and the SSE walk are unaffected. `/unit/status`, the only live cross-repo
+status consumer, keeps its wire shape byte-for-byte; only *where* the wrapping happens moved. The
+five component `/status` routes do change on the wire (they gain the envelope, which is the
+point) and have no automated consumers -- they are operator and Swagger surface. Consequently
+this tranche needs **no `MAST_common` or `MAST_gui` change and no coordinated deployment**: the
+bump-common-then-deploy-everything lockstep that #47 was expected to require does not apply. It
+still applies to #48 and to any future change to the envelope itself.
 
 ---
 

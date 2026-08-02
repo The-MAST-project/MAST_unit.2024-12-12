@@ -613,8 +613,8 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"{op}: dist_to_target settled (< {tol_arcsec:.3f} arcsec for {stable_samples} samples)")
         return True
 
-    def endpoint_status(self) -> MountStatus:
-        return self.status()
+    def endpoint_status(self) -> CanonicalResponse:
+        return CanonicalResponse(value=self.status())
 
     def target_verbal(self) -> str | None:
         """

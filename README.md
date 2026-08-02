@@ -15,13 +15,19 @@ Provides (via FastAPI) `autofocus` and `acquisition` interfaces
 
 `tests/` holds a pytest suite that drives the real connector code with mocked
 collaborators — no PHD2 process, no hardware, no Mongo. The import chain is
-Windows-only today (`stage.py` needs pyximc), so the suite runs in the unit
-venv and skips cleanly elsewhere. Install `requirements-dev.txt` into the
-venv, then from the repo root:
+Windows-only today (`stage.py` needs pyximc, and the component modules need
+`win32com`), so the suite runs in the unit venv and skips cleanly elsewhere.
+Install `requirements-dev.txt` into the venv, then from the repo root:
 
 ```
 python -m pytest tests/ -v
 ```
+
+`test_response_envelope.py` covers invariant 4 of the endpoint contract (#42):
+every routed handler returns a `CanonicalResponse`, with refusals as `errors`.
+It builds components with `object.__new__` and gives them only the state the
+path under test reads — the method under test is always the real one — and
+drives two cases through a real FastAPI app to pin the wire shape.
 
 The `src/common` submodule carries its own platform-independent suite
 (`src/common/tests/`).
