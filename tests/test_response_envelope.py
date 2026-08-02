@@ -9,9 +9,10 @@ module scope, so it skips on a dev machine the same way the rest of the suite do
 hardware, Mongo or PWI4 is needed -- components are built with ``object.__new__`` and given
 only the state the path under test reads, and the method under test is always the real one.
 
-Until #71 lands, ``import zwo`` raises ImportError on any machine (``ImagerExposure`` moved
-to ``common.models.statuses``), so the ZWO cases skip rather than fail -- they are about the
-envelope, not about that import.
+Until #71 lands, neither imager backend imports on any machine: ``zwo`` asks
+``common.interfaces.imager`` for ``ImagerExposure``/``ImagerStatus`` and ``imagers.ascom``
+for ``ImagerStatus``, all of which live in ``common.models.statuses``. Those cases
+``importorskip`` rather than fail -- they are about the envelope, not about that import.
 """
 
 from __future__ import annotations
@@ -136,7 +137,7 @@ def test_covers_shutdown_succeeds_when_disconnected():
 
 
 def _zwo(connected: bool, exposing: bool = False):
-    zwo = pytest.importorskip("zwo", reason="stale zwo import until #71 lands")
+    zwo = pytest.importorskip("zwo", reason="stale ImagerExposure/ImagerStatus import until #71 lands")
 
     class _Parent:
         def is_active(self, _):
@@ -160,7 +161,7 @@ def test_zwo_abort_refuses_when_not_exposing():
 
 
 def test_ascom_abort_exposure_refuses_when_not_connected():
-    from imagers import ascom as ascom_module
+    ascom_module = pytest.importorskip("imagers.ascom", reason="stale ImagerStatus import until #71 lands")
 
     class _Ascom(ascom_module.ASCOMImager):
         @property
