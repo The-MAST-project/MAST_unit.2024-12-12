@@ -13,49 +13,12 @@ and the methods under test are the real ones.
 
 from __future__ import annotations
 
-import platform
-import tempfile
-from pathlib import Path
-
 import pytest
 
 pytest.importorskip("win32com", reason="mount.py is Windows-only")
 
 from common.activities import MountActivities  # noqa: E402
 from common.canonical import CanonicalResponse  # noqa: E402
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _hermetic_filer():
-    """Keep the module-level ``Filer`` in ``common.utils`` off the unit's storage roots.
-
-    Third copy of this shim (see tests/test_response_envelope.py and
-    tests/test_imager_backend_imports.py) -- worth hoisting into conftest once the #47 stack
-    and #72 have merged, rather than coupling those PRs to each other.
-    """
-    if platform.system() != "Windows":
-        yield
-        return
-
-    import common.filer as filer_module
-
-    location = filer_module.Location(None, str(Path(tempfile.mkdtemp(prefix="mast-goto-tests-"))))
-    original_init = filer_module.Filer.__init__
-
-    def _tmp_init(self, logger=None):
-        self.local = location
-        self.shared = location
-        self.ram = location
-        self.tops = {
-            filer_module.FilerTop.Local: self.local,
-            filer_module.FilerTop.Shared: self.shared,
-            filer_module.FilerTop.Ram: self.ram,
-        }
-        self.logger = logger
-
-    filer_module.Filer.__init__ = _tmp_init
-    yield
-    filer_module.Filer.__init__ = original_init
 
 
 class _RecordingPw:

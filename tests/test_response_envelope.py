@@ -18,9 +18,6 @@ for ``ImagerStatus``, all of which live in ``common.models.statuses``. Those cas
 from __future__ import annotations
 
 import importlib
-import platform
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -28,39 +25,6 @@ pytest.importorskip("win32com", reason="the unit's component modules are Windows
 
 from common.canonical import CanonicalResponse  # noqa: E402
 from common.models.statuses import AscomDriverInfoModel, CoversState, CoverStatus  # noqa: E402
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _hermetic_filer():
-    """``common.utils`` builds a module-level ``Filer`` at import; keep it off real storage.
-
-    conftest shims this for Darwin only, where the import fails outright. On Windows the
-    import succeeds but would reach for the unit's storage roots.
-    """
-    if platform.system() != "Windows":
-        yield
-        return
-
-    import common.filer as filer_module
-
-    tmp_root = Path(tempfile.mkdtemp(prefix="mast-envelope-tests-"))
-    location = filer_module.Location(None, str(tmp_root))
-    original_init = filer_module.Filer.__init__
-
-    def _tmp_init(self, logger=None):
-        self.local = location
-        self.shared = location
-        self.ram = location
-        self.tops = {
-            filer_module.FilerTop.Local: self.local,
-            filer_module.FilerTop.Shared: self.shared,
-            filer_module.FilerTop.Ram: self.ram,
-        }
-        self.logger = logger
-
-    filer_module.Filer.__init__ = _tmp_init
-    yield
-    filer_module.Filer.__init__ = original_init
 
 
 def import_backend_or_skip(module_name: str):
