@@ -27,12 +27,13 @@
 #                  -- both want the stdlib.
 #   pydantic     - was listed three times (identical ==2.13.4 pins); kept once,
 #                  in the alphabetical block above.
-#   setuptools   - a `pip freeze` artifact, not a dependency. Nothing in this
-#                  repo imports setuptools, pkg_resources or distutils, and
-#                  nothing in the resolved dependency tree needs it at runtime.
-#                  Note that `uv venv` does not seed it, so if some future
-#                  dependency turns out to import pkg_resources on the units,
-#                  this is the line to restore.
+#
+# Kept deliberately:
+#   setuptools   - looks like a `pip freeze` artifact (nothing in this repo
+#                  imports setuptools, pkg_resources or distutils), but it stays.
+#                  `uv venv` does not seed setuptools, so if any dependency
+#                  reaches for pkg_resources it would fail at *runtime* on a
+#                  unit rather than at install time. Not worth that risk here.
 #
 
 anyio==4.14.1
@@ -58,6 +59,7 @@ pythonping==1.1.4
 pywin32==312; sys_platform == "win32"
 requests==2.34.2
 semaphore-win-ctypes==0.1.2
+setuptools==83.0.0
 smmap==5.0.3
 sniffio==1.3.1
 soupsieve==2.8.4
