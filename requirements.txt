@@ -10,6 +10,30 @@
 # pywin32 carries a "win32" environment marker so this file also resolves on a
 # Linux dev box; it still installs normally on the units.
 #
+# Removed deliberately:
+#   black, isort, flake8 - dev-only formatters/linters that had leaked into this
+#                  *runtime* file, and all three are superseded by ruff==0.16.0
+#                  (pinned in requirements-dev.txt, which mast-clone installs
+#                  alongside this file). ruff.toml already enables their rule
+#                  sets: "I" is isort, "B"/"SIM" are flake8-bugbear/-simplify,
+#                  and the formatter is Black-compatible. Nothing in the repo or
+#                  CI invokes the three tools; no setup.cfg/.flake8/.isort.cfg
+#                  exists. Keeping them here shipped three redundant linters to
+#                  every unit machine.
+#   ipaddress    - the PyPI *backport*, which shadows the stdlib module (stdlib
+#                  since Python 3.3; this file targets py312). Same trap as the
+#                  pathlib backport removed from MAST_spec/requirements.txt. The
+#                  two import sites -- src/common/networking.py and src/unit.py
+#                  -- both want the stdlib.
+#   pydantic     - was listed three times (identical ==2.13.4 pins); kept once,
+#                  in the alphabetical block above.
+#   setuptools   - a `pip freeze` artifact, not a dependency. Nothing in this
+#                  repo imports setuptools, pkg_resources or distutils, and
+#                  nothing in the resolved dependency tree needs it at runtime.
+#                  Note that `uv venv` does not seed it, so if some future
+#                  dependency turns out to import pkg_resources on the units,
+#                  this is the line to restore.
+#
 
 anyio==4.14.1
 astropy==8.0.1
@@ -34,7 +58,6 @@ pythonping==1.1.4
 pywin32==312; sys_platform == "win32"
 requests==2.34.2
 semaphore-win-ctypes==0.1.2
-setuptools==83.0.0
 smmap==5.0.3
 sniffio==1.3.1
 soupsieve==2.8.4
@@ -47,16 +70,10 @@ websockets==16.0
 pillow==12.3.0
 pymongo==4.17.0
 cachetools==7.1.4
-ipaddress==1.0.23
 scikit-image==0.26.0
 httpx==0.28.1
 humanfriendly==10.0
-pydantic==2.13.4
 matplotlib==3.11.0
-pydantic==2.13.4
-isort==8.0.1
-black==26.5.1
-flake8==7.3.0
 watchdog==6.0.0
 pyzwoasi==0.2.6
 pyserial==3.5
