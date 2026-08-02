@@ -8,6 +8,7 @@ import pyzwoasi as zwoasi
 
 import common.asi as asi
 from common.activities import ImagerActivities
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.imager import (
@@ -311,9 +312,15 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         """
         return self.abort()
 
-    def abort(self):
-        if self.connected and (self.parent_imager and self.parent_imager.is_active(ImagerActivities.Exposing)):
-            zwoasi.stopExposure(self.cam_id)
+    def abort(self) -> CanonicalResponse:
+        if not self.connected:
+            return CanonicalResponse(errors=["not connected"])
+
+        if not (self.parent_imager and self.parent_imager.is_active(ImagerActivities.Exposing)):
+            return CanonicalResponse(errors=["not exposing"])
+
+        zwoasi.stopExposure(self.cam_id)
+        return CanonicalResponse_Ok
 
     def endpoint_status(self) -> ImagerStatus:
         """
@@ -400,7 +407,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         except Exception as ex:
             self.log_and_append(f"failed to set format to {x=},{y=},{width=},{height=},{binning=},{format.name=}: {ex=}")
 
-    def start_exposure(self, settings: ImagerSettings):
+    def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:
         self.errors = []
         self.image_was_read = False
         self.image_was_saved = False
@@ -446,6 +453,8 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         except Exception as ex:
             self.log_and_append(f"failed to start exposure, {ex=}")
 
+        return CanonicalResponse(errors=self.errors) if self.errors else CanonicalResponse_Ok
+
     def set_control(self, control: asi.Control, value: int):
         try:
             zwoasi.setControlValue(self.cam_id, controlType=control, value=value, auto=0)
@@ -458,11 +467,19 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         self.errors.append(err)
         logger.error(err)
 
-    def stop_exposure(self):
-        zwoasi.stopExposure(self.cam_id)
+    def stop_exposure(self) -> CanonicalResponse:
+        if not self.connected:
+            return CanonicalResponse(errors=["not connected"])
 
-    def abort_exposure(self):
         zwoasi.stopExposure(self.cam_id)
+        return CanonicalResponse_Ok
+
+    def abort_exposure(self) -> CanonicalResponse:
+        if not self.connected:
+            return CanonicalResponse(errors=["not connected"])
+
+        zwoasi.stopExposure(self.cam_id)
+        return CanonicalResponse_Ok
 
     def wait_for_image_ready(self):
         if not self.image_was_read:

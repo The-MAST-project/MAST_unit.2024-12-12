@@ -496,7 +496,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         self.errors = []
         if not self.connected:
             self.errors.append("not connected")
-            return
+            return CanonicalResponse(errors=["not connected"])
 
         parent_imager = cast(Imager, self.parent_imager) or None
         if parent_imager and not parent_imager.is_active(ImagerActivities.Exposing):

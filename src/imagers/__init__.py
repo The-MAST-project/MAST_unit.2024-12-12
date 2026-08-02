@@ -213,10 +213,10 @@ class Imager(ImagerInterface, SwitchedOutlet):
         """
         return self._backend.why_not_operational
 
-    def endpoint_abort(self) -> CanonicalResponse | None:
+    def endpoint_abort(self) -> CanonicalResponse:
         return self.abort()
 
-    def abort(self) -> CanonicalResponse | None:
+    def abort(self) -> CanonicalResponse:
         """
         Immediately terminates any in-progress activities and returns the imager to its default state.
         :return: CanonicalResponse indicating the result of the operation
@@ -285,7 +285,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         logger.info(f"Ending exposure series id='{series.series_id}', purpose='{series.purpose}'")
         self._backend.end_exposure_series(series)
 
-    def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse | None:
+    def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:
         """
         Starts an exposure with the given settings.
         :param settings: ImagerSettings object containing the exposure settings
@@ -294,14 +294,14 @@ class Imager(ImagerInterface, SwitchedOutlet):
         self.latest_settings = settings
         return self._backend.start_exposure(settings)
 
-    def stop_exposure(self) -> CanonicalResponse | None:
+    def stop_exposure(self) -> CanonicalResponse:
         """
         Stops the current exposure.
         :return: CanonicalResponse indicating the result of the operation
         """
         return self._backend.stop_exposure()
 
-    def abort_exposure(self) -> CanonicalResponse | None:
+    def abort_exposure(self) -> CanonicalResponse:
         """
         Aborts the current exposure.
         :return: CanonicalResponse indicating the result of the operation

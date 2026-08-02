@@ -2,6 +2,56 @@
 
 ---
 
+## [2026-08-02] Response-envelope remediation, part 2: imager backends agree, annotations enforce it
+
+**Why:** The imager verbs were the least consistent surface on the unit. `ASCOMImager` returned
+proper envelopes with `errors=["not connected"]` / `["not exposing"]`; `ZWOImager` returned
+`None` from the same verbs and did not import `CanonicalResponse` at all. Because
+`Imager` is a pure delegating wrapper, the backend a unit happens to run decided what a caller
+saw -- the same `PUT /unit/imager/stop_exposure` was an envelope on an ASCOM unit and `null` on
+a ZWO one. `Imager` also advertised the defect in its own signatures as
+`-> CanonicalResponse | None`; the `| None` *was* invariant 4's breach, written down.
+
+**What:** ZWO's `abort` / `stop_exposure` / `abort_exposure` / `start_exposure` return envelopes,
+using ASCOM's existing error strings verbatim so the two backends are indistinguishable to a
+caller. `Imager`'s annotations for `abort`, `endpoint_abort`, `start_exposure`, `stop_exposure`
+and `abort_exposure` drop `| None`, which makes a type checker reject a future backend that
+returns nothing.
+
+Two offenders outside the #47 audit list came out of the alignment and are fixed here, since
+"the two backends agree" is false without them:
+
+- **`ASCOMImager.abort_exposure` had its own `None` path** -- it appended `"not connected"` to
+  `self.errors` and then bare-`return`ed, so the reference implementation was not actually clean.
+- **`ZWOImager.start_exposure` returned `None`** while swallowing every exception into
+  `self.errors`, so a failed exposure start reported success. It now ends the way ASCOM's does.
+- **`PHD2Connector.abort` was `pass`** and `endpoint_abort` returned `stop_capture()`'s `None`.
+  Both return `Ok`. Behavior is unchanged deliberately -- whether a PHD2 `abort` should do more
+  than nothing is a question for #43, not an envelope fix.
+
+**Implications:** Three decisions worth recording as *not* taken.
+
+1. **The annotations were tightened only where the claim is now true.** `startup` / `shutdown`
+   keep `| None`: `PHD2Connector.startup` is `pass`, `ASCOMImager.shutdown` falls off the end,
+   and `ZWOImager` delegates to `super().startup()`. Dropping `| None` there would assert
+   something false. That chain is the remaining #47 work on the imager, tracked in the issue
+   rather than folded in silently. `connect` / `disconnect` keep `| None` for the part-1 reason:
+   #42 deletes them.
+2. **The backend contract already exists, in `MAST_common`.** The #47 plan assumed no backend
+   ABC and proposed adding a Protocol under `src/imagers/`; that was wrong.
+   `common/interfaces/imager.py` defines `ImagerInterface(Component, ABC)` with
+   `@abstractmethod stop_exposure` / `abort_exposure`, and all four implementers
+   (`ZWOImager`, `ASCOMImager`, `Imager`, `PHD2Connector`) derive from it. No new abstraction
+   was introduced.
+3. **The ABC's own return annotations are deliberately left for a separate change.** Declaring
+   `-> CanonicalResponse` on `ImagerInterface` is the single-source-of-truth fix and is what
+   would bind *future* backends, but it edits `MAST_common`, which means a submodule PR, a
+   gitlink bump here, and re-syncing the other three `common/` checkouts. `ImagerInterface` is
+   implemented only in MAST_unit (verified across control, spec and gui), so that change is
+   safe whenever it happens and nothing waits on it. It is a cross-repo step, not an oversight.
+
+---
+
 ## [2026-08-02] Response-envelope remediation, part 1: refusals are returned, not dropped
 
 **Why:** Invariant 4 of the endpoint contract (#42) says every routed handler returns a
