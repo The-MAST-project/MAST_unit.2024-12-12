@@ -26,7 +26,7 @@ real optics, so `plan_donut_jump` calibrates it from the differential move itsel
 
 Design reference: docs/autofocus_design.md sec. 2.5 (donuts / sign ambiguity),
 sec. 3 Phase 2; unit self-calibration design sec. 1 (autofocus).  Parallel to
-`imaging.hfd` (Phase 1, near focus) and routed to by `hfd.assess_focus_regime`
+`calibration.analysis.hfd` (Phase 1, near focus) and routed to by `hfd.assess_focus_regime`
 returning ``"far"``.
 """
 
@@ -170,7 +170,7 @@ def detect_donuts(
     data = _load(image)
     ny, nx = data.shape
     data_sub = _bg_subtract(data, box_size)
-    mask = data_sub > detect_threshold(data_sub, nsigma=nsigma)
+    mask = data_sub > detect_threshold(data_sub, n_sigma=nsigma)
     if open_iter > 0:
         mask = ndi.binary_opening(mask, iterations=int(open_iter))
 

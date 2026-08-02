@@ -30,5 +30,14 @@
   "python.analysis.extraPaths": [
     "..",
     "./src/Standa/ximc-2.13.6/ximc/crossplatform/wrappers/python"
-  ]
+  ],
+  // Test discovery for the Testing sidebar (from the calibration branch). The
+  // actual pytest configuration -- pythonpath, testpaths, and the hardware/db
+  // marker deselection -- lives in pyproject.toml; these keys only tell VS Code
+  // which runner to use.
+  "python.testing.pytestArgs": [
+    "tests"
+  ],
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestEnabled": true
 }

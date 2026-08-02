@@ -14,6 +14,7 @@ import numpy as np
 from astropy.coordinates import Angle
 from matplotlib.patches import Patch
 
+from calibration.analysis.protocols import FocusAnalysisResultLike
 from common.const import Const
 from common.corrections import Corrections
 from common.mast_logging import get_logger
@@ -41,10 +42,24 @@ class Point(NamedTuple):
 
 
 def plot_autofocus_analysis(
-    result: "PS3FocusAnalysisResult",  # noqa: F821 # type: ignore
+    result: FocusAnalysisResultLike,
     folder: str | None = None,
     pixel_scale: float = 0.2612,
+    metric_label: str = "Star diameter",
 ):
+    """Plot a fitted V-curve.
+
+    Typed against the protocol, not a concrete model, so it renders either
+    analyzer's output -- ps3cli (``focus_analysis.PS3FocusAnalysisResult``) or
+    the self-contained HFD one (``calibration.analysis.models.HFDAutofocusResult``).
+
+    ``metric_label`` names the ordinate, because the two analyzers do not measure
+    the same thing: ps3cli reports a star **RMS** diameter, HFD a **half-flux**
+    diameter.  Pass the analyzer's own term (e.g. ``"HFD"``, ``"Star RMS
+    diameter"``) -- it matters when A/B-ing both on one captured sweep, where two
+    otherwise identical plots must be tellable apart.  The default is deliberately
+    neutral rather than either metric's name.
+    """
     op = function_name()
 
     if not result:
@@ -64,15 +79,15 @@ def plot_autofocus_analysis(
         if not (sample and sample.is_valid):
             continue
         assert sample.focus_position
-        assert sample.star_rms_diameter_pixels
+        assert sample.star_diameter_pixels
         points.append(
             Point(
                 x=int(sample.focus_position),
-                y=sample.star_rms_diameter_pixels,
+                y=sample.star_diameter_pixels,
                 label=f"{sample.num_stars} stars",
             )
         )
-        star_diameters.append(sample.star_rms_diameter_pixels)
+        star_diameters.append(sample.star_diameter_pixels)
         positions.append(int(sample.focus_position))
 
     # Define the focuser positions (X values)
@@ -94,7 +109,7 @@ def plot_autofocus_analysis(
 
     # Plot the V-curve
     plt.figure(figsize=(8, 6))
-    plt.plot(x, star_diameter, label="Star diameters (RMS, pixels)", color=ra_color)
+    plt.plot(x, star_diameter, label=f"{metric_label} (pixels)", color=ra_color)
 
     # Add a red tick at the minimum X position on the X-axis
     plt.axvline(
@@ -143,7 +158,7 @@ def plot_autofocus_analysis(
     # Add labels and title
     plt.title("Autofocus V-Curve")
     plt.xlabel("Focuser Position")
-    plt.ylabel("Star Diameter (px)")
+    plt.ylabel(f"{metric_label} (px)")
 
     tolerance_label = Patch(color="none", label=f"Tolerance: {result.tolerance:.1f} microns")
     # Show grid and legend
@@ -398,19 +413,21 @@ class FocusSample:
         is_valid: bool,
         focus_position: int,
         num_stars: int,
-        star_rms_diameter_pixels: float,
+        star_diameter_pixels: float,
     ):
         self.is_valid = is_valid
         self.focus_position = focus_position
         self.num_stars = num_stars
-        self.star_rms_diameter_pixels = star_rms_diameter_pixels
+        self.star_diameter_pixels = star_diameter_pixels
 
 
 class DummyResult:
     def __init__(self):
         self.has_solution: bool = True
         self.best_focus_position: int = 27444
+        self.best_focus_star_diameter: float = 10.5
         self.tolerance: float = 20
+        self.errors: list[str] | None = []
         self.vcurve_a: float = 0.003969732449914025
         self.vcurve_b: float = -218.95312265253094
         self.vcurve_c: float = 3019252.867956934
@@ -419,25 +436,25 @@ class DummyResult:
                 is_valid=True,
                 focus_position=27444,
                 num_stars=12,
-                star_rms_diameter_pixels=14.059341433692959,
+                star_diameter_pixels=14.059341433692959,
             ),
             FocusSample(
                 is_valid=True,
                 focus_position=27494,
                 num_stars=13,
-                star_rms_diameter_pixels=12.504629812575239,
+                star_diameter_pixels=12.504629812575239,
             ),
             FocusSample(
                 is_valid=True,
                 focus_position=27544,
                 num_stars=14,
-                star_rms_diameter_pixels=11.868161311662165,
+                star_diameter_pixels=11.868161311662165,
             ),
             FocusSample(
                 is_valid=True,
                 focus_position=27594,
                 num_stars=18,
-                star_rms_diameter_pixels=10.85730885089308,
+                star_diameter_pixels=10.85730885089308,
             ),
         ]
 

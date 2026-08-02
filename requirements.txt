@@ -52,6 +52,7 @@ h11==0.16.0
 idna==3.18
 numpy==2.5.1
 packaging==26.2
+photutils==3.0.0
 psutil==7.2.2
 pydantic==2.13.4
 pyerfa==2.0.1.5

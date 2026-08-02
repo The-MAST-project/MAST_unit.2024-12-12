@@ -27,6 +27,17 @@ class PS3FocusSample(ExtendedBaseModel):
     star_rms_diameter_pixels: float | None = None
     vcurve_star_rms_diameter_pixels: float | None = None
 
+    @property
+    def star_diameter_pixels(self) -> float | None:
+        """Neutral alias satisfying ``calibration.analysis.protocols.FocusSampleLike``.
+
+        ``star_rms_diameter_pixels`` is PlaneWave's JSON wire key and stays the
+        stored field name here, where it is accurate.  Consumers shared with the
+        HFD analyzer (which measures a half-flux, not an RMS, diameter) read
+        through this alias instead.
+        """
+        return self.star_rms_diameter_pixels
+
 
 class PS3FocusAnalysisResult(ExtendedBaseModel):
     has_solution: bool
