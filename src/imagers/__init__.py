@@ -223,8 +223,8 @@ class Imager(ImagerInterface, SwitchedOutlet):
         """
         return self._backend.endpoint_abort()
 
-    def endpoint_status(self):
-        return self.status()
+    def endpoint_status(self) -> CanonicalResponse:
+        return CanonicalResponse(value=self.status())
 
     def status(self) -> ImagerStatus:
         """

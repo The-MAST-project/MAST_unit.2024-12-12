@@ -324,9 +324,9 @@ class Unit(Component):
             c.powerdown()
 
     def endpoint_status(self) -> CanonicalResponse:
-        return self.status()
+        return CanonicalResponse(value=serialize_ip_addresses(self.status()))
 
-    def status(self) -> CanonicalResponse:
+    def status(self) -> FullUnitStatus:
         autofocus = (
             {
                 "success": self.autofocus_result.success,
@@ -378,7 +378,7 @@ class Unit(Component):
         )
         ret.type = StatusType.FULL  # Should already be set in the constructor, but WAS NOT, so setting it explicitly here.
 
-        return CanonicalResponse(value=serialize_ip_addresses(ret))
+        return ret
 
     @staticmethod
     def quit():
