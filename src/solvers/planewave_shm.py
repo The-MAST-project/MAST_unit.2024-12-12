@@ -1,5 +1,4 @@
 import datetime
-import logging
 import time
 from multiprocessing.shared_memory import SharedMemory
 from typing import TYPE_CHECKING, Literal
@@ -11,7 +10,7 @@ from astropy.io import fits
 from common.const import Const
 from common.extended_basemodel import ExtendedBaseModel
 from common.interfaces.solving import SolverInterface, SolvingResult, SolvingSolution
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.utils import Coord, function_name
 from imagers import ImagerSettings
 from PlaneWave.ps3cli_client import PS3CLIClient
@@ -19,10 +18,7 @@ from PlaneWave.ps3cli_client import PS3CLIClient
 if TYPE_CHECKING:
     from unit import Unit  # type: ignore[import-untyped]
 
-logger = logging.Logger("planewave_shm")
-init_log(logger)
-
-
+logger = get_logger(__name__)
 class PlaneWaveShmSolvingSolution(ExtendedBaseModel):
     num_matched_stars: int
     match_rms_error_arcsec: float

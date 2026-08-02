@@ -1,6 +1,5 @@
 import datetime
 import json
-import logging
 from threading import Event, Lock, Thread
 from typing import Any
 
@@ -19,13 +18,11 @@ from common.interfaces.imager import (
     ImagerSettings,
     ImagerStatus,
 )
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.utils import RepeatTimer, function_name, time_stamp
 from imagers import Imager
 
-logger = logging.Logger("mast-unit-imager-zwo")
-init_log(logger)
-
+logger = get_logger(__name__)
 # if TYPE_CHECKING:
 #     from unit import Unit
 

@@ -1,4 +1,3 @@
-import logging
 from collections import deque
 from enum import IntEnum, auto
 from typing import TYPE_CHECKING
@@ -12,7 +11,7 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.statuses import FocuserStatus
 from common.utils import RepeatTimer, boxed_log, time_stamp
 from PlaneWave import pwi4_client
@@ -20,10 +19,7 @@ from PlaneWave import pwi4_client
 if TYPE_CHECKING:
     pass
 
-logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
-
-
+logger = get_logger(__name__)
 class FocusDirection(IntEnum):
     In = auto()
     Out = auto()

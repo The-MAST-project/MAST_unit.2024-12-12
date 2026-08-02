@@ -1,3 +1,4 @@
+import argparse
 import logging
 import os
 import socket
@@ -10,20 +11,23 @@ import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, ORJSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import ValidationError
 
 from common.config import Config, ConfigError
-from common.mast_logging import init_log
+from common.mast_logging import configure_logging, get_logger
 from common.process import ensure_process_is_running
 from PlaneWave import pwi4_client
 from PlaneWave.ps3cli_locate import locate_ps3cli_catalog, locate_ps3cli_dir
 
-log_level = logging.WARNING
-logging.basicConfig(level=log_level)
-logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
+# Logging is configured once, here, before anything logs. Every 'mast.*' logger
+# inherits the handlers and level from root by propagation.
+# Precedence: --log-level > MAST_LOG_LEVEL > default.
+_parser = argparse.ArgumentParser(add_help=False)
+_parser.add_argument("--log-level", default=None, help="DEBUG, INFO, WARNING, ... (overrides MAST_LOG_LEVEL)")
+configure_logging(_parser.parse_known_args()[0].log_level)
 
+logger = get_logger(__name__)
 logger.info("+--------------+")
 logger.info("| Starting ... |")
 logger.info("+--------------+")
@@ -139,7 +143,6 @@ app = FastAPI(
     lifespan=lifespan,
     openapi_url="/openapi.json",
     debug=True,
-    default_response_class=ORJSONResponse,
     # exception_handlers={WebSocketDisconnect: websocket_disconnect_handler},
 )
 
@@ -166,7 +169,7 @@ def read_favicon():
 async def generic_exception_handler(request, exc: Exception):
     from common.utils import function_name
 
-    return ORJSONResponse(
+    return JSONResponse(
         status_code=500,
         content={"message": f"{function_name()}: Exception occurred: {exc}"},
     )
@@ -223,7 +226,7 @@ if __name__ == "__main__":
 
         logger.info(f"The MAST Unit server is starting on {host}:{port} ...")
 
-        uvicorn.run(app, host=host, port=port, log_level=log_level)
+        uvicorn.run(app, host=host, port=port)
     else:
         logger.error("Unit is not initialized, cannot start the server.")
         app_quit(reason="unit not initialized")

@@ -1,6 +1,5 @@
 import datetime
 import json
-import logging
 import os
 import shutil
 import subprocess
@@ -18,7 +17,7 @@ from common.const import Const
 from common.filer import Filer
 from common.interfaces.imager import ImagerRoi
 from common.interfaces.solving import SolverInterface, SolvingResult
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.rois import SkyRoi, SpecRoi
 from common.utils import Coord, boxed_log, function_name
 from imagers import ImagerSettings
@@ -26,9 +25,7 @@ from imagers import ImagerSettings
 from .astrometry_dot_net import cygwin_to_win, generate_random_string, parse_solver_output, win_to_cygwin
 from .pixel_grid import roi_center_to_crpix
 
-logger = logging.getLogger("mastrometry_dot_net")
-init_log(logger)
-
+logger = get_logger(__name__)
 if TYPE_CHECKING:
     from unit import Unit  # type: ignore[import-untyped]
 

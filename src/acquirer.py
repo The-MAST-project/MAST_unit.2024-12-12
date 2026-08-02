@@ -1,4 +1,3 @@
-import logging
 import os
 import time
 from threading import Thread
@@ -13,7 +12,7 @@ from acquisition import Acquisition, ApproachMode
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import FcuVersion, SkyRoiConfig
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification, UnitAssignment
 from common.notifications import Notifier
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
@@ -24,9 +23,7 @@ from phd2.phd2 import PHD2Connector
 from solving import SolverId, SolvingTolerance
 from stage import StagePresetPosition
 
-logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
-
+logger = get_logger(__name__)
 RA_REGEX = r"^(\d{1,2})[: ](\d{2})[: ](\d{2}(?:\.\d{1,3})?)$"
 DEC_REGEX = r"^([+-]?)(\d{1,2})[: ](\d{2})[: ](\d{2}(?:\.\d{1,3})?)$"
 
@@ -58,6 +55,13 @@ class Acquirer:
 
         self.unit.errors = []
         self.unit.reference_image = None
+
+        assert self.unit.mount is not None, f"{op}: unit.mount is None"
+        assert self.unit.guider is not None, f"{op}: unit.guider is None"
+        assert self.unit.imager is not None, f"{op}: unit.imager is None"
+        assert self.unit.solver is not None, f"{op}: unit.solver is None"
+        assert self.unit.stage is not None, f"{op}: unit.stage is None"
+        assert self.unit.acquirer is not None, f"{op}: unit.acquirer is None"
 
         self.latest_acquisition = acquisition
         acquisition_conf = acquisition.conf
@@ -414,6 +418,11 @@ class Acquirer:
         :param handover_automatically_to_guider: After acquisition, start PHD2 guiding automatically
         :return: The folder path on the MAST-SHARE with the acquisition's products
         """
+
+        op = function_name()
+
+        assert self.unit.mount is not None, f"{op}: unit.mount is None"
+        assert self.unit.mount.pw is not None, f"{op}: unit.mount.pw is None"
 
         pw_status = self.unit.mount.pw.status()
 

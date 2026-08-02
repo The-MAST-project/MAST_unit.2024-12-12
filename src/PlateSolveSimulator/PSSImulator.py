@@ -10,6 +10,7 @@ import logging
 import guiding
 import json
 from unit import PLATE_SOLVING_SHM_NAME
+from common.mast_logging import get_logger
 
 image_params_shm: SharedMemory | None = None
 image_shm: SharedMemory | None = None
@@ -18,7 +19,7 @@ results_shm: SharedMemory | None = None
 image_params_dict: dict
 
 image_dir = "images"
-logger = logging.getLogger("PSSimulator")
+logger = get_logger(__name__)
 default_log_level = logging.DEBUG
 
 
@@ -101,7 +102,6 @@ def init_log(lg: logging.Logger):
 
 
 if __name__ == "__main__":
-    init_log(logger)
     logger.info("---------------")
     logger.info("New PSSimulator")
     logger.info("---------------")

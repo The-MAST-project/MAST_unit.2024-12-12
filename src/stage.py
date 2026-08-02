@@ -1,5 +1,4 @@
 import datetime
-import logging
 import os
 import platform
 import sys
@@ -19,16 +18,14 @@ from common.config.rois import FcuVersion
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.statuses import StageStatus
 from common.utils import RepeatTimer, Timeout, boxed_log, function_name, time_stamp
 
 if TYPE_CHECKING:
     from unit import Unit
 
-logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
-
+logger = get_logger(__name__)
 # os.environ["XILOG"] = "C:/temp/ximc.log"  # Enables logging for ximc library.
 
 XIMC_VERSION = "2.13.6"

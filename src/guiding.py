@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from threading import Thread
 from typing import TYPE_CHECKING
 
@@ -18,13 +17,11 @@ from common.activities import Activities
 from common.config.rois import FcuVersion, SpecRoiConfig
 from common.interfaces.guiding import GuiderInterface, GuiderTypes
 from common.interfaces.imager import ImagerRoi, ImagerSettings
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.statuses import GuiderStatus
 from common.rois import SpecRoi
 
-logger = logging.Logger("mast.unit." + __name__)
-init_log(logger)
-
+logger = get_logger(__name__)
 guider_address_port = ("127.0.0.1", 8001)
 
 
