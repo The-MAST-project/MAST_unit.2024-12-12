@@ -697,10 +697,11 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"stopped tracking (from {caller_name()})")
         return CanonicalResponse_Ok
 
-    def goto_ra_dec_j2000(self, ra: float, dec: float):
+    def goto_ra_dec_j2000(self, ra: float, dec: float) -> CanonicalResponse:
         self.start_activity(MountActivities.Slewing)
         self.target = (ra, dec)
         self.pw.mount_goto_ra_dec_j2000(ra, dec)
+        return CanonicalResponse_Ok
 
     def goto_ra_dec_apparent(self, ra: float, dec: float):
         self.start_activity(MountActivities.Slewing)

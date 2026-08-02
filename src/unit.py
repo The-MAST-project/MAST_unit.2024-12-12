@@ -405,6 +405,7 @@ class Unit(Component):
         if self.guider:
             self.guider.abort()
         [comp.abort() for comp in self.components]
+        return CanonicalResponse_Ok
 
     def ontimer(self):  # noqa: C901
         if self.unit_shutdown_event.is_set():

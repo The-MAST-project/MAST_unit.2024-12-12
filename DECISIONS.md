@@ -38,6 +38,56 @@ only an API shape". Anything that cannot be exercised on hardware ships explicit
 unverified, or does not ship. The same reasoning applies to the sibling epics when the contract
 extends to `MAST_control` and `MAST_spec`.
 
+---
+
+## [2026-08-02] Response-envelope remediation, part 1: refusals are returned, not dropped
+
+**Why:** Invariant 4 of the endpoint contract (#42) says every routed handler returns a
+`CanonicalResponse`, with failures as `errors=[...]` -- never an implicit `None`, never an
+exception across the HTTP boundary. #47 audited the violations. The consumer-visible harm is
+not the missing envelope itself but what it hides: a handler that falls off the end sends a
+`null` body, and `covers.open` / `close` used a bare `return` on the not-connected path, which
+over HTTP is a success-shaped empty response. A caller cannot distinguish "I refused" from
+"it worked."
+
+**What:** The offenders in this tranche now return an envelope --
+`mount.goto_ra_dec_j2000`, `unit.abort`, `focuser.shutdown`, `covers.open` / `close` /
+`shutdown`, `focuser.endpoint_move_in` / `_out` (were discarding `move()`'s response), and the
+`/focuser/position` getter (was a raw `int`).
+
+Two of these needed more than a `return` statement:
+
+- **`focuser.endpoint_set_position` returned `Ok` even when nothing moved.** The refusal
+  decision (not-powered / not-connected) lives in the `position` property setter, and a Python
+  setter cannot return anything -- assignment discards it. Extracted `Focuser.goto_position()`,
+  which owns the decision and returns a `CanonicalResponse`; the setter delegates to it and
+  drops the result, so the existing `self.position = x` call sites (autofocusing, `move`,
+  `goto_known_as_good_position`) keep working unchanged. The endpoint calls `goto_position`
+  directly. Re-checking the preconditions inside the handler was the alternative and was
+  rejected: it duplicates the decision and puts logic in a handler, violating invariant 6.
+- **`covers.shutdown` on the not-connected path returns `Ok`, not an error.** Powering off
+  *is* the shutdown for a disconnected cover -- it succeeded. Only `open` / `close` genuinely
+  could not act, so only those two report `errors=["not connected"]`.
+
+`Imager.connect` / `disconnect` also return `None` and were deliberately left alone: #42 slates
+them for deletion (not ABC-enforced, unused, Arie OK'd), so fixing them is work that gets
+deleted.
+
+**Implications:** Six component endpoints change what they put on the wire, all in the
+refusal direction -- a caller that previously got `null` or an empty body now gets
+`{"api_version": "1.0", "errors": [...]}`. Nothing live consumes them: the only cross-repo
+calls into the unit are `GET /unit/status`, `PUT /unit/execute_assignment` and
+`GET /unit/abort`, and of those only `unit.abort` is touched here (it gained an envelope where
+it sent `null`). No `MAST_common` or `MAST_gui` change, so no submodule-bump lockstep.
+
+Behavioral verification cannot happen on a development Mac: `focuser.py`, `mount.py` and
+`covers.py` all import `win32com` at module scope, so the three files changed here are
+un-importable off Windows and the pytest suite skips (as README already documents). This
+tranche was verified by ruff (no new findings against `origin/main`) and byte-compilation; the
+refusal paths need an HTTP smoke pass on a unit, and permanent coverage belongs to the #52
+contract suite rather than to hand-written per-site tests that could only ever run on the
+units.
+
 ## [2026-07-23] Fixed limit frame sent verbatim; per-call endpoint override dropped
 
 **Why (verbatim):** The `fixed` arm routed the DB rectangle through `ImagerRoi`,
