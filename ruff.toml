@@ -31,6 +31,16 @@ extend-select = [
 # Optionally ignore some rules:
 # ignore = ["E501"]  # example: disable line-length enforcement
 
+[lint.isort]
+# `common` is MAST_common, our own shared library -- first-party, grouped with
+# the local modules (acquirer, covers, PlaneWave, ...). Without this, ruff's
+# resolver splits the package: bare `from common import asi` lands in the
+# first-party block while `from common.activities import ...` is treated as
+# third-party, so every isort run reshuffles the import block and the next
+# person reverts it. The `src/common` submodule being an empty directory in
+# uninitialized checkouts makes the classification machine-dependent too.
+known-first-party = ["common"]
+
 [format]
 # Ruff's Black-compatible formatter.
 quote-style = "double"
