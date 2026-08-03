@@ -16,7 +16,7 @@ from astropy.coordinates import Angle
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
-from common.config.phd2 import LimitFrameMode
+from common.config.phd2 import ExcludeRegionMode, LimitFrameMode
 from common.config.rois import FcuVersion
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
@@ -973,7 +973,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
         The region (unbinned camera pixels) is excluded from guide-star
         auto-selection so guiding locks only on stars the fold mirror will not
-        occult. Requires the set_exclude_region PHD2 API (2.6.14dev1mast04+);
+        occult. Requires the set_exclude_region PHD2 API (2.6.14dev1mastbuild4+);
         setting a region on an older build fails loudly, but a reset failure is
         ignored — an older build has no exclusion state to reset.
         """
@@ -1000,26 +1000,34 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         guide, like the limit frame: the region is runtime-only in PHD2 but survives
         across guide sessions within one PHD2 process."""
         exclude_region = self.conf.exclude_region
-        if exclude_region.enabled and exclude_region.has_roi:
-            stale = exclude_region.stale_derivation()
-            if stale:
-                raise PHD2ConnectorError(
-                    f"{function_name()}: stale exclusion region ({stale}) - "
-                    "re-run the shadow measurement instead of guiding with a stale rectangle"
-                )
-            self.set_exclude_region(roi=ImagerRoi(
-                x=exclude_region.x,
-                y=exclude_region.y,
-                width=exclude_region.width,
-                height=exclude_region.height,
-            ))
-            # the exclusion only filters *auto-selection*: a star already selected
-            # (e.g. left over from the previous guide session) survives it and the
-            # guide RPC would lock on it without re-selecting. Force a fresh
-            # selection so the region is honored.
-            self.call("deselect_star")
-        else:
-            self.set_exclude_region(roi=None)
+        match exclude_region.mode:
+            case ExcludeRegionMode.FIXED:
+                stale = exclude_region.stale_derivation()
+                if stale:
+                    raise PHD2ConnectorError(
+                        f"{function_name()}: stale exclusion region ({stale}) - "
+                        "re-run the shadow measurement instead of guiding with a stale rectangle"
+                    )
+                # verbatim: the rectangle is a measured shadow band plus a deliberate
+                # pad, and the exclusion is a *selection* filter rather than a sensor
+                # readout crop, so no camera alignment constraint applies to it -
+                # ImagerRoi conditioning would only shift the placement
+                # (same reasoning as the limit frame, MAST_common#17)
+                self.set_exclude_region(roi=ImagerRoi.verbatim(
+                    x=exclude_region.x,
+                    y=exclude_region.y,
+                    width=exclude_region.width,
+                    height=exclude_region.height,
+                ))
+                # the exclusion only filters *auto-selection*: a star already selected
+                # (e.g. left over from the previous guide session) survives it and the
+                # guide RPC would lock on it without re-selecting. Force a fresh
+                # selection so the region is honored.
+                self.call("deselect_star")
+            case ExcludeRegionMode.OFF:
+                # a measured rectangle may be stored while the region is off (the
+                # per-unit measure-now-enable-later workflow); mode alone decides
+                self.set_exclude_region(roi=None)
 
     def guide(
         self,
@@ -1431,7 +1439,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         logger.info(f"{function_name()}: limit frame: mode={limit_frame.mode}, roi={guiding_settings.roi}")
         exclude_region = self.conf.exclude_region
         logger.info(
-            f"{function_name()}: exclusion region: enabled={exclude_region.enabled}, "
+            f"{function_name()}: exclusion region: mode={exclude_region.mode}, "
             f"roi=({exclude_region.x}, {exclude_region.y}, {exclude_region.width}, {exclude_region.height})"
         )
 
