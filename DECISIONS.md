@@ -41,8 +41,7 @@ extends to `MAST_control` and `MAST_spec`.
 
 ---
 
-## [2026-08-02] /mount/goto delegates to the maintained slew and gains alt/az
-
+## [2026-08-02] /mount/goto delegates to the maintained slew; alt/az deferred to its own endpoint
 
 **Why:** `mount.goto()` was a second implementation of the slew. It called
 `pw.mount_goto_ra_dec_j2000` directly and skipped `start_activity(MountActivities.Slewing)` and
@@ -51,42 +50,46 @@ API was invisible to `wait_until_settled(SettleMode.SLEW)` and to mount status -
 looked idle while it moved. This is invariant 2 of the endpoint contract (#42), and this fork is
 the example that motivated the whole review.
 
-**What:** `endpoint_goto` is a thin handler over the maintained methods: check `connected`,
-validate the arguments, delegate. `goto_alt_az` is the horizontal counterpart of
-`goto_ra_dec_j2000`, with identical activity/target bookkeeping so both slews settle the same
-way. `mount.goto()` is gone, and so is `goto_ra_dec_apparent` -- unrouted, zero callers, and it
-carried the same missing-envelope defect.
+**What:** `endpoint_goto` is a thin handler over the maintained method: check `connected`,
+delegate to `goto_ra_dec_j2000`. `mount.goto()` is gone, and so is `goto_ra_dec_apparent` --
+unrouted, zero callers, and it carried the same missing-envelope defect.
 
-Four decisions inside that are worth recording:
+**Alt/az is deliberately *not* part of this endpoint** (decision revised 2026-08-02, reversing
+the 2026-07-20 contract note's "`goto` gains alt/az"). Horizontal pointing is not the same
+operation with different numbers:
 
-- **Argument shape: four optional floats, exactly one complete pair.** Named
-  `ra_j2000_hours` / `dec_j2000_degs` to match `unit.expose` rather than the old generic
-  `primary_coord` / `secondary_coord`, plus `alt_degs` / `az_degs`. The alternative was
-  `coord_system` + `coord0` / `coord1`, which is fewer parameters but reproduces exactly the
-  ambiguity PWI4's own `mount_goto_coord_pair` documents ("coord0 is the azimuth for altaz");
-  explicit names are self-documenting in Swagger. Mixed pairs, half a pair, and no coordinates
-  each refuse with `errors` rather than guessing which slew was meant.
-- **Decimal only, deliberately.** `/mount/goto` previously typed its coordinates `float | str`,
+- **Tracking has to be stopped for it to mean anything.** With tracking on, the mount
+  immediately starts drifting off the commanded alt/az -- the pointing the caller asked for
+  does not hold. So the operation is "stop tracking, then slew", which is a different contract
+  and a different abort/settle story, not an extra pair of query parameters.
+- **The input validation differs.** Alt/az is decimal degrees; RA/Dec is conventionally
+  sexagesimal (and `unit.expose` accepts both forms for RA/Dec). Folding them into one handler
+  means one endpoint with two validation regimes selected by which parameters arrived.
+- Its `target` bookkeeping also differs, since `status()` renders a tuple as RA/Dec and would
+  mislabel a horizontal target.
+
+Removing it also removes the argument plumbing it forced: with one coordinate system,
+`ra_j2000_hours` / `dec_j2000_degs` are simply **required**, and FastAPI rejects a missing or
+half pair with a 422 before the handler runs. The hand-rolled "exactly one complete pair"
+validation (mixed pairs, half a pair, no coordinates) is gone with it.
+
+Two decisions that stand:
+
+- **Decimal only, for now.** `/mount/goto` previously typed its coordinates `float | str`,
   which was a lie: PWI4's client does `float(value)`, so a sexagesimal string raised inside the
-  client and surfaced as a 500. Typing them `float` makes that a clean 422 instead. Full
-  sexagesimal support is not included because it does not fit yet:
-  `common.parsers.sexagesimal_degrees_to_decimal` is built on `astropy` `Latitude`, bounded to
-  +/-90, so it cannot parse an **azimuth** (0-360). Supporting sexagesimal here needs a
-  longitude-style degree parser in `common` first; RA/Dec alone would leave the four parameters
-  asymmetric.
+  client and surfaced as a 500. Typing them `float` makes that a clean 422 instead. Sexagesimal
+  RA/Dec is a reasonable future addition here (`common.parsers` already has the two parsers);
+  it was the *azimuth* that had no usable parser, and that concern leaves with alt/az.
 - **`GET` -> `PUT` applied here, not deferred to #48.** Invariant 5, and safe to take now: the
   only live cross-repo calls into the unit are `status`, `execute_assignment` and `abort`, and
   `/mount/goto` has no automated caller. #48's risk lives in `abort` (called as `GET` from
   `common`), not here. A slew is also the least defensible route to leave on `GET`, where a
   caching proxy or a Swagger "try it out" can fire it.
-- **An alt/az target is recorded as text, not a tuple.** `status()` renders a tuple as
-  RA/Dec, so storing `(alt, az)` would mislabel a horizontal target in the operator's status
-  view. The string arm already exists for `"Home"`.
 
 **Implications:** `/mount/goto` is behavior-preserving from a caller's perspective except the
-verb and the parameter names, both of which are safe because nothing automated calls it; what
-changes is that a slew commanded through it is now tracked like any other. Sexagesimal input
-moves from 500 to 422 -- still rejected, but honestly.
+verb and the parameter names, both safe because nothing automated calls it; what changes is
+that a slew commanded through it is now tracked like any other. The alt/az endpoint is future
+work (its own issue), and the contract note's goto row needs the same correction.
 
 Two adjacent fixes came out of this and are in the same change, since both are in the status
 field an operator reads immediately after issuing a goto:

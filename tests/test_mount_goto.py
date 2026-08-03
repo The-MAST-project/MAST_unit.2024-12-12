@@ -1,10 +1,9 @@
-"""`/mount/goto` delegates to the maintained slew, and refuses instead of guessing.
+"""`/mount/goto` delegates to the maintained slew instead of forking it.
 
 Covers MAST_unit #37: the endpoint used to be a second copy of the slew that called
 `pw.mount_goto_ra_dec_j2000` directly and skipped the activity/target bookkeeping, so a
 slew started through the API was invisible to `wait_until_settled(SettleMode.SLEW)` and to
-mount status. These tests pin the delegation, the alt/az arm, the argument validation, and
-the target rendering.
+mount status. These tests pin the delegation and the target rendering.
 
 Windows-only by import chain (`mount` imports `win32com`), like the rest of the suite. No
 hardware: `Mount` comes from `object.__new__` with a recording stand-in for the PWI4 client,
@@ -29,9 +28,6 @@ class _RecordingPw:
 
     def mount_goto_ra_dec_j2000(self, ra_hours, dec_degs):
         self.calls.append(("j2000", ra_hours, dec_degs))
-
-    def mount_goto_alt_az(self, alt_degs, az_degs):
-        self.calls.append(("altaz", alt_degs, az_degs))
 
 
 def make_mount(connected: bool = True):
@@ -73,29 +69,10 @@ def test_equatorial_goto_delegates_to_the_maintained_slew():
     assert mount.target == (12.5, -30.25)
 
 
-def test_horizontal_goto_uses_the_alt_az_command():
-    mount = make_mount()
-
-    response = mount.endpoint_goto(alt_degs=45.0, az_degs=200.0)
-
-    assert not response.errors
-    assert mount.pw.calls == [("altaz", 45.0, 200.0)]
-    assert MountActivities.Slewing in mount.started
-    # recorded as text: status renders a tuple as RA/Dec, which would mislabel alt/az
-    assert mount.target == "alt=45.0, az=200.0"
-
-
 def test_goto_refuses_when_not_connected():
     mount = make_mount(connected=False)
 
     assert_refused(mount.endpoint_goto(ra_j2000_hours=1.0, dec_j2000_degs=2.0), "not connected")
-    assert mount.pw.calls == []
-
-
-def test_goto_refuses_mixed_coordinate_systems():
-    mount = make_mount()
-
-    assert_refused(mount.endpoint_goto(ra_j2000_hours=1.0, dec_j2000_degs=2.0, alt_degs=45.0), "not both")
     assert mount.pw.calls == []
 
 
@@ -108,20 +85,6 @@ def test_goto_refuses_mixed_coordinate_systems():
         ({"az_degs": 200.0}, "both alt_degs and az_degs are required"),
     ],
 )
-def test_goto_refuses_half_a_pair(kwargs, expected):
-    mount = make_mount()
-
-    assert_refused(mount.endpoint_goto(**kwargs), expected)
-    assert mount.pw.calls == []
-
-
-def test_goto_refuses_with_no_coordinates():
-    mount = make_mount()
-
-    assert_refused(mount.endpoint_goto(), "no coordinates supplied")
-    assert mount.pw.calls == []
-
-
 def test_target_verbal_renders_declination_in_degrees():
     """Regression: Dec was rendered as `unit='arcsec'`, dividing it by 3600 in status."""
     mount = make_mount()

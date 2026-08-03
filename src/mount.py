@@ -274,18 +274,13 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.pw.mount_find_home()
         return CanonicalResponse_Ok
 
-    def endpoint_goto(
-        self,
-        ra_j2000_hours: float | None = None,
-        dec_j2000_degs: float | None = None,
-        alt_degs: float | None = None,
-        az_degs: float | None = None,
-    ) -> CanonicalResponse:
+    def endpoint_goto(self, ra_j2000_hours: float, dec_j2000_degs: float) -> CanonicalResponse:
         """
-        Slews the mount to either equatorial (J2000) or horizontal coordinates.
+        Slews the mount to equatorial (J2000) coordinates, in decimal hours and degrees.
 
-        Supply exactly one complete pair: ``ra_j2000_hours`` + ``dec_j2000_degs``, or
-        ``alt_degs`` + ``az_degs``.
+        Horizontal (alt/az) slewing is deliberately not offered here -- it needs its own
+        endpoint, because it is not the same operation with different numbers: tracking has
+        to be stopped for the pointing to stay put.
         """
         op = function_name()
 
@@ -294,33 +289,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             logger.error(msg)
             return CanonicalResponse(errors=[msg])
 
-        equatorial = (ra_j2000_hours, dec_j2000_degs)
-        horizontal = (alt_degs, az_degs)
-        wants_equatorial = any(c is not None for c in equatorial)
-        wants_horizontal = any(c is not None for c in horizontal)
-
-        if wants_equatorial and wants_horizontal:
-            msg = f"{op}: supply either ra/dec or alt/az, not both"
-            logger.error(msg)
-            return CanonicalResponse(errors=[msg])
-
-        if wants_equatorial:
-            if None in equatorial:
-                msg = f"{op}: both ra_j2000_hours and dec_j2000_degs are required"
-                logger.error(msg)
-                return CanonicalResponse(errors=[msg])
-            return self.goto_ra_dec_j2000(ra_j2000_hours, dec_j2000_degs)  # type: ignore[arg-type]
-
-        if wants_horizontal:
-            if None in horizontal:
-                msg = f"{op}: both alt_degs and az_degs are required"
-                logger.error(msg)
-                return CanonicalResponse(errors=[msg])
-            return self.goto_alt_az(alt_degs, az_degs)  # type: ignore[arg-type]
-
-        msg = f"{op}: no coordinates supplied (ra/dec or alt/az)"
-        logger.error(msg)
-        return CanonicalResponse(errors=[msg])
+        return self.goto_ra_dec_j2000(ra_j2000_hours, dec_j2000_degs)
 
     def ontimer(self):
         if self.unit.unit_shutdown_event.is_set():
@@ -619,7 +588,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def target_verbal(self) -> str | None:
         """
         Renders ``target`` for status: a tuple is (RA hours, Dec degrees) from
-        ``goto_ra_dec_j2000``; a string is already display-ready (``goto_alt_az``, "Home").
+        ``goto_ra_dec_j2000``; a string is already display-ready (e.g. "Home").
         """
         if isinstance(self.target, str):
             return self.target
@@ -718,19 +687,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self.start_activity(MountActivities.Slewing)
         self.target = (ra, dec)
         self.pw.mount_goto_ra_dec_j2000(ra, dec)
-        return CanonicalResponse_Ok
-
-    def goto_alt_az(self, alt_degs: float, az_degs: float) -> CanonicalResponse:
-        """
-        The horizontal counterpart of ``goto_ra_dec_j2000`` -- same activity and target
-        bookkeeping, so ``wait_until_settled(SettleMode.SLEW)`` tracks it identically.
-
-        ``target`` is recorded as text rather than a tuple: ``status()`` renders a tuple as
-        RA/Dec, which would mislabel a horizontal target.
-        """
-        self.start_activity(MountActivities.Slewing)
-        self.target = f"alt={alt_degs}, az={az_degs}"
-        self.pw.mount_goto_alt_az(alt_degs, az_degs)
         return CanonicalResponse_Ok
 
     def endpoint_abort(self):
