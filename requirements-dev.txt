@@ -1,0 +1,4 @@
+# Test-only dependencies (runtime deps live in requirements.txt).
+pytest
+# Pinned so every machine/CI formats and lints identically (rules in ruff.toml).
+ruff==0.16.0

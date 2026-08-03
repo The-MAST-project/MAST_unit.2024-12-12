@@ -1,15 +1,13 @@
 import datetime
-import logging
 import os
-import time
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
 import common.asi as asi
 from common.config.unit import AcquisitionConfig
 from common.corrections import Corrections
-from common.filer import Filer
-from common.mast_logging import init_log
+from common.filer import Filer, MoveGuardian
+from common.mast_logging import get_logger
 from common.paths import PathMaker
 from common.solving import SolverId
 from plotting import plot_acquisition_corrections, plot_phase_corrections
@@ -17,11 +15,8 @@ from plotting import plot_acquisition_corrections, plot_phase_corrections
 if TYPE_CHECKING:
     from unit import Unit
 
-logger = logging.getLogger("mast.unit." + __name__)
+logger = get_logger(__name__)
 filer = Filer(logger)
-init_log(logger)
-
-
 class ApproachMode(IntEnum):
     """
     How `solve_and_correct` applies a mount correction. IntEnum, so existing
@@ -36,7 +31,6 @@ class ApproachMode(IntEnum):
 
 
 class Acquisition:
-
     def __init__(
         self,
         unit: "Unit",
@@ -72,15 +66,11 @@ class Acquisition:
             if st.ra_j2000_hours is not None:
                 self.target_ra = st.ra_j2000_hours
             else:
-                raise ValueError(
-                    "Acquisition: target_ra is None and mount status does not provide RA"
-                )
+                raise ValueError("Acquisition: target_ra is None and mount status does not provide RA")
             if st.dec_j2000_degs is not None:
                 self.target_dec = st.dec_j2000_degs
             else:
-                raise ValueError(
-                    "Acquisition: target_dec is None and mount status does not provide DEC"
-                )
+                raise ValueError("Acquisition: target_dec is None and mount status does not provide DEC")
 
         self.conf = conf
         self.ra_tolerance = conf.tolerance.ra_arcsec
@@ -98,26 +88,27 @@ class Acquisition:
     def save_corrections(self, phase: str):
         if phase in self.corrections:
             path = os.path.join(self.folder, phase, "corrections.json")
-            for _ in range(3):
-                try:
-                    with open(path, "w") as fp:
-                        fp.write(self.corrections[phase].model_dump_json(indent=2))
-                        break
-                except Exception as e:
-                    logger.error(f"failed to write {path} (error: {e})")
-                    continue
-            plot_phase_corrections(
-                phase=phase,
-                corrections=self.corrections[phase],
-                file=path,
-                ends_of_phases=[datetime.datetime.now(datetime.UTC)],
-            )
-            time.sleep(2)
-            filer.move_ram_to_shared(path)
-            filer.move_ram_to_shared(path.replace("json", "png"))
+            png = path.replace("json", "png")
+            # Protect both artifacts until they are fully written AND handed to the mover,
+            # so the ram->shared move can't copy a half-written file (replaces sleep(2)).
+            with MoveGuardian().protect(path, png):
+                for _ in range(3):
+                    try:
+                        with open(path, "w") as fp:
+                            fp.write(self.corrections[phase].model_dump_json(indent=2))
+                            break
+                    except Exception as e:
+                        logger.error(f"failed to write {path} (error: {e})")
+                        continue
+                plot_phase_corrections(
+                    phase=phase,
+                    corrections=self.corrections[phase],
+                    file=path,
+                    ends_of_phases=[datetime.datetime.now(datetime.UTC)],
+                )
+                filer.move_ram_to_shared(path)
+                filer.move_ram_to_shared(png)
 
     def post_process(self):
         if filer.ram and filer.ram.root is not None:
-            plot_acquisition_corrections(
-                self.folder.replace(filer.ram.root, filer.shared.root)
-            )
+            plot_acquisition_corrections(self.folder.replace(filer.ram.root, filer.shared.root))

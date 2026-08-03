@@ -1,6 +1,5 @@
 import copy
 import json
-import logging
 import math
 import selectors
 import socket
@@ -12,21 +11,22 @@ from enum import IntFlag, auto
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from astropy.coordinates import Angle
-from pydantic import BaseModel
-
 import common.asi as asi
+from astropy.coordinates import Angle
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
+from common.config.phd2 import LimitFrameMode
 from common.config.rois import FcuVersion
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.statuses import PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, Timeout, boxed_debug, function_name
+from pydantic import BaseModel
+
 from phd2.phd2_locate import locate_phd2_exe
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 from stage import StagePresetPosition
@@ -34,10 +34,7 @@ from stage import StagePresetPosition
 if TYPE_CHECKING:
     pass  # type: ignore[name-defined]
 
-logger = logging.Logger("mast.unit." + __name__)
-init_log(logger)
-
-
+logger = get_logger(__name__)
 class CoolerStatus(BaseModel):
     temperature: float
     coolerOn: bool  # noqa: N815
@@ -251,7 +248,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
     def __init__(
         self,
-        parent = None,
+        parent=None,
         hostname="localhost",
         instance=1,
         _from_imager: bool = False,
@@ -289,7 +286,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.settle = None
         self._setpoint: float | None = None
         self.profile_binning: int | None = None
-        self.profile_bpp: int | None = None # bits per pixel
+        self.profile_bpp: int | None = None  # bits per pixel
 
         unit_conf = Config().get_unit()
         assert unit_conf is not None
@@ -325,9 +322,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.guiding_verification_timer: RepeatTimer | None = None
         if self.validation_interval != 0:
             logger.info(f"{function_name()}: guiding validation every {self.validation_interval} seconds")
-            self.guiding_verification_timer = RepeatTimer(
-                interval=self.validation_interval, function=self.validate_guiding
-            )
+            self.guiding_verification_timer = RepeatTimer(interval=self.validation_interval, function=self.validate_guiding)
         else:
             logger.info(f"{function_name()}: no guiding validation ({self.validation_interval=})")
 
@@ -418,7 +413,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
     def equipment_is_connected(self) -> bool:
         response = self.call("get_connected")
-        return response['result']
+        return response["result"]
 
     def validate_guiding(self):
         if not self.is_active(PHD2Activities.Guiding):
@@ -432,11 +427,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         # self.call("stop_capture")  # stop guiding
         self.stop_guiding()
         guiding_settings = self.parent.unit.guider.make_guiding_settings(
-            base_folder=str(
-                Path(self.parent.unit.acquirer.latest_acquisition.folder)
-                / "guiding"
-                / "validation"
-            )
+            base_folder=str(Path(self.parent.unit.acquirer.latest_acquisition.folder) / "guiding" / "validation")
         )
         assert guiding_settings.roi is not None
         try:
@@ -444,13 +435,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.call(
                 "capture_single_frame",
                 params={
-                    "exposure": int(
-                        guiding_settings.seconds * 1000
-                    ),  # convert to milliseconds
+                    "exposure": int(guiding_settings.seconds * 1000),  # convert to milliseconds
                     "gain": int(asi.gain_absolute_to_percent(guiding_settings.gain)),
-                    "binning": (
-                        guiding_settings.binning.x if guiding_settings.binning else 1
-                    ),
+                    "binning": (guiding_settings.binning.x if guiding_settings.binning else 1),
                     "subframe": [
                         guiding_settings.roi.x,
                         guiding_settings.roi.y,
@@ -493,9 +480,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         with ThreadPoolExecutor() as executor:
             logger.info(f"{function_name()}: starting solving for {target=}")
             self.parent.start_activity(UnitActivities.Solving)
-            future = executor.submit(
-                self.parent.unit.solver.solve, guiding_settings, target
-            )
+            future = executor.submit(self.parent.unit.solver.solve, guiding_settings, target)
             solving_result = future.result()
             self.parent.end_activity(UnitActivities.Solving)
 
@@ -503,17 +488,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if solving_result and solving_result.succeeded and solving_result.solution:
             delta_ra = solving_result.solution.ra_hours - target.ra.hours  # type: ignore
             delta_dec = solving_result.solution.dec_degs - target.dec.degrees  # type: ignore
-            within_tolerance = (
-                abs(delta_ra) <= tolerance.ra_arcsec
-                and abs(delta_dec) <= tolerance.dec_arcsec
-            )
+            within_tolerance = abs(delta_ra) <= tolerance.ra_arcsec and abs(delta_dec) <= tolerance.dec_arcsec
             boxed_debug(
                 logger=logger,
                 lines=[
                     f"{delta_ra=}, {delta_dec=}",
                     f"{tolerance=}",
                     f"within tolerance: {within_tolerance}",
-                ]
+                ],
             )
 
             if not within_tolerance:
@@ -576,7 +558,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 boxed_debug(lines=[f"{function_name()}: {e}, {self.version=}, {self.sub_version=}"], logger=logger)
 
             case "StartGuiding":
-                if self.parent is not None and self.parent.unit is not None and self.parent.unit.fcu_version == FcuVersion.v2:
+                if (
+                    self.parent is not None
+                    and self.parent.unit is not None
+                    and self.parent.unit.fcu_version == FcuVersion.v2
+                ):
                     boxed_debug(lines=[f"{function_name()}: {e}, waiting for FCU v2 to reach SPEC"], logger=logger)
                     threading.Thread(target=self._wait_for_fcu_v2_at_spec).start()
 
@@ -586,9 +572,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 self.accumulators_active = True
                 self.ra_accumulator.reset()
                 self.dec_accumulator.reset()
-                stats = self._get_accumulated_stats(
-                    self.ra_accumulator, self.dec_accumulator
-                )
+                stats = self._get_accumulated_stats(self.ra_accumulator, self.dec_accumulator)
                 with self.lock:
                     self.stats = stats
                     logger.debug(f"{function_name()}: Started guiding")
@@ -618,16 +602,19 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 # |DecLimited |boolean|true if step was limited by the Max Dec setting (attribute omitted if step was not limited)|
                 # |ErrorCode  |number|the star finder error code, 1=saturated, 2=low SNR, 3=low mass, 4=low HFD, 5=High HFD, 6=edge of frame, 7=mass change, 8=unexpected|
                 stats = None
-                boxed_debug(lines=[f"{function_name()}: {e}, Frame={ev['Frame']}, Time={ev['Time']:.1f}s, ",
-                            f"dx={ev['dx']:.2f}, dy={ev['dy']:.2f}, ",
-                            f"RADistanceRaw={ev['RADistanceRaw']:.2f}, DECDistanceRaw={ev['DECDistanceRaw']:.2f}, ",
-                            f"StarMass={ev.get('StarMass')}, SNR={ev.get('SNR')}, HFD={ev.get('HFD')}"], logger=logger)
+                boxed_debug(
+                    lines=[
+                        f"{function_name()}: {e}, Frame={ev['Frame']}, Time={ev['Time']:.1f}s, ",
+                        f"dx={ev['dx']:.2f}, dy={ev['dy']:.2f}, ",
+                        f"RADistanceRaw={ev['RADistanceRaw']:.2f}, DECDistanceRaw={ev['DECDistanceRaw']:.2f}, ",
+                        f"StarMass={ev.get('StarMass')}, SNR={ev.get('SNR')}, HFD={ev.get('HFD')}",
+                    ],
+                    logger=logger,
+                )
                 if self.accumulators_active:
                     self.ra_accumulator.add(ev["RADistanceRaw"])
                     self.dec_accumulator.add(ev["DECDistanceRaw"])
-                    stats = self._get_accumulated_stats(
-                        self.ra_accumulator, self.dec_accumulator
-                    )
+                    stats = self._get_accumulated_stats(self.ra_accumulator, self.dec_accumulator)
                 with self.lock:
                     self.app_state = "Guiding"
                     self.start_activity(PHD2Activities.Guiding, existing_ok=True)
@@ -648,13 +635,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 if lines:
                     boxed_debug(logger=logger, lines=lines)
 
-                self.sky_quality.update(FrameMetrics(snr=ev['SNR'], hfd_pixels=ev['HFD']))
+                self.sky_quality.update(FrameMetrics(snr=ev["SNR"], hfd_pixels=ev["HFD"]))
 
             case "SettleBegin":
                 self.start_activity(PHD2Activities.Settling)
-                self.accumulators_active = (
-                    False  # exclude GuideStep messages from stats while settling
-                )
+                self.accumulators_active = False  # exclude GuideStep messages from stats while settling
                 boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
 
             case "Settling":
@@ -668,17 +653,20 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 s.status = 0
                 with self.lock:
                     self.settle = s
-                boxed_debug(lines=[f"{function_name()}: Settling in progress, distance={s.distance:.2f}",
-                            f"time={s.time:.1f}s, settle_time={s.settle_time:.1f}s"], logger=logger)
+                boxed_debug(
+                    lines=[
+                        f"{function_name()}: Settling in progress, distance={s.distance:.2f}",
+                        f"time={s.time:.1f}s, settle_time={s.settle_time:.1f}s",
+                    ],
+                    logger=logger,
+                )
 
             case "SettleDone":
                 self.end_activity(PHD2Activities.Settling)
                 self.accumulators_active = True
                 self.ra_accumulator.reset()
                 self.dec_accumulator.reset()
-                stats = self._get_accumulated_stats(
-                    self.ra_accumulator, self.dec_accumulator
-                )
+                stats = self._get_accumulated_stats(self.ra_accumulator, self.dec_accumulator)
                 s = PHD2SettleProgress()
                 s.done = True
                 s.status = ev["Status"]
@@ -710,12 +698,17 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 # | pos       | [number,number] | star coordinates |
                 # | step      | number | step number |
                 # | State     | string | calibration status message |
-                boxed_debug(lines=[f"Mount='{ev['Mount']}', dir='{ev['dir']}', dist={ev['dist']:.2f}, ",
-                            f"dx={ev['dx']:.2f}, dy={ev['dy']:.2f}, step={ev['step']}, State='{ev['State']}'"], logger=logger)
+                boxed_debug(
+                    lines=[
+                        f"Mount='{ev['Mount']}', dir='{ev['dir']}', dist={ev['dist']:.2f}, ",
+                        f"dx={ev['dx']:.2f}, dy={ev['dy']:.2f}, step={ev['step']}, State='{ev['State']}'",
+                    ],
+                    logger=logger,
+                )
 
             case "CalibrationComplete":
                 if "Mount" in ev:
-                    logger.debug(f"{function_name()}: {e}, Mount='{ev["Mount"]}'")
+                    logger.debug(f"{function_name()}: {e}, Mount='{ev['Mount']}'")
                 if self.is_active(PHD2Activities.Calibrating):
                     self.end_activity(PHD2Activities.Calibrating)
 
@@ -731,29 +724,21 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 boxed_debug(lines=[f"{function_name()}: LoopingExposures frame# {ev['Frame']}"], logger=logger)
 
             case "LoopingExposuresStopped":
-                activity = (
-                    PHD2Activities.Looping
-                    if e == "LoopingExposuresStopped"
-                    else PHD2Activities.Guiding
-                )
+                activity = PHD2Activities.Looping if e == "LoopingExposuresStopped" else PHD2Activities.Guiding
                 self.end_activity(activity)
                 if activity == PHD2Activities.Guiding and self.guiding_verification_timer is not None:
-                        logger.info(f"{function_name()}: stopping guiding verification timer")
-                        self.guiding_verification_timer.cancel()
+                    logger.info(f"{function_name()}: stopping guiding verification timer")
+                    self.guiding_verification_timer.cancel()
                 with self.lock:
                     self.app_state = "Stopped"
                 boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
 
             case "GuidingStopped":
-                activity = (
-                    PHD2Activities.Looping
-                    if e == "LoopingExposuresStopped"
-                    else PHD2Activities.Guiding
-                )
+                activity = PHD2Activities.Looping if e == "LoopingExposuresStopped" else PHD2Activities.Guiding
                 self.end_activity(activity)
                 if activity == PHD2Activities.Guiding and self.guiding_verification_timer is not None:
-                        logger.info(f"{function_name()}: stopping guiding verification timer")
-                        self.guiding_verification_timer.cancel()
+                    logger.info(f"{function_name()}: stopping guiding verification timer")
+                    self.guiding_verification_timer.cancel()
                 with self.lock:
                     self.app_state = "Stopped"
                 boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
@@ -935,7 +920,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.response = None
         if self._failed(response):
             raise PHD2ConnectorError(
-                f"{function_name()}: error from RPC: {method=}, {params=}, message={response["error"]["message"]}"
+                f"{function_name()}: error from RPC: {method=}, {params=}, message={response['error']['message']}"
             )
         return response
 
@@ -947,24 +932,21 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if not self.connected:
             logger.error(f"{function_name()}: not connected")
 
-        if roi is not None: # oren
+        if roi is not None:
             logger.debug(f"{function_name()}: setting {roi=}")
-            self.call("set_limit_frame", params={
-                "roi": [
-                    roi.x, roi.y,
-                    roi.width, roi.height
-                ]
-            })
+            self.call("set_limit_frame", params={"roi": [roi.x, roi.y, roi.width, roi.height]})
             self.need_to_reset_limit_frame = True
         else:
             logger.debug(f"{function_name()}: resetting ROI")
             self.call("set_limit_frame", params={"roi": None})
             self.need_to_reset_limit_frame = False
 
-    def guide(self,
-              imager_settings: ImagerSettings | None = None,
-              settling_settings: SettleModel | None = None,
-              new_interface: bool = False):
+    def guide(
+        self,
+        imager_settings: ImagerSettings | None = None,
+        settling_settings: SettleModel | None = None,
+        new_interface: bool = False,
+    ):
         """Start guiding with the given settling parameters. PHD2 takes care
         of looping exposures, guide star selection, and settling. Call
         CheckSettling() periodically to see when settling is complete.
@@ -1022,11 +1004,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     ],
                 )
             else:
-                # self.set_limit_frame(roi=imager_settings.roi.binned(imager_settings.binning))
                 if imager_settings.use_set_limit_frame:
                     self.set_limit_frame(roi=imager_settings.roi)
-                else: # oren
-                    self.set_limit_frame(roi=None) # oren
+                else:
+                    self.set_limit_frame(roi=None)
 
                 self.call(
                     method="guide",
@@ -1158,9 +1139,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if st == "Stopped":
             return
         # end workaround
-        raise PHD2ConnectorError(
-            f"guider did not stop capture after {timeout_seconds} seconds!"
-        )
+        raise PHD2ConnectorError(f"guider did not stop capture after {timeout_seconds} seconds!")
 
     def loop(self, timeout_seconds=10):
         """start looping exposures"""
@@ -1209,9 +1188,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     break
             if profile_id == -1:
                 logger.error(f"{function_name()}: unknown profile '{self.conf.profile}', {existing_profiles=}")
-                raise PHD2ConnectorError(
-                    f"invalid phd2 profile name: {self.conf.profile}"
-                )
+                raise PHD2ConnectorError(f"invalid phd2 profile name: {self.conf.profile}")
             self.stop_capture()
             self.call("set_connected", False)
             self.call("set_profile", profile_id)
@@ -1239,9 +1216,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def endpoint_status(self):
         return self.status()
 
-    def status(
-        self, capacity: Literal["imager", "guider"] = "imager"
-    ) -> PHD2ImagerStatus | PHD2GuiderStatus:
+    def status(self, capacity: Literal["imager", "guider"] = "imager") -> PHD2ImagerStatus | PHD2GuiderStatus:
 
         if capacity == "imager":
             ret = PHD2ImagerStatus(
@@ -1254,12 +1229,13 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             )
         elif capacity == "guider":
             st = self.sky_quality.state
-            sky_quality: SkyQualityStatus | None = None if self.sky_quality.latest_update is None \
+            sky_quality: SkyQualityStatus | None = (
+                None
+                if self.sky_quality.latest_update is None
                 else SkyQualityStatus(
-                    score=st.score_0_to_100,
-                    state=st.quality_state,
-                    latest_update=self.sky_quality.latest_update
+                    score=st.score_0_to_100, state=st.quality_state, latest_update=self.sky_quality.latest_update
                 )
+            )
 
             ret = PHD2GuiderStatus(
                 identifier=self.identifier,
@@ -1328,9 +1304,31 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             except PHD2ConnectorError as ex:
                 return CanonicalResponse(errors=[f"cannot connect {ex=}"])
 
-        assert self.parent and self.parent.unit, "phd2.start_guiding(): self.parent or self.unit is None. " \
-            + "cannot make_guiding_settings"
+        assert self.parent and self.parent.unit, (
+            "phd2.start_guiding(): self.parent or self.unit is None. " + "cannot make_guiding_settings"
+        )
         guiding_settings: ImagerSettings = self.parent.unit.guider.make_guiding_settings(save=False)
+
+        # the limit frame is governed by the persisted phd2.limit_frame configuration,
+        # not by the fiber/margin-derived guiding ROI (which remains the 'derived' mode)
+        limit_frame = self.conf.limit_frame
+        match limit_frame.mode:
+            case LimitFrameMode.FULL_FRAME:
+                guiding_settings.use_set_limit_frame = False
+            case LimitFrameMode.DERIVED:
+                guiding_settings.use_set_limit_frame = True
+            case LimitFrameMode.FIXED:
+                guiding_settings.use_set_limit_frame = True
+                # verbatim: PHD2 applies the camera alignment constraints itself
+                # (upstream PRs #1374-#1376); ImagerRoi conditioning would shift a
+                # deliberately placed frame (see MAST_common#17)
+                guiding_settings.roi = ImagerRoi.verbatim(
+                    x=limit_frame.x,
+                    y=limit_frame.y,
+                    width=limit_frame.width,
+                    height=limit_frame.height,
+                )
+        logger.info(f"{function_name()}: limit frame: mode={limit_frame.mode}, roi={guiding_settings.roi}")
 
         requested_binning: Literal[1, 2] = guiding_settings.binning if guiding_settings and guiding_settings.binning else 1
         if requested_binning != self.profile_binning:
@@ -1441,9 +1439,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         logger.info(f"{function_name()}: starting {settings.seconds}s exposure")
         self.image_was_saved = False
         if self.parent is not None:
-            self.parent.start_activity(
-                ImagerActivities.Exposing, details=[f"{settings.seconds} seconds"]
-            )
+            self.parent.start_activity(ImagerActivities.Exposing, details=[f"{settings.seconds} seconds"])
             self.parent.start_activity(
                 ImagerActivities.Saving,
                 # details=f"{Path(settings.image_path).as_posix() if settings.image_path else None}",
@@ -1462,18 +1458,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     "binning": settings.binning,
                     "save": True,
                     "path": settings.image_path,
-                    "limit_frame": [roi.x, roi.y, roi.width, roi.height]
+                    "limit_frame": [roi.x, roi.y, roi.width, roi.height],
                 },
             )
 
         except PHD2ConnectorError as ex:
             self.log_and_append_error(f"{ex=}")
 
-        return (
-            CanonicalResponse(errors=self.errors)
-            if self.errors
-            else CanonicalResponse_Ok
-        )
+        return CanonicalResponse(errors=self.errors) if self.errors else CanonicalResponse_Ok
 
     def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:
         """
@@ -1508,9 +1500,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         logger.info(f"{function_name()}: starting {settings.seconds} seconds exposure")
         self.image_was_saved = False
         if self.parent is not None:
-            self.parent.start_activity(
-                ImagerActivities.Exposing, details=[f"{settings.seconds} seconds"]
-            )
+            self.parent.start_activity(ImagerActivities.Exposing, details=[f"{settings.seconds} seconds"])
             self.parent.start_activity(
                 ImagerActivities.Saving,
                 # details=f"{Path(settings.image_path).as_posix()}",
@@ -1527,11 +1517,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
             try:
                 assert settings.roi
-                # self.set_limit_frame(roi=settings.roi.binned(settings.binning))
                 if settings.use_set_limit_frame:
                     self.set_limit_frame(roi=settings.roi)
-                else: # oren
-                    self.set_limit_frame(roi=None) # oren
+                else:
+                    self.set_limit_frame(roi=None)
 
                 self.call(
                     "capture_single_frame",
@@ -1548,11 +1537,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
             except PHD2ConnectorError as ex:
                 self.log_and_append_error(f"{ex=}")
-        return (
-            CanonicalResponse(errors=self.errors)
-            if self.errors
-            else CanonicalResponse_Ok
-        )
+        return CanonicalResponse(errors=self.errors) if self.errors else CanonicalResponse_Ok
 
     def stop_exposure(self) -> CanonicalResponse:
         logger.info(f"{function_name()}: stopping exposure")
@@ -1655,9 +1640,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             base_folder="c:/temp/phd2_images",
             binning=1,
             gain=int(asi.gain_absolute_to_percent(imager_conf.gain)),
-            roi=ImagerRoi(
-                x=0, y=0, width=self.camera_x_size, height=self.camera_y_size
-            ),
+            roi=ImagerRoi(x=0, y=0, width=self.camera_x_size, height=self.camera_y_size),
             format=imager_conf.format,
         )
 
@@ -1672,13 +1655,15 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
 if __name__ == "__main__":
 
-    def test_exposures(nexposures: int = 1,
-                       gain: int = 180,
-                       binning: int = 1,
-                       x: int = 0,
-                       y: int = 0,
-                       width: int | None = None,
-                       height: int | None = None):
+    def test_exposures(
+        nexposures: int = 1,
+        gain: int = 180,
+        binning: int = 1,
+        x: int = 0,
+        y: int = 0,
+        width: int | None = None,
+        height: int | None = None,
+    ):
         from imagers import Imager
 
         imager = Imager(imager_type="phd2")
@@ -1691,13 +1676,13 @@ if __name__ == "__main__":
                 "binning": binning,
                 "roi": ImagerRoi.model_validate(
                     {
-                    "x": x,
-                    "y": y,
-                    "width": width or imager.camera_x_size,
-                    "height": height or imager.camera_y_size,
+                        "x": x,
+                        "y": y,
+                        "width": width or imager.camera_x_size,
+                        "height": height or imager.camera_y_size,
                     },
-                )
-                },
+                ),
+            },
             context={"imager": imager},
         )
         i = 0
@@ -1729,28 +1714,26 @@ if __name__ == "__main__":
             time.sleep(1)
 
     def test_new_guiding():
-        PHD2Connector().guide(imager_settings=ImagerSettings(
-            seconds=3.4,
-            save=False,
-            binning=2,
-            gain=200,
-            roi = ImagerRoi(x=200, y=150, width=2000, height=1000)
-        ), new_interface=True)
+        PHD2Connector().guide(
+            imager_settings=ImagerSettings(
+                seconds=3.4, save=False, binning=2, gain=200, roi=ImagerRoi(x=200, y=150, width=2000, height=1000)
+            ),
+            new_interface=True,
+        )
 
     def test_new_single_frame():
-        PHD2Connector().new_start_exposure(settings=ImagerSettings(
-            seconds=3.4,
-            save=False,
-            binning=2,
-            gain=200,
-            image_path="c:/dummy.fits",
-            roi = ImagerRoi(x=200, y=150, width=2000, height=1000)))
+        PHD2Connector().new_start_exposure(
+            settings=ImagerSettings(
+                seconds=3.4,
+                save=False,
+                binning=2,
+                gain=200,
+                image_path="c:/dummy.fits",
+                roi=ImagerRoi(x=200, y=150, width=2000, height=1000),
+            )
+        )
 
-    test_exposures(
-        nexposures=1,
-        binning=2,
-        x=1000, y=2000, width=4000, height=3000
-    )
+    test_exposures(nexposures=1, binning=2, x=1000, y=2000, width=4000, height=3000)
     # test_guiding()
 
     # test_new_guiding()

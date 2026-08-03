@@ -1,8 +1,6 @@
 import datetime
 import json
-import logging
 import os.path
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,17 +15,16 @@ from common.config.rois import RoisConfig, SkyRoiConfig
 from common.config.unit import AcquisitionConfig, ToleranceConfig
 from common.const import Const
 from common.corrections import Correction, Corrections
-from common.filer import Filer
+from common.filer import Filer, MoveGuardian
 from common.interfaces.imager import ImagerSettings
 from common.interfaces.solving import SolverInterface, SolvingResult, SolvingTolerance
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.safety import safety_get_sensor
 from common.solving import SolverId
 from common.utils import Coord, boxed_log, function_name, isoformat_zulu
 from mount import SettleMode
 
-logger = logging.Logger("mast.unit." + __name__)
-init_log(logger)
+logger = get_logger(__name__)
 filer = Filer(logger)
 
 
@@ -87,15 +84,12 @@ class Solver(SolverInterface):
         logger.error(message)
         self.unit.errors.append(message)
 
-    def solve(
-        self, imager_settings: ImagerSettings, target: Coord, phase: Const.SolvingPhase
-    ) -> SolvingResult | None:
+    def solve(self, imager_settings: ImagerSettings, target: Coord, phase: Const.SolvingPhase) -> SolvingResult | None:
         op = function_name()
 
         assert self._backend is not None, "solve: self._backend is None"
 
         if self.unit.is_active(UnitActivities.Solving):
-
             imager_settings.make_file_name()
             if self._backend.name == "mastrometry.net":
                 assert imager_settings.image_path is not None, f"{op}: imager_settings.image_path is None"
@@ -107,7 +101,8 @@ class Solver(SolverInterface):
                 if imager_settings.roi is not None:
                     imager_settings.image_path = imager_settings.image_path.replace(
                         f"binned_roi={imager_settings.roi.binned(imager_settings.binning)}",
-                        f"binned_roi={ASI_294MM_WIDTH}x{ASI_294MM_HEIGHT}",)
+                        f"binned_roi={ASI_294MM_WIDTH}x{ASI_294MM_HEIGHT}",
+                    )
 
             #
             # Start exposure
@@ -118,9 +113,7 @@ class Solver(SolverInterface):
             # Try to fetch wind-speed from safety system
             #
             wind_speed = safe = reasons_for_not_safe = None
-            result = safety_get_sensor(
-                "wind-speed", timeout=0.5, max_age=datetime.timedelta(minutes=1)
-            )
+            result = safety_get_sensor("wind-speed", timeout=0.5, max_age=datetime.timedelta(minutes=1))
             if result is not None:
                 wind_speed, safe, reasons_for_not_safe = result
 
@@ -131,9 +124,7 @@ class Solver(SolverInterface):
 
             response = self.unit.imager.start_exposure(imager_settings)
             if response and response.failed:
-                self.log_and_store_error(
-                    f"{op}: could not start acquisition exposure: {response=}"
-                )
+                self.log_and_store_error(f"{op}: could not start acquisition exposure: {response=}")
 
                 return SolvingResult(
                     succeeded=False,
@@ -141,9 +132,7 @@ class Solver(SolverInterface):
                 )
 
             self.unit.imager.wait_for_image_saved()
-            return self._backend.solve(
-                unit=self.unit, settings=imager_settings, target=target, phase=phase
-            )
+            return self._backend.solve(unit=self.unit, settings=imager_settings, target=target, phase=phase)
 
     def solve_and_correct(  # noqa: C901
         self,
@@ -219,15 +208,13 @@ class Solver(SolverInterface):
             conf = AcquisitionConfig(
                 exposure=imager_settings.seconds,
                 binning=imager_settings.binning,
-                rois=RoisConfig({ self.unit.fcu_version: sky_roi_config}),
+                rois=RoisConfig({self.unit.fcu_version: sky_roi_config}),
                 gain=imager_settings.gain or 100,
                 tries=self.unit.unit_conf.acquisition.tries,
                 tolerance=tolerance,
             )
             if self.unit.acquirer is None:
-                raise Exception(
-                    f"{op}: unit.acquirer is None, cannot create latest_acquisition"
-                )
+                raise Exception(f"{op}: unit.acquirer is None, cannot create latest_acquisition")
 
             if target is None:
                 mount_status = self.unit.mount.status
@@ -276,8 +263,9 @@ class Solver(SolverInterface):
 
             # run the plate solver
             try:
-                result = self.solve(imager_settings=imager_settings, target=target,
-                                    phase="sky" if phase == "sky" else "spec")
+                result = self.solve(
+                    imager_settings=imager_settings, target=target, phase="sky" if phase == "sky" else "spec"
+                )
             except TimeoutError:
                 self.log_and_store_error("plate solving timed out, continuing ...")
                 continue
@@ -288,19 +276,15 @@ class Solver(SolverInterface):
                 continue
 
             if imager_settings.image_path is None:
-                raise Exception(
-                    f"{op}: imager_settings.image_path is None, cannot save the image"
-                )
+                raise Exception(f"{op}: imager_settings.image_path is None, cannot save the image")
 
             # save the solver result for debugging
-            result_file_name = imager_settings.image_path.replace(
-                ".fits", "-solver_result.json"
-            )
+            result_file_name = imager_settings.image_path.replace(".fits", "-solver_result.json")
             os.makedirs(os.path.dirname(result_file_name), exist_ok=True)
-            with open(result_file_name, "w") as fp:
-                fp.write(json.dumps(result.to_dict(), indent=2))
-            time.sleep(2)
-            filer.move_ram_to_shared(result_file_name)
+            with MoveGuardian().protect(result_file_name):
+                with open(result_file_name, "w") as fp:
+                    fp.write(json.dumps(result.to_dict(), indent=2))
+                filer.move_ram_to_shared(result_file_name)
 
             #
             # From "PlateSolve3 server documentation"
@@ -365,9 +349,7 @@ class Solver(SolverInterface):
                     ra=Angle(delta_ra_arcsec * u.arcsecond),  # type: ignore
                     dec=Angle(delta_dec_arcsec * u.arcsecond),  # type: ignore
                 )
-                coord_tolerance = Coord(
-                    ra=solving_tolerance.ra, dec=solving_tolerance.dec
-                )
+                coord_tolerance = Coord(ra=solving_tolerance.ra, dec=solving_tolerance.dec)
                 logger.info(
                     f"{op}: target: {target}, solved: {coord_solved}, delta: {coord_delta}, "
                     + f"tolerance: {coord_tolerance}"
@@ -399,14 +381,12 @@ class Solver(SolverInterface):
                     )
 
                     if not imager_settings.folder:
-                        raise Exception(
-                            f"{function_name()}: empty imager_settings.folder"
-                        )
+                        raise Exception(f"{function_name()}: empty imager_settings.folder")
                     file_name = str(Path(imager_settings.folder) / "corrections.json")
-                    with open(file_name, "w") as f:
-                        f.write(latest_corrections.model_dump_json(indent=2))
-                    time.sleep(2)
-                    filer.move_ram_to_shared(file_name)
+                    with MoveGuardian().protect(file_name):
+                        with open(file_name, "w") as f:
+                            f.write(latest_corrections.model_dump_json(indent=2))
+                        filer.move_ram_to_shared(file_name)
 
                     self.unit.end_activity(UnitActivities.Solving)
                     return True
@@ -456,12 +436,9 @@ class Solver(SolverInterface):
                                 # Discrete step: wait for the servo following-
                                 # distance to spike then settle (is_moving can't
                                 # see a small offset).
-                                self.unit.mount.wait_until_settled(
-                                    SettleMode.OFFSET_STEP
-                                )
+                                self.unit.mount.wait_until_settled(SettleMode.OFFSET_STEP)
 
                             case ApproachMode.GRADUAL_BY_RATE:
-
                                 if abs_delta_ra_arcsec > 10:
                                     # ra_rate_arcsec_per_sec = abs_delta_ra_arcsec * 0.1
                                     ra_rate_arcsec_per_sec = abs_delta_ra_arcsec * 0.2
@@ -500,12 +477,9 @@ class Solver(SolverInterface):
                                 # channels' gradual_offset_progress to reach 1.0
                                 # (guards the start-of-ramp race; is_moving can't
                                 # see a ramp the servo follows).
-                                self.unit.mount.wait_until_settled(
-                                    SettleMode.OFFSET_GRADUAL, channels=("ra", "dec")
-                                )
+                                self.unit.mount.wait_until_settled(SettleMode.OFFSET_GRADUAL, channels=("ra", "dec"))
 
                             case ApproachMode.GRADUAL_BY_TIME:
-
                                 if abs_delta_ra_arcsec > 100:
                                     ra_offsetting_seconds = 5
                                 elif abs_delta_ra_arcsec > 10:
@@ -540,12 +514,9 @@ class Solver(SolverInterface):
                                 # channels' gradual_offset_progress to reach 1.0
                                 # (guards the start-of-ramp race; is_moving can't
                                 # see a ramp the servo follows).
-                                self.unit.mount.wait_until_settled(
-                                    SettleMode.OFFSET_GRADUAL, channels=("ra", "dec")
-                                )
+                                self.unit.mount.wait_until_settled(SettleMode.OFFSET_GRADUAL, channels=("ra", "dec"))
 
                             case ApproachMode.STEP_WITH_TRACKING_RATE:
-
                                 if abs_delta_ra_arcsec > 100:
                                     ra_rate_arcsec_per_sec = abs_delta_ra_arcsec * 0.2
                                 elif abs_delta_ra_arcsec > 10:
@@ -578,15 +549,10 @@ class Solver(SolverInterface):
                                 # discrete step to land; the ongoing set_rate is
                                 # servo-followed (small dist) and persists by
                                 # design, so it reads as settled.
-                                self.unit.mount.wait_until_settled(
-                                    SettleMode.OFFSET_STEP
-                                )
+                                self.unit.mount.wait_until_settled(SettleMode.OFFSET_STEP)
 
                             case _:
-                                logger.error(
-                                    f"{op}: unknown approach_mode {approach_mode!r}; "
-                                    "no offset applied"
-                                )
+                                logger.error(f"{op}: unknown approach_mode {approach_mode!r}; no offset applied")
 
                         self.unit.end_activity(UnitActivities.Correcting)
                         # logger.info(f"{op}: corrected by {delta_ra_arcsec=:.6f}, {delta_dec_arcsec=:.6f}")
@@ -596,9 +562,7 @@ class Solver(SolverInterface):
         #
 
         if phase != "guiding":
-            logger.info(
-                f"{function_name()}: could not reach tolerances within {max_tries=}"
-            )
+            logger.info(f"{function_name()}: could not reach tolerances within {max_tries=}")
         self.unit.end_activity(UnitActivities.Solving)
         return False
 

@@ -1,5 +1,4 @@
 import datetime
-import logging
 import os
 import re
 import subprocess
@@ -12,19 +11,15 @@ from astropy.coordinates import Angle
 
 from common.config.rois import SkyRoiConfig, SpecRoiConfig
 from common.const import Const
-from common.filer import Filer
-from common.interfaces.solving import (SolverInterface, SolvingConfidenceLevel,
-                                       SolvingResult, SolvingSolution)
-from common.mast_logging import init_log
-from common.utils import (Coord, boxed_log, function_name,
-                          generate_random_string)
+from common.filer import Filer, MoveGuardian
+from common.interfaces.solving import SolverInterface, SolvingConfidenceLevel, SolvingResult, SolvingSolution
+from common.mast_logging import get_logger
+from common.utils import Coord, boxed_log, function_name, generate_random_string
 from imagers import ImagerSettings
 
 # from unit import Unit  # type: ignore[import-untyped]
 
-logger = logging.Logger("astrometry_dot_net")
-init_log(logger)
-
+logger = get_logger(__name__)
 if TYPE_CHECKING:
     from unit import Unit  # type: ignore[import-untyped]
 
@@ -60,7 +55,6 @@ def win_to_wsl(path: str) -> str:
 
 
 class AstrometryDotNet(SolverInterface):
-
     def solve(  # noqa: C901
         self,
         unit,
@@ -81,12 +75,10 @@ class AstrometryDotNet(SolverInterface):
 
         if index_file is None:
             assert self.unit is not None, f"{function_name()}: self.unit is None"
-            assert (
-                self.unit.acquirer is not None
-            ), f"{function_name()}: self.unit.acquirer is None"
-            assert (
-                self.unit.acquirer.latest_acquisition is not None
-            ), f"{function_name()}: self.unit.acquirer.latest_acquisition is None"
+            assert self.unit.acquirer is not None, f"{function_name()}: self.unit.acquirer is None"
+            assert self.unit.acquirer.latest_acquisition is not None, (
+                f"{function_name()}: self.unit.acquirer.latest_acquisition is None"
+            )
 
             if (
                 all(
@@ -103,16 +95,10 @@ class AstrometryDotNet(SolverInterface):
                 and isinstance(self.unit.acquirer.latest_acquisition.solver_data, dict)
                 and "index_file" in self.unit.acquirer.latest_acquisition.solver_data
             ):
-                index_file = self.unit.acquirer.latest_acquisition.solver_data[
-                    "index_file"
-                ]
+                index_file = self.unit.acquirer.latest_acquisition.solver_data["index_file"]
 
-        if index_file is not None and not (
-            index_file.startswith("index-") and index_file.endswith(".fits")
-        ):
-            logger.error(
-                f"bad '{index_file=}', should start with 'index-' and end with '.fits'"
-            )
+        if index_file is not None and not (index_file.startswith("index-") and index_file.endswith(".fits")):
+            logger.error(f"bad '{index_file=}', should start with 'index-' and end with '.fits'")
             index_file = None
 
         os.environ["PATH"] = (
@@ -127,12 +113,8 @@ class AstrometryDotNet(SolverInterface):
 
         if image_path is None:  # noqa: SIM102
             if settings is not None:
-                assert (
-                    settings.roi is not None
-                ), f"{function_name()}: settings.roi is None"
-                assert (
-                    settings.image_path is not None
-                ), f"{function_name()}: settings.image_path is None"
+                assert settings.roi is not None, f"{function_name()}: settings.roi is None"
+                assert settings.image_path is not None, f"{function_name()}: settings.image_path is None"
 
         binning = settings.binning if settings else 1
         cmd = ""
@@ -147,9 +129,7 @@ class AstrometryDotNet(SolverInterface):
         args += ["--no-plots", "--overwrite", "--solved", "none"]
         args += ["--match", "none", "--rdls", "none", "--corr", "none"]
 
-        input_fits_path = (
-            settings.image_path if settings else image_path if image_path else None
-        )
+        input_fits_path = settings.image_path if settings else image_path if image_path else None
         assert input_fits_path is not None, f"{function_name()}: fits_path is None"
 
         if settings is not None and settings.roi is not None:
@@ -180,9 +160,7 @@ class AstrometryDotNet(SolverInterface):
                     # get the center pixel from the existing FITS header
                     args += ["--crpix-x", header["CRPIX1"]]
                     args += ["--crpix-y", header["CRPIX2"]]
-                    logger.info(
-                        f"using center pixel from '{input_fits_path}' FITS header"
-                    )
+                    logger.info(f"using center pixel from '{input_fits_path}' FITS header")
                 else:
                     logger.warning("no center pixel")
 
@@ -231,7 +209,10 @@ class AstrometryDotNet(SolverInterface):
         command = " ".join([cmd] + args)
         # logger.info(f"AstrometryDotNet.solve: {command=}")
 
-        completed_process = subprocess.run(command, capture_output=True, shell=True)
+        # The astrometry.net subprocess writes new_fits_path (the solved FITS); protect it
+        # so a ram->shared move can't grab a partially-written solved frame.
+        with MoveGuardian().protect(new_fits_path):
+            completed_process = subprocess.run(command, capture_output=True, shell=True)
         stdout_lines = completed_process.stdout.decode().strip().splitlines()
         stderr_lines = completed_process.stderr.decode().strip().splitlines()
         elapsed = datetime.datetime.now() - start
@@ -241,7 +222,7 @@ class AstrometryDotNet(SolverInterface):
         )
 
         result_file = cygwin_to_win(new_fits_path).replace(".fits", "-result.txt")
-        with open(result_file, "w") as file:
+        with MoveGuardian().protect(result_file), open(result_file, "w") as file:
             file.write("--- command ---\n")
             file.write(" ".join([cmd] + args) + "\n")
             file.write("\n--- stdout ---\n")
@@ -255,7 +236,7 @@ class AstrometryDotNet(SolverInterface):
 
         if completed_process.returncode == 0:
             ret = parse_solver_output(stdout_lines)
-            if ret is not None and  ret.succeeded and ret.solution is not None:
+            if ret is not None and ret.succeeded and ret.solution is not None:
                 boxed_log(
                     logger=logger,
                     lines=[
@@ -265,13 +246,8 @@ class AstrometryDotNet(SolverInterface):
                     ],
                     center=True,
                 )
-                if (
-                    ret.solution.index_file
-                    and self.unit.acquirer.latest_acquisition is not None
-                ):
-                    self.unit.acquirer.latest_acquisition.solver_data = {
-                        "index_file": ret.solution.index_file
-                    }
+                if ret.solution.index_file and self.unit.acquirer.latest_acquisition is not None:
+                    self.unit.acquirer.latest_acquisition.solver_data = {"index_file": ret.solution.index_file}
 
                 # override solved RA/Dec from FITS header
                 header = astropy.io.fits.getheader(new_fits_path, 0)  # type: ignore
@@ -303,6 +279,7 @@ class AstrometryDotNet(SolverInterface):
     @property
     def name(self) -> str:
         return "astrometry.net"
+
 
 def parse_solver_output(lines: list[str]) -> SolvingResult | None:
     op = function_name()
@@ -385,9 +362,7 @@ def parse_solver_output(lines: list[str]) -> SolvingResult | None:
                     logger.error("bad match for ret.solution.matched_stars")
 
             elif line.startswith("  RA,Dec = "):  # (5)
-                match = re.match(
-                    r"^.*pixel scale (" + pattern_float + r") arcsec", line
-                )
+                match = re.match(r"^.*pixel scale (" + pattern_float + r") arcsec", line)
                 if match:
                     ret.solution.pixel_scale = float(match.group(1))
                     # logger.info(f"{ret.solution.pixel_scale=}")

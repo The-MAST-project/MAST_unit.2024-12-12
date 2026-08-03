@@ -16,6 +16,7 @@ ARCSEC_PER_ORIG_PX = 0.2616  # for translating pixel errors to sky, documentatio
 
 # --- the validated convention -------------------------------------------------
 
+
 def test_crpix_center_matches_naxis_plus_1_over_2():
     # solve-field --crpix-center yields (NAXIS+1)/2 on each grid. For the full
     # 8288-wide frame the original center is 4144.5; binned 2x it must be 2072.5
@@ -48,6 +49,7 @@ def test_naive_division_is_rejected():
 
 
 # --- the ROI refpix fix (the bug that was live in mastrometry.py) -------------
+
 
 def test_roi_center_to_crpix_known_value():
     # ROI center at original 0-based index 2000, crop origin at 1000, factor 2.

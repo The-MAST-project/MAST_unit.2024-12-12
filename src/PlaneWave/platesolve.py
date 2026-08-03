@@ -15,7 +15,7 @@ import tempfile
 PS3CLI_EXE = os.path.expanduser("~/Downloads/PlaneWave/ps3cli/ps3cli.exe")
 
 # For testing purposes...
-#PS3CLI_EXE = r"C:\Users\kmi\Desktop\Planewave work\Code\PWGit\PWCode\ps3cli\bin\Debug\ps3cli.exe"
+# PS3CLI_EXE = r"C:\Users\kmi\Desktop\Planewave work\Code\PWGit\PWCode\ps3cli\bin\Debug\ps3cli.exe"
 
 
 # Set this to the path where the PlateSolve catalogs are located.
@@ -37,7 +37,9 @@ def get_default_catalog_location():
 
 
 def platesolve(image_file: str, arcsec_per_pixel: float):
-    stdout_destination = PIPE # None  # Replace with PIPE if we want to capture the output rather than displaying on the console
+    stdout_destination = (
+        PIPE  # None  # Replace with PIPE if we want to capture the output rather than displaying on the console
+    )
 
     output_file_path = os.path.join(tempfile.gettempdir(), "ps3cli_results.txt")
 
@@ -46,33 +48,21 @@ def platesolve(image_file: str, arcsec_per_pixel: float):
     else:
         catalog_path = PS3_CATALOG
 
-    args = [
-        PS3CLI_EXE,
-        image_file,
-        str(arcsec_per_pixel),
-        output_file_path,
-        catalog_path
-    ]
+    args = [PS3CLI_EXE, image_file, str(arcsec_per_pixel), output_file_path, catalog_path]
 
     if is_linux():
         # Linux systems need to run ps3cli via the mono runtime,
         # so add that to the beginning of the command/argument list
         args.insert(0, "mono")
-    
-    process = Popen(
-            args,
-            stdout=stdout_destination,
-            stderr=PIPE
-            )
+
+    process = Popen(args, stdout=stdout_destination, stderr=PIPE)
 
     (stdout, stderr) = process.communicate()  # Obtain stdout and stderr output from the wcs tool
     exit_code = process.wait()  # Wait for process to complete and obtain the exit code
 
     if exit_code != 0:
-        raise Exception("Error finding solution.\n" +
-                        "Exit code: " + str(exit_code) + "\n" + 
-                        "Error output: " + stderr)
-    
+        raise Exception("Error finding solution.\n" + "Exit code: " + str(exit_code) + "\n" + "Error output: " + stderr)
+
     return parse_platesolve_output(output_file_path)
 
 
@@ -89,9 +79,9 @@ def parse_platesolve_output(output_file):
         fields = line.split("=")
         if len(fields) != 2:
             continue
-        
+
         keyword, value = fields
 
         results[keyword] = float(value)
-    
+
     return results

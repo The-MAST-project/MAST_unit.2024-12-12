@@ -101,15 +101,10 @@ class SeeingQualityWhilePHD2Guiding(BaseModel):
 
         # Optionally compute absolute HFD in arcsec for this frame
         if config.plate_scale_arcsec_per_pixel is not None:
-            state.last_hfd_arcsec = (
-                frame.hfd_pixels * config.plate_scale_arcsec_per_pixel
-            )
+            state.last_hfd_arcsec = frame.hfd_pixels * config.plate_scale_arcsec_per_pixel
             # Rolling median of absolute HFD (arcsec)
             state.median_hfd_arcsec = statistics.median(
-                [
-                    h * config.plate_scale_arcsec_per_pixel
-                    for h in state.hfd_history_pixels
-                ]
+                [h * config.plate_scale_arcsec_per_pixel for h in state.hfd_history_pixels]
             )
 
         # Warm-up
@@ -125,31 +120,23 @@ class SeeingQualityWhilePHD2Guiding(BaseModel):
 
         median_hfd_pixels = statistics.median(state.hfd_history_pixels)
         mad_hfd_pixels = median_absolute_deviation(state.hfd_history_pixels) or 1e-6
-        hfd_zscore = (
-            frame.hfd_pixels - median_hfd_pixels
-        ) / mad_hfd_pixels  # higher is worse
+        hfd_zscore = (frame.hfd_pixels - median_hfd_pixels) / mad_hfd_pixels  # higher is worse
 
-        combined_zscore = (
-            config.weight_snr * snr_zscore - config.weight_hfd * hfd_zscore
-        )
+        combined_zscore = config.weight_snr * snr_zscore - config.weight_hfd * hfd_zscore
 
         # EWMA smoothing
         if state.ewma_zscore is None:
             state.ewma_zscore = combined_zscore
         else:
             alpha = config.ewma_alpha
-            state.ewma_zscore = (
-                alpha * combined_zscore + (1 - alpha) * state.ewma_zscore
-            )
+            state.ewma_zscore = alpha * combined_zscore + (1 - alpha) * state.ewma_zscore
 
         # Logistic mapping to 0..100
         steepness = 0.9
         state.score_0_to_100 = 100.0 / (1.0 + math.exp(-steepness * state.ewma_zscore))
 
         # Hysteretic state mapping
-        state.quality_state = self._compute_next_state(
-            previous_state=state.quality_state, score=state.score_0_to_100
-        )
+        state.quality_state = self._compute_next_state(previous_state=state.quality_state, score=state.score_0_to_100)
 
         self.latest_update = isoformat_zulu(datetime.datetime.now(datetime.UTC))
 
@@ -186,11 +173,7 @@ class SeeingQualityWhilePHD2Guiding(BaseModel):
             if score >= config.threshold_excellent + margin:
                 return QualityState.Excellent
             elif score < config.threshold_good - margin:
-                return (
-                    QualityState.Fair
-                    if score >= config.threshold_fair
-                    else QualityState.Poor
-                )
+                return QualityState.Fair if score >= config.threshold_fair else QualityState.Poor
             else:
                 return QualityState.Good
 

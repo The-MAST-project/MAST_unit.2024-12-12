@@ -1,4 +1,3 @@
-import logging
 import math
 import time
 from enum import StrEnum
@@ -15,7 +14,7 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.statuses import MountStatus, SpiralSettings
 from common.utils import RepeatTimer, caller_name, function_name, time_stamp
 from PlaneWave import pwi4_client
@@ -23,10 +22,7 @@ from PlaneWave import pwi4_client
 if TYPE_CHECKING:
     from unit import Unit
 
-logger = logging.getLogger("mast.unit." + __name__)
-init_log(logger)
-
-
+logger = get_logger(__name__)
 # class SpiralSettings(BaseModel):
 #     x: float
 #     y: float
@@ -51,8 +47,8 @@ init_log(logger)
 
 
 class SettleMode(StrEnum):
-    SLEW = "slew"                      # goto / find_home / park  (large move)
-    OFFSET_STEP = "offset_step"        # discrete ra/dec_add_arcsec, spiral steps
+    SLEW = "slew"  # goto / find_home / park  (large move)
+    OFFSET_STEP = "offset_step"  # discrete ra/dec_add_arcsec, spiral steps
     OFFSET_GRADUAL = "offset_gradual"  # ra/dec_add_gradual_offset_*
 
 
@@ -188,9 +184,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                 response = ascom_run(self, "Connected = True")
                 if response.failed:
                     self.errors.append("could not ASCOM connect")
-                    logger.error(
-                        f"failed to ASCOM connect (failure='{response.failure}')"
-                    )
+                    logger.error(f"failed to ASCOM connect (failure='{response.failure}')")
                 if not st.mount.is_connected:  # type: ignore
                     self.pw.mount_connect()
                 if not st.mount.axis0.is_enabled:  # type: ignore
@@ -339,9 +333,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         elif not was_moving and self.is_moving:
             self.start_activity(
                 MountActivities.Moving,
-                details=(
-                    [f"target={self.target}" if self.target else "unsolicited movement"]
-                ),
+                details=([f"target={self.target}" if self.target else "unsolicited movement"]),
             )
 
         if self.is_active(MountActivities.FindingHome) and not self.is_moving:
@@ -367,7 +359,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         if not self.connected:
             return False
         st = self.pw.status()
-        return st.mount.is_tracking # type: ignore
+        return st.mount.is_tracking  # type: ignore
 
     def wait_until_settled(
         self,
@@ -405,7 +397,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
 
         logger.info(
             f"{op}: start mode={mode} channels={channels} "
-            f"tol={dist_tolerance_arcsec:.3f}\" stable_samples={stable_samples} "
+            f'tol={dist_tolerance_arcsec:.3f}" stable_samples={stable_samples} '
             f"grace={start_grace_seconds:.1f}s poll={poll_seconds:.1f}s "
             f"timeout={timeout_seconds:.0f}s"
         )
@@ -414,18 +406,31 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
 
         if mode is SettleMode.SLEW:
             return self._wait_slew(
-                dist_tolerance_arcsec, stable_samples,
-                start_grace_seconds, poll_seconds, deadline, op,
+                dist_tolerance_arcsec,
+                stable_samples,
+                start_grace_seconds,
+                poll_seconds,
+                deadline,
+                op,
             )
         if mode is SettleMode.OFFSET_STEP:
             return self._wait_offset_step(
-                dist_tolerance_arcsec, stable_samples,
-                start_grace_seconds, poll_seconds, deadline, op,
+                dist_tolerance_arcsec,
+                stable_samples,
+                start_grace_seconds,
+                poll_seconds,
+                deadline,
+                op,
             )
         if mode is SettleMode.OFFSET_GRADUAL:
             return self._wait_offset_gradual(
-                channels, dist_tolerance_arcsec, stable_samples,
-                start_grace_seconds, poll_seconds, deadline, op,
+                channels,
+                dist_tolerance_arcsec,
+                stable_samples,
+                start_grace_seconds,
+                poll_seconds,
+                deadline,
+                op,
             )
         raise ValueError(f"{op}: unknown mode {mode!r}")
 
@@ -462,13 +467,10 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             logger.info(f"{op}(SLEW): is_slewing cleared")
         else:
             logger.warning(
-                f"{op}(SLEW): slew not observed within "
-                f"{start_grace_seconds:.1f}s grace; proceeding to dist settle"
+                f"{op}(SLEW): slew not observed within {start_grace_seconds:.1f}s grace; proceeding to dist settle"
             )
         # Phase C: settle on following-distance.
-        return self._wait_dist_settle(
-            dist_tolerance_arcsec, stable_samples, poll_seconds, deadline, op
-        )
+        return self._wait_dist_settle(dist_tolerance_arcsec, stable_samples, poll_seconds, deadline, op)
 
     def _wait_offset_step(
         self,
@@ -486,10 +488,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         while time.monotonic() < grace_end:
             dist = _max_dist_to_target_arcsec(self.pw.status())
             if dist > dist_tolerance_arcsec:
-                logger.info(
-                    f"{op}(OFFSET_STEP): step registered "
-                    f"(dist_to_target={dist:.3f}\" > tol)"
-                )
+                logger.info(f'{op}(OFFSET_STEP): step registered (dist_to_target={dist:.3f}" > tol)')
                 spiked = True
                 break
             time.sleep(poll_seconds)
@@ -500,9 +499,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                 f"proceeding to settle"
             )
         # Phase B: settle.
-        return self._wait_dist_settle(
-            dist_tolerance_arcsec, stable_samples, poll_seconds, deadline, op
-        )
+        return self._wait_dist_settle(dist_tolerance_arcsec, stable_samples, poll_seconds, deadline, op)
 
     def _wait_offset_gradual(
         self,
@@ -516,44 +513,28 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     ) -> bool:
         chans = [c for c in channels if c in _OFFSET_CHANNELS]
         if not chans:
-            logger.warning(
-                f"{op}: no valid gradual channels in {channels!r}; not waiting"
-            )
+            logger.warning(f"{op}: no valid gradual channels in {channels!r}; not waiting")
             return True
 
         st0 = self.pw.status()
         if _offset_channel(st0, chans[0]) is None:
-            logger.warning(
-                f"{op}: PWI4 does not report mount.offsets; falling back to dist settle"
-            )
-            return self._wait_dist_settle(
-                dist_tolerance_arcsec, stable_samples, poll_seconds, deadline, op
-            )
+            logger.warning(f"{op}: PWI4 does not report mount.offsets; falling back to dist settle")
+            return self._wait_dist_settle(dist_tolerance_arcsec, stable_samples, poll_seconds, deadline, op)
 
-        baseline_total = {
-            c: (getattr(_offset_channel(st0, c), "total", 0.0) or 0.0) for c in chans
-        }
+        baseline_total = {c: (getattr(_offset_channel(st0, c), "total", 0.0) or 0.0) for c in chans}
 
         # Phase A: confirm each commanded channel's ramp has started.
-        self._wait_gradual_ramp_start(
-            chans, baseline_total, start_grace_seconds, poll_seconds, op
-        )
+        self._wait_gradual_ramp_start(chans, baseline_total, start_grace_seconds, poll_seconds, op)
 
         # Phase B: wait for every commanded channel's ramp to complete.
         while True:
             if self._deadline_passed(deadline, f"{op}(OFFSET_GRADUAL)"):
                 return False
             st = self.pw.status()
-            progresses = {
-                c: getattr(_offset_channel(st, c), "gradual_offset_progress", 1.0)
-                for c in chans
-            }
+            progresses = {c: getattr(_offset_channel(st, c), "gradual_offset_progress", 1.0) for c in chans}
             logger.debug(
                 f"{op}(OFFSET_GRADUAL): progress "
-                + ", ".join(
-                    f"{c}={(p if p is not None else 1.0):.2f}"
-                    for c, p in progresses.items()
-                )
+                + ", ".join(f"{c}={(p if p is not None else 1.0):.2f}" for c, p in progresses.items())
             )
             done = all(_gradual_ramp_complete(p) for p in progresses.values())
             if done:
@@ -562,9 +543,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"{op}(OFFSET_GRADUAL): all ramps complete")
 
         # Phase C: brief following-distance settle (catches residual servo lag).
-        return self._wait_dist_settle(
-            dist_tolerance_arcsec, stable_samples, poll_seconds, deadline, op
-        )
+        return self._wait_dist_settle(dist_tolerance_arcsec, stable_samples, poll_seconds, deadline, op)
 
     def _wait_gradual_ramp_start(
         self,
@@ -589,9 +568,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                 ch = _offset_channel(st, c)
                 prog = getattr(ch, "gradual_offset_progress", 1.0)
                 total = getattr(ch, "total", 0.0) or 0.0
-                if not _gradual_ramp_complete(prog) or abs(
-                    total - baseline_total[c]
-                ) > 1e-6:
+                if not _gradual_ramp_complete(prog) or abs(total - baseline_total[c]) > 1e-6:
                     started[c] = True
                     logger.info(f"{op}(OFFSET_GRADUAL): ramp started on '{c}'")
             time.sleep(poll_seconds)
@@ -621,15 +598,9 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                 in_tol += 1
             else:
                 in_tol = 0
-            logger.debug(
-                f"{op}: dist_to_target={dist:.3f} arcsec, "
-                f"in_tol={in_tol}/{stable_samples}"
-            )
+            logger.debug(f"{op}: dist_to_target={dist:.3f} arcsec, in_tol={in_tol}/{stable_samples}")
             time.sleep(poll_seconds)
-        logger.info(
-            f"{op}: dist_to_target settled (< {tol_arcsec:.3f} arcsec "
-            f"for {stable_samples} samples)"
-        )
+        logger.info(f"{op}: dist_to_target settled (< {tol_arcsec:.3f} arcsec for {stable_samples} samples)")
         return True
 
     def endpoint_status(self) -> MountStatus:
@@ -849,25 +820,15 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
 
         router = APIRouter()
         router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
-        router.add_api_route(
-            base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown
-        )
+        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown)
         router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
         router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
         router.add_api_route(base_path + "/connect", tags=[tag], endpoint=self.connect)
-        router.add_api_route(
-            base_path + "/disconnect", tags=[tag], endpoint=self.disconnect
-        )
-        router.add_api_route(
-            base_path + "/start_tracking", tags=[tag], endpoint=self.start_tracking
-        )
-        router.add_api_route(
-            base_path + "/stop_tracking", tags=[tag], endpoint=self.stop_tracking
-        )
+        router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
+        router.add_api_route(base_path + "/start_tracking", tags=[tag], endpoint=self.start_tracking)
+        router.add_api_route(base_path + "/stop_tracking", tags=[tag], endpoint=self.stop_tracking)
         router.add_api_route(base_path + "/park", tags=[tag], endpoint=self.park)
-        router.add_api_route(
-            base_path + "/find_home", tags=[tag], endpoint=self.find_home
-        )
+        router.add_api_route(base_path + "/find_home", tags=[tag], endpoint=self.find_home)
         router.add_api_route(base_path + "/goto", tags=[tag], endpoint=self.goto)
         router.add_api_route(base_path + "/dance", tags=[tag], endpoint=self.dance)
 
@@ -875,9 +836,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
 
 
 # Function to generate cone coordinates
-def cone_coordinates_generator(
-    steps=20, base_radius=30, rotation_axis_ra=0, rotation_axis_dec=60
-):
+def cone_coordinates_generator(steps=20, base_radius=30, rotation_axis_ra=0, rotation_axis_dec=60):
     cone_coordinates = []
     for i in range(steps):
         angle = i * 2 * math.pi / steps

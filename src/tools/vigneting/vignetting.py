@@ -5,9 +5,7 @@ from astropy.io import fits
 import argparse
 
 
-def main(
-    filepath, fiber_px=4041, plate_scale_arcsec_px=206265 * 2.3 / 1800000, shift=0
-):
+def main(filepath, fiber_px=4041, plate_scale_arcsec_px=206265 * 2.3 / 1800000, shift=0):
     # Open FITS file to get CCD width
     with fits.open(filepath) as hd:
         ccd_width_px = hd[0].header["NAXIS1"]
@@ -16,9 +14,7 @@ def main(
     def fiffa_shadow_at_col(w_arr):
         # Load data
         folder = os.path.dirname(__file__)
-        a = np.fromfile(
-            os.path.join(folder, "MAST_BFD17_ASI1600_GuideMode.dat"), sep=" "
-        )
+        a = np.fromfile(os.path.join(folder, "MAST_BFD17_ASI1600_GuideMode.dat"), sep=" ")
         y = np.fromfile(os.path.join(folder, "MAST_BFD17_ASI1600_YCord.dat"), sep=" ")
 
         # Process data
@@ -53,13 +49,9 @@ def main(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Apply FIFFA shadow correction to an image."
-    )
+    parser = argparse.ArgumentParser(description="Apply FIFFA shadow correction to an image.")
     parser.add_argument("filepath", type=str, help="Path to the FITS file.")
-    parser.add_argument(
-        "--fiber_px", type=int, default=4041, help="Fiber pixel value (default: 4041)."
-    )
+    parser.add_argument("--fiber_px", type=int, default=4041, help="Fiber pixel value (default: 4041).")
     parser.add_argument(
         "--plate_scale_arcsec_px",
         type=float,

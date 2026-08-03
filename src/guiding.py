@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 from common.activities import ImagerActivities, UnitActivities
@@ -17,17 +16,15 @@ from common.activities import Activities
 from common.config.rois import FcuVersion, SpecRoiConfig
 from common.interfaces.guiding import GuiderInterface, GuiderTypes
 from common.interfaces.imager import ImagerRoi, ImagerSettings
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.statuses import GuiderStatus
 from common.rois import SpecRoi
 
-logger = logging.Logger("mast.unit." + __name__)
-init_log(logger)
-
+logger = get_logger(__name__)
 guider_address_port = ("127.0.0.1", 8001)
 
-class Guider(GuiderInterface):
 
+class Guider(GuiderInterface):
     @staticmethod
     def valid_guiding_methods():
         from common.config import Config
@@ -78,7 +75,7 @@ class Guider(GuiderInterface):
         return GuiderStatus(
             activities=self.activities,
             activities_verbal=self.activities_verbal,
-            backend=self._backend.status(capacity="guider") if self._backend else None, # type: ignore
+            backend=self._backend.status(capacity="guider") if self._backend else None,  # type: ignore
         )
 
     def start_guiding(self):
@@ -137,9 +134,7 @@ class Guider(GuiderInterface):
             camera_x_size = self.unit.imager.camera_x_size
             camera_y_size = self.unit.imager.camera_y_size
             if camera_x_size is None or camera_y_size is None:
-                raise Exception(
-                    f"Cannot make guiding settings - bad camera size(s) {camera_x_size=}, {camera_y_size=}"
-                )
+                raise Exception(f"Cannot make guiding settings - bad camera size(s) {camera_x_size=}, {camera_y_size=}")
         else:
             import common.asi as asi
 
@@ -149,18 +144,15 @@ class Guider(GuiderInterface):
             fcu_version = FcuVersion("fcu_v1")
 
         cfg = guiding_conf.rois[fcu_version]
-        if not  isinstance(cfg, SpecRoiConfig):
+        if not isinstance(cfg, SpecRoiConfig):
             raise ValueError(f"cannot make a guiding ROI from {type(cfg)}")
 
         half_width = min(cfg.fiber_x - cfg.margin_horizontal, camera_x_size - cfg.margin_horizontal - cfg.fiber_x)
         half_height = min(cfg.fiber_y - cfg.margin_vertical, camera_y_size - cfg.margin_vertical - cfg.fiber_y)
 
         import common.asi as asi
-        guiding_roi = SpecRoi(
-            width=half_width * 2,
-            height=half_height * 2,
-            fiber_x=cfg.fiber_x,
-            fiber_y=cfg.fiber_y)
+
+        guiding_roi = SpecRoi(width=half_width * 2, height=half_height * 2, fiber_x=cfg.fiber_x, fiber_y=cfg.fiber_y)
 
         return ImagerSettings(
             seconds=guiding_conf.exposure,
@@ -220,6 +212,7 @@ class Guider(GuiderInterface):
         if self._backend:
             return self._backend.is_guiding
         return False
+
 
 if __name__ == "__main__":
     import sys

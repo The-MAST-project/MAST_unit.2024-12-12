@@ -1,31 +1,34 @@
 {
   "terminal.integrated.accessibleViewFocusOnCommandExecution": false,
   "terminal.integrated.defaultProfile.windows": "PowerShell",
-  // Linting
-  "python.linting.enabled": true,
-  "python.linting.ruffEnabled": true,
-  "python.linting.flake8Enabled": false,
-  "python.linting.pylintEnabled": false,
-  "python.formatting.provider": "none",
-  // Formatting
+  // Formatting (fleet standard: ruff formatter; only reformat CHANGED lines on
+  // save, so diffs stay small — see ruff.toml for the rules).
   "editor.formatOnSave": true,
-  // Optional: isort to sort imports on save
-  "editor.codeActionsOnSave": {
-    "source.organizeImports": "explicit",
-    "source.fixAll": "always"
+  "editor.formatOnSaveMode": "modifications",
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit",
+      "source.fixAll": "explicit"
+    }
   },
   "ruff.enable": true,
   "ruff.organizeImports": true,
-  "[python]": {
-    "editor.defaultFormatter": null
-  },
   "editor.accessibilitySupport": "off",
   "terminal.integrated.accessibilitySupport": false,
   "files.eol": "\n",
   "python.analysis.autoImportCompletions": true,
   "python.languageServer": "Pylance",
   "python.analysis.typeCheckingMode": "basic",
+  // ".." is the flat-layout top folder, where MAST_common is cloned as
+  // "common/" alongside this repo (see MAST_provisioning tools/mast-clone.*).
+  // The generated mast.code-workspace sets this at workspace level, but a
+  // folder-scoped extraPaths REPLACES the workspace value rather than merging
+  // with it -- so without ".." here, "from common.X import ..." fails to
+  // resolve in Pylance for this folder only. Harmless when the layout is not
+  // in use: a non-existent path is simply ignored.
   "python.analysis.extraPaths": [
+    "..",
     "./src/Standa/ximc-2.13.6/ximc/crossplatform/wrappers/python"
-  ],
+  ]
 }
