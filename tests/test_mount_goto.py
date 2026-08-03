@@ -76,15 +76,6 @@ def test_goto_refuses_when_not_connected():
     assert mount.pw.calls == []
 
 
-@pytest.mark.parametrize(
-    ("kwargs", "expected"),
-    [
-        ({"ra_j2000_hours": 1.0}, "both ra_j2000_hours and dec_j2000_degs are required"),
-        ({"dec_j2000_degs": 2.0}, "both ra_j2000_hours and dec_j2000_degs are required"),
-        ({"alt_degs": 45.0}, "both alt_degs and az_degs are required"),
-        ({"az_degs": 200.0}, "both alt_degs and az_degs are required"),
-    ],
-)
 def test_target_verbal_renders_declination_in_degrees():
     """Regression: Dec was rendered as `unit='arcsec'`, dividing it by 3600 in status."""
     mount = make_mount()
