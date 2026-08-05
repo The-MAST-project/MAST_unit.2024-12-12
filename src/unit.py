@@ -397,7 +397,9 @@ class Unit(Component):
         Aborts any in-progress activities
         """
 
-        if self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing):
+        if self.autofocuser is not None and (
+            self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing)
+        ):
             self.autofocuser.stop_autofocus()
             while self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing):
                 time.sleep(0.2)
@@ -762,6 +764,11 @@ class Unit(Component):
         return CanonicalResponse_Ok
 
     def do_start_sequence_of_exposures(self, sequence: ImagerSequenceOfExposures):  # noqa: C901
+
+        assert self.mount is not None
+        assert self.imager is not None
+        assert self.guider is not None
+
         if not self.imager.connected:
             self.imager.connect()
 
@@ -830,7 +837,8 @@ class Unit(Component):
         return CanonicalResponse_Ok
 
     def stop_sequence_of_exposures(self):
-        self.guider.stop_acquisition_and_guiding()
+        if self.guider is not None:
+            self.guider.stop_acquisition_and_guiding()
         self.end_activity(UnitActivities.SequenceOfExposures)
 
     def endpoint_test_stage_repeatability(
@@ -858,6 +866,10 @@ class Unit(Component):
         binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
         gain: int | str = asi.ASI_294MM_DEFAULT_GAIN,
     ) -> CanonicalResponse:
+
+        assert self.imager is not None
+        assert self.stage is not None
+
         op = function_name()
 
         if isinstance(start_position, str):
@@ -936,6 +948,11 @@ class Unit(Component):
         :param assignment:
         :return:
         """
+        assert self.acquirer is not None
+        assert self.autofocuser is not None
+        assert self.guider is not None
+        assert self.imager is not None
+
         if assignment.plan.autofocus:
             self.autofocuser.start_autofocus(
                 ra_j2000_hours=assignment.plan.target.ra_hours,
