@@ -17,19 +17,17 @@ from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.config.phd2 import LimitFrameMode
-from common.config.rois import FcuVersion
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
 from common.mast_logging import get_logger
 from common.models.statuses import PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
 from common.process import WatchedProcess
-from common.utils import Coord, RepeatTimer, Timeout, boxed_debug, function_name
+from common.utils import Coord, RepeatTimer, boxed_debug, function_name
 from pydantic import BaseModel
 
 from phd2.phd2_locate import locate_phd2_exe
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
-from stage import StagePresetPosition
 
 if TYPE_CHECKING:
     pass  # type: ignore[name-defined]
@@ -519,26 +517,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         stats.peak_dec = dec._peak
         return stats
 
-    def _wait_for_stage_at_spec(self, stage):
-        while not stage.at_preset(StagePresetPosition.Spec):
-            time.sleep(1)
-
-    def _wait_for_fcu_v2_at_spec(self, timeout: int = 60):
-        op = f"{function_name()}"
-        assert self.parent is not None and self.parent.unit is not None
-        stage = self.parent.unit.stage
-
-        try:
-            with Timeout(timeout) as t:
-                t.run(self._wait_for_stage_at_spec, stage)
-        except TimeoutError:
-            logger.error(f"{op}: timeout waiting for stage to reach SPEC position after {timeout} seconds")
-            return
-
-        self.parent.unit.end_activity(UnitActivities.PreGuiding)
-        self.parent.unit.start_activity(UnitActivities.Guiding)
-        boxed_debug(logger, ["stage reached SPEC position", "starting guiding"])
-
     def _handle_event(self, ev):  # noqa: C901
         e = ev["Event"]
 
@@ -558,14 +536,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 boxed_debug(lines=[f"{function_name()}: {e}, {self.version=}, {self.sub_version=}"], logger=logger)
 
             case "StartGuiding":
-                if (
-                    self.parent is not None
-                    and self.parent.unit is not None
-                    and self.parent.unit.fcu_version == FcuVersion.v2
-                ):
-                    boxed_debug(lines=[f"{function_name()}: {e}, waiting for FCU v2 to reach SPEC"], logger=logger)
-                    threading.Thread(target=self._wait_for_fcu_v2_at_spec).start()
-
                 self.start_activity(PHD2Activities.Guiding)
                 if self.guiding_verification_timer is not None:
                     self.guiding_verification_timer.start()
