@@ -7,8 +7,8 @@ import astropy.units as u
 from astropy.coordinates import Angle, Latitude, Longitude
 from fastapi import Query
 
-import common.asi as asi
 from acquisition import Acquisition, ApproachMode
+from common import asi
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import FcuVersion, SkyRoiConfig
