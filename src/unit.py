@@ -1,7 +1,7 @@
-import logging
 import datetime
 import io
 import ipaddress
+import logging
 import os
 import socket
 import threading
@@ -19,10 +19,10 @@ from fastapi.routing import APIRouter
 from PIL import Image
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-import common.asi as asi
 from acquirer import Acquirer
 from acquisition import Acquisition
 from autofocusing import Autofocuser, AutofocusResult
+from common import asi
 from common.activities import (
     CoverActivities,
     FocuserActivities,
@@ -47,7 +47,12 @@ from common.mast_logging import DailyFileHandler, get_logger
 from common.models.assignments import AssignmentNotification, UnitAssignment
 from common.models.statuses import FullUnitStatus, StatusType
 from common.notifications import Notifier
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.parsers import (
+    DEC_PATTERN,
+    RA_PATTERN,
+    sexagesimal_degrees_to_decimal,
+    sexagesimal_hours_to_decimal,
+)
 from common.paths import PathMaker
 from common.rois import UnitRoi
 from common.utils import RepeatTimer, function_name, time_stamp
@@ -59,10 +64,6 @@ from phd2.phd2 import PHD2Connector
 from PlaneWave import pwi4_client
 from solving import Solver
 from stage import Stage
-from common.mast_logging import get_logger
-
-RA_REGEX = r"^(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
-DEC_REGEX = r"^([+-]?)(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
 
 logger = get_logger(__name__)
 filer = Filer(logger)
@@ -78,14 +79,14 @@ def configured_imager() -> ImagerTypes | None:
     return ImagerTypes(t)
 
 
-def get_imager_type(
-    imager_type: ImagerTypes = Query(default=configured_imager()),
-) -> ImagerTypes:
-    t = imager_type
-    if not t:
-        t = configured_imager()
-        assert t is not None, "No imager type configured"
-    return t
+# def get_imager_type(
+#     imager_type: ImagerTypes = Query(default=configured_imager()),
+# ) -> ImagerTypes:
+#     t = imager_type
+#     if not t:
+#         t = configured_imager()
+#         assert t is not None, "No imager type configured"
+#     return t
 
 
 class GuideDirections(Enum):
@@ -276,7 +277,7 @@ class Unit(Component):
 
     @property
     def connected(self):
-        return all([comp.connected for comp in self.components])
+        return all(comp.connected for comp in self.components)
 
     @connected.setter
     def connected(self, value: bool):
@@ -340,22 +341,22 @@ class Unit(Component):
 
         all_corrections: list = []
 
-        if self.acquirer and self.acquirer.latest_acquisition:
-            corrections_list = (
-                self.acquirer.latest_acquisition.corrections
-                if (self.acquirer.latest_acquisition and self.acquirer.latest_acquisition.corrections)
-                else []
-            )
+        # if self.acquirer and self.acquirer.latest_acquisition:
+        #     corrections_list = (
+        #         self.acquirer.latest_acquisition.corrections
+        #         if (self.acquirer.latest_acquisition and self.acquirer.latest_acquisition.corrections)
+        #         else []
+        #     )
 
-            # for phase in list(get_args(Const.CorrectionPhase)):
-            #     if isinstance(corrections_list, dict):
-            #         if phase not in corrections_list:
-            #             corrections_list[phase] = Corrections(phase=phase)
-            #         correction = corrections_list[phase]
-            #         if isinstance(correction, list):
-            #             all_corrections.extend(correction)
-            #         else:
-            #             all_corrections.append(correction)
+        #     for phase in list(get_args(Const.CorrectionPhase)):
+        #         if isinstance(corrections_list, dict):
+        #             if phase not in corrections_list:
+        #                 corrections_list[phase] = Corrections(phase=phase)
+        #             correction = corrections_list[phase]
+        #             if isinstance(correction, list):
+        #                 all_corrections.extend(correction)
+        #             else:
+        #                 all_corrections.append(correction)
 
         ret = FullUnitStatus(
             **self.component_status().model_dump(),
@@ -397,7 +398,9 @@ class Unit(Component):
         Aborts any in-progress activities
         """
 
-        if self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing):
+        if self.autofocuser is not None and (
+            self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing)
+        ):
             self.autofocuser.stop_autofocus()
             while self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing):
                 time.sleep(0.2)
@@ -437,7 +440,7 @@ class Unit(Component):
             self._was_shut_down = True
 
         # UnitActivities.AutofocusingPWI4
-        if self.is_active(UnitActivities.AutofocusingPWI4):
+        if self.pw is not None and self.autofocuser is not None and self.is_active(UnitActivities.AutofocusingPWI4):
             autofocus_status = self.pw.status().autofocus
             if not autofocus_status:
                 logger.error("Empty PWI4 autofocus status")
@@ -481,7 +484,7 @@ class Unit(Component):
                     logger.error("PlaneWave autofocus failed")
                     self.autofocus_result.best_position = None
                     self.autofocus_result.tolerance = None
-                self.autofocus_result.time_stamp = datetime.datetime.now().isoformat()
+                self.autofocus_result.time_stamp = datetime.datetime.now(tz=datetime.UTC).isoformat()
 
                 self.end_activity(UnitActivities.AutofocusingPWI4)
             else:
@@ -502,7 +505,7 @@ class Unit(Component):
         components = set(self.components)
         if self.unit_conf and self.unit_conf.name.lower() == "mastw":
             components.discard(self.covers)
-        return all([c.operational for c in components])
+        return all(c.operational for c in components)
 
     @property
     def why_not_operational(self) -> list[str]:
@@ -559,7 +562,7 @@ class Unit(Component):
         ra_j2000_hours: Annotated[
             str | float | None,
             Query(
-                pattern=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
+                pattern=RA_PATTERN,
                 description=(
                     "### Right Ascension (J2000) in either:\n"
                     "- decimal hours (e.g., `12.5`) or\n"
@@ -572,7 +575,7 @@ class Unit(Component):
         dec_j2000_degs: Annotated[
             str | float | None,
             Query(
-                pattern=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
+                pattern=DEC_PATTERN,
                 description=(
                     "### Declination (J2000) in either:\n"
                     "- decimal degrees (e.g., `-45.5`) or\n"
@@ -614,23 +617,23 @@ class Unit(Component):
         ] = None,
     ) -> CanonicalResponse:
 
+        if self.imager is None:
+            return CanonicalResponse(errors=["imager is not initialized"])
+
+        # One call, whatever the form -- see the note in acquirer.py. This endpoint's
+        # pattern was the colon-only copy, so the space-separated form was rejected
+        # here while acquirer accepted it; both now share RA_PATTERN/DEC_PATTERN.
         if ra_j2000_hours:
-            if isinstance(ra_j2000_hours, str):
-                if ":" in ra_j2000_hours:
-                    ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
-                else:
-                    ra_j2000_hours = float(ra_j2000_hours)
-            elif isinstance(ra_j2000_hours, float):
-                pass
+            try:
+                ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
+            except ValueError as e:
+                return CanonicalResponse(errors=[f"expose: bad ra_j2000_hours -- {e}"])
 
         if dec_j2000_degs:
-            if isinstance(dec_j2000_degs, str):
-                if ":" in dec_j2000_degs:
-                    dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
-                else:
-                    dec_j2000_degs = float(dec_j2000_degs)
-            elif isinstance(dec_j2000_degs, float):
-                pass
+            try:
+                dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
+            except ValueError as e:
+                return CanonicalResponse(errors=[f"expose: bad dec_j2000_degs -- {e}"])
 
         assert self.mount is not None
         if (ra_j2000_hours is not None and isinstance(ra_j2000_hours, float)) and (
@@ -684,7 +687,7 @@ class Unit(Component):
         ).start()
         return CanonicalResponse_Ok
 
-    def do_expose(  # noqa: C901
+    def do_expose(
         self,
         subfolder: str | None = None,
         exposure_seconds: float = 3,
@@ -711,7 +714,7 @@ class Unit(Component):
         for repeat in range(repeats):
             end = None
             if seconds_between_exposures != 0.0:
-                start = datetime.datetime.now()
+                start = datetime.datetime.now(tz=datetime.UTC)
                 end = start + datetime.timedelta(seconds=seconds_between_exposures)
 
             unit_roi = UnitRoi(fiber_x, fiber_y, width, height)
@@ -737,7 +740,7 @@ class Unit(Component):
                 filer.move_ram_to_shared(self.imager.latest_settings.image_path)
 
             if end is not None and seconds_between_exposures != 0.0:
-                now = datetime.datetime.now()
+                now = datetime.datetime.now(tz=datetime.UTC)
                 if now < end:
                     period = (end - now).seconds
                     logger.info(f"{op}: sleeping {period} seconds till next exposure ...")
@@ -763,6 +766,11 @@ class Unit(Component):
         return CanonicalResponse_Ok
 
     def do_start_sequence_of_exposures(self, sequence: ImagerSequenceOfExposures):  # noqa: C901
+
+        assert self.mount is not None
+        assert self.imager is not None
+        assert self.guider is not None
+
         if not self.imager.connected:
             self.imager.connect()
 
@@ -803,7 +811,7 @@ class Unit(Component):
         phd2 = self.guider._backend
 
         if isinstance(self.guider._backend, PHD2Connector) and not isinstance(self.imager._backend, PHD2Connector):
-            start = datetime.datetime.now()
+            start = datetime.datetime.now(tz=datetime.UTC)
             logger.debug(msg + "telling phd2 to disconnect equipment")
             phd2.disconnect_equipment()
             while phd2.equipment_is_connected():
@@ -814,7 +822,11 @@ class Unit(Component):
             self.guider._backend.connect_equipment()
             while not phd2.equipment_is_connected():
                 time.sleep(0.1)
-            logger.debug(f"phd2 disconnect/connect took {humanfriendly.format_timespan(datetime.datetime.now() - start)}")
+            logger.debug(
+                f"phd2 disconnect/connect took {
+                    humanfriendly.format_timespan(datetime.datetime.now(tz=datetime.UTC) - start)
+                }"
+            )
 
         logger.debug(f"telling guider to start '{sequence.tell_guider_to_start}'")
         if sequence.tell_guider_to_start == "loop":
@@ -831,7 +843,8 @@ class Unit(Component):
         return CanonicalResponse_Ok
 
     def stop_sequence_of_exposures(self):
-        self.guider.stop_acquisition_and_guiding()
+        if self.guider is not None:
+            self.guider.stop_acquisition_and_guiding()
         self.end_activity(UnitActivities.SequenceOfExposures)
 
     def endpoint_test_stage_repeatability(
@@ -859,6 +872,10 @@ class Unit(Component):
         binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
         gain: int | str = asi.ASI_294MM_DEFAULT_GAIN,
     ) -> CanonicalResponse:
+
+        assert self.imager is not None
+        assert self.stage is not None
+
         op = function_name()
 
         if isinstance(start_position, str):
@@ -937,6 +954,11 @@ class Unit(Component):
         :param assignment:
         :return:
         """
+        assert self.acquirer is not None
+        assert self.autofocuser is not None
+        assert self.guider is not None
+        assert self.imager is not None
+
         if assignment.plan.autofocus:
             self.autofocuser.start_autofocus(
                 ra_j2000_hours=assignment.plan.target.ra_hours,
@@ -1124,6 +1146,11 @@ class Unit(Component):
                 endpoint=self.acquirer.endpoint_start_acquisition_and_guiding,
             )
         if self.guider:
+            router.add_api_route(
+                base_path + "/start_guiding",
+                tags=[tag],
+                endpoint=self.guider.endpoint_start_guiding,
+            )
             router.add_api_route(
                 base_path + "/stop_acquisition_and_guiding",
                 tags=[tag],

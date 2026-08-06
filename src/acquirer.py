@@ -7,15 +7,20 @@ import astropy.units as u
 from astropy.coordinates import Angle, Latitude, Longitude
 from fastapi import Query
 
-import common.asi as asi
 from acquisition import Acquisition, ApproachMode
+from common import asi
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import FcuVersion, SkyRoiConfig
 from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification, UnitAssignment
 from common.notifications import Notifier
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.parsers import (
+    DEC_PATTERN,
+    RA_PATTERN,
+    sexagesimal_degrees_to_decimal,
+    sexagesimal_hours_to_decimal,
+)
 from common.rois import SkyRoi
 from common.utils import Coord, boxed_log, function_name
 from mount import SettleMode
@@ -24,8 +29,6 @@ from solving import SolverId, SolvingTolerance
 from stage import StagePresetPosition
 
 logger = get_logger(__name__)
-RA_REGEX = r"^(\d{1,2})[: ](\d{2})[: ](\d{2}(?:\.\d{1,3})?)$"
-DEC_REGEX = r"^([+-]?)(\d{1,2})[: ](\d{2})[: ](\d{2}(?:\.\d{1,3})?)$"
 
 
 class Acquirer:
@@ -290,26 +293,35 @@ class Acquirer:
             )
             self.unit.imager.disconnect()
 
+        # Move the stage to SPEC (FCU v2 was left at Sky by the solve; v1 is already there)
+        # and wait for it to settle -- needed by BOTH the auto-handover and the manual
+        # acquisition-tuning paths, so guiding always starts with the stage at SPEC.
+        if self.unit.fcu_version == FcuVersion.v2:
+            self.unit.stage.move_to_preset(StagePresetPosition.Spec)
+            lines.append("moving stage to SPEC")
+        while self.unit.stage.is_moving:
+            time.sleep(0.2)
+        logger.info("sleeping additional 5 seconds to let the stage stop moving ...")
+        time.sleep(5)
+
         if self.latest_acquisition.handover_automatically_to_guider:
             lines.append("starting PHD2 guiding")
-            if self.unit.fcu_version == FcuVersion.v2:
-                self.unit.stage.move_to_preset(StagePresetPosition.Spec)
-                lines.append("started moving stage to SPEC")
             boxed_log(logger, lines)
-            self.unit.start_activity(UnitActivities.PreGuiding)
             self.unit.guider.start_guiding()
+
+            while self.unit.is_active(UnitActivities.Guiding):
+                time.sleep(1)
+
+            # Guiding was stopped
+            self.unit.end_activity(UnitActivities.Acquiring)
+            self.unit.mount.stop_tracking()
         else:
-            lines.append("Use start_guiding endpoint to start PHD2 guiding")
+            lines.append("acquisition tuning: guiding must be started manually via /start_guiding")
             boxed_log(logger, lines)
-            self.unit.start_activity(UnitActivities.PreGuiding)
+            # End the acquisition but KEEP the mount tracking: the operator fine-tunes the
+            # pointing with external tools, then starts guiding via the /start_guiding endpoint.
+            self.unit.end_activity(UnitActivities.Acquiring)
 
-        while self.unit.is_active(UnitActivities.PreGuiding) or self.unit.is_active(UnitActivities.Guiding):
-            time.sleep(1)
-
-        # Acquisition was stopped
-        self.unit.end_activity(UnitActivities.Acquiring)
-
-        self.unit.mount.stop_tracking()
         if self.unit.acquirer.latest_acquisition is not None:
             self.unit.acquirer.latest_acquisition.post_process()
 
@@ -337,6 +349,9 @@ class Acquirer:
             target_ra=float(ra_j2000_hours),
             target_dec=float(dec_j2000_degs),
             conf=self.unit.unit_conf.acquisition,
+            # Unattended assignments auto-hand-over to guiding; the Acquisition default is
+            # False (manual acquisition-tuning), which would stall the assignment at SPEC.
+            handover_automatically_to_guider=True,
         )
         Thread(name="acquisition", target=self.do_acquire, args=[acquisition]).start()
 
@@ -354,13 +369,13 @@ class Acquirer:
                 )
             )
 
-    def endpoint_start_acquisition_and_guiding(  # noqa: C901
+    def endpoint_start_acquisition_and_guiding(
         self,
         seconds: float | None = 5.0,
         ra_j2000_hours: Annotated[
             str | float | None,
             Query(
-                pattern=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
+                pattern=RA_PATTERN,
                 description=(
                     "### Right Ascension (J2000) in either:\n"
                     "- decimal hours (e.g., `12.5`) or\n"
@@ -373,7 +388,7 @@ class Acquirer:
         dec_j2000_degs: Annotated[
             str | float | None,
             Query(
-                pattern=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
+                pattern=DEC_PATTERN,
                 description=(
                     "### Declination (J2000) in either:\n"
                     "- decimal degrees (e.g., `-45.5`) or\n"
@@ -414,27 +429,25 @@ class Acquirer:
 
         pw_status = self.unit.mount.pw.status()
 
+        # One call, whatever the form. The old code dispatched on `":" in value` and
+        # sent everything else to float() -- so a space-separated coordinate, which
+        # RA_REGEX explicitly allowed, raised an uncaught ValueError and returned 500.
+        # The parsers take sexagesimal, decimal and surrounding whitespace alike.
         if ra_j2000_hours:
-            if isinstance(ra_j2000_hours, str):
-                if ":" in ra_j2000_hours:
-                    ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
-                else:
-                    ra_j2000_hours = float(ra_j2000_hours)
-            elif isinstance(ra_j2000_hours, float):
-                pass
+            try:
+                ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
+            except ValueError as e:
+                return CanonicalResponse(errors=[f"{op}: bad ra_j2000_hours -- {e}"])
         else:
             if not pw_status.mount.is_connected:  # type: ignore
                 return CanonicalResponse(errors=["cannot get coordinates from mount (mount not connected)"])
             ra_j2000_hours = pw_status.mount.ra_j2000_hours  # type: ignore
 
         if dec_j2000_degs:
-            if isinstance(dec_j2000_degs, str):
-                if ":" in dec_j2000_degs:
-                    dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
-                else:
-                    dec_j2000_degs = float(dec_j2000_degs)
-            elif isinstance(dec_j2000_degs, float):
-                pass
+            try:
+                dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
+            except ValueError as e:
+                return CanonicalResponse(errors=[f"{op}: bad dec_j2000_degs -- {e}"])
         else:
             if not pw_status.mount.is_connected:  # type: ignore
                 return CanonicalResponse(errors=["cannot get coordinates from mount (mount not connected)"])

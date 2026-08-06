@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from threading import Thread
 from typing import TYPE_CHECKING
 
 from common.activities import ImagerActivities, UnitActivities
-from common.canonical import CanonicalResponse_Ok
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.utils import function_name
 from phd2.phd2 import PHD2Connector
@@ -162,6 +163,33 @@ class Guider(GuiderInterface):
             roi=ImagerRoi.from_other(guiding_roi),
             save=save,
         )
+
+    def endpoint_start_guiding(self):
+        """
+        Manually start guiding after an acquisition-tuning run (handover_automatically_to_guider
+        =False), where the acquisition ended at the SPEC position with the mount still tracking and
+        the operator then fine-tuned the pointing with external tools.
+        """
+        op = function_name()
+        if self.unit is None:
+            return CanonicalResponse(errors=[f"{op}: no unit"])
+        if self.unit.is_active(UnitActivities.Guiding):
+            return CanonicalResponse(errors=[f"{op}: already guiding"])
+        # SolvingGuider reads unit.acquirer.latest_acquisition; the PHD2 backend does not need it.
+        if isinstance(self._backend, SolvingGuider) and (
+            self.unit.acquirer is None or self.unit.acquirer.latest_acquisition is None
+        ):
+            return CanonicalResponse(errors=[f"{op}: no acquisition to guide on (solving backend)"])
+
+        # Keep the mount tracking across a later stop (mirrors the sequence-of-exposures path in unit.py):
+        # stop_acquisition_and_guiding only stops tracking when it wasn't tracking before guiding.
+        self.unit.was_tracking_before_guiding = self.unit.mount.is_tracking
+        if not self.unit.was_tracking_before_guiding:
+            self.unit.mount.start_tracking()
+
+        # start_guiding blocks for the solving backend, so run it on a thread.
+        Thread(name="guiding", target=self.start_guiding).start()
+        return CanonicalResponse_Ok
 
     def endpoint_stop_acquisition_and_guiding(self):
         return self.stop_acquisition_and_guiding()

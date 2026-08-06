@@ -1,7 +1,10 @@
 """Test bootstrap for the MAST_unit suite.
 
 Puts ``src/`` on ``sys.path`` so the tests import exactly what the unit
-service imports (``common`` resolves to the ``src/common`` submodule).
+service imports. ``common`` is NOT under this repo: it is a sibling clone
+(``<top>/common/``) reached through the ``mast.pth`` the provisioning writes
+into the venv, so nothing here needs to place it -- but the tests will fail to
+import it in a venv without that ``.pth``.
 
 ``common.filer.Filer.__init__`` is shimmed to a temp-dir layout on **every**
 platform, because ``common.utils`` builds a module-level ``Filer`` at import,

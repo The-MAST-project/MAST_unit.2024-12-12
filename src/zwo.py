@@ -11,15 +11,9 @@ from common.activities import ImagerActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.interfaces.imager import (
-    ImagerExposure,
-    ImagerExposureSeries,
-    ImagerInterface,
-    ImagerRoi,
-    ImagerSettings,
-    ImagerStatus,
-)
+from common.interfaces.imager import ImagerExposureSeries, ImagerInterface
 from common.mast_logging import get_logger
+from common.models.statuses import ImagerExposure, ImagerRoi, ImagerSettings, ImagerStatus
 from common.utils import RepeatTimer, function_name, time_stamp
 from imagers import Imager
 

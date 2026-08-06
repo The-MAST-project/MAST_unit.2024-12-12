@@ -1,22 +1,21 @@
 import argparse
-import logging
 import os
-import socket
 import sys
 import time
 from contextlib import asynccontextmanager
 
 import psutil
 import uvicorn
+from common.config import Config, ConfigError
+from common.mast_logging import configure_logging, get_logger
+from common.process import ensure_process_is_running
+from common.utils import boxed_info
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import ValidationError
 
-from common.config import Config, ConfigError
-from common.mast_logging import configure_logging, get_logger
-from common.process import ensure_process_is_running
 from PlaneWave import pwi4_client
 from PlaneWave.ps3cli_locate import locate_ps3cli_catalog, locate_ps3cli_dir
 
@@ -28,9 +27,7 @@ _parser.add_argument("--log-level", default=None, help="DEBUG, INFO, WARNING, ..
 configure_logging(_parser.parse_known_args()[0].log_level)
 
 logger = get_logger(__name__)
-logger.info("+--------------+")
-logger.info("| Starting ... |")
-logger.info("+--------------+")
+boxed_info(logger, "Starting ...")
 
 # Get rid of HTTP proxy environment variables.  We're talking to PWI4 which lives on this same machine
 if "http_proxy" in os.environ:
@@ -40,7 +37,7 @@ if "https_proxy" in os.environ:
 
 
 def app_quit(reason: str):
-    logger.info(f"Quiting ({reason=}) !")
+    boxed_info(logger, f"Quiting ({reason=}) !")
     parent_pid = os.getpid()
     parent = psutil.Process(parent_pid)
     for child in parent.children(recursive=True):  # or parent.children() for recursive=False
@@ -124,7 +121,7 @@ async def lifespan(fast_app: FastAPI):
     try:
         unit = Unit()
     except Exception as ex:
-        logger.error(f"Unit initialization failed in lifespan: {ex}")
+        logger.error(f"Unit initialization failed in lifespan: {ex=}")
         yield
         return
     unit.start_lifespan()

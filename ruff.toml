@@ -10,9 +10,9 @@
 line-length = 125
 target-version = "py312"
 
-# src/common is a submodule owned by MAST_common — never format it from here.
-# (ruff does NOT skip submodules automatically.)
-extend-exclude = ["src/common"]
+# MAST_common is no longer checked out inside this repo (it was the src/common
+# submodule; it is now a sibling clone, <top>/common/), so there is nothing here
+# to exclude. Keep this file scoped to this repo's own sources.
 
 [lint]
 # Enable rules from common linters.
@@ -30,6 +30,17 @@ extend-select = [
 ]
 # Optionally ignore some rules:
 # ignore = ["E501"]  # example: disable line-length enforcement
+
+[lint.isort]
+# `common` is MAST_common, our own shared library -- first-party, grouped with
+# the local modules (acquirer, covers, PlaneWave, ...). Without this, ruff's
+# resolver splits the package: bare `from common import asi` lands in the
+# first-party block while `from common.activities import ...` is treated as
+# third-party, so every isort run reshuffles the import block and the next
+# person reverts it. It also no longer lives under this repo at all (it is a
+# sibling clone), so ruff's path-based resolver could not classify it correctly
+# even in principle -- naming it here is the only reliable way.
+known-first-party = ["common"]
 
 [format]
 # Ruff's Black-compatible formatter.

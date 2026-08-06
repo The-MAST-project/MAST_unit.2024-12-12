@@ -29,5 +29,5 @@ It builds components with `object.__new__` and gives them only the state the
 path under test reads — the method under test is always the real one — and
 drives two cases through a real FastAPI app to pin the wire shape.
 
-The `src/common` submodule carries its own platform-independent suite
-(`src/common/tests/`).
+MAST_common carries its own platform-independent suite, run from its own clone
+(`<top>/common/tests/`). It is a sibling of this repo, not a submodule.
