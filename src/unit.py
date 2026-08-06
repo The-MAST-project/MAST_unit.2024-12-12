@@ -47,7 +47,12 @@ from common.mast_logging import DailyFileHandler, get_logger
 from common.models.assignments import AssignmentNotification, UnitAssignment
 from common.models.statuses import FullUnitStatus, StatusType
 from common.notifications import Notifier
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.parsers import (
+    DEC_PATTERN,
+    RA_PATTERN,
+    sexagesimal_degrees_to_decimal,
+    sexagesimal_hours_to_decimal,
+)
 from common.paths import PathMaker
 from common.rois import UnitRoi
 from common.utils import RepeatTimer, function_name, time_stamp
@@ -59,9 +64,6 @@ from phd2.phd2 import PHD2Connector
 from PlaneWave import pwi4_client
 from solving import Solver
 from stage import Stage
-
-RA_REGEX = r"^(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
-DEC_REGEX = r"^([+-]?)(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
 
 logger = get_logger(__name__)
 filer = Filer(logger)
@@ -559,7 +561,7 @@ class Unit(Component):
         ra_j2000_hours: Annotated[
             str | float | None,
             Query(
-                pattern=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
+                pattern=RA_PATTERN,
                 description=(
                     "### Right Ascension (J2000) in either:\n"
                     "- decimal hours (e.g., `12.5`) or\n"
@@ -572,7 +574,7 @@ class Unit(Component):
         dec_j2000_degs: Annotated[
             str | float | None,
             Query(
-                pattern=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
+                pattern=DEC_PATTERN,
                 description=(
                     "### Declination (J2000) in either:\n"
                     "- decimal degrees (e.g., `-45.5`) or\n"
@@ -617,23 +619,20 @@ class Unit(Component):
         if self.imager is None:
             return CanonicalResponse(errors=["imager is not initialized"])
 
+        # One call, whatever the form -- see the note in acquirer.py. This endpoint's
+        # pattern was the colon-only copy, so the space-separated form was rejected
+        # here while acquirer accepted it; both now share RA_PATTERN/DEC_PATTERN.
         if ra_j2000_hours:
-            if isinstance(ra_j2000_hours, str):
-                if ":" in ra_j2000_hours:
-                    ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
-                else:
-                    ra_j2000_hours = float(ra_j2000_hours)
-            elif isinstance(ra_j2000_hours, float):
-                pass
+            try:
+                ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
+            except ValueError as e:
+                return CanonicalResponse(errors=[f"expose: bad ra_j2000_hours -- {e}"])
 
         if dec_j2000_degs:
-            if isinstance(dec_j2000_degs, str):
-                if ":" in dec_j2000_degs:
-                    dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
-                else:
-                    dec_j2000_degs = float(dec_j2000_degs)
-            elif isinstance(dec_j2000_degs, float):
-                pass
+            try:
+                dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
+            except ValueError as e:
+                return CanonicalResponse(errors=[f"expose: bad dec_j2000_degs -- {e}"])
 
         assert self.mount is not None
         if (ra_j2000_hours is not None and isinstance(ra_j2000_hours, float)) and (

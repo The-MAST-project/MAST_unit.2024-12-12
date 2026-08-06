@@ -15,7 +15,12 @@ from common.config.rois import FcuVersion, SkyRoiConfig
 from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification, UnitAssignment
 from common.notifications import Notifier
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.parsers import (
+    DEC_PATTERN,
+    RA_PATTERN,
+    sexagesimal_degrees_to_decimal,
+    sexagesimal_hours_to_decimal,
+)
 from common.rois import SkyRoi
 from common.utils import Coord, boxed_log, function_name
 from mount import SettleMode
@@ -24,8 +29,6 @@ from solving import SolverId, SolvingTolerance
 from stage import StagePresetPosition
 
 logger = get_logger(__name__)
-RA_REGEX = r"^(\d{1,2})[: ](\d{2})[: ](\d{2}(?:\.\d{1,3})?)$"
-DEC_REGEX = r"^([+-]?)(\d{1,2})[: ](\d{2})[: ](\d{2}(?:\.\d{1,3})?)$"
 
 
 class Acquirer:
@@ -366,13 +369,13 @@ class Acquirer:
                 )
             )
 
-    def endpoint_start_acquisition_and_guiding(  # noqa: C901
+    def endpoint_start_acquisition_and_guiding(
         self,
         seconds: float | None = 5.0,
         ra_j2000_hours: Annotated[
             str | float | None,
             Query(
-                pattern=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
+                pattern=RA_PATTERN,
                 description=(
                     "### Right Ascension (J2000) in either:\n"
                     "- decimal hours (e.g., `12.5`) or\n"
@@ -385,7 +388,7 @@ class Acquirer:
         dec_j2000_degs: Annotated[
             str | float | None,
             Query(
-                pattern=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
+                pattern=DEC_PATTERN,
                 description=(
                     "### Declination (J2000) in either:\n"
                     "- decimal degrees (e.g., `-45.5`) or\n"
@@ -426,27 +429,25 @@ class Acquirer:
 
         pw_status = self.unit.mount.pw.status()
 
+        # One call, whatever the form. The old code dispatched on `":" in value` and
+        # sent everything else to float() -- so a space-separated coordinate, which
+        # RA_REGEX explicitly allowed, raised an uncaught ValueError and returned 500.
+        # The parsers take sexagesimal, decimal and surrounding whitespace alike.
         if ra_j2000_hours:
-            if isinstance(ra_j2000_hours, str):
-                if ":" in ra_j2000_hours:
-                    ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
-                else:
-                    ra_j2000_hours = float(ra_j2000_hours)
-            elif isinstance(ra_j2000_hours, float):
-                pass
+            try:
+                ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
+            except ValueError as e:
+                return CanonicalResponse(errors=[f"{op}: bad ra_j2000_hours -- {e}"])
         else:
             if not pw_status.mount.is_connected:  # type: ignore
                 return CanonicalResponse(errors=["cannot get coordinates from mount (mount not connected)"])
             ra_j2000_hours = pw_status.mount.ra_j2000_hours  # type: ignore
 
         if dec_j2000_degs:
-            if isinstance(dec_j2000_degs, str):
-                if ":" in dec_j2000_degs:
-                    dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
-                else:
-                    dec_j2000_degs = float(dec_j2000_degs)
-            elif isinstance(dec_j2000_degs, float):
-                pass
+            try:
+                dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
+            except ValueError as e:
+                return CanonicalResponse(errors=[f"{op}: bad dec_j2000_degs -- {e}"])
         else:
             if not pw_status.mount.is_connected:  # type: ignore
                 return CanonicalResponse(errors=["cannot get coordinates from mount (mount not connected)"])
