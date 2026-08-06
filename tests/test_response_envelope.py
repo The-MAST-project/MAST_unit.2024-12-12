@@ -9,10 +9,9 @@ module scope, so it skips on a dev machine the same way the rest of the suite do
 hardware, Mongo or PWI4 is needed -- components are built with ``object.__new__`` and given
 only the state the path under test reads, and the method under test is always the real one.
 
-Until #71 lands, neither imager backend imports on any machine: ``zwo`` asks
-``common.interfaces.imager`` for ``ImagerExposure``/``ImagerStatus`` and ``imagers.ascom``
-for ``ImagerStatus``, all of which live in ``common.models.statuses``. Those cases
-``importorskip`` rather than fail -- they are about the envelope, not about that import.
+Both imager backends import again as of #72, so the ZWO and ASCOM envelope cases below
+run rather than skip; the temporary ``import_backend_or_skip`` helper that stood in while
+#71 was open is gone with it.
 """
 
 from __future__ import annotations
@@ -25,20 +24,6 @@ pytest.importorskip("win32com", reason="the unit's component modules are Windows
 
 from common.canonical import CanonicalResponse  # noqa: E402
 from common.models.statuses import AscomDriverInfoModel, CoversState, CoverStatus  # noqa: E402
-
-
-def import_backend_or_skip(module_name: str):
-    """Import an imager backend, skipping if #71's stale import is still in the tree.
-
-    ``pytest.importorskip`` cannot be used: since pytest 8.2 it deliberately re-raises
-    when a module exists but fails internally, rather than masking a real break. The
-    skip is narrow and temporary -- #71 removes it, and the envelope assertions below
-    then run for both backends.
-    """
-    try:
-        return importlib.import_module(module_name)
-    except ImportError as exc:
-        pytest.skip(f"{module_name}: stale ImagerExposure/ImagerStatus import, see #71 ({exc})")
 
 
 def assert_refused(response, *, expected: str | None = None) -> None:
@@ -116,7 +101,7 @@ def test_covers_shutdown_succeeds_when_disconnected():
 
 
 def _zwo(connected: bool, exposing: bool = False):
-    zwo = import_backend_or_skip("zwo")
+    zwo = importlib.import_module("zwo")
 
     class _Parent:
         def is_active(self, _):
@@ -140,7 +125,7 @@ def test_zwo_abort_refuses_when_not_exposing():
 
 
 def test_ascom_abort_exposure_refuses_when_not_connected():
-    ascom_module = import_backend_or_skip("imagers.ascom")
+    ascom_module = importlib.import_module("imagers.ascom")
 
     class _Ascom(ascom_module.ASCOMImager):
         @property
