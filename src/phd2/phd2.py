@@ -1362,11 +1362,12 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def endpoint_startup(self):
         pass
 
-    def abort(self):
-        pass
+    def abort(self) -> CanonicalResponse:
+        return CanonicalResponse_Ok
 
-    def endpoint_abort(self):
+    def endpoint_abort(self) -> CanonicalResponse:
         self.stop_capture()
+        return CanonicalResponse_Ok
 
     @property
     def connected(self) -> bool:

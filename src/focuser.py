@@ -109,6 +109,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             self.disconnect()
         self.pw.focuser_disable()
         self.end_activity(FocuserActivities.ShuttingDown)
+        return CanonicalResponse_Ok
 
     @property
     def is_shutting_down(self) -> bool:
@@ -170,9 +171,20 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
     @position.setter
     def position(self, value: int):
+        self.goto_position(value)
+
+    def goto_position(self, value: int) -> CanonicalResponse:
+        """
+        Sends the focuser to an absolute position, reporting refusals to the caller.
+
+        The ``position`` setter cannot return anything (assignment discards it), so the
+        decision lives here and the setter delegates -- otherwise a not-powered or
+        not-connected focuser silently reports success over HTTP.
+        """
         if not self.is_on() or not self.connected:
-            logger.error(f"Cannot goto {value} - not-powered or not-connected")
-            return
+            msg = f"Cannot goto {value} - not-powered or not-connected"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
 
         if self.close_enough(value):
             logger.info(f"at {self.position=} (close enough to {value=})")
@@ -180,6 +192,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             self.target = value
             self.start_activity(FocuserActivities.Moving, details=[f"from {self.position} to {self.target}"])
             self.pw.focuser_goto(value)
+        return CanonicalResponse_Ok
 
     def close_enough(self, position):
         return abs(self.position - position) <= self.CLOSE_ENOUGH
@@ -196,8 +209,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
         if isinstance(position, str):
             position = int(position)
-        self.position = position
-        return CanonicalResponse_Ok
+        return self.goto_position(position)
 
     def endpoint_goto_known_as_good_position(self):
         """
@@ -207,14 +219,13 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         if self.known_as_good_position is None:
             return CanonicalResponse(errors=["known_as_good_position is None"])
 
-        self.position = self.known_as_good_position
-        return CanonicalResponse_Ok
+        return self.goto_position(self.known_as_good_position)
 
     def endpoint_move_in(self, amount):
-        self.move(amount, direction=FocusDirection.In)
+        return self.move(amount, direction=FocusDirection.In)
 
     def endpoint_move_out(self, amount):
-        self.move(amount, direction=FocusDirection.Out)
+        return self.move(amount, direction=FocusDirection.Out)
 
     def move(self, amount: int, direction: FocusDirection):
         """
@@ -243,8 +254,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
                 logger.error(msg)
                 return CanonicalResponse(errors=[msg])
 
-        self.position = target
-        return CanonicalResponse_Ok
+        return self.goto_position(target)
 
     def endpoint_abort(self):
         return self.abort()
@@ -293,8 +303,8 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
                 self.end_activity(FocuserActivities.Moving)
                 self.target = None
 
-    def endpoint_status(self) -> FocuserStatus | None:
-        return self.status()
+    def endpoint_status(self) -> CanonicalResponse:
+        return CanonicalResponse(value=self.status())
 
     def status(self) -> FocuserStatus | None:
         pw_stat = self.pw.status()
@@ -367,7 +377,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         tag = "Focuser"
 
         def endpoint_get_position():
-            return self.position
+            return CanonicalResponse(value=self.position)
 
         router = APIRouter()
         router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)

@@ -8,7 +8,7 @@ from fastapi.routing import APIRouter
 
 from common.activities import CoverActivities
 from common.ascom import AscomDispatcher, ascom_run
-from common.canonical import CanonicalResponse_Ok
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
@@ -125,8 +125,8 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         else:
             return CoversState.Error
 
-    def endpoint_status(self) -> CoverStatus:
-        return self.status()
+    def endpoint_status(self) -> CanonicalResponse:
+        return CanonicalResponse(value=self.status())
 
     def status(self) -> CoverStatus:
         """
@@ -159,7 +159,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         :mastapi:
         """
         if not self.connected:
-            return
+            return CanonicalResponse(errors=["not connected"])
 
         logger.info("opening covers")
         self.start_activity(CoverActivities.Opening)
@@ -177,7 +177,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         :mastapi:
         """
         if not self.connected:
-            return
+            return CanonicalResponse(errors=["not connected"])
 
         logger.info("closing covers")
         self.start_activity(CoverActivities.Closing)
@@ -210,8 +210,9 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         Performs the ``shutdown`` procedure for the **MAST** mirror covers controller
         """
         if not self.connected:
+            # Powering off *is* the shutdown for a disconnected cover -- success, not a refusal.
             self.power_off()
-            return
+            return CanonicalResponse_Ok
 
         if self.state != CoversState.Closed:
             self.start_activity(CoverActivities.ShuttingDown)

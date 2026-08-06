@@ -524,8 +524,8 @@ from pyximc import *
         else:
             raise Exception(f"Could not start move to {value} ({result=})")
 
-    def endpoint_status(self) -> StageStatus:
-        return self.status()
+    def endpoint_status(self) -> CanonicalResponse:
+        return CanonicalResponse(value=self.status())
 
     def status(self) -> StageStatus:
         at_preset = None

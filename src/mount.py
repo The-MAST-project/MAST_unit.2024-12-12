@@ -274,12 +274,14 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.pw.mount_find_home()
         return CanonicalResponse_Ok
 
-    def goto(
-        self,
-        primary_coord: float | str,
-        secondary_coord: float | str,
-        # frame: str = "icrs",
-    ):
+    def endpoint_goto(self, ra_j2000_hours: float, dec_j2000_degs: float) -> CanonicalResponse:
+        """
+        Slews the mount to equatorial (J2000) coordinates, in decimal hours and degrees.
+
+        Horizontal (alt/az) slewing is deliberately not offered here -- it needs its own
+        endpoint, because it is not the same operation with different numbers: tracking has
+        to be stopped for the pointing to stay put.
+        """
         op = function_name()
 
         if not self.connected:
@@ -287,30 +289,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             logger.error(msg)
             return CanonicalResponse(errors=[msg])
 
-        # frame_names = frame_transform_graph.get_names()
-        # if frame not in frame_names:
-        #     error = f"{op}: '{frame}' not in [{frame_names}]"
-        #     logger.error(error)
-        #     return CanonicalResponse(errors=[error])
-
-        # if frame != "icrs" and primary_coord is not None and secondary_coord is not None:
-        #     try:
-        #         j2000_coord = SkyCoord(primary_coord, secondary_coord, frame)
-        #         primary_coord = j2000_coord.ra.hour
-        #         secondary_coord = j2000_coord.dec.deg
-        #     except Exception as e:
-        #         error = f"{op}: {e}"
-        #         logger.error(error)
-        #         return CanonicalResponse(errors=[error])
-
-        try:
-            self.pw.mount_goto_ra_dec_j2000(primary_coord, secondary_coord)
-        except Exception as e:
-            error = f"{op}: {e}"
-            logger.error(error)
-            return CanonicalResponse(errors=[error])
-
-        return CanonicalResponse_Ok
+        return self.goto_ra_dec_j2000(ra_j2000_hours, dec_j2000_degs)
 
     def ontimer(self):
         if self.unit.unit_shutdown_event.is_set():
@@ -603,18 +582,25 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"{op}: dist_to_target settled (< {tol_arcsec:.3f} arcsec for {stable_samples} samples)")
         return True
 
-    def endpoint_status(self) -> MountStatus:
-        return self.status()
+    def endpoint_status(self) -> CanonicalResponse:
+        return CanonicalResponse(value=self.status())
+
+    def target_verbal(self) -> str | None:
+        """
+        Renders ``target`` for status: a tuple is (RA hours, Dec degrees) from
+        ``goto_ra_dec_j2000``; a string is already display-ready (e.g. "Home").
+        """
+        if isinstance(self.target, str):
+            return self.target
+        if isinstance(self.target, tuple):
+            return (
+                f"[{Angle(self.target[0], unit='hour').to_string(unit='hour', sep=':', precision=3)}, "
+                + f"{Angle(self.target[1], unit='deg').to_string(unit='deg', sep=':', precision=3)}]"
+            )
+        return None
 
     def status(self) -> MountStatus:
-        target_verbal = None
-        if isinstance(self.target, str):
-            target_verbal = self.target
-        elif isinstance(self.target, tuple):
-            target_verbal = (
-                f"[{Angle(self.target[0], unit='hour').to_string(unit='hour', sep=':', precision=3)}, "
-                + f"{Angle(self.target[1], unit='arcsec').to_string(unit='deg', sep=':', precision=3)}]"
-            )
+        target_verbal = self.target_verbal()
 
         activities = self.activities  # integrate activities we may have not started
         st = None
@@ -697,14 +683,11 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"stopped tracking (from {caller_name()})")
         return CanonicalResponse_Ok
 
-    def goto_ra_dec_j2000(self, ra: float, dec: float):
+    def goto_ra_dec_j2000(self, ra: float, dec: float) -> CanonicalResponse:
         self.start_activity(MountActivities.Slewing)
         self.target = (ra, dec)
         self.pw.mount_goto_ra_dec_j2000(ra, dec)
-
-    def goto_ra_dec_apparent(self, ra: float, dec: float):
-        self.start_activity(MountActivities.Slewing)
-        self.pw.mount_goto_ra_dec_apparent(ra, dec)
+        return CanonicalResponse_Ok
 
     def endpoint_abort(self):
         return self.abort()
@@ -829,7 +812,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         router.add_api_route(base_path + "/stop_tracking", tags=[tag], endpoint=self.stop_tracking)
         router.add_api_route(base_path + "/park", tags=[tag], endpoint=self.park)
         router.add_api_route(base_path + "/find_home", tags=[tag], endpoint=self.find_home)
-        router.add_api_route(base_path + "/goto", tags=[tag], endpoint=self.goto)
+        router.add_api_route(base_path + "/goto", methods=["PUT"], tags=[tag], endpoint=self.endpoint_goto)
         router.add_api_route(base_path + "/dance", tags=[tag], endpoint=self.dance)
 
         return router
