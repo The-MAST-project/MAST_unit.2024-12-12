@@ -104,8 +104,8 @@ $\Delta x=\sqrt{D_{\min}^2((1+f)^2-1)/a}$.
 
 ### Plumbing (additive)
 `start_hfd_autofocus` endpoint (`src/unit.py`), `UnitActivities.HfdAutofocusing`
-(`src/common/activities.py`), HFD config block in `AutofocusConfig`
-(`src/common/config/unit.py`; MAST_common submodule → sync). `src/app.py`/ps3cli
+(MAST_common `activities.py`), HFD config block in `AutofocusConfig`
+(MAST_common `config/unit.py`; separate repo → its own PR). `src/app.py`/ps3cli
 unchanged.
 
 **Refinements (validated by autofocus-methods-research):** the `D²=ax²+bx+c` fit *is*
@@ -119,7 +119,7 @@ empirically (the off-axis-coma cutoff is not quantified in the literature).
 
 **Files:** new `src/imaging/hfd.py`, `src/focus_analysis_hfd.py`; additive edits to
 `src/autofocusing.py` (shared-sweep helper + `do_start_hfd_autofocus`), `src/unit.py`,
-`src/common/activities.py`, `src/common/config/unit.py`.
+and in MAST_common: `activities.py`, `config/unit.py`.
 
 **Verification:** (1) **A/B on the same files** — extend `tests/autofocus/validate_autofocus_solve.py`
 to run both analyzers over real `FOCUS*.fits`, compare best-focus/tolerance;
