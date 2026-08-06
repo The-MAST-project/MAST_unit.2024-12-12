@@ -23,5 +23,5 @@ venv, then from the repo root:
 python -m pytest tests/ -v
 ```
 
-The `src/common` submodule carries its own platform-independent suite
-(`src/common/tests/`).
+MAST_common carries its own platform-independent suite, run from its own clone
+(`<top>/common/tests/`). It is a sibling of this repo, not a submodule.
