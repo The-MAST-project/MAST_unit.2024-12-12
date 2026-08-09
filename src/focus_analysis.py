@@ -20,6 +20,8 @@ from common.mast_logging import get_logger
 from PlaneWave.ps3cli_client import PS3CLIClient
 
 logger = get_logger(__name__)
+
+
 class PS3FocusSample(ExtendedBaseModel):
     is_valid: bool
     focus_position: float | None = None

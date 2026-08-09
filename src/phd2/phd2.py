@@ -33,6 +33,8 @@ if TYPE_CHECKING:
     pass  # type: ignore[name-defined]
 
 logger = get_logger(__name__)
+
+
 class CoolerStatus(BaseModel):
     temperature: float
     coolerOn: bool  # noqa: N815

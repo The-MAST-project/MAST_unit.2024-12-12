@@ -11,6 +11,8 @@ from common.utils import function_name
 from imagers import ImagerInterface
 
 logger = get_logger(__name__)
+
+
 def save_to_fits_file(imager_backend: ImagerInterface):
     op = function_name()
 
