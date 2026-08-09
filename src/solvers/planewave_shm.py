@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from unit import Unit  # type: ignore[import-untyped]
 
 logger = get_logger(__name__)
+
+
 class PlaneWaveShmSolvingSolution(ExtendedBaseModel):
     num_matched_stars: int
     match_rms_error_arcsec: float

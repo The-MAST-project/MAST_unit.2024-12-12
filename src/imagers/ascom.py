@@ -32,6 +32,8 @@ from imagers.saving import save_to_fits_file
 #     from unit import Unit
 
 logger = get_logger(__name__)
+
+
 class Visualizer:
     def __init__(self, name: str, func: Callable):
         self.name = name

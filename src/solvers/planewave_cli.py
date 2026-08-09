@@ -79,7 +79,10 @@ class PlaneWaveCli(SolverInterface):
                     check=True,
                     shell=True,
                 )
-            filer.move_ram_to_shared(image_path)
+            # The input frame is NOT moved here. Solver.solve owns image_path and moves it
+            # on both outcomes; doing it here as well raced that move and logged a spurious
+            # "path does not exist" ERROR for whichever mover lost. Solvers move only the
+            # artifacts they themselves produce -- result_path below.
         except subprocess.CalledProcessError as e:
             logger.error(f"{op}: solver return code: {PlaneWaveCliSolverExitCode(e.returncode).__repr__()}")
             # Write + close result.txt, THEN move it (protected). The move was previously
