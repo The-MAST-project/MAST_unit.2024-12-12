@@ -1,0 +1,90 @@
+# Continuous integration for MAST_unit.
+#
+# Windows only: the units are Windows machines, the imager backends bind to
+# pywin32/ASCOM, and tests/test_imager_backend_imports.py skips itself off Windows.
+# (MAST_common is matrixed over Windows and Linux because it runs on both; MAST_spec
+# would be Windows, MAST_control and MAST_gui Linux. Darwin is development only.)
+#
+# The interesting part is the layout. This repo dropped the src/common submodule
+# (#94): `common` is now a SIBLING clone, put on sys.path by the mast.pth that
+# MAST_provisioning writes into each machine's venv. So the workflow reproduces that
+# layout -- two checkouts side by side, with the workspace root on PYTHONPATH -- rather
+# than initialising a submodule that no longer exists.
+#
+#   <workspace>/
+#     common/   <- MAST_common master; the repo root IS the `common` package
+#     unit/     <- this repo
+#
+# Consequence worth knowing: this builds against MAST_common's master, not against a
+# pinned commit. A breaking change there turns this red without anything in this repo
+# having moved -- which is the point, since that is exactly how the units are deployed.
+#
+# Only the tests are blocking. `ruff check` reports 269 findings and `ruff format
+# --check` 44 files as of 2026-08-09, all pre-existing; gating on them would make every
+# run red from day one, which teaches people to ignore CI. They run advisory so the debt
+# stays visible, and should be flipped to blocking once burned down.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (windows-latest)
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out MAST_unit
+        uses: actions/checkout@v4
+        with:
+          path: unit
+
+      - name: Check out MAST_common as a sibling
+        uses: actions/checkout@v4
+        with:
+          repository: The-MAST-project/MAST_common
+          ref: master
+          path: common
+
+      - uses: actions/setup-python@v5
+        with:
+          # ruff.toml sets target-version = "py312"; keep these in step.
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            unit/requirements.txt
+            unit/requirements-dev.txt
+
+      - name: Install dependencies
+        working-directory: unit
+        # requirements.txt already pins everything the common import chain needs, so
+        # there is nothing to install from the sibling checkout.
+        run: python -m pip install --upgrade pip -r requirements.txt -r requirements-dev.txt
+
+      - name: Tests
+        working-directory: unit
+        env:
+          # Stands in for the mast.pth the provisioning writes into the venv: it is what
+          # makes `import common` resolve to the sibling clone. tests/conftest.py adds
+          # src/ on top of this.
+          PYTHONPATH: ${{ github.workspace }}
+        # -ra surfaces skips: test_imager_backend_imports.py guards on win32com, and a
+        # skip there would mean pywin32 failed to install rather than that the test is
+        # inapplicable -- on a Windows runner it must actually run.
+        run: python -m pytest tests/ -q -ra
+
+      - name: Lint (advisory)
+        continue-on-error: true
+        working-directory: unit
+        run: ruff check .
+
+      - name: Format (advisory)
+        continue-on-error: true
+        working-directory: unit
+        run: ruff format --check .
