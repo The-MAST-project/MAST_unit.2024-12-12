@@ -17,6 +17,8 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 filer = Filer(logger)
+
+
 class ApproachMode(IntEnum):
     """
     How `solve_and_correct` applies a mount correction. IntEnum, so existing

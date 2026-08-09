@@ -20,6 +20,8 @@ if TYPE_CHECKING:
     pass
 
 logger = get_logger(__name__)
+
+
 class FocusDirection(IntEnum):
     In = auto()
     Out = auto()

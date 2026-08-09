@@ -20,6 +20,8 @@ if TYPE_CHECKING:
     from unit import Unit
 
 logger: logging.Logger = logging.getLogger("mast.unit." + __name__)
+
+
 class Covers(Component, SwitchedOutlet, AscomDispatcher):
     _instance = None
     _initialized = False

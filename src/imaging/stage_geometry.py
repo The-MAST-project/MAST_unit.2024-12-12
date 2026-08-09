@@ -54,6 +54,8 @@ if TYPE_CHECKING:
     from unit import Unit  # type: ignore[import-untyped]
 
 logger = get_logger(__name__)
+
+
 @dataclass
 class StageGeometryResult:
     """The spec stage position and the quality behind it.
