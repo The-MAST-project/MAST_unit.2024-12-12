@@ -19,10 +19,14 @@
 # pinned commit. A breaking change there turns this red without anything in this repo
 # having moved -- which is the point, since that is exactly how the units are deployed.
 #
-# Only the tests are blocking. `ruff check` reports 269 findings and `ruff format
-# --check` 44 files as of 2026-08-09, all pre-existing; gating on them would make every
-# run red from day one, which teaches people to ignore CI. They run advisory so the debt
-# stays visible, and should be flipped to blocking once burned down.
+# Lint is BLOCKING and, as of 2026-08-09, failing: 269 ruff findings and 44 files
+# needing the formatter, all pre-existing. That is deliberate -- the debt is meant to
+# show as red until it is cleared, rather than sit in an advisory step nobody reads.
+#
+# It is a separate job from the tests so the two signals stay independent: a red lint
+# does not hide whether the suite passed, and vice versa. Lint runs on Linux because
+# ruff is platform-independent and the Linux runner is quicker to start; the tests are
+# what need Windows.
 name: CI
 
 on:
@@ -79,12 +83,29 @@ jobs:
         # inapplicable -- on a Windows runner it must actually run.
         run: python -m pytest tests/ -q -ra
 
-      - name: Lint (advisory)
-        continue-on-error: true
-        working-directory: unit
-        run: ruff check .
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
 
-      - name: Format (advisory)
-        continue-on-error: true
-        working-directory: unit
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install ruff
+        # requirements-dev.txt pins the version, so CI and every workstation agree on
+        # what counts as a finding. Nothing else is needed: ruff never imports the code.
+        run: python -m pip install --upgrade pip -r requirements-dev.txt
+
+      - name: Format
+        # Deliberately before `ruff check`: this one is a single `ruff format .` away,
+        # so surfacing it first means the cheap half of the debt is not hidden behind
+        # the expensive half.
         run: ruff format --check .
+
+      - name: Lint
+        run: ruff check .
