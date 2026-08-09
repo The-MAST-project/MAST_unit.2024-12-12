@@ -107,7 +107,10 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         if self.connected and (self.parent_imager and self.parent_imager.is_active(ImagerActivities.Exposing)):
             assert self.latest_exposure is not None
             assert self.latest_settings is not None
-            if (datetime.datetime.now() - self.latest_exposure.start) >= datetime.timedelta(
+            # Naive on purpose: ImagerExposure.start is built by a naive
+            # default_factory, and mixing an aware `now` with it raises TypeError. Making
+            # that model aware is a MAST_common change and must land with this line.
+            if (datetime.datetime.now() - self.latest_exposure.start) >= datetime.timedelta(  # noqa: DTZ005
                 seconds=self.latest_settings.seconds / 2
             ):
                 self.ccd_temp_at_mid_exposure, _ = zwoasi.getControlValue(self.cam_id, asi.Control.Temperature)

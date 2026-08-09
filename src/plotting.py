@@ -457,7 +457,7 @@ class DummyStatus:
 
 def test_corrections_plot():
 
-    start = datetime.datetime.now()
+    start = datetime.datetime.now(datetime.UTC)
     dt = [
         0,
         32,

@@ -1,4 +1,3 @@
-import datetime
 import time
 from multiprocessing.shared_memory import SharedMemory
 from typing import TYPE_CHECKING, Literal
@@ -76,9 +75,8 @@ class PlaneWaveShm(SolverInterface):
         ps3_shm_client: PS3CLIClient = PS3CLIClient()
 
         ps3_shm_client.connect("127.0.0.1", 8998)
-        start = datetime.datetime.now()
         timeout_seconds: float = 50
-        end = start + datetime.timedelta(seconds=timeout_seconds)
+        deadline = time.monotonic() + timeout_seconds
         logger.info(f"{op}: calling ps3_client.begin_platesolve_shm ...")
         ps3_shm_client.begin_platesolve_shm(
             shm_key=Const.PLATE_SOLVING_SHM_NAME,
@@ -105,7 +103,7 @@ class PlaneWaveShm(SolverInterface):
             ):
                 break
 
-            if datetime.datetime.now() >= end:
+            if time.monotonic() >= deadline:
                 ps3_shm_client.platesolve_cancel()
                 ps3_solver_status = PlaneWaveShmSolvingResult(
                     state="error",

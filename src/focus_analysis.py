@@ -11,7 +11,6 @@ harness over a bundle of previously-captured FITS files (see
 ``tests/autofocus/validate_autofocus_solve.py``).
 """
 
-import datetime
 import time
 from pathlib import Path
 
@@ -98,12 +97,13 @@ def analyze_focus_files(
         logger.info(f"calling ps3_client.begin_analyze_focus({posix_files})")
         ps3_client.begin_analyze_focus(posix_files)
 
-        start = datetime.datetime.now()
-        end = start + datetime.timedelta(seconds=timeout)
+        # monotonic: this is an elapsed-time deadline, and a wall clock can step
+        # under NTP or DST and either expire it early or never.
+        deadline = time.monotonic() + timeout
 
         # wait for the autofocus analyser to start running
         status: PS3AutofocusStatus | None = None
-        while datetime.datetime.now() < end:
+        while time.monotonic() < deadline:
             d = ps3_client.focus_status()
             if d is None:
                 time.sleep(0.1)
@@ -118,7 +118,7 @@ def analyze_focus_files(
             else:
                 break
 
-        if datetime.datetime.now() >= end:
+        if time.monotonic() >= deadline:
             raise FocusAnalysisError(
                 f"autofocus analyser did not start within {timeout} seconds",
                 phase="start",
@@ -126,7 +126,7 @@ def analyze_focus_files(
 
         # wait for the autofocus analyser to stop running
         last_log_message = ""
-        while datetime.datetime.now() < end:
+        while time.monotonic() < deadline:
             s = ps3_client.focus_status()
             status = PS3AutofocusStatus(**s if s else {})
             logger.info(f"{op}: {s=}")
@@ -136,7 +136,7 @@ def analyze_focus_files(
             else:
                 time.sleep(0.5)
 
-        if datetime.datetime.now() >= end:
+        if time.monotonic() >= deadline:
             raise FocusAnalysisError(
                 f"autofocus analyser did not finish within {timeout} seconds",
                 phase="finish",

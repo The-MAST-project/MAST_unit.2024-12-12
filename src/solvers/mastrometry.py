@@ -1,8 +1,8 @@
-import datetime
 import json
 import os
 import shutil
 import subprocess
+import time
 from contextlib import suppress
 from pathlib import Path
 from threading import Thread
@@ -340,7 +340,7 @@ class MastrometryDotNet(SolverInterface):
 
         command = " ".join([r"C:/cygwin64/usr/local/astrometry/bin/solve-field"] + args)
         logger.info(f"{function_name()}: Running astrometry.net with '{command}'")
-        start = datetime.datetime.now()
+        start = time.monotonic()
 
         # solve-field writes new_fits_path (the solved frame, carrying the WCS). Protect it
         # for the duration: it keeps the mover off a half-written file, and -- since
@@ -351,10 +351,10 @@ class MastrometryDotNet(SolverInterface):
             completed_process = subprocess.run(command, capture_output=True, shell=True, env=env)
         stdout_lines = completed_process.stdout.decode().strip().splitlines()
         stderr_lines = completed_process.stderr.decode().strip().splitlines()
-        elapsed = datetime.datetime.now() - start
+        elapsed = time.monotonic() - start
         logger.info(
             f"{function_name()}: {'succeeded' if completed_process.returncode == 0 else 'failed'}"
-            + f" in {elapsed.total_seconds():.2f} seconds"
+            + f" in {elapsed:.2f} seconds"
         )
 
         result_file = cygwin_to_win(str(new_fits_path)).replace(".fits", "-result.txt")
@@ -376,7 +376,7 @@ class MastrometryDotNet(SolverInterface):
                 file.writelines(line + "\n")
 
             file.write("\n--- timing ---\n")
-            file.writelines(f"elapsed: {elapsed.total_seconds():.2f} seconds\n")
+            file.writelines(f"elapsed: {elapsed:.2f} seconds\n")
 
         if completed_process.returncode == 0:
             ret = parse_solver_output(stdout_lines)

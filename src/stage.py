@@ -793,7 +793,7 @@ from pyximc import *
 
         self.ticks_at_start = self.position
         self.target = position
-        self.motion_start_time = datetime.datetime.now()
+        self.motion_start_time = datetime.datetime.now(datetime.UTC)
         self.start_activity(StageActivities.Moving, details=[f"from {self.position} to {self.target}"])
 
         return CanonicalResponse_Ok

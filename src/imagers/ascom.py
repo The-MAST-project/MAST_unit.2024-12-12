@@ -466,7 +466,9 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if response.value is None:
             if parent_imager:
                 parent_imager.start_activity(ImagerActivities.Exposing)
-            self.expected_mid_exposure = datetime.datetime.now() + datetime.timedelta(seconds=settings.seconds / 2)
+            self.expected_mid_exposure = datetime.datetime.now(datetime.UTC) + datetime.timedelta(
+                seconds=settings.seconds / 2
+            )
             self.image = None
             self.image_was_read = False
             self.latest_settings = settings
@@ -716,7 +718,8 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         else:
             return
 
-        now = datetime.datetime.now()
+        # aware, to match expected_mid_exposure which it is compared against below.
+        now = datetime.datetime.now(datetime.UTC)
         # previous_state = self.last_state
         if self.last_state is None and current_state is not None:
             self.last_state = current_state

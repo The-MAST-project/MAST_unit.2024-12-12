@@ -1,9 +1,9 @@
-import datetime
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -207,7 +207,7 @@ class AstrometryDotNet(SolverInterface):
             args += ["--new-fits", win_to_wsl(new_fits_path)]
             args += [win_to_wsl(input_fits_path)]
 
-        start = datetime.datetime.now()
+        start = time.monotonic()
         command = " ".join([cmd] + args)
         # logger.info(f"AstrometryDotNet.solve: {command=}")
 
@@ -217,11 +217,8 @@ class AstrometryDotNet(SolverInterface):
             completed_process = subprocess.run(command, capture_output=True, shell=True)
         stdout_lines = completed_process.stdout.decode().strip().splitlines()
         stderr_lines = completed_process.stderr.decode().strip().splitlines()
-        elapsed = datetime.datetime.now() - start
-        logger.info(
-            f"{'succeeded' if completed_process.returncode == 0 else 'failed'}"
-            + f" in {elapsed.total_seconds():.2f} seconds"
-        )
+        elapsed = time.monotonic() - start
+        logger.info(f"{'succeeded' if completed_process.returncode == 0 else 'failed'}" + f" in {elapsed:.2f} seconds")
 
         result_file = cygwin_to_win(new_fits_path).replace(".fits", "-result.txt")
         with MoveGuardian().protect(result_file), open(result_file, "w") as file:
@@ -234,7 +231,7 @@ class AstrometryDotNet(SolverInterface):
             for line in stderr_lines:
                 file.writelines(line + "\n")
             file.write("\n--- timing ---\n")
-            file.writelines(f"elapsed: {elapsed.total_seconds():.2f} seconds\n")
+            file.writelines(f"elapsed: {elapsed:.2f} seconds\n")
 
         if completed_process.returncode == 0:
             ret = parse_solver_output(stdout_lines)

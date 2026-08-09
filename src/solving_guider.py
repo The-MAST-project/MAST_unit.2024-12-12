@@ -1,4 +1,3 @@
-import datetime
 import os
 import time
 
@@ -45,7 +44,7 @@ class SolvingGuider(GuiderInterface):
         ra_tolerance = Angle(phase_conf.tolerance.ra_arcsec * u.arcsecond)  # type: ignore
         dec_tolerance = Angle(phase_conf.tolerance.dec_arcsec * u.arcsecond)  # type: ignore
 
-        end: datetime.datetime | None = None
+        end: float | None = None
         folder = os.path.join(self.unit.acquirer.latest_acquisition.folder, phase)
         guiding_settings = self.unit.guider.make_guiding_settings(folder)
         target: Coord = Coord(
@@ -56,9 +55,9 @@ class SolvingGuider(GuiderInterface):
         self.guiding_exposure_series = self.unit.imager.start_exposure_series()
         self.unit.start_activity(UnitActivities.Guiding)
         while self.unit.is_active(UnitActivities.Guiding):
-            start = datetime.datetime.now()
+            start = time.monotonic()
             if cadence:
-                end = start + datetime.timedelta(seconds=cadence)
+                end = start + cadence
             self.unit.solver.solve_and_correct(
                 target=target,
                 approach_mode=self.unit.acquirer.latest_acquisition.approach_mode,
@@ -74,9 +73,11 @@ class SolvingGuider(GuiderInterface):
             self.unit.acquirer.latest_acquisition.save_corrections(phase)
 
         if cadence and end is not None:
-            now = datetime.datetime.now()
+            # monotonic, and a plain subtraction: timedelta.seconds is the 0-86399
+            # component, so it truncated any sub-second remainder to zero.
+            now = time.monotonic()
             if now < end:
-                sec = (end - now).seconds
+                sec = end - now
                 boxed_log(
                     logger,
                     f"phase '[{phase.upper()}], sleeping {sec:.2f} seconds till end-of-cadence ...",
