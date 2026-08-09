@@ -408,8 +408,8 @@ def parse_solver_output(lines: list[str]) -> SolvingResult | None:
                 ret.solution.confidence = None
                 ret.solution.confidence_level = SolvingConfidenceLevel.Unsolved
 
-    except Exception as e:
-        logger.error(f"{op}: exception: {e}")
+    except Exception:
+        logger.exception(f"{op}: exception")
 
     return ret
 

@@ -147,7 +147,7 @@ if __name__ == "__main__":
             image_params = None
             try:
                 image_params = json.loads(s.decode("utf-8"))
-            except Exception:
+            except json.JSONDecodeError:
                 pass  # TBD
             if not image_params:
                 logger.warning("bad image_params")
@@ -158,5 +158,5 @@ if __name__ == "__main__":
             socket_to_guider.send(json.dumps(response).encode("utf-8"))
             # logger.info('sent response to guider')
             time.sleep(1)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- obsolete simulator for the retired PlaneWave SHM solver
             logger.error("exception: ", e)

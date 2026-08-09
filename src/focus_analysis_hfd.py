@@ -46,7 +46,7 @@ def focus_position_of(path) -> float | None:
         return float(m.group(1))
     try:
         return float(fits.getheader(path)["FOCUSPOS"])
-    except Exception:
+    except (OSError, KeyError, ValueError):
         return None
 
 
@@ -142,8 +142,8 @@ def analyze_focus_samples(
     errors: list[str] = []
     try:
         per_frame, n_consistent = measure_sweep_hfd(images, **hfd_kw)
-    except Exception as ex:
-        logger.error(f"measure_sweep_hfd failed: {ex}")
+    except Exception:
+        logger.exception("measure_sweep_hfd failed")
         per_frame, n_consistent = [(float("nan"), 0)] * len(images), 0
 
     ps3_samples: list[PS3FocusSample] = []
@@ -245,8 +245,8 @@ def analyze_donut_samples(
             continue
         try:
             metric = frame_donut_metric(img, min_donuts=min_donuts, **detect_kw)
-        except Exception as ex:
-            logger.error(f"frame_donut_metric failed: {ex}")
+        except Exception:
+            logger.exception("frame_donut_metric failed")
             continue
         if metric.n_donuts >= min_donuts and np.isfinite(metric.median_diameter):
             positions.append(pos)

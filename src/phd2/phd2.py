@@ -389,8 +389,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             except PHD2ConnectorError as ex:
                 self.connected = False
                 logger.error(f"{function_name()}: Failed to connect {ex=}")
-            except Exception as ex:
-                logger.error(f"{function_name()}: reconnect: caught {ex=}")
+            except Exception:
+                logger.exception(f"{function_name()}: reconnect: caught")
 
             # self.cooler_on = True
 
@@ -826,8 +826,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.worker.start()
             self._connected = True
             # print("DBG: connect done")
-        except Exception as ex:
-            logger.error(f"{function_name()}: connect: {ex=}")
+        except Exception:
+            logger.exception(f"{function_name()}: connect:")
             # self.disconnect()
             # raise
 
@@ -1532,8 +1532,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             reply = self.call("get_ccd_temperature")
             if reply and "result" in reply and "temperature" in reply["result"]:
                 return reply["result"]["temperature"]
-        except Exception as ex:
-            logger.error(f"{function_name()}: could not get temperature {ex=}")
+        except Exception:
+            logger.exception(f"{function_name()}: could not get temperature")
             return None
 
     @property
@@ -1547,8 +1547,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             if reply and "result" in reply and "coolerOn" in reply["result"]:
                 self._setpoint = reply["result"]["setpoint"]
                 return reply["result"]["coolerOn"]
-        except Exception as ex:
-            logger.error(f"{function_name()}: could not get coolerOn {ex=}")
+        except Exception:
+            logger.exception(f"{function_name()}: could not get coolerOn")
             return None
 
     @cooler_on.setter
@@ -1561,8 +1561,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             reply = self.call("get_cooler_status")
             if "result" in reply and "power" in reply["result"]:
                 return reply["result"]["power"]
-        except Exception as ex:
-            logger.error(f"{function_name()}: could not get power {ex=}")
+        except Exception:
+            logger.exception(f"{function_name()}: could not get power")
             return None
 
     @property

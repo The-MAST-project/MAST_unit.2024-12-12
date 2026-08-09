@@ -99,7 +99,7 @@ class Acquisition:
                         with open(path, "w") as fp:
                             fp.write(self.corrections[phase].model_dump_json(indent=2))
                             break
-                    except Exception as e:
+                    except OSError as e:
                         logger.error(f"failed to write {path} (error: {e})")
                         continue
                 plot_phase_corrections(

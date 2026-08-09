@@ -362,7 +362,7 @@ class Autofocuser:
                         f"saved unit '{self.unit.hostname}' configuration for "
                         + f"focuser known-as-good-position {position}"
                     )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 -- config write failure is reported to the caller, never fatal to an autofocus run
                     self.log_and_store_error(
                         f"could not save unit '{self.unit.hostname}' "
                         + f"configuration for focuser known-as-good-position (exception: {e})"

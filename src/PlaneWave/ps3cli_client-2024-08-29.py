@@ -22,7 +22,7 @@ class PS3CLIClient:
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.connect((host, port))
-        except Exception:
+        except OSError:
             raise Exception(f"Failed to connect to {host}:{port}")
 
     def close(self):
@@ -244,7 +244,7 @@ def test_bad_method(ps3: PS3CLIClient):
     try:
         response = ps3.send_receive("bogus_method")
         print("Response:", response)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- demo entry point: report whatever went wrong
         print("Caught exception:")
         print(e)
 

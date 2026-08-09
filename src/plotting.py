@@ -354,7 +354,7 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):  # noqa
         try:
             with open(file) as fp:
                 corrections: Corrections = Corrections.model_validate(json.load(fp))
-        except Exception as e:
+        except (OSError, ValueError) as e:
             logger.error(f"{op}: Could not get corrections from {file} ({e=})")
             continue
 

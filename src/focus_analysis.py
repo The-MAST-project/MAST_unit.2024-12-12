@@ -110,7 +110,7 @@ def analyze_focus_files(
                 continue
             try:
                 status = PS3AutofocusStatus(**d)
-            except Exception as ex:
+            except ValueError as ex:
                 logger.error(f"{op}: cannot parse focus_status() response: {d=} ({ex=})")
                 continue
             if not status.is_running:

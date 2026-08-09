@@ -202,8 +202,8 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                 if response.failed:
                     self.errors.append(response.failure)
                 logger.info(f"connected = {value}, axes disabled, disconnected")
-        except Exception as ex:
-            logger.exception(ex)
+        except Exception:
+            logger.exception("mount connect/disconnect failed")
 
     def endpoint_startup(self):
         return self.startup()
@@ -307,7 +307,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.pw.mount_goto_ra_dec_j2000(primary_coord, secondary_coord)
         except Exception as e:
             error = f"{op}: {e}"
-            logger.error(error)
+            logger.exception(error)
             return CanonicalResponse(errors=[error])
 
         return CanonicalResponse_Ok

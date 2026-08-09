@@ -135,9 +135,9 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 self.power_on()
 
             self._ascom = win32com.client.Dispatch(self.prog_id)
-        except Exception as ex:
-            logger.exception(ex)
-            raise ex
+        except Exception:
+            logger.exception(f"could not create ASCOM imager driver '{self.prog_id}'")
+            raise
 
         self.latest_settings: ImagerSettings | None = None
         self.latest_temperature_check: datetime.datetime | None = None
@@ -453,7 +453,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             if settings.roi:
                 self.roi = settings.roi
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- ASCOM/COM boundary: whatever the vendor driver raises is recorded in self.errors
             self.errors.append(f"{e}")
 
         if len(self.errors) > 0:
@@ -692,8 +692,8 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if self.connected:
             try:
                 self.disconnect()
-            except Exception as e:
-                logger.error(f"failed to disconnect from ASCOM camera: {e}")
+            except Exception:
+                logger.exception("failed to disconnect from ASCOM camera")
 
     def ontimer(self):  # noqa: C901
         """

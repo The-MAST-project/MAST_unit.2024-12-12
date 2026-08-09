@@ -132,7 +132,7 @@ def map_point(pwi4, alt_degs, azm_degs):
     print("Running PlateSolve...")
     try:
         match = platesolve("image.fits", IMAGE_ARCSEC_PER_PIXEL)
-    except Exception as ex:
+    except Exception as ex:  # noqa: BLE001 -- vendor demo script
         print(ex.message)
         return
 

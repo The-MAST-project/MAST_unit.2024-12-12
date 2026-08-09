@@ -77,7 +77,7 @@ def save_to_fits_file(imager_backend: ImagerInterface):
         # this file or its folder blocks until the write completes.
         with MoveGuardian().protect(settings.image_path):
             hdu_list.writeto(settings.image_path, checksum=True, overwrite=True)
-    except Exception as ex:
+    except OSError as ex:
         logger.error(f"failed to save to '{settings.image_path}', {ex=}")
 
     if imager_backend.parent_imager:

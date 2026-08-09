@@ -148,8 +148,8 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                     else:
                         self.parent_imager.end_activity(ImagerActivities.Exposing)
 
-            except Exception as ex:
-                logger.error(f"{op}: could not get exposure status, {ex=}")
+            except Exception:
+                logger.exception(f"{op}: could not get exposure status")
 
     @property
     def can_image_to_memory(self) -> bool:
@@ -181,7 +181,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         self.errors = []
         try:
             val, _ = zwoasi.getControlValue(self.cam_id, asi.Control.Temperature)
-        except Exception as ex:
+        except Exception as ex:  # noqa: BLE001 -- ZWO SDK boundary: the ctypes wrapper raises undocumented types; recorded in self.errors for the caller
             self.errors.append(f"failed to get control AsiControl.Temperature ({asi.Control.Temperature}), {ex=}")
         return val / 10.0
 
@@ -189,7 +189,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         self.errors = []
         try:
             zwoasi.setControlValue(self.cam_id, asi.Control.CoolerOn, onoff, 0)
-        except Exception as ex:
+        except Exception as ex:  # noqa: BLE001 -- ZWO SDK boundary: the ctypes wrapper raises undocumented types; recorded in self.errors for the caller
             self.errors.append(
                 f"failed to set control AsiControl.ASI_COOLER_ON ({asi.Control.CoolerOn}), " + f"value={onoff}, {ex=}"
             )
@@ -199,7 +199,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         self.errors = []
         try:
             val, _ = zwoasi.getControlValue(self.cam_id, asi.Control.CoolPowerPerc)
-        except Exception as ex:
+        except Exception as ex:  # noqa: BLE001 -- ZWO SDK boundary: the ctypes wrapper raises undocumented types; recorded in self.errors for the caller
             self.errors.append(
                 "failed to get control AsiControl.ASI_COOLER_POWER_PERC " + f"({asi.Control.CoolPowerPerc}), {ex=}"
             )
@@ -272,13 +272,13 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                     + f"size={self.width}x{self.height}, "
                     + f"depth={self.depth} bits, pixel-size={self.pixel_size} micron"
                 )
-            except Exception as ex:
+            except Exception as ex:  # noqa: BLE001 -- ZWO SDK boundary: the ctypes wrapper raises undocumented types; recorded in self.errors for the caller
                 self.log_and_append(f"could not connect to {self.cam_id=}, {ex=}")
         else:
             try:
                 zwoasi.closeCamera(self.cam_id)
                 self._connected = False
-            except Exception as ex:
+            except Exception as ex:  # noqa: BLE001 -- ZWO SDK boundary: the ctypes wrapper raises undocumented types; recorded in self.errors for the caller
                 self.log_and_append(f"could not closeCamera {self.cam_id=}, {ex=}")
 
     @property
@@ -391,7 +391,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             )
             zwoasi.setStartPos(self.cam_id, x, y)
             logger.info(f"set_format(roi=({x=}, {y=}, {width=}, {height=}), {binning=}, output_format={format.name})")
-        except Exception as ex:
+        except Exception as ex:  # noqa: BLE001 -- ZWO SDK boundary: the ctypes wrapper raises undocumented types; recorded in self.errors for the caller
             self.log_and_append(f"failed to set format to {x=},{y=},{width=},{height=},{binning=},{format.name=}: {ex=}")
 
     def start_exposure(self, settings: ImagerSettings):
@@ -437,7 +437,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                 self.parent_imager.start_activity(ImagerActivities.Exposing)
             zwoasi.startExposure(self.cam_id, isDark=False)
             logger.info(f"started a {settings.seconds} seconds exposure")
-        except Exception as ex:
+        except Exception as ex:  # noqa: BLE001 -- ZWO SDK boundary: the ctypes wrapper raises undocumented types; recorded in self.errors for the caller
             self.log_and_append(f"failed to start exposure, {ex=}")
 
     def set_control(self, control: asi.Control, value: int):
@@ -468,7 +468,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         self.errors = []
         try:
             val, _ = zwoasi.getControlValue(self.cam_id, asi.Control.CoolerOn)
-        except Exception as ex:
+        except Exception as ex:  # noqa: BLE001 -- ZWO SDK boundary: the ctypes wrapper raises undocumented types; recorded in self.errors for the caller
             self.errors.append(f"failed to get control AsiControl.CoolerOn ({asi.Control.CoolerOn}), {ex=}")
         return bool(val)
 
@@ -477,7 +477,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         self.errors = []
         try:
             zwoasi.setControlValue(self.cam_id, asi.Control.CoolerOn, int(onoff), 0)
-        except Exception as ex:
+        except Exception as ex:  # noqa: BLE001 -- ZWO SDK boundary: the ctypes wrapper raises undocumented types; recorded in self.errors for the caller
             self.errors.append(f"failed to set control AsiControl.CoolerOn ({asi.Control.CoolerOn}, {int(onoff)}), {ex=}")
 
     @property

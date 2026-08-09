@@ -384,7 +384,7 @@ from pyximc import *
         namespace = {}
         try:
             exec(compile(preamble + code, f"{self.stage_model}", "exec"), namespace)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- executes a profile file: arbitrary code, so arbitrary exceptions
             logger.warning(f"Error executing profile file '{file_path.as_posix()}': {e}")
             return
 
@@ -399,9 +399,9 @@ from pyximc import *
                 f"set profile for stage model '{self.stage_model}' from file '{file_path.as_posix()}', "
                 + f"result: {RESULT_MAP.get(result, result)}"
             )
-        except Exception as e:
-            logger.error(
-                f"error setting profile for stage model '{self.stage_model}' " + f"from file '{file_path.as_posix()}': {e}"
+        except Exception:
+            logger.exception(
+                f"error setting profile for stage model '{self.stage_model}' " + f"from file '{file_path.as_posix()}'"
             )
 
     def position_sampler(self):
@@ -788,7 +788,7 @@ from pyximc import *
                     return CanonicalResponse(errors=[msg])
         except Exception as ex:
             msg = f"{op}: Failed to start stage move absolute (command_move({self.device}, {position}), {ex=}"
-            logger.error(msg)
+            logger.exception(msg)
             return CanonicalResponse(errors=[msg])
 
         self.ticks_at_start = self.position
@@ -833,7 +833,7 @@ from pyximc import *
                 return CanonicalResponse(errors=[msg])
         except Exception as ex:
             msg = f"{op}: Failed to start stage move relative (command_movr({self.device}, {amount}), {ex=}"
-            logger.error(msg)
+            logger.exception(msg)
             return CanonicalResponse(errors=[msg])
         return CanonicalResponse_Ok
 

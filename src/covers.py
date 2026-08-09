@@ -52,10 +52,9 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         self.conf = self.unit.unit_conf.covers
         try:
             self._ascom = win32com.client.Dispatch(self.conf.ascom_driver)
-        except Exception as ex:
-            # logger.exception(ex)
-            logger.exception(ex)
-            raise ex
+        except Exception:
+            logger.exception(f"could not create ASCOM covers driver '{self.conf.ascom_driver}'")
+            raise
 
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Covers")
         Component.__init__(self, CoverActivities)

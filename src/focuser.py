@@ -46,9 +46,9 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         self.conf = self.unit.unit_conf.focuser
         try:
             self._ascom = win32com.client.Dispatch(self.conf.ascom_driver)
-        except Exception as ex:
-            logger.exception(ex)
-            raise ex
+        except Exception:
+            logger.exception(f"could not create ASCOM focuser driver '{self.conf.ascom_driver}'")
+            raise
 
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Focuser")
         Component.__init__(self, FocuserActivities)
