@@ -39,7 +39,7 @@ for path in [
 
 if platform.system() == "Windows":
     # Determining the directory with dependencies for windows depending on the bit depth.
-    arch_dir = "win64" if "64" in platform.architecture()[0] else "win32"  #
+    arch_dir = "win64" if "64" in platform.architecture()[0] else "win32"
     lib_dir = ximc_top_dir / arch_dir  # lib directory for ximc library
     if not lib_dir.exists():
         raise FileNotFoundError(f"Directory with ximc library not found: {lib_dir=}. ")
@@ -256,8 +256,7 @@ class Stage(Component, SwitchedOutlet):
             self.info["controller"] = repr(string_at(x_device_information.Manufacturer).decode()).replace("'", "")
             self.info["product"] = repr(string_at(x_device_information.ProductDescription).decode()).replace("'", "")
             self.info["version"] = (
-                f"{repr(x_device_information.Major)}.{repr(x_device_information.Minor)}"
-                + f".{repr(x_device_information.Release)}"
+                f"{x_device_information.Major!r}.{x_device_information.Minor!r}" + f".{x_device_information.Release!r}"
             )
 
         x_edges_settings = edges_settings_t()
@@ -385,7 +384,7 @@ from pyximc import *
         namespace = {}
         try:
             exec(compile(preamble + code, f"{self.stage_model}", "exec"), namespace)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- executes a profile file: arbitrary code, so arbitrary exceptions
             logger.warning(f"Error executing profile file '{file_path.as_posix()}': {e}")
             return
 
@@ -400,9 +399,9 @@ from pyximc import *
                 f"set profile for stage model '{self.stage_model}' from file '{file_path.as_posix()}', "
                 + f"result: {RESULT_MAP.get(result, result)}"
             )
-        except Exception as e:
-            logger.error(
-                f"error setting profile for stage model '{self.stage_model}' " + f"from file '{file_path.as_posix()}': {e}"
+        except Exception:
+            logger.exception(
+                f"error setting profile for stage model '{self.stage_model}' " + f"from file '{file_path.as_posix()}'"
             )
 
     def position_sampler(self):
@@ -789,12 +788,12 @@ from pyximc import *
                     return CanonicalResponse(errors=[msg])
         except Exception as ex:
             msg = f"{op}: Failed to start stage move absolute (command_move({self.device}, {position}), {ex=}"
-            logger.error(msg)
+            logger.exception(msg)
             return CanonicalResponse(errors=[msg])
 
         self.ticks_at_start = self.position
         self.target = position
-        self.motion_start_time = datetime.datetime.now()
+        self.motion_start_time = datetime.datetime.now(datetime.UTC)
         self.start_activity(StageActivities.Moving, details=[f"from {self.position} to {self.target}"])
 
         return CanonicalResponse_Ok
@@ -834,7 +833,7 @@ from pyximc import *
                 return CanonicalResponse(errors=[msg])
         except Exception as ex:
             msg = f"{op}: Failed to start stage move relative (command_movr({self.device}, {amount}), {ex=}"
-            logger.error(msg)
+            logger.exception(msg)
             return CanonicalResponse(errors=[msg])
         return CanonicalResponse_Ok
 

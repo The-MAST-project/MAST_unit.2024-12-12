@@ -17,20 +17,18 @@ that drives the real class is a worthwhile future addition (see README).
 
 import os
 import subprocess
-from pathlib import Path
-
-import pytest
 
 import pixel_grid as pg
+import pytest
 
 # Heavy deps are only needed when this test actually runs; gate them through
 # importorskip so the module skips cleanly (rather than erroring at collection)
 # on a machine without the scientific stack.
 np = pytest.importorskip("numpy")
 astropy_fits = pytest.importorskip("astropy.io.fits")
+import astropy.units as u  # noqa: E402
 from astropy.coordinates import SkyCoord  # noqa: E402
 from astropy.wcs import WCS  # noqa: E402
-import astropy.units as u  # noqa: E402
 
 PIXELSCALE = 0.2616
 FACTOR = 2

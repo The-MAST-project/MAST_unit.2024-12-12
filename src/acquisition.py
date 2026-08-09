@@ -3,7 +3,7 @@ import os
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
-import common.asi as asi
+from common import asi
 from common.config.unit import AcquisitionConfig
 from common.corrections import Corrections
 from common.filer import Filer, MoveGuardian
@@ -99,7 +99,7 @@ class Acquisition:
                         with open(path, "w") as fp:
                             fp.write(self.corrections[phase].model_dump_json(indent=2))
                             break
-                    except Exception as e:
+                    except OSError as e:
                         logger.error(f"failed to write {path} (error: {e})")
                         continue
                 plot_phase_corrections(

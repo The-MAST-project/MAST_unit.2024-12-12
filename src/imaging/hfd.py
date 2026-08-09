@@ -45,7 +45,7 @@ def _bg_subtract(data, box_size=64):
             bkg_estimator=MedianBackground(),  # type: ignore[arg-type]
         )
         return data - bkg.background
-    except Exception:
+    except Exception:  # noqa: BLE001 -- background estimation is best-effort; any failure falls back to the median
         return data - np.median(data)
 
 

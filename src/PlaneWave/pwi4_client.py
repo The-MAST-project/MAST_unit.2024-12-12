@@ -448,8 +448,6 @@ class Section:
     Simple object for collecting properties in PWI4Status
     """
 
-    pass
-
 
 class PWI4Status:
     """
@@ -746,7 +744,7 @@ class PWI4HttpCommunicator:
 
             raise PWException(message=f"request: HTTPError: error_message={error_message}, error_details: {error_details}")
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- vendor client: any transport failure becomes a PWException
             # This will often be a urllib2.URLError to indicate that a connection
             # could not be made to the server, but we'll handle any exception here
             raise PWException(message=f"request: got exception: {e}")
@@ -765,4 +763,4 @@ def list_to_comma_separated_string(value_list):
 
 class PWException(Exception):
     def __init__(self, message=None):
-        super(PWException, self).__init__(message)
+        super().__init__(message)
