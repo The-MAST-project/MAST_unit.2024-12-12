@@ -318,6 +318,15 @@ class Solver(SolverInterface):
                     f"phase: {phase.upper()}, plate solver found a match, YEY, YEPEEE, HURRAY !!!",
                 )
 
+                # A solved frame leaves the ram disk exactly like a failed one. Only the
+                # failure branch used to do this, so every SUCCESSFUL solve stranded its
+                # FITS -- the largest artifact of the acquisition -- and nothing else ever
+                # moved or reclaimed it. Whether that showed up depended on the solver
+                # backend: astrometry_dot_net and planewave_cli move the input frame
+                # themselves, mastrometry does not, and on 2026-08-04 mastrometry was the
+                # configured one, so the ram disk filled over the night.
+                filer.move_ram_to_shared(imager_settings.image_path)
+
                 # dec_avg_rad = math.radians((target.dec.arcsecond + Angle(result.solution.dec_rads * u.radian).arcsecond) / 2)  # type: ignore
                 dec_avg_rad = float(target.dec.radian + result.solution.dec_rads) / 2  # type: ignore
                 assert result.solution is not None, f"{op}: result.solution is None"

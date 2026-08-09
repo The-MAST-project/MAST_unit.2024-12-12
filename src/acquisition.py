@@ -110,5 +110,8 @@ class Acquisition:
                 filer.move_ram_to_shared(png)
 
     def post_process(self):
+        # NB: the ram-disk folder is NOT released here. post_process() is only reached by
+        # acquisitions that ran to completion, and the ones worth clearing are the ones that
+        # did not. Acquirer.run_acquisition owns the release, in a finally.
         if filer.ram and filer.ram.root is not None:
             plot_acquisition_corrections(self.folder.replace(filer.ram.root, filer.shared.root))

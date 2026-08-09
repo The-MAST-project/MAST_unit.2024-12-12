@@ -1,8 +1,10 @@
 import datetime
 import os
 import re
+import shutil
 import subprocess
 import sys
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -268,8 +270,23 @@ class AstrometryDotNet(SolverInterface):
                     ", ".join(stderr_lines),
                 ],
             )
-        filer.move_ram_to_shared([result_file, input_fits_path, cygwin_to_win(new_fits_path)])
-        # shutil.rmtree(win_tmp_dir, ignore_errors=True)
+        # input_fits_path is deliberately absent: Solver.solve owns it and moves it on both
+        # outcomes. Moving it here too raced that move and logged a spurious "path does not
+        # exist" ERROR for whichever mover lost. What remains are this solver's OWN
+        # artifacts -- the result file and the annotated copy it wrote.
+        filer.move_ram_to_shared([result_file, cygwin_to_win(new_fits_path)])
+
+        # Drop the astrometry.net scratch (.axy/.xyls/.wcs and the downsampled frame).
+        # Safe to do synchronously: both artifacts above derive from input_fits_path, so
+        # they live in the acquisition folder, not in here -- nothing the mover still wants
+        # is under this directory.
+        #
+        # The previous attempt was commented out AND referred to `win_tmp_dir`, which the
+        # lines near the top of this method leave commented out too, so it could never have
+        # been simply re-enabled. The directory actually created is the cygwin one below.
+        assert filer.ram is not None
+        with suppress(Exception):
+            shutil.rmtree(Path(filer.ram.root, "tmp", tmp_dir))
 
         return ret
 

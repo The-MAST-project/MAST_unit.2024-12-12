@@ -12,6 +12,7 @@ from common import asi
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import FcuVersion, SkyRoiConfig
+from common.filer import MoveGuardian
 from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification, UnitAssignment
 from common.notifications import Notifier
@@ -46,6 +47,30 @@ class Acquirer:
         self.unit = unit
         self.folder: str | None = None
         self.latest_acquisition: Acquisition | None = None
+
+    def run_acquisition(self, acquisition: Acquisition):
+        """Thread entry point for an acquisition: run it, then always release its folder.
+
+        do_acquire() returns early in several places -- mount not connected, a phase that
+        never reached tolerance -- and can raise. None of those paths reach post_process(),
+        so releasing the ram-disk folder there covered only the acquisitions that succeeded,
+        and precisely the ones that failed (partially written, most in need of clearing)
+        were the ones left behind.
+
+        The except clause matters as much as the finally: this runs on a thread, so an
+        escaping exception would otherwise go to threading's excepthook, i.e. to a stderr
+        file nobody reads -- the same way a TypeError in the mastrometry solver's cleanup
+        stayed invisible for months.
+        """
+        try:
+            self.do_acquire(acquisition)
+        except Exception:
+            logger.exception(f"{function_name()}: acquisition failed")
+        finally:
+            # Removed once every protected artifact has reached the shared area, and never
+            # before -- so a frame that failed to move keeps its folder instead of being
+            # deleted with it.
+            MoveGuardian().release_folder(acquisition.folder, logger=logger)
 
     def do_acquire(self, acquisition: Acquisition):  # noqa: C901
         """
@@ -353,7 +378,7 @@ class Acquirer:
             # False (manual acquisition-tuning), which would stall the assignment at SPEC.
             handover_automatically_to_guider=True,
         )
-        Thread(name="acquisition", target=self.do_acquire, args=[acquisition]).start()
+        Thread(name="acquisition", target=self.run_acquisition, args=[acquisition]).start()
 
         """
         This acquisition is part of an assignment, tell the controller where
@@ -484,6 +509,6 @@ class Acquirer:
             use_set_limit_frame=use_set_limit_frame,
             handover_automatically_to_guider=handover_automatically_to_guider,
         )
-        Thread(name="acquisition", target=self.do_acquire, args=[acquisition]).start()
+        Thread(name="acquisition", target=self.run_acquisition, args=[acquisition]).start()
 
         return CanonicalResponse_Ok
