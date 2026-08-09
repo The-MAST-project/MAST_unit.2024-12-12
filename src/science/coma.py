@@ -1,12 +1,10 @@
-import numpy as np
 import matplotlib.pyplot as plt
-
+import numpy as np
 from astropy.io import fits
 from astropy.stats import SigmaClip
-from photutils.background import Background2D, MedianBackground
-from photutils.segmentation import detect_threshold
-from photutils.segmentation import detect_sources, deblend_sources, SourceCatalog
 from photutils.aperture import EllipticalAperture
+from photutils.background import Background2D, MedianBackground
+from photutils.segmentation import SourceCatalog, detect_sources, detect_threshold
 
 
 def find_optical_center(
@@ -78,7 +76,7 @@ def find_optical_center(
 
     if segm is None:
         print("No sources detected. Consider lowering nsigma or npixels.")
-        return None
+        return
 
     # segm_deblend = deblend_sources(
     #     data_bkg_sub, segm, npixels=npixels,
@@ -101,7 +99,7 @@ def find_optical_center(
 
     if len(tbl) == 0:
         print("No valid sources after filtering. Adjust min_area/max_area.")
-        return None
+        return
 
     # Extract relevant columns
     x_centroids = tbl.columns["xcentroid"]

@@ -12,7 +12,7 @@ from typing import cast
 import numpy as np
 import win32com.client
 
-import common.asi as asi
+from common import asi
 from common.activities import ImagerActivities
 from common.ascom import AscomDispatcher, AscomStatus, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
@@ -414,7 +414,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
     def start_exposure(  # noqa: C901
         self, settings: ImagerSettings
-    ) -> CanonicalResponse:  # noqa: C901
+    ) -> CanonicalResponse:
         """
         Starts a *MAST* camera exposure
 

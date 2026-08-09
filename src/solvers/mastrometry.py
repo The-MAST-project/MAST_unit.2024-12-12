@@ -173,7 +173,7 @@ class MastrometryDotNet(SolverInterface):
                     imager_roi = ImagerRoi.from_other(sky_roi)
 
                 case "spec":
-                    import common.asi as asi
+                    from common import asi
 
                     camera_x_size = asi.ASI_294MM_WIDTH
                     camera_y_size = asi.ASI_294MM_HEIGHT
@@ -257,7 +257,7 @@ class MastrometryDotNet(SolverInterface):
 
             # Save downsampled image to temporary directory
             assert full_frame_input_image_path is not None
-            downsampled_image_path = win_tmp_dir / f"downsampled_{str(Path(full_frame_input_image_path).name)}"
+            downsampled_image_path = win_tmp_dir / f"downsampled_{Path(full_frame_input_image_path).name!s}"
             fits.writeto(downsampled_image_path, downsampled, header, overwrite=True)
             logger.info(f"{function_name()}: Saved downsampled image to '{downsampled_image_path}'")
 

@@ -7,8 +7,8 @@ model.
 
 import os.path
 import platform
-from subprocess import Popen, PIPE
 import tempfile
+from subprocess import PIPE, Popen
 
 # Point this to the location of the "ps3cli.exe" executable
 # PS3CLI_EXE = os.path.expanduser("~/ps3cli/ps3cli.exe")
@@ -71,7 +71,7 @@ def parse_platesolve_output(output_file):
 
     results = {}
 
-    for line in f.readlines():
+    for line in f:
         line = line.strip()
         if line == "":
             continue

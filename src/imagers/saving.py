@@ -2,7 +2,7 @@ import datetime
 import socket
 from pathlib import Path
 
-import astropy.io.fits as fits
+from astropy.io import fits
 
 from common.activities import ImagerActivities
 from common.filer import MoveGuardian

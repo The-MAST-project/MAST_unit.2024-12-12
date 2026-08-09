@@ -39,7 +39,7 @@ for path in [
 
 if platform.system() == "Windows":
     # Determining the directory with dependencies for windows depending on the bit depth.
-    arch_dir = "win64" if "64" in platform.architecture()[0] else "win32"  #
+    arch_dir = "win64" if "64" in platform.architecture()[0] else "win32"
     lib_dir = ximc_top_dir / arch_dir  # lib directory for ximc library
     if not lib_dir.exists():
         raise FileNotFoundError(f"Directory with ximc library not found: {lib_dir=}. ")
@@ -256,8 +256,7 @@ class Stage(Component, SwitchedOutlet):
             self.info["controller"] = repr(string_at(x_device_information.Manufacturer).decode()).replace("'", "")
             self.info["product"] = repr(string_at(x_device_information.ProductDescription).decode()).replace("'", "")
             self.info["version"] = (
-                f"{repr(x_device_information.Major)}.{repr(x_device_information.Minor)}"
-                + f".{repr(x_device_information.Release)}"
+                f"{x_device_information.Major!r}.{x_device_information.Minor!r}" + f".{x_device_information.Release!r}"
             )
 
         x_edges_settings = edges_settings_t()

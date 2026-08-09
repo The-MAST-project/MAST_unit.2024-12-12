@@ -9,10 +9,12 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import IntFlag, auto
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
-import common.asi as asi
 from astropy.coordinates import Angle
+from pydantic import BaseModel
+
+from common import asi
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
@@ -24,13 +26,8 @@ from common.mast_logging import get_logger
 from common.models.statuses import PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_debug, function_name
-from pydantic import BaseModel
-
 from phd2.phd2_locate import locate_phd2_exe
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
-
-if TYPE_CHECKING:
-    pass  # type: ignore[name-defined]
 
 logger = get_logger(__name__)
 
@@ -104,8 +101,6 @@ class PHD2ConnectorError(Exception):
 
     """
 
-    pass
-
 
 class PHD2Accumulator:
     def __init__(self):
@@ -119,8 +114,7 @@ class PHD2Accumulator:
 
     def add(self, x):
         ax = abs(x)
-        if ax > self._peak:
-            self._peak = ax
+        self._peak = max(self._peak, ax)
         self.n += 1
         d = x - self.a
         self.a += d / self.n
@@ -501,7 +495,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             if not within_tolerance:
                 # TBD: what to do if the target is not within tolerance?
                 logger.error(f"{function_name()}: OUT OF TOLERANCE!, WHAT TO DO?")
-                pass
 
         self.end_activity(PHD2Activities.SolvingForValidation)
         self.end_activity(PHD2Activities.Validating)
@@ -780,7 +773,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 pass
             case _:
                 logger.warning(f"{function_name()}: TODO: Unhandled event {e}")
-                pass
 
     def _worker(self):
         if not self.conn:
@@ -1096,7 +1088,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def stop_capture(self, timeout_seconds=DEFAULT_STOP_CAPTURE_TIMEOUT):
         """stop looping and guiding"""
         res = self.call("stop_capture")
-        for _ in range(0, timeout_seconds):
+        for _ in range(timeout_seconds):
             with self.lock:
                 if self.app_state == "Stopped":
                     return
@@ -1124,7 +1116,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         exp_ms = res["result"]
         self.call("loop")
         time.sleep((exp_ms * 1.5) / 1000)
-        for _ in range(0, timeout_seconds):
+        for _ in range(timeout_seconds):
             with self.lock:
                 if self.app_state == "Looping":
                     return

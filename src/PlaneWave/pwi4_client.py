@@ -448,8 +448,6 @@ class Section:
     Simple object for collecting properties in PWI4Status
     """
 
-    pass
-
 
 class PWI4Status:
     """
@@ -765,4 +763,4 @@ def list_to_comma_separated_string(value_list):
 
 class PWException(Exception):
     def __init__(self, message=None):
-        super(PWException, self).__init__(message)
+        super().__init__(message)

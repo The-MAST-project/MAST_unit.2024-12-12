@@ -1,6 +1,5 @@
 from collections import deque
 from enum import IntEnum, auto
-from typing import TYPE_CHECKING
 
 import win32com.client
 from fastapi.routing import APIRouter
@@ -15,9 +14,6 @@ from common.mast_logging import get_logger
 from common.models.statuses import FocuserStatus
 from common.utils import RepeatTimer, boxed_log, time_stamp
 from PlaneWave import pwi4_client
-
-if TYPE_CHECKING:
-    pass
 
 logger = get_logger(__name__)
 

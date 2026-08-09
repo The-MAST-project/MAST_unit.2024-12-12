@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 import pyzwoasi as zwoasi
 
-import common.asi as asi
+from common import asi
 from common.activities import ImagerActivities
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
@@ -516,12 +516,12 @@ if __name__ == "__main__":
 
     def test_gain_percent():
         percent = asi.gain_absolute_to_percent(asi.ASI_294MM_DEFAULT_GAIN)
-        print("")
+        print()
         print(f"gain 170: {percent:2.0f}%")
         print(f"gain {percent:2.0f}%: {asi.gain_percent_to_absolute(percent)}")
 
         percent = asi.gain_absolute_to_percent(asi.ASI_294MM_DEFAULT_GAIN)
-        print("")
+        print()
         print(f"gain 170: {percent:2.0f}%")
         print(f"gain {percent:2.0f}%: {asi.gain_percent_to_absolute(percent)}")
 
@@ -529,7 +529,7 @@ if __name__ == "__main__":
         print(f"gain {percent:2.0f}%: {asi.gain_percent_to_absolute(percent)}")
 
         percent = asi.gain_absolute_to_percent(asi.ASI_294MM_DEFAULT_GAIN)
-        print("")
+        print()
         print(f"gain 170: {percent:2.0f}%")
         print(f"gain {percent:2.0f}%: {asi.gain_percent_to_absolute(percent)}")
 

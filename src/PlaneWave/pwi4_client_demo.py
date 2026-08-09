@@ -7,7 +7,6 @@ import time
 
 from pwi4_client import PWI4
 
-
 print("Connecting to PWI4...")
 
 pwi4 = PWI4()

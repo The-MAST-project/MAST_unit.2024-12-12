@@ -32,7 +32,6 @@ except (ImportError, NameError) as ex:  # NameError: stage.py off-Windows
 
 from common.config.phd2 import LimitFrameConfig, LimitFrameMode, PHD2Config
 from common.interfaces.imager import ImagerRoi, ImagerSettings
-
 from phd2.phd2 import SettleModel
 
 # The derived ROI is conditioned by ImagerRoi.model_post_init (mod-8 width /

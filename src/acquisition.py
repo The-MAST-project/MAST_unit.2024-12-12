@@ -3,7 +3,7 @@ import os
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
-import common.asi as asi
+from common import asi
 from common.config.unit import AcquisitionConfig
 from common.corrections import Corrections
 from common.filer import Filer, MoveGuardian

@@ -1,8 +1,6 @@
 import datetime
 import os
 import time
-from logging import Logger
-from typing import TYPE_CHECKING
 
 import astropy.units as u
 from astropy.coordinates import Angle
@@ -14,8 +12,6 @@ from common.utils import Coord, boxed_log
 from solving import SolvingTolerance
 
 logger = get_logger(__name__)
-if TYPE_CHECKING:
-    pass
 
 
 class SolvingGuider(GuiderInterface):

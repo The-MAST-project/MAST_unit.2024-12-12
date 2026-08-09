@@ -12,7 +12,6 @@ from common.canonical import CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.mast_logging import get_logger
 from common.models.statuses import CoversState, CoverStatus
 from common.utils import RepeatTimer, time_stamp
 

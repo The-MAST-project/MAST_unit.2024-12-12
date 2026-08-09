@@ -137,7 +137,7 @@ class Guider(GuiderInterface):
             if camera_x_size is None or camera_y_size is None:
                 raise Exception(f"Cannot make guiding settings - bad camera size(s) {camera_x_size=}, {camera_y_size=}")
         else:
-            import common.asi as asi
+            from common import asi
 
             camera_x_size = asi.ASI_294MM_WIDTH
             camera_y_size = asi.ASI_294MM_HEIGHT
@@ -151,7 +151,7 @@ class Guider(GuiderInterface):
         half_width = min(cfg.fiber_x - cfg.margin_horizontal, camera_x_size - cfg.margin_horizontal - cfg.fiber_x)
         half_height = min(cfg.fiber_y - cfg.margin_vertical, camera_y_size - cfg.margin_vertical - cfg.fiber_y)
 
-        import common.asi as asi
+        from common import asi
 
         guiding_roi = SpecRoi(width=half_width * 2, height=half_height * 2, fiber_x=cfg.fiber_x, fiber_y=cfg.fiber_y)
 

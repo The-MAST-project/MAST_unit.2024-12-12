@@ -16,8 +16,8 @@ from matplotlib.patches import Patch
 
 from common.const import Const
 from common.corrections import Corrections
-from common.mast_logging import get_logger
 from common.filer import MoveGuardian
+from common.mast_logging import get_logger
 from common.utils import Filer, fromisoformat_zulu, function_name
 
 logger = get_logger(__name__)
@@ -551,4 +551,3 @@ if __name__ == "__main__":
     plot_acquisition_corrections(acq_folder)
     # plot_autofocus_analysis(DummyResult(), 'C:\\Temp')
     # test_corrections_plot()
-    pass

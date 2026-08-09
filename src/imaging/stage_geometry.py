@@ -486,9 +486,7 @@ class StageCalibrator:
     def _fail(self, msg: str) -> None:
         logger.error(msg)
         self.errors.append(msg)
-        return None
 
     def _abort(self, msg: str) -> None:
         logger.warning(msg)
         self.errors.append(msg)
-        return None
