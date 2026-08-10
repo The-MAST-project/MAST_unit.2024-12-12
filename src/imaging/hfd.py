@@ -204,7 +204,7 @@ def frame_hfd(
     if len(x) == 0:
         return float("nan"), 0
     keep = _low_coma_keep(x, y, (ny, nx), center, radius, near_axis_frac)
-    stars = list(zip(x[keep], y[keep], smaj[keep]))
+    stars = list(zip(x[keep], y[keep], smaj[keep], strict=True))
     hfds = _measure_hfds_at(data, data_sub, stars, r_factor, r_min, r_max, stamp_pad, k_thresh, max_value)
     if len(hfds) < min_stars:
         return float("nan"), 0
@@ -245,16 +245,16 @@ def measure_sweep_hfd(
     """
     loaded = [_load(im) for im in images]
     subs = [_bg_subtract(d, box_size) for d in loaded]
-    detections = [list(zip(*_detect(ds, nsigma, npixels, min_area, max_area))) for ds in subs]
+    detections = [list(zip(*_detect(ds, nsigma, npixels, min_area, max_area), strict=True)) for ds in subs]
     stars = _consistent_stars(detections, len(images), match_tol, min_frac)
     if stars and (radius is not None or near_axis_frac < 1.0):
         sx = np.array([s[0] for s in stars])
         sy = np.array([s[1] for s in stars])
         keep = _low_coma_keep(sx, sy, loaded[0].shape, center, radius, near_axis_frac)
-        stars = [st for st, k in zip(stars, keep) if k]
+        stars = [st for st, k in zip(stars, keep, strict=True) if k]
 
     per_frame = []
-    for data, ds in zip(loaded, subs):
+    for data, ds in zip(loaded, subs, strict=True):
         hfds = _measure_hfds_at(data, ds, stars, r_factor, r_min, r_max, stamp_pad, k_thresh, max_value)
         per_frame.append((float(np.median(hfds)) if len(hfds) >= min_stars else float("nan"), len(hfds)))
     return per_frame, len(stars)

@@ -348,7 +348,9 @@ class MastrometryDotNet(SolverInterface):
         # MoveGuardian.release_folder from discarding it as scratch. Every other writer in
         # the fleet does this; this solver was the one that did not.
         with MoveGuardian().protect(str(new_fits_path)):
-            completed_process = subprocess.run(command, capture_output=True, shell=True, env=env)
+            completed_process = subprocess.run(
+                command, capture_output=True, shell=True, env=env, check=False
+            )  # returncode is inspected below
         stdout_lines = completed_process.stdout.decode().strip().splitlines()
         stderr_lines = completed_process.stderr.decode().strip().splitlines()
         elapsed = time.monotonic() - start
