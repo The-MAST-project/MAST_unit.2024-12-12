@@ -635,11 +635,18 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         """
         Shuts the **MAST** camera down (warms up, if needed)
         """
-        if self.connected:
-            self.start_activity(ImagerActivities.ShuttingDown)
-            if abs(self.temperature - self.warm_set_point) > 0.5:
-                self.warmup()
+        if not self.connected:
+            # A refusal, reported as one. Previously this fell off the end of the
+            # method and returned None, so "shut down while disconnected" and
+            # "shut down successfully" were indistinguishable at the API boundary.
+            self._was_shut_down = True
+            return CanonicalResponse(errors=[f"{function_name()}: not connected"])
+
+        self.start_activity(ImagerActivities.ShuttingDown)
+        if abs(self.temperature - self.warm_set_point) > 0.5:
+            self.warmup()
         self._was_shut_down = True
+        return CanonicalResponse_Ok
 
     def warmup(self):
         """

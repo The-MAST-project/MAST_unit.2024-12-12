@@ -1251,16 +1251,19 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         res = self.call("save_image")
         return res["result"]["filename"]
 
-    def endpoint_shutdown(self):
+    def endpoint_shutdown(self) -> CanonicalResponse:
         return self.shutdown()
 
-    def shutdown(self):
+    def shutdown(self) -> CanonicalResponse:
         self.start_activity(PHD2Activities.ShuttingDown)
         self.stop_guiding()
         self.disconnect()
         if self.watched_process:
             self.watched_process.terminate()
         self.end_activity(PHD2Activities.ShuttingDown)
+        # Unlike startup(), this has real content -- it just never reported it,
+        # falling off the end and returning None (#73).
+        return CanonicalResponse_Ok
 
     @property
     def is_shutting_down(self) -> bool:
@@ -1361,11 +1364,29 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         # logger.error(f"{function_name()}: got None from 'get_camera_frame_size'")
         # return 0
 
-    def startup(self):
-        pass
+    def startup(self) -> CanonicalResponse:
+        """Nothing to do, and `Ok` is the truthful answer.
 
-    def endpoint_startup(self):
-        pass
+        Unlike the ASCOM backend -- which powers on, connects and enables the cooler
+        *in* `startup()` -- this connector does all of that in `__init__`: it locates
+        and launches `phd2.exe` through `WatchedProcess`, waits for it, then calls
+        `connect()` and `connect_equipment()`. So by the time anything can call this,
+        the component is started.
+
+        It returns an envelope rather than `None` so the wrapper can declare
+        `-> CanonicalResponse` (#73), and `Ok` rather than an error because startup
+        genuinely is complete. What it must **not** do is repeat the constructor's
+        work: that launches a second `phd2.exe`, which is #84.
+
+        That the work lives in the constructor at all is a lifecycle defect rather
+        than a contract one -- `Component.startup` is documented as running at the
+        start of every observing session, which a constructor cannot do. Tracked
+        under `epic:unit-lifecycle`.
+        """
+        return CanonicalResponse_Ok
+
+    def endpoint_startup(self) -> CanonicalResponse:
+        return self.startup()
 
     def abort(self) -> CanonicalResponse:
         return CanonicalResponse_Ok

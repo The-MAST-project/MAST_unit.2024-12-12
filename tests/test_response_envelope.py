@@ -144,6 +144,56 @@ def test_phd2_abort_returns_an_envelope():
     assert_ok(object.__new__(PHD2Connector).abort())
 
 
+# ------------------------------------------------- the startup / shutdown chain (#73)
+#
+# Before #73 all of these returned None: ASCOM's shutdown fell off the end, ZWO's pair
+# delegated through super() to `Component`'s abstract (empty) stub, and PHD2's startup
+# was a bare `pass`. "The imager started" and "the imager did nothing" were therefore
+# the same answer on the wire, which is what kept `-> CanonicalResponse | None` on the
+# four wrapper methods.
+
+
+def test_ascom_shutdown_refuses_when_not_connected():
+    ascom_module = importlib.import_module("imagers.ascom")
+
+    class _Ascom(ascom_module.ASCOMImager):
+        @property
+        def connected(self):
+            return False
+
+    backend = object.__new__(_Ascom)
+    backend.errors = []
+    backend.parent_imager = None
+    assert_refused(backend.shutdown(), expected="not connected")
+    assert backend._was_shut_down, "a refused shutdown still records that it was shut down"
+
+
+@pytest.mark.parametrize("verb", ["startup", "shutdown"])
+def test_zwo_lifecycle_returns_an_envelope(verb):
+    zwo = importlib.import_module("zwo")
+    from common.activities import ImagerActivities
+
+    class _Zwo(zwo.ZWOImager):
+        def set_control(self, *_args, **_kwargs):
+            """Stubbed: the real one talks to the ASI SDK."""
+
+    backend = object.__new__(_Zwo)
+    backend.activities = ImagerActivities(0)
+    backend.cam_id = 0
+    backend.errors = []
+    assert_ok(getattr(backend, verb)())
+
+
+def test_phd2_startup_returns_ok_because_init_already_started_it():
+    """Not a stub reporting false success: `PHD2Connector.__init__` launches phd2.exe
+    and connects the equipment, so by the time this runs there is nothing left to do
+    and `Ok` is the honest answer. It must not repeat that work -- doing so launches a
+    second phd2.exe (#84)."""
+    from phd2.phd2 import PHD2Connector
+
+    assert_ok(object.__new__(PHD2Connector).startup())
+
+
 # ------------------------------------------------------------------ wire shape (HTTP)
 
 

@@ -124,13 +124,13 @@ class Imager(ImagerInterface, SwitchedOutlet):
     def can_send_image_saved_event(self) -> bool:
         return self._backend.can_send_image_saved_event
 
-    def endpoint_startup(self) -> CanonicalResponse | None:
+    def endpoint_startup(self) -> CanonicalResponse:
         return self.startup()
 
-    def startup(self) -> CanonicalResponse | None:
+    def startup(self) -> CanonicalResponse:
         return self._backend.startup()
 
-    def shutdown(self) -> CanonicalResponse | None:
+    def shutdown(self) -> CanonicalResponse:
         return self._backend.shutdown()
 
     @property
@@ -144,7 +144,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
             time.sleep(1)
         self.power_off()
 
-    def endpoint_shutdown(self) -> CanonicalResponse | None:
+    def endpoint_shutdown(self) -> CanonicalResponse:
         return self.shutdown()
 
     @property

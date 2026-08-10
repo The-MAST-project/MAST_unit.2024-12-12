@@ -212,22 +212,25 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def endpoint_startup(self):
         return self.startup()
 
-    def startup(self):
+    def startup(self) -> CanonicalResponse:
         # self.set_control(asi.Control.ASI_HIGH_SPEED_MODE, 1)
         self.set_control(asi.Control.TargetTemp, -5)
         self.set_control(asi.Control.CoolerOn, True)
-        return super().startup()
+        # Was `return super().startup()`, which resolved to `Component.startup` -- an
+        # abstract method with an empty body -- so it did nothing and returned None.
+        return CanonicalResponse_Ok
 
     def endpoint_shutdown(self):
         return self.shutdown()
 
-    def shutdown(self):
+    def shutdown(self) -> CanonicalResponse:
         self.start_activity(ImagerActivities.ShuttingDown)
         self.set_control(asi.Control.TargetTemp, 10)
         self.set_control(asi.Control.CoolerOn, False)
         # del self._image_array
         self.end_activity(ImagerActivities.ShuttingDown)
-        return super().shutdown()
+        # Was `return super().shutdown()` -- see the note on startup().
+        return CanonicalResponse_Ok
 
     @property
     def is_shutting_down(self) -> bool:
