@@ -1,0 +1,335 @@
+"""Operator-driven spiral search, and the measurement it produces.
+
+The sequence is manual by design:
+
+1. ``start`` fixes the step size and takes a **reference** frame.
+2. The operator calls ``step`` repeatedly, watching an independent Ximea camera until
+   the star sits on the optical axis. Only the operator can judge that, which is why
+   nothing here tries to.
+3. ``end`` takes a **final** frame and cross-correlates it against the reference. The
+   shift, in pixels, is where the optical axis lies relative to where the field started.
+
+PWI4 owns the spiral itself -- this only says "next" or "previous" and records where PWI4
+reports it ended up.
+
+Frames come back from disk, not memory: the configured imager is PHD2, whose
+``can_image_to_memory`` is False. Each frame is therefore written, read back, and only
+then handed to the mover -- and the read happens inside ``MoveGuardian.protect`` so a
+mover cannot take the file mid-read. That protection does double duty, since a protected
+path is also a *product*, which is what stops ``release_folder`` discarding it.
+"""
+
+from __future__ import annotations
+
+import datetime
+import json
+import os
+import threading
+from typing import TYPE_CHECKING, Any
+
+from astropy.io import fits
+
+from common.activities import UnitActivities
+from common.canonical import CanonicalResponse
+from common.config import Config
+from common.config.rois import FcuVersion, SpecRoiConfig
+from common.filer import Filer, MoveGuardian
+from common.interfaces.imager import ImagerSettings
+from common.mast_logging import get_logger
+from common.paths import PathMaker
+from common.utils import function_name, isoformat_zulu
+from imaging.frame_shift import DEFAULT_USABLE_FRACTION, MIN_CONFIDENCE, max_reliable_shift, measure_shift
+from mount import SettleMode
+
+if TYPE_CHECKING:
+    from unit import Unit
+
+logger = get_logger(__name__)
+filer = Filer(logger)
+
+REFERENCE_IMAGE = "reference.fits"
+FINAL_IMAGE = "final.fits"
+RESULT_FILE = "result.json"
+
+#: An abandoned session holds tracking on and an exposure series open. After this long
+#: it is closed WITHOUT a final frame: an hour on, nobody has confirmed the star is
+#: centred, so a shift measured then would look like a result without being one.
+SESSION_TIMEOUT_SECONDS = 3600.0
+
+
+class SpiralSearch:
+    """One spiral session at a time, owned by the Unit."""
+
+    def __init__(self, unit: Unit):
+        self.unit = unit
+        self._lock = threading.RLock()
+        self._clear()
+
+    def _clear(self) -> None:
+        self.folder: str | None = None
+        self.exposure_series = None
+        self.reference: Any = None
+        self.x_step_arcsec: float = 0.0
+        self.y_step_arcsec: float = 0.0
+        self.exposure_seconds: float = 0.0
+        self.usable_fraction: float = DEFAULT_USABLE_FRACTION
+        self.center_x: int = 0
+        self.center_y: int = 0
+        self.save_intermediate_exposures: bool = False
+        self.steps: list[dict] = []
+        self.started_at: str | None = None
+        self._timer: threading.Timer | None = None
+
+    @property
+    def is_active(self) -> bool:
+        return self.folder is not None
+
+    # ---------------------------------------------------------------- frames --
+
+    def _expose(self, file_name: str) -> tuple[str, Any]:
+        """Expose, save under `file_name`, read the frame back, then hand it to the mover.
+
+        Returns (path, data). The read is inside protect() so a mover cannot take the
+        file while astropy has it open, and protect() also marks the path as a product
+        so release_folder keeps it.
+        """
+        assert self.unit.imager is not None and self.folder is not None
+        path = os.path.join(self.folder, file_name)
+
+        with MoveGuardian().protect(path):
+            self.unit.imager.latest_settings = ImagerSettings(
+                seconds=self.exposure_seconds,
+                save=True,
+                image_path=path,
+                binning=1,  # always 1: the correlation wants full detector sampling
+            )
+            self.unit.imager.start_exposure(self.unit.imager.latest_settings)
+            self.unit.imager.wait_for_image_saved()
+            data = fits.getdata(path)
+
+        filer.move_ram_to_shared(path)
+        return path, data
+
+    def _write_result(self, result: dict) -> None:
+        assert self.folder is not None
+        path = os.path.join(self.folder, RESULT_FILE)
+        with MoveGuardian().protect(path), open(path, "w") as fp:
+            json.dump(result, fp, indent=2, default=str)
+        filer.move_ram_to_shared(path)
+
+    def _spiral_offset(self) -> dict:
+        """Where PWI4 says the spiral currently is."""
+        try:
+            offset = self.unit.mount.pw.status().mount.spiral_offset  # type: ignore[union-attr]
+            return {"x": offset.x, "y": offset.y}
+        except Exception:
+            logger.exception("could not read PWI4 spiral offset")
+            return {"x": None, "y": None}
+
+    # ----------------------------------------------------------------- verbs --
+
+    def start(
+        self,
+        x_step_arcsec: float,
+        y_step_arcsec: float,
+        exposure_seconds: float,
+        save_intermediate_exposures: bool = False,
+        center_x: int | None = None,
+        center_y: int | None = None,
+        usable_fraction: float = DEFAULT_USABLE_FRACTION,
+    ) -> CanonicalResponse:
+        op = function_name()
+        with self._lock:
+            if self.is_active:
+                logger.warning(f"{op}: a spiral session was still open; closing it before starting a new one")
+                self._abandon("superseded by a new spiral session")
+
+            # Deliberately a warning, not a refusal: the operating assumption is that a
+            # spiral is never started mid-acquisition. If that ever stops being true,
+            # this line is how we find out.
+            if self.unit.is_active(UnitActivities.Acquiring) or self.unit.is_active(UnitActivities.Guiding):
+                logger.warning(f"{op}: starting a spiral while acquiring/guiding -- the mount is being driven twice")
+
+            assert self.unit.mount is not None and self.unit.mount.pw is not None and self.unit.imager is not None
+
+            self.x_step_arcsec = x_step_arcsec
+            self.y_step_arcsec = y_step_arcsec
+            self.exposure_seconds = exposure_seconds
+            configured_x, configured_y = guiding_roi_center()
+            self.center_x = configured_x if center_x is None else center_x
+            self.center_y = configured_y if center_y is None else center_y
+            self.usable_fraction = usable_fraction
+            self.save_intermediate_exposures = save_intermediate_exposures
+            self.started_at = isoformat_zulu(datetime.datetime.now(datetime.UTC))
+
+            self.unit.mount.start_tracking()
+            self.unit.mount.pw.mount_spiral_offset_new(x_step_arcsec=x_step_arcsec, y_step_arcsec=y_step_arcsec)
+            self.folder = PathMaker().make_spirals_folder()
+            self.exposure_series = self.unit.imager.start_exposure_series(purpose="spiral")
+
+            _path, self.reference = self._expose(REFERENCE_IMAGE)
+            self._log_step(direction="reference", image=REFERENCE_IMAGE)
+
+            self._timer = threading.Timer(SESSION_TIMEOUT_SECONDS, self._on_timeout)
+            self._timer.daemon = True
+            self._timer.start()
+
+            logger.info(f"{op}: spiral session open in '{self.folder}', steps ({x_step_arcsec}, {y_step_arcsec})″")
+            return CanonicalResponse(value={"folder": self.folder, "reference_image": REFERENCE_IMAGE})
+
+    def step(self, forward: bool) -> CanonicalResponse:
+        op = function_name()
+        with self._lock:
+            if not self.is_active:
+                return CanonicalResponse(errors=[f"{op}: no spiral session is open; call spiral_new_path first"])
+
+            assert self.unit.mount is not None and self.unit.mount.pw is not None
+
+            if forward:
+                self.unit.mount.pw.mount_spiral_offset_next()
+            else:
+                self.unit.mount.pw.mount_spiral_offset_previous()
+            self.unit.mount.wait_until_settled(SettleMode.OFFSET_STEP)
+
+            image = None
+            if self.save_intermediate_exposures:
+                image = "step-" + PathMaker().make_seq(self.folder) + ".fits"
+                self._expose(image)
+
+            entry = self._log_step(direction="next" if forward else "previous", image=image)
+            return CanonicalResponse(value=entry)
+
+    def end(self) -> CanonicalResponse:
+        op = function_name()
+        with self._lock:
+            if not self.is_active:
+                return CanonicalResponse(errors=[f"{op}: no spiral session is open"])
+
+            self._cancel_timer()
+            _path, final = self._expose(FINAL_IMAGE)
+            self._log_step(direction="final", image=FINAL_IMAGE)
+
+            shift = measure_shift(
+                self.reference,
+                final,
+                center_x=self.center_x,
+                center_y=self.center_y,
+                usable_fraction=self.usable_fraction,
+            )
+            limit = max_reliable_shift(self.reference.shape, self.usable_fraction)
+            magnitude = (shift.dx**2 + shift.dy**2) ** 0.5
+            beyond_limit = magnitude > limit
+            if beyond_limit:
+                logger.warning(
+                    f"{op}: measured shift {magnitude:.2f} px exceeds the reliable range of {limit:.0f} px "
+                    f"at a usable fraction of {self.usable_fraction} -- too little sky is common to both frames, "
+                    "so dx/dy should not be trusted"
+                )
+
+            result = self._result(shift=shift.as_dict(), limit=limit, beyond_limit=beyond_limit, magnitude=magnitude)
+            self._write_result(result)
+            self._close()
+            logger.info(f"{op}: spiral session closed, dx={shift.dx} dy={shift.dy} px (confidence {shift.confidence})")
+            return CanonicalResponse(value=result)
+
+    # -------------------------------------------------------------- internals --
+
+    def _log_step(self, direction: str, image: str | None) -> dict:
+        entry = {
+            "n": len(self.steps),
+            "direction": direction,
+            "time": isoformat_zulu(datetime.datetime.now(datetime.UTC)),
+            "spiral_offset": self._spiral_offset(),
+            "image": image,
+        }
+        self.steps.append(entry)
+        return entry
+
+    def _result(self, **extra) -> dict:
+        shift = extra.get("shift")
+        magnitude = extra.get("magnitude")
+        result: dict = {
+            "started_at": self.started_at,
+            "ended_at": isoformat_zulu(datetime.datetime.now(datetime.UTC)),
+            "x_step_arcsec": self.x_step_arcsec,
+            "y_step_arcsec": self.y_step_arcsec,
+            "exposure_seconds": self.exposure_seconds,
+            "usable_fraction": self.usable_fraction,
+            "center_x": self.center_x,
+            "center_y": self.center_y,
+            "save_intermediate_exposures": self.save_intermediate_exposures,
+            "reference_image": REFERENCE_IMAGE,
+            "steps": self.steps,
+            "aborted": False,
+        }
+        if shift is None:
+            return result | {"final_image": None, "shift": None, "aborted": True, "abort_reason": extra.get("reason")}
+
+        result |= {
+            "final_image": FINAL_IMAGE,
+            "shift": shift,
+            "shift_magnitude_pixels": round(float(magnitude), 2),
+            "max_reliable_shift_pixels": round(float(extra["limit"]), 1),
+            "shift_exceeds_reliable_range": bool(extra["beyond_limit"]),
+            # The two independent ways this measurement can be wrong: too little common
+            # sky (above), and frames that never correlated in the first place (below).
+            "confidence_below_threshold": bool(shift["confidence"] < MIN_CONFIDENCE),
+            "min_confidence": MIN_CONFIDENCE,
+        }
+        return result
+
+    def _on_timeout(self) -> None:
+        with self._lock:
+            if not self.is_active:
+                return  # end() got here first
+            logger.warning(
+                f"spiral session in '{self.folder}' abandoned: no spiral_end_path within "
+                f"{SESSION_TIMEOUT_SECONDS / 3600:.0f}h. Closing WITHOUT a final frame -- nobody confirmed the "
+                "star was centred, so any shift measured now would look like a result without being one."
+            )
+            self._abandon(f"no spiral_end_path within {SESSION_TIMEOUT_SECONDS / 3600:.0f}h")
+
+    def _abandon(self, reason: str) -> None:
+        """Close the session with no measurement, leaving a result that says so.
+
+        Caller holds the lock. The result.json is still written -- an abandoned run that
+        leaves no trace is indistinguishable from one that never happened.
+        """
+        self._cancel_timer()
+        try:
+            self._write_result(self._result(reason=reason))
+        except Exception:
+            logger.exception("could not write the aborted spiral result")
+        self._close()
+
+    def _cancel_timer(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+
+    def _close(self) -> None:
+        """Stop tracking, end the series, reap the folder. Caller holds the lock."""
+        if self.unit.imager is not None and self.exposure_series is not None:
+            self.unit.imager.end_exposure_series(self.exposure_series)
+        if self.unit.mount is not None:
+            self.unit.mount.stop_tracking()
+        if self.folder is not None:
+            # Removed once every protected artifact -- the two frames and result.json --
+            # has reached the shared area, and not before.
+            MoveGuardian().release_folder(self.folder, logger=logger)
+        self._clear()
+
+
+def guiding_roi_center() -> tuple[int, int]:
+    """The fibre position from ``guiding.rois[fcu_v2]``, used to centre the correlation window.
+
+    Centred on the fibre rather than on the sensor because that is where the field of
+    interest is; fcu_v1 is deprecated and is not consulted. Raises rather than guessing
+    if the configuration is not the expected shape -- a silently wrong window would give
+    a confident, wrong measurement.
+    """
+    rois = Config().get_unit().guiding.rois
+    roi = rois.get(FcuVersion.v2)
+    if not isinstance(roi, SpecRoiConfig):
+        raise TypeError(f"guiding.rois[fcu_v2] is {type(roi).__name__}, expected SpecRoiConfig")
+    return roi.fiber_x, roi.fiber_y

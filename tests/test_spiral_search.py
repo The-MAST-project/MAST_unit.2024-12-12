@@ -1,0 +1,297 @@
+"""Tests for the spiral search session state machine.
+
+No hardware: the mount and imager are fakes, and the imager writes a real FITS so the
+read-back path is exercised for real. What is being pinned is the behaviour that guards
+hardware and the operator's result --
+
+* tracking starts on open and stops on close, on every exit path;
+* a step or an end without an open session is an error, not a silent no-op (both used to
+  be: `next_step` did nothing and `end_path` raised through to a 500);
+* an abandoned session closes itself WITHOUT inventing a measurement;
+* every step is logged even when intermediate frames are not saved.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+pytest.importorskip("skimage", reason="scikit-image unavailable")
+pytest.importorskip("photutils", reason="photutils unavailable")
+from astropy.io import fits
+
+import spiral_search
+from spiral_search import FINAL_IMAGE, REFERENCE_IMAGE, RESULT_FILE, SpiralSearch
+
+SIZE = 300
+CENTER = SIZE // 2
+
+
+def star_field(dy: float = 0.0, dx: float = 0.0) -> np.ndarray:
+    rng = np.random.default_rng(1)
+    data = rng.normal(100.0, 5.0, (SIZE, SIZE)).astype(np.float32)
+    yy, xx = np.mgrid[0:SIZE, 0:SIZE]
+    for y, x in [(80, 95), (150, 210), (220, 70), (120, 160)]:
+        data += 3000.0 * np.exp(-(((yy - y - dy) ** 2 + (xx - x - dx) ** 2) / (2 * 3.0**2)))
+    return data
+
+
+class FakePw:
+    def __init__(self):
+        self.calls: list[str] = []
+        self.x = 0
+        self.y = 0
+
+    def mount_spiral_offset_new(self, x_step_arcsec, y_step_arcsec):
+        self.calls.append("new")
+        self.x = self.y = 0
+
+    def mount_spiral_offset_next(self):
+        self.calls.append("next")
+        self.x += 1
+
+    def mount_spiral_offset_previous(self):
+        self.calls.append("previous")
+        self.x -= 1
+
+    def status(self):
+        pw, outer = self, type("S", (), {})()
+        outer.mount = type("M", (), {"spiral_offset": type("O", (), {"x": pw.x, "y": pw.y})()})()
+        return outer
+
+
+class FakeMount:
+    def __init__(self):
+        self.pw = FakePw()
+        self.tracking = False
+        self.settled = 0
+
+    def start_tracking(self):
+        self.tracking = True
+
+    def stop_tracking(self):
+        self.tracking = False
+
+    def wait_until_settled(self, mode):
+        self.settled += 1
+
+
+class FakeImager:
+    """Writes a real FITS, like PHD2 does -- this class cannot image to memory either."""
+
+    def __init__(self):
+        self.latest_settings = None
+        self.series_open = 0
+        self.shift = (0.0, 0.0)
+        self.exposures: list[str] = []
+
+    def start_exposure_series(self, purpose=None):
+        self.series_open += 1
+        return object()
+
+    def end_exposure_series(self, series):
+        self.series_open -= 1
+
+    def start_exposure(self, settings):
+        self.latest_settings = settings
+
+    def wait_for_image_saved(self):
+        path = self.latest_settings.image_path
+        self.exposures.append(os.path.basename(path))
+        # The final frame is the shifted one; everything before it is the unshifted field.
+        dy, dx = self.shift if os.path.basename(path) == FINAL_IMAGE else (0.0, 0.0)
+        fits.writeto(path, star_field(dy, dx), overwrite=True)
+
+
+class FakeUnit:
+    def __init__(self):
+        self.mount = FakeMount()
+        self.imager = FakeImager()
+
+    def is_active(self, _activity):
+        return False
+
+
+@pytest.fixture
+def session(tmp_path, monkeypatch):
+    """A SpiralSearch writing into tmp_path, with the mover and reaper stubbed out."""
+    folder = tmp_path / "Spirals" / "0001"
+    folder.mkdir(parents=True)
+
+    # Config() would reach MongoDB; the fibre position is supplied directly instead.
+    monkeypatch.setattr(spiral_search, "guiding_roi_center", lambda: (CENTER, CENTER))
+    monkeypatch.setattr(spiral_search.PathMaker, "make_spirals_folder", lambda self: str(folder))
+    monkeypatch.setattr(spiral_search.PathMaker, "make_seq", lambda self, f: f"{len(os.listdir(f)):04d}")
+
+    moved: list[str] = []
+    monkeypatch.setattr(spiral_search.filer, "move_ram_to_shared", lambda p: moved.append(str(p)))
+    reaped: list[str] = []
+    monkeypatch.setattr(
+        spiral_search.MoveGuardian, "release_folder", lambda self, f, logger=None, timeout=None: reaped.append(str(f))
+    )
+
+    unit = FakeUnit()
+    search = SpiralSearch(unit)  # type: ignore[arg-type]
+    search.test_folder, search.test_moved, search.test_reaped = folder, moved, reaped  # type: ignore[attr-defined]
+    return search
+
+
+def read_result(folder: Path) -> dict:
+    return json.loads((folder / RESULT_FILE).read_text())
+
+
+class TestOpeningASession:
+    def test_start_tracks_exposes_and_opens_a_series(self, session):
+        response = session.start(x_step_arcsec=5.0, y_step_arcsec=5.0, exposure_seconds=2.0)
+
+        assert response.succeeded
+        assert session.unit.mount.tracking, "tracking must be on for the whole search"
+        assert session.unit.mount.pw.calls == ["new"]
+        assert session.unit.imager.series_open == 1
+        assert (session.test_folder / REFERENCE_IMAGE).exists()
+        assert session.is_active
+
+    def test_the_reference_frame_reaches_the_mover(self, session):
+        session.start(1.0, 1.0, exposure_seconds=2.0)
+        assert any(REFERENCE_IMAGE in p for p in session.test_moved)
+
+    def test_exposure_seconds_is_used_and_binning_is_always_one(self, session):
+        session.start(1.0, 1.0, exposure_seconds=3.5)
+        assert session.unit.imager.latest_settings.seconds == 3.5
+        assert session.unit.imager.latest_settings.binning == 1
+
+    def test_starting_again_closes_the_previous_session(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        first_folder = session.folder
+        session.start(2.0, 2.0, exposure_seconds=1.0)
+
+        assert read_result(Path(first_folder))["aborted"] is True, "the abandoned run must leave a trace"
+        assert session.is_active, "the new session is open"
+
+
+class TestStepping:
+    def test_steps_are_logged_without_saving_frames(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=False)
+        before = list(session.unit.imager.exposures)
+
+        session.step(forward=True)
+        session.step(forward=True)
+        session.step(forward=False)
+
+        assert session.unit.imager.exposures == before, "no frames when save_intermediate_exposures is false"
+        assert session.unit.mount.pw.calls == ["new", "next", "next", "previous"]
+        assert [s["direction"] for s in session.steps] == ["reference", "next", "next", "previous"]
+        assert all(s["spiral_offset"]["x"] is not None for s in session.steps), "PWI4's offset is recorded per step"
+
+    def test_intermediate_frames_are_saved_when_asked(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=True)
+        session.step(forward=True)
+        assert any(name.startswith("step-") for name in session.unit.imager.exposures)
+
+    def test_each_step_waits_for_the_mount_to_settle(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        session.step(forward=True)
+        assert session.unit.mount.settled == 1
+
+    def test_stepping_without_a_session_is_an_error_not_a_no_op(self, session):
+        response = session.step(forward=True)
+        assert response.failed
+        assert "no spiral session" in response.errors[0]
+
+
+class TestEndingASession:
+    def test_end_measures_the_shift_and_closes_down(self, session):
+        session.unit.imager.shift = (4.0, 9.0)  # the operator moved the field
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        response = session.end()
+
+        assert response.succeeded
+        assert response.value["shift"]["dx"] == pytest.approx(9.0, abs=0.6)
+        assert response.value["shift"]["dy"] == pytest.approx(4.0, abs=0.6)
+        assert not session.unit.mount.tracking, "end must stop tracking"
+        assert session.unit.imager.series_open == 0
+        assert not session.is_active
+
+    def test_both_frames_and_the_result_are_on_disk(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        session.end()
+
+        folder = session.test_folder
+        assert (folder / REFERENCE_IMAGE).exists() and (folder / FINAL_IMAGE).exists()
+        assert (folder / RESULT_FILE).exists(), "the operator reads this"
+        for name in (REFERENCE_IMAGE, FINAL_IMAGE, RESULT_FILE):
+            assert any(name in p for p in session.test_moved), f"{name} was never handed to the mover"
+
+    def test_the_folder_is_released_for_reaping(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        session.end()
+        assert session.test_reaped, "release_folder must be called so the ram disk is reclaimed"
+
+    def test_result_json_carries_the_session(self, session):
+        session.start(2.5, 3.5, exposure_seconds=1.5, usable_fraction=0.5)
+        session.step(forward=True)
+        session.end()
+
+        result = read_result(session.test_folder)
+        assert result["x_step_arcsec"] == 2.5
+        assert result["y_step_arcsec"] == 3.5
+        assert result["exposure_seconds"] == 1.5
+        assert result["usable_fraction"] == 0.5
+        assert result["center_x"] == CENTER
+        assert result["aborted"] is False
+        assert len(result["steps"]) == 3  # reference + one step + final
+        assert result["shift"]["dx"] == pytest.approx(0.0, abs=0.2)
+
+    def test_ending_without_a_session_is_an_error(self, session):
+        response = session.end()
+        assert response.failed
+        assert "no spiral session" in response.errors[0]
+
+    def test_an_oversized_shift_is_flagged(self, session, monkeypatch):
+        """Past the overlap limit the correlation stops meaning anything; say so."""
+        monkeypatch.setattr(spiral_search, "max_reliable_shift", lambda shape, frac: 1.0)
+        session.unit.imager.shift = (4.0, 9.0)
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+
+        result = session.end().value
+
+        assert result["shift_exceeds_reliable_range"] is True
+        assert result["max_reliable_shift_pixels"] == 1.0
+        assert result["shift_magnitude_pixels"] > 1.0
+
+
+class TestAbandonedSession:
+    def test_timeout_closes_without_inventing_a_measurement(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        exposures_before = list(session.unit.imager.exposures)
+
+        session._on_timeout()
+
+        result = read_result(session.test_folder)
+        assert result["aborted"] is True
+        assert result["shift"] is None, "no measurement may be reported for a run nobody confirmed"
+        assert result["final_image"] is None
+        assert session.unit.imager.exposures == exposures_before, "no final frame is taken"
+        assert not session.unit.mount.tracking, "tracking must not be left running"
+        assert not session.is_active
+
+    def test_timeout_after_a_normal_end_does_nothing(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        session.end()
+        tracking_after_end = session.unit.mount.tracking
+
+        session._on_timeout()  # the timer fires late; end() already won
+
+        assert session.unit.mount.tracking == tracking_after_end
+        assert read_result(session.test_folder)["aborted"] is False
+
+    def test_a_normal_end_cancels_the_timer(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        timer = session._timer
+        session.end()
+        assert session._timer is None
+        assert not timer.is_alive()

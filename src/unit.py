@@ -41,7 +41,7 @@ from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 
 # from guiding import Guider
-from common.interfaces.imager import ImagerExposureSeries, ImagerRoi, ImagerSettings, ImagerTypes
+from common.interfaces.imager import ImagerRoi, ImagerSettings, ImagerTypes
 from common.mast_logging import DailyFileHandler, get_logger
 from common.models.assignments import AssignmentNotification, UnitAssignment
 from common.models.statuses import FullUnitStatus, StatusType
@@ -62,6 +62,7 @@ from imagers import Imager
 from mount import Mount, SettleMode
 from PlaneWave import pwi4_client
 from solving import Solver
+from spiral_search import SpiralSearch, guiding_roi_center
 from stage import Stage
 
 logger = get_logger(__name__)
@@ -203,8 +204,7 @@ class Unit(Component):
 
         self.errors: list[str] = list(self._init_errors)
 
-        self.spirals_folder: str | None = None
-        self.spiral_exposure_series: ImagerExposureSeries | None = None
+        self.spiral = SpiralSearch(self)
         self.latest_acquisition: Acquisition | None = None
 
         self._initialized = True
@@ -1031,77 +1031,77 @@ class Unit(Component):
 
     #     return CanonicalResponse_Ok
 
-    def endpoint_spiral_new_path(self, x_step_arcsec: float, y_step_arcsec: float):
-        """
-        Defines a new spiral path<br>
-        **NOTE**: Remember to call `spiral_end_path()` when done with the spiral path
-        """
-        assert self.mount is not None
-        assert self.imager is not None
+    def _spiral_new_path_endpoint(self):
+        """Build the `spiral_new_path` endpoint with the configured ROI as its defaults.
 
-        self.mount.pw.mount_spiral_offset_new(x_step_arcsec=x_step_arcsec, y_step_arcsec=y_step_arcsec)
-        self.spirals_folder = PathMaker().make_spirals_folder()
+        The defaults have to be bound HERE rather than written into a method signature:
+        a signature default is evaluated at import, long before `Config()` has loaded,
+        which is why `get_imager_type` further up is commented out. Routes are registered
+        after the Unit is constructed, so by this point the configuration is real, and
+        binding the values into a closure's signature is what puts actual numbers in the
+        OpenAPI schema -- the operator sees the unit's own fibre position pre-filled in
+        Swagger instead of a placeholder.
+        """
+        try:
+            configured_x, configured_y = guiding_roi_center()
+        except Exception:
+            logger.exception("could not read guiding.rois[fcu_v2]; spiral defaults will be unset")
+            configured_x = configured_y = 0
 
-        image_path = os.path.join(
-            self.spirals_folder,
-            "step-" + PathMaker().make_seq(self.spirals_folder) + ".fits",
-        )
-        self.imager.latest_settings = ImagerSettings(seconds=5, save=True, image_path=image_path, binning=1)
-        self.spiral_exposure_series = self.imager.start_exposure_series(purpose="spiral_new_path")
-        self.imager.start_exposure(self.imager.latest_settings)
-        self.imager.wait_for_image_saved()
-        Filer().move_ram_to_shared(image_path)
-        return CanonicalResponse_Ok
+        def endpoint_spiral_new_path(
+            x_step_arcsec: float,
+            y_step_arcsec: float,
+            exposure_seconds: float = 5.0,
+            save_intermediate_exposures: bool = False,
+            center_x: int = configured_x,
+            center_y: int = configured_y,
+            usable_fraction: float = 0.66,
+        ):
+            """
+            Opens a spiral search session and takes the **reference** frame.<br>
+            Tracking is started; `spiral_end_path()` stops it again.<br>
+            **NOTE**: an abandoned session closes itself after an hour, without a measurement.
+
+            - **exposure_seconds**: exposure for every frame in the session (binning is always 1)
+            - **save_intermediate_exposures**: when false (default) only the reference and final
+              frames are kept; every step is logged either way
+            - **center_x**, **center_y**: centre of the area cross-correlated at the end.
+              Defaults to the fibre position from `guiding.rois[fcu_v2]`.
+            - **usable_fraction**: fraction of each sensor axis correlated, about that centre.
+              The optics have pronounced coma, so the outer field smears the correlation peak.
+            """
+            return self.spiral.start(
+                x_step_arcsec=x_step_arcsec,
+                y_step_arcsec=y_step_arcsec,
+                exposure_seconds=exposure_seconds,
+                save_intermediate_exposures=save_intermediate_exposures,
+                center_x=center_x,
+                center_y=center_y,
+                usable_fraction=usable_fraction,
+            )
+
+        return endpoint_spiral_new_path
 
     def endpoint_spiral_next_step(self):
         """
         Takes the next step in the currently defined spiral path
         """
-        assert self.mount is not None
-        assert self.imager is not None
-
-        logger.info("calling mount_spiral_offset_next() ...")
-        self.mount.pw.mount_spiral_offset_next()
-        self.mount.wait_until_settled(SettleMode.OFFSET_STEP)
-        logger.info("mount stopped moving")
-
-        if self.spirals_folder is not None:
-            image_path = str(Path(self.spirals_folder) / Path("step-" + PathMaker().make_seq(self.spirals_folder) + ".fits"))
-            self.imager.latest_settings = ImagerSettings(seconds=5, save=True, image_path=image_path, binning=1)
-            self.imager.start_exposure(self.imager.latest_settings)
-            self.imager.wait_for_image_saved()
-            Filer().move_ram_to_shared(image_path)
-
-        return CanonicalResponse_Ok
+        return self.spiral.step(forward=True)
 
     def endpoint_spiral_previous_step(self):
         """
         Goes back one step in the currently defined spiral path
         """
-        assert self.mount is not None
-        assert self.imager is not None
-
-        logger.info("calling mount_spiral_offset_previous() ...")
-        self.mount.pw.mount_spiral_offset_previous()
-        self.mount.wait_until_settled(SettleMode.OFFSET_STEP)
-        logger.info("mount stopped moving")
-
-        if self.spirals_folder is not None:
-            image_path = str(Path(self.spirals_folder) / Path("step-" + PathMaker().make_seq(self.spirals_folder) + ".fits"))
-            self.imager.latest_settings = ImagerSettings(seconds=5, save=True, image_path=image_path, binning=1)
-            self.imager.start_exposure(self.imager.latest_settings)
-            self.imager.wait_for_image_saved()
-            Filer().move_ram_to_shared(image_path)
-
-        return CanonicalResponse_Ok
+        return self.spiral.step(forward=False)
 
     def endpoint_spiral_end_path(self):
         """
-        Ends the currently defined spiral path
+        Ends the spiral session: takes the **final** frame, cross-correlates it against the
+        reference, stops tracking, and returns the measured shift in pixels.
+
+        The same result is written as `result.json` beside the two frames.
         """
-        assert self.spiral_exposure_series is not None and self.imager is not None, "No spiral exposure series defined"
-        self.imager.end_exposure_series(self.spiral_exposure_series)
-        return CanonicalResponse_Ok
+        return self.spiral.end()
 
     @property
     def api_router(self) -> APIRouter:
@@ -1175,7 +1175,7 @@ class Unit(Component):
         # )
 
         tag = "PlaneWave mount - spiral path"
-        router.add_api_route(base_path + "/spiral_new_path", tags=[tag], endpoint=self.endpoint_spiral_new_path)
+        router.add_api_route(base_path + "/spiral_new_path", tags=[tag], endpoint=self._spiral_new_path_endpoint())
         router.add_api_route(base_path + "/spiral_next_step", tags=[tag], endpoint=self.endpoint_spiral_next_step)
         router.add_api_route(
             base_path + "/spiral_previous_step",

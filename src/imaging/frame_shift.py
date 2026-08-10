@@ -11,9 +11,11 @@ operator has not vetted.
 
 Three preparation steps matter, and each is there for a reason:
 
-* **Crop to the middle of the frame.** The optics have pronounced coma, so PSFs in the
-  outer field are elongated and their shape varies with position -- they smear the
-  correlation peak rather than sharpen it. The edges are also the most vignetted.
+* **Crop to the usable field around the fibre.** The window is centred on the fibre
+  position from ``guiding.rois[fcu_v2]``, not on the geometric centre of the sensor,
+  and its size is ``usable_fraction`` of each axis. Two reasons: the optics have
+  pronounced coma, so PSFs in the outer field are elongated and position-dependent and
+  smear the correlation peak; and the edges are the most vignetted.
 * **Subtract the background.** ``_bg_subtract`` models the sky gradient and vignetting
   on a coarse grid and removes them.
 * **Flatten isolated spikes.** The mount moves between the two frames but the DETECTOR
@@ -26,6 +28,19 @@ Three preparation steps matter, and each is there for a reason:
 
 Sub-pixel accuracy is nominally 1/``upsample`` px, but seeing, SNR and tracking drift
 over an operator-paced sequence dominate long before that. Two decimals is honest.
+
+Two things deliberately NOT done here:
+
+* **Masking the folding-mirror shadow.** The pick-off stage's 45-deg mirror casts a wide,
+  near-vertical band with graded edges when it is inserted (modelled on the ``calibration``
+  branch, ``src/calibration/analysis/mirror_shadow.py``). It is fixed in the detector frame
+  and so, like the hot pixels, contributes a zero-shift signal. It turns out not to need
+  handling: it is smooth and wide, so ``_bg_subtract``'s 64-px background model absorbs it,
+  and a simulated band is recovered exactly even at 60% depth. Masking would also be a bad
+  trade -- ``phase_cross_correlation`` ignores ``upsample_factor`` when masks are supplied
+  and falls back to whole-pixel shifts, costing the sub-pixel precision that is the point.
+* **Plate-solving for field rotation.** The mount is equatorial and well polar-aligned, so
+  over an operator-paced sequence rotation is negligible against seeing.
 """
 
 from __future__ import annotations
@@ -34,6 +49,7 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 from scipy.ndimage import median_filter
+from scipy.ndimage import shift as ndi_shift
 from skimage.registration import phase_cross_correlation
 
 from common.mast_logging import get_logger
@@ -42,11 +58,14 @@ from .hfd import _bg_subtract
 
 logger = get_logger(__name__)
 
-#: Fraction of each axis kept before correlating. See the coma note above.
-DEFAULT_CROP_FRACTION = 0.66
+#: Fraction of each sensor axis kept before correlating. See the coma note above.
+DEFAULT_USABLE_FRACTION = 0.66
 
 #: Sub-pixel refinement passed to phase_cross_correlation.
 DEFAULT_UPSAMPLE = 100
+
+#: Below this post-registration correlation the answer is not worth acting on.
+MIN_CONFIDENCE = 0.5
 
 
 @dataclass
@@ -55,9 +74,17 @@ class ShiftResult:
 
     dx: float
     dy: float
-    error: float
-    """skimage's normalised RMS error for the registration; lower is better."""
-    crop_fraction: float
+    confidence: float
+    """Pearson correlation between the reference and the registered final, over their
+    overlap: ~1.0 when the frames genuinely match, ~0 when the answer is noise.
+
+    This is computed here rather than taken from ``phase_cross_correlation``, whose
+    documented ``error`` return is a constant 1.0 under the default
+    ``normalization="phase"`` -- it discriminates nothing. tests/test_frame_shift.py
+    pins that this one does."""
+    usable_fraction: float
+    center_x: int
+    center_y: int
     crop_shape: tuple[int, int]
     at_origin: bool
     """True if the peak landed on exactly (0, 0). Suspicious whenever the mount is
@@ -67,12 +94,23 @@ class ShiftResult:
         return asdict(self)
 
 
-def _prepare(data: np.ndarray, crop_fraction: float) -> np.ndarray:
-    """Crop to the central `crop_fraction`, de-gradient, and flatten single-pixel spikes."""
-    ny, nx = data.shape
-    half_y, half_x = int(ny * crop_fraction) // 2, int(nx * crop_fraction) // 2
-    cy, cx = ny // 2, nx // 2
-    cropped = data[cy - half_y : cy + half_y, cx - half_x : cx + half_x].astype(np.float32)
+def _window(shape: tuple[int, int], center_x: int, center_y: int, usable_fraction: float) -> tuple[slice, slice]:
+    """The usable window: `usable_fraction` of each axis, centred on (center_x, center_y).
+
+    Clipped to the sensor, so a centre near an edge yields a smaller window rather than
+    an out-of-bounds one. Both frames are windowed identically, so clipping shifts the
+    region but never the measurement.
+    """
+    ny, nx = shape
+    half_x, half_y = int(nx * usable_fraction) // 2, int(ny * usable_fraction) // 2
+    x0, x1 = max(0, center_x - half_x), min(nx, center_x + half_x)
+    y0, y1 = max(0, center_y - half_y), min(ny, center_y + half_y)
+    return slice(y0, y1), slice(x0, x1)
+
+
+def _prepare(data: np.ndarray, window: tuple[slice, slice]) -> np.ndarray:
+    """Crop to `window`, de-gradient, and flatten single-pixel spikes."""
+    cropped = data[window].astype(np.float32)
 
     flattened = _bg_subtract(cropped)
     # Despeckle. A 3x3 median replaces an isolated spike with its neighbourhood while
@@ -86,7 +124,9 @@ def _prepare(data: np.ndarray, crop_fraction: float) -> np.ndarray:
 def measure_shift(
     reference: np.ndarray,
     final: np.ndarray,
-    crop_fraction: float = DEFAULT_CROP_FRACTION,
+    center_x: int,
+    center_y: int,
+    usable_fraction: float = DEFAULT_USABLE_FRACTION,
     upsample: int = DEFAULT_UPSAMPLE,
 ) -> ShiftResult:
     """Pixel shift that registers `final` onto `reference`.
@@ -106,10 +146,11 @@ def measure_shift(
     if reference.shape != final.shape:
         raise ValueError(f"frames differ in shape: reference {reference.shape}, final {final.shape}")
 
-    ref_prepared = _prepare(reference, crop_fraction)
-    final_prepared = _prepare(final, crop_fraction)
+    window = _window(reference.shape, center_x, center_y, usable_fraction)  # type: ignore[arg-type]
+    ref_prepared = _prepare(reference, window)
+    final_prepared = _prepare(final, window)
 
-    (registration_y, registration_x), error, _phase = phase_cross_correlation(
+    (registration_y, registration_x), _error, _phase = phase_cross_correlation(
         ref_prepared, final_prepared, upsample_factor=upsample
     )
     # Negate: registration shift -> how the content actually moved.
@@ -118,8 +159,10 @@ def measure_shift(
     result = ShiftResult(
         dx=round(float(shift_x), 2),
         dy=round(float(shift_y), 2),
-        error=round(float(error), 4),
-        crop_fraction=crop_fraction,
+        confidence=_confidence(ref_prepared, final_prepared, registration_y, registration_x),
+        usable_fraction=usable_fraction,
+        center_x=center_x,
+        center_y=center_y,
         crop_shape=tuple(ref_prepared.shape),  # type: ignore[arg-type]
         at_origin=bool(shift_x == 0.0 and shift_y == 0.0),
     )
@@ -128,14 +171,40 @@ def measure_shift(
             "frame shift measured as exactly (0, 0): if the mount moved, this is more likely "
             "fixed-pattern noise winning the correlation than a real null result"
         )
+    if result.confidence < MIN_CONFIDENCE:
+        logger.warning(
+            "frame shift confidence %.3f is below %.2f: the two frames do not correlate well, so "
+            "dx=%.2f dy=%.2f should not be acted on. Usually too few stars, a cloud, or a frame "
+            "taken at a different focus or exposure.",
+            result.confidence,
+            MIN_CONFIDENCE,
+            result.dx,
+            result.dy,
+        )
     return result
 
 
-def max_reliable_shift(shape: tuple[int, int], crop_fraction: float = DEFAULT_CROP_FRACTION) -> float:
+def _confidence(reference: np.ndarray, final: np.ndarray, registration_y: float, registration_x: float) -> float:
+    """How well the frames actually match once the measured shift is undone.
+
+    The final frame is shifted back onto the reference and the two are correlated over
+    the region that stayed in frame. A real match gives ~1.0; an answer read off noise
+    gives ~0. Without this there is nothing at all to distinguish the two, since
+    ``at_origin`` only catches the fixed-pattern case.
+    """
+    registered = ndi_shift(final, shift=(registration_y, registration_x), order=1, mode="constant", cval=np.nan)
+    overlap = np.isfinite(registered)
+    if overlap.sum() < 100:  # shifted almost entirely out of frame; nothing left to compare
+        return 0.0
+    correlation = np.corrcoef(reference[overlap].ravel(), registered[overlap].ravel())[0, 1]
+    return 0.0 if np.isnan(correlation) else round(float(correlation), 4)
+
+
+def max_reliable_shift(shape: tuple[int, int], usable_fraction: float = DEFAULT_USABLE_FRACTION) -> float:
     """Rough upper bound, in pixels, on a shift this method can still measure.
 
     The sky common to both crops shrinks by the shift, so the correlation degrades as
     the overlap does. A third of the cropped width is a conservative working limit.
     """
     _ny, nx = shape
-    return (nx * crop_fraction) / 3.0
+    return (nx * usable_fraction) / 3.0
