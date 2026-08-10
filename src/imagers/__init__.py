@@ -2,7 +2,6 @@ import time
 
 import numpy as np
 from fastapi import APIRouter
-from pydantic import BaseModel
 
 from common.canonical import CanonicalResponse
 from common.const import Const
@@ -231,9 +230,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         Returns the imager's current status.
         :return: ImagerStatus object containing the status information
         """
-        backend_status = self._backend.status(capacity="imager")  # type: ignore
-
-        ret = ImagerStatus(
+        return ImagerStatus(
             # detected=self.detected,
             connected=self.connected,
             # operational=self.operational,
@@ -248,9 +245,8 @@ class Imager(ImagerInterface, SwitchedOutlet):
             latest_settings=self.latest_settings,
             activities=self.activities,
             activities_verbal=self.activities_verbal,
-            backend=backend_status if isinstance(backend_status, BaseModel) else backend_status.__dict__,
+            backend=self._backend.status(),
         )
-        return ret
 
     def connect(self) -> CanonicalResponse | None:  # obsoleted by connected property
         self._backend.connected = True

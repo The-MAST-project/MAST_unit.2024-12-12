@@ -22,9 +22,9 @@ from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface
 from common.mast_logging import get_logger
-from common.models.statuses import ImagerRoi, ImagerSettings, ImagerStatus
+from common.models.statuses import ImagerBackendStatus, ImagerRoi, ImagerSettings, ImagerStatus
 from common.paths import PathMaker
-from common.utils import RepeatTimer, function_name, time_stamp
+from common.utils import RepeatTimer, function_name
 from imagers import Imager
 from imagers.saving import save_to_fits_file
 
@@ -538,27 +538,23 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         return CanonicalResponse(errors=self.errors) if self.errors else CanonicalResponse_Ok
 
-    def endpoint_status(self) -> ImagerStatus:
+    def endpoint_status(self) -> ImagerBackendStatus:
         return self.status()
 
-    def status(self) -> ImagerStatus:
-        """
-        Gets the **ASCOM** imager status
-        """
+    def status(self) -> ImagerBackendStatus:
+        """What the **ASCOM** backend reports about itself.
 
-        return ImagerStatus(
+        Narrow by contract: the composite `ImagerStatus` -- temperature, cooler,
+        camera size, power, set point -- belongs to the `Imager` wrapper, which reads
+        each of those from its own properties. This used to return a whole
+        `ImagerStatus` that the wrapper then embedded under its own `backend` field,
+        answering the same fields twice with only the outer copy authoritative. See
+        MAST_common's 2026-08-09 DECISIONS entry.
+        """
+        return ImagerBackendStatus(
             identifier=self.prog_id,
-            **self.power_status().model_dump(),
-            **self.ascom_status().model_dump(),
+            name=self.name,
             **self.component_status().model_dump(),
-            set_point=self.operational_set_point,
-            temperature=self.temperature,
-            cooler_on=self._ascom.CoolerOn,
-            cooler_power=self._ascom.CoolerPower,
-            latest_settings=self.latest_settings,
-            date=time_stamp(),
-            camera_x_size=self.camera_x_size,
-            camera_y_size=self.camera_y_size,
         )
 
     @property

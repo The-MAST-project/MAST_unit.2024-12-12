@@ -13,8 +13,8 @@ from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface
 from common.mast_logging import get_logger
-from common.models.statuses import ImagerExposure, ImagerRoi, ImagerSettings, ImagerStatus
-from common.utils import RepeatTimer, function_name, time_stamp
+from common.models.statuses import ImagerBackendStatus, ImagerExposure, ImagerRoi, ImagerSettings
+from common.utils import RepeatTimer, function_name
 from imagers import Imager
 
 logger = get_logger(__name__)
@@ -319,36 +319,40 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         zwoasi.stopExposure(self.cam_id)
         return CanonicalResponse_Ok
 
-    def endpoint_status(self) -> ImagerStatus:
-        """
-        Gets the **MAST** imager status
-        """
+    def endpoint_status(self) -> ImagerBackendStatus:
         return self.status()
 
-    def status(self) -> ImagerStatus:
-        """
-        Gets the **MAST** imager status
-        """
+    def status(self) -> ImagerBackendStatus:
+        """What the **ZWO** backend reports about itself.
 
-        self._setpoint = None
-        if self.connected:
-            self._setpoint, _ = zwoasi.getControlValue(self.cam_id, asi.Control.TargetTemp)
-
-        return ImagerStatus(
-            **self.power_status().model_dump(),
+        Narrow by contract: the composite `ImagerStatus` -- temperature, cooler,
+        camera size, power, set point -- belongs to the `Imager` wrapper, which reads
+        each of those from its own properties. See MAST_common's 2026-08-09
+        DECISIONS entry.
+        """
+        return ImagerBackendStatus(
+            identifier=str(self.cam_id),
+            name=self.name,
             **self.component_status().model_dump(),
-            camera_x_size=self.width,
-            camera_y_size=self.height,
-            set_point=self._setpoint,
-            temperature=self.temperature if self.connected else None,
-            cooler_on=self.cooler_on if self.connected else None,
-            cooler_power=self.cooler_power if self.connected else None,
-            latest_settings=self.latest_settings,
-            date=time_stamp(),
         )
 
     @property
-    def set_point(self):
+    def set_point(self) -> float | None:
+        """The cooler set point the camera is actually holding.
+
+        Queries the camera rather than returning a cached value. It used to return
+        `self._setpoint`, which was populated **only** as a side effect of
+        `status()` -- so it read correctly purely because `Imager.status()` happens
+        to call the backend's `status()` before reading this property. Narrowing
+        `status()` removed that side effect, which would have left this permanently
+        `None`; the query belongs here anyway, since a reported set point is a
+        measurement rather than an echo (#98).
+        """
+        if not self.connected:
+            self._setpoint = None
+            return None
+
+        self._setpoint, _ = zwoasi.getControlValue(self.cam_id, asi.Control.TargetTemp)
         return self._setpoint
 
     @property

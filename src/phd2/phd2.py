@@ -1180,36 +1180,47 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def endpoint_status(self):
         return self.status()
 
-    def status(self, capacity: Literal["imager", "guider"] = "imager") -> PHD2ImagerStatus | PHD2GuiderStatus:
+    def status(self) -> PHD2ImagerStatus:
+        """PHD2 in its **imager** role, for embedding under `ImagerStatus.backend`.
 
-        if capacity == "imager":
-            ret = PHD2ImagerStatus(
-                identifier=self.identifier,
-                activities=int(self.activities),
-                activities_verbal=self.activities_verbal,
-                connected=self.connected,
-                operational=self.operational,
-                why_not_operational=self.why_not_operational,
-            )
-        elif capacity == "guider":
-            st = self.sky_quality.state
-            sky_quality: SkyQualityStatus | None = (
-                None
-                if self.sky_quality.latest_update is None
-                else SkyQualityStatus(
-                    score=st.score_0_to_100, state=st.quality_state, latest_update=self.sky_quality.latest_update
-                )
-            )
+        Satisfies `ImagerInterface.status()`. The guider role answers separately,
+        through `guider_status()`.
+        """
+        return PHD2ImagerStatus(
+            identifier=self.identifier,
+            activities=int(self.activities),
+            activities_verbal=self.activities_verbal,
+            connected=self.connected,
+            operational=self.operational,
+            why_not_operational=self.why_not_operational,
+        )
 
-            ret = PHD2GuiderStatus(
-                identifier=self.identifier,
-                is_guiding=self.is_guiding,
-                is_settling=self.is_settling(),
-                app_state=self.app_state,
-                avg_dist=self.avg_dist,
-                sky_quality=sky_quality,
+    def guider_status(self) -> PHD2GuiderStatus:
+        """PHD2 in its **guider** role, for embedding under `GuiderStatus.backend`.
+
+        One connector serves two roles, so it answers for both -- but as two
+        methods rather than one method behind a `capacity` discriminator. The
+        discriminator made `status()` return a union, which is how the `Imager`
+        wrapper came to pass `capacity="imager"` to ASCOM and ZWO, neither of
+        which takes an argument: `/imager/status` was a 500 on both (#100).
+        """
+        st = self.sky_quality.state
+        sky_quality: SkyQualityStatus | None = (
+            None
+            if self.sky_quality.latest_update is None
+            else SkyQualityStatus(
+                score=st.score_0_to_100, state=st.quality_state, latest_update=self.sky_quality.latest_update
             )
-        return ret
+        )
+
+        return PHD2GuiderStatus(
+            identifier=self.identifier,
+            is_guiding=self.is_guiding,
+            is_settling=self.is_settling(),
+            app_state=self.app_state,
+            avg_dist=self.avg_dist,
+            sky_quality=sky_quality,
+        )
 
     @property
     def identifier(self):
