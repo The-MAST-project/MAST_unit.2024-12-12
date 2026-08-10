@@ -134,9 +134,9 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         """
 
         return CoverStatus(
-            **self.power_status().dict(),
-            **self.ascom_status().dict(),
-            **self.component_status().dict(),
+            **self.power_status().model_dump(),
+            **self.ascom_status().model_dump(),
+            **self.component_status().model_dump(),
             state=self.state,
             state_verbal=self.state.__repr__(),
             target_verbal=(

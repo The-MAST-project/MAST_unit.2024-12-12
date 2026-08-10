@@ -214,7 +214,9 @@ class AstrometryDotNet(SolverInterface):
         # The astrometry.net subprocess writes new_fits_path (the solved FITS); protect it
         # so a ram->shared move can't grab a partially-written solved frame.
         with MoveGuardian().protect(new_fits_path):
-            completed_process = subprocess.run(command, capture_output=True, shell=True)
+            completed_process = subprocess.run(
+                command, capture_output=True, shell=True, check=False
+            )  # returncode is inspected below
         stdout_lines = completed_process.stdout.decode().strip().splitlines()
         stderr_lines = completed_process.stderr.decode().strip().splitlines()
         elapsed = time.monotonic() - start

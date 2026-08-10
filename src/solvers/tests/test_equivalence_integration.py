@@ -94,7 +94,7 @@ def _common_args(solve_field, index_dir, workdir):
 
 
 def _run(args):
-    proc = subprocess.run(" ".join(args), capture_output=True, shell=True, env=_cygwin_env())
+    proc = subprocess.run(" ".join(args), capture_output=True, shell=True, env=_cygwin_env(), check=False)
     assert proc.returncode == 0, f"solve-field failed (rc={proc.returncode}):\n{proc.stderr.decode(errors='replace')}"
 
 
