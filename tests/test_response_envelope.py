@@ -168,28 +168,26 @@ def test_ascom_shutdown_refuses_when_not_connected():
     assert backend._was_shut_down, "a refused shutdown still records that it was shut down"
 
 
-@pytest.mark.parametrize("verb", ["startup", "shutdown"])
-def test_zwo_lifecycle_returns_an_envelope(verb):
-    import threading
+def test_zwo_startup_returns_an_envelope():
+    """`startup` used to `return super().startup()` -- `Component`'s abstract method,
+    with an empty body -- so it did nothing and returned None.
 
+    Only `startup` is covered here. `shutdown` brackets itself in
+    `start_activity`/`end_activity`, which reach the notification path and therefore
+    `load_local_config()`, so exercising it needs a fake `Config` (via `MAST_CONFIG`)
+    rather than an `object.__new__` stand-in. That fixture is #52's Phase 1; until it
+    exists, ZWO's shutdown envelope is covered by the hardware pass rather than here.
+    """
     zwo = importlib.import_module("zwo")
-    from common.activities import ImagerActivities
 
     class _Zwo(zwo.ZWOImager):
         def set_control(self, *_args, **_kwargs):
             """Stubbed: the real one talks to the ASI SDK."""
 
     backend = object.__new__(_Zwo)
-    # shutdown() brackets itself in start_activity/end_activity, which need the state
-    # Activities.__init__ would have set up.
-    backend.activities = ImagerActivities(0)
-    backend.timings = {}
-    backend.details = {}
-    backend.data = {}
-    backend.lock = threading.Lock()
     backend.cam_id = 0
     backend.errors = []
-    assert_ok(getattr(backend, verb)())
+    assert_ok(backend.startup())
 
 
 def test_phd2_startup_returns_ok_because_init_already_started_it():
