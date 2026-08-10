@@ -802,18 +802,18 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         tag = "Mount"
 
         router = APIRouter()
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
-        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown)
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
+        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
+        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown, methods=["PUT"])
+        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["PUT"])
         router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
         router.add_api_route(base_path + "/connect", tags=[tag], endpoint=self.connect)
         router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
-        router.add_api_route(base_path + "/start_tracking", tags=[tag], endpoint=self.start_tracking)
-        router.add_api_route(base_path + "/stop_tracking", tags=[tag], endpoint=self.stop_tracking)
-        router.add_api_route(base_path + "/park", tags=[tag], endpoint=self.park)
-        router.add_api_route(base_path + "/find_home", tags=[tag], endpoint=self.find_home)
+        router.add_api_route(base_path + "/start_tracking", tags=[tag], endpoint=self.start_tracking, methods=["PUT"])
+        router.add_api_route(base_path + "/stop_tracking", tags=[tag], endpoint=self.stop_tracking, methods=["PUT"])
+        router.add_api_route(base_path + "/park", tags=[tag], endpoint=self.park, methods=["PUT"])
+        router.add_api_route(base_path + "/find_home", tags=[tag], endpoint=self.find_home, methods=["PUT"])
         router.add_api_route(base_path + "/goto", methods=["PUT"], tags=[tag], endpoint=self.endpoint_goto)
-        router.add_api_route(base_path + "/dance", tags=[tag], endpoint=self.dance)
+        router.add_api_route(base_path + "/dance", tags=[tag], endpoint=self.dance, methods=["PUT"])
 
         return router
 

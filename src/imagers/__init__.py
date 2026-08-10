@@ -383,9 +383,9 @@ class Imager(ImagerInterface, SwitchedOutlet):
             self.cooler_on = False
 
         router = APIRouter()
-        router.add_api_route(base_imager_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
-        router.add_api_route(base_imager_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown)
-        router.add_api_route(base_imager_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
+        router.add_api_route(base_imager_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
+        router.add_api_route(base_imager_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown, methods=["PUT"])
+        router.add_api_route(base_imager_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["PUT"])
         router.add_api_route(base_imager_path + "/status", tags=[tag], endpoint=self.endpoint_status)
         router.add_api_route(base_imager_path + "/connect", tags=[tag], endpoint=self.connect)
         router.add_api_route(base_imager_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
@@ -393,14 +393,16 @@ class Imager(ImagerInterface, SwitchedOutlet):
             base_imager_path + "/start_exposure",
             tags=[tag],
             endpoint=self.start_exposure,
+            methods=["PUT"],
         )
-        router.add_api_route(base_imager_path + "/stop_exposure", tags=[tag], endpoint=self.stop_exposure)
+        router.add_api_route(base_imager_path + "/stop_exposure", tags=[tag], endpoint=self.stop_exposure, methods=["PUT"])
         router.add_api_route(
             base_imager_path + "/abort_exposure",
             tags=[tag],
             endpoint=self.abort_exposure,
+            methods=["PUT"],
         )
-        router.add_api_route(base_imager_path + "/cooler_on", tags=[tag], endpoint=cooler_on)
-        router.add_api_route(base_imager_path + "/cooler_off", tags=[tag], endpoint=cooler_off)
+        router.add_api_route(base_imager_path + "/cooler_on", tags=[tag], endpoint=cooler_on, methods=["PUT"])
+        router.add_api_route(base_imager_path + "/cooler_off", tags=[tag], endpoint=cooler_off, methods=["PUT"])
 
         return router

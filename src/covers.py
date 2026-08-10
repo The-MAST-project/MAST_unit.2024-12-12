@@ -327,13 +327,13 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         tag = "Covers"
 
         router = APIRouter()
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
-        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown)
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
+        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
+        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown, methods=["PUT"])
+        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["PUT"])
         router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
         router.add_api_route(base_path + "/connect", tags=[tag], endpoint=self.connect)
         router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
-        router.add_api_route(base_path + "/open", tags=[tag], endpoint=self.endpoint_open)
-        router.add_api_route(base_path + "/close", tags=[tag], endpoint=self.endpoint_close)
+        router.add_api_route(base_path + "/open", tags=[tag], endpoint=self.endpoint_open, methods=["PUT"])
+        router.add_api_route(base_path + "/close", tags=[tag], endpoint=self.endpoint_close, methods=["PUT"])
 
         return router
