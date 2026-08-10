@@ -7,7 +7,7 @@ import time
 from collections import deque
 from enum import Enum, IntEnum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from fastapi.routing import APIRouter
 
@@ -100,7 +100,7 @@ class Stage(Component, SwitchedOutlet):
     _instance = None
     _initialized = False
 
-    state_flags_dict: dict = {
+    state_flags_dict: ClassVar[dict[StateFlags, str]] = {
         StateFlags.STATE_ERRC: "STATE_ERRC",
         StateFlags.STATE_ERRV: "STATE_ERRV",
         StateFlags.STATE_ERRD: "STATE_ERRD",
