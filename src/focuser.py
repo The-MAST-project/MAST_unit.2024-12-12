@@ -1,6 +1,5 @@
 from collections import deque
 from enum import IntEnum, auto
-from typing import TYPE_CHECKING
 
 import win32com.client
 from fastapi.routing import APIRouter
@@ -15,9 +14,6 @@ from common.mast_logging import get_logger
 from common.models.statuses import FocuserStatus
 from common.utils import RepeatTimer, boxed_log, time_stamp
 from PlaneWave import pwi4_client
-
-if TYPE_CHECKING:
-    pass
 
 logger = get_logger(__name__)
 
@@ -50,9 +46,9 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         self.conf = self.unit.unit_conf.focuser
         try:
             self._ascom = win32com.client.Dispatch(self.conf.ascom_driver)
-        except Exception as ex:
-            logger.exception(ex)
-            raise ex
+        except Exception:
+            logger.exception(f"could not create ASCOM focuser driver '{self.conf.ascom_driver}'")
+            raise
 
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Focuser")
         Component.__init__(self, FocuserActivities)

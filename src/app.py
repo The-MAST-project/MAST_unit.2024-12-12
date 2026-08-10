@@ -6,16 +6,16 @@ from contextlib import asynccontextmanager
 
 import psutil
 import uvicorn
-from common.config import Config, ConfigError
-from common.mast_logging import configure_logging, get_logger
-from common.process import ensure_process_is_running
-from common.utils import boxed_info
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import ValidationError
 
+from common.config import Config, ConfigError
+from common.mast_logging import configure_logging, get_logger
+from common.process import ensure_process_is_running
+from common.utils import boxed_info
 from PlaneWave import pwi4_client
 from PlaneWave.ps3cli_locate import locate_ps3cli_catalog, locate_ps3cli_dir
 
@@ -66,8 +66,8 @@ while time.monotonic() < _pwi4_deadline:
     except pwi4_client.PWException:
         logger.warning("PWI4 not ready yet, retrying ...")
         time.sleep(1)
-    except Exception as ex:
-        logger.error(f"cannot connect to PWI4: {ex}")
+    except Exception:
+        logger.exception("cannot connect to PWI4")
         break
 if not _pwi4_ok:
     logger.warning("PWI4 unavailable at startup - unit will start with mount unavailable")
@@ -120,8 +120,8 @@ else:
 async def lifespan(fast_app: FastAPI):
     try:
         unit = Unit()
-    except Exception as ex:
-        logger.error(f"Unit initialization failed in lifespan: {ex=}")
+    except Exception:
+        logger.exception("Unit initialization failed in lifespan:")
         yield
         return
     unit.start_lifespan()
@@ -204,7 +204,7 @@ if __name__ == "__main__":
     try:
         unit = Unit()
     except Exception as ex:
-        logger.error(f"Unit initialization failed: {ex}")
+        logger.exception("Unit initialization failed")
         app_quit(reason=f"unit initialization failed: {ex}")
         unit = None
 

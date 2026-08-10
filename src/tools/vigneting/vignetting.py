@@ -1,8 +1,9 @@
-import numpy as np
-import os
-from scipy.interpolate import CubicSpline
-from astropy.io import fits
 import argparse
+import os
+
+import numpy as np
+from astropy.io import fits
+from scipy.interpolate import CubicSpline
 
 
 def main(filepath, fiber_px=4041, plate_scale_arcsec_px=206265 * 2.3 / 1800000, shift=0):

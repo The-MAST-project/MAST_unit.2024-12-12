@@ -202,8 +202,8 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                 if response.failed:
                     self.errors.append(response.failure)
                 logger.info(f"connected = {value}, axes disabled, disconnected")
-        except Exception as ex:
-            logger.exception(ex)
+        except Exception:
+            logger.exception("mount connect/disconnect failed")
 
     def endpoint_startup(self):
         return self.startup()

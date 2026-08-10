@@ -135,7 +135,7 @@ class Unit(Component):
             self.unit_conf = Config().get_unit()
         except Exception as ex:
             msg = f"unit configuration failed to load: {ex}"
-            logger.error(msg)
+            logger.exception(msg)
             self._init_errors.append(msg)
         if self.unit_conf is None and not self._init_errors:
             msg = "unit configuration could not be loaded (no config in database or TOML)"
@@ -159,7 +159,7 @@ class Unit(Component):
                 return factory()
             except Exception as ex:
                 msg = f"component '{name}' failed to initialize: {ex}"
-                logger.error(msg)
+                logger.exception(msg)
                 self._init_errors.append(msg)
                 return None
 
@@ -554,8 +554,8 @@ class Unit(Component):
                 await websocket.send_bytes(png_data)
                 # loop = asyncio.get_event_loop()
                 # loop.run_until_complete(websocket.send(png_data))
-            except Exception as e:
-                logger.error(f"websocket.send error: {e}")
+            except Exception:
+                logger.exception("websocket.send error")
 
     def expose(
         self,

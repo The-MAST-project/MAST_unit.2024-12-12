@@ -480,15 +480,13 @@ class StageCalibrator:
         try:
             Config().set_unit(unit_name=self.unit.hostname, unit_conf=conf)
             logger.info(f"saved stage calibration for '{self.unit.hostname}': spec_position={stage_cal.spec_position}")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- config write failure is reported to the caller, never fatal to a calibration
             self.errors.append(f"could not save stage calibration for '{self.unit.hostname}': {e}")
 
     def _fail(self, msg: str) -> None:
         logger.error(msg)
         self.errors.append(msg)
-        return None
 
     def _abort(self, msg: str) -> None:
         logger.warning(msg)
         self.errors.append(msg)
-        return None

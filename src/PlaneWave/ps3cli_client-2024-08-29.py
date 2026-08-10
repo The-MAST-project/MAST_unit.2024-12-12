@@ -1,7 +1,7 @@
-from multiprocessing import shared_memory
 import json
 import socket
 import time
+from multiprocessing import shared_memory
 
 
 class PS3AutofocusResult:
@@ -22,7 +22,7 @@ class PS3CLIClient:
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.connect((host, port))
-        except Exception as e:
+        except OSError:
             raise Exception(f"Failed to connect to {host}:{port}")
 
     def close(self):
@@ -170,8 +170,8 @@ def test_platesolve_file(ps3: PS3CLIClient):
 
 
 def test_ascom_camera_shm(ps3: PS3CLIClient):
-    from win32com.client import Dispatch
     import numpy as np
+    from win32com.client import Dispatch
 
     prog_id = input("Enter ProgID of ASCOM camera driver: ")
     camera = Dispatch(prog_id)
@@ -244,7 +244,7 @@ def test_bad_method(ps3: PS3CLIClient):
     try:
         response = ps3.send_receive("bogus_method")
         print("Response:", response)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- demo entry point: report whatever went wrong
         print("Caught exception:")
         print(e)
 
