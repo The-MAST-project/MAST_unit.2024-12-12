@@ -170,6 +170,8 @@ def test_ascom_shutdown_refuses_when_not_connected():
 
 @pytest.mark.parametrize("verb", ["startup", "shutdown"])
 def test_zwo_lifecycle_returns_an_envelope(verb):
+    import threading
+
     zwo = importlib.import_module("zwo")
     from common.activities import ImagerActivities
 
@@ -178,7 +180,13 @@ def test_zwo_lifecycle_returns_an_envelope(verb):
             """Stubbed: the real one talks to the ASI SDK."""
 
     backend = object.__new__(_Zwo)
+    # shutdown() brackets itself in start_activity/end_activity, which need the state
+    # Activities.__init__ would have set up.
     backend.activities = ImagerActivities(0)
+    backend.timings = {}
+    backend.details = {}
+    backend.data = {}
+    backend.lock = threading.Lock()
     backend.cam_id = 0
     backend.errors = []
     assert_ok(getattr(backend, verb)())
