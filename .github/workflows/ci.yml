@@ -45,18 +45,18 @@ jobs:
 
     steps:
       - name: Check out MAST_unit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: unit
 
       - name: Check out MAST_common as a sibling
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: The-MAST-project/MAST_common
           ref: master
           path: common
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           # ruff.toml sets target-version = "py312"; keep these in step.
           python-version: "3.12"
@@ -88,9 +88,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
