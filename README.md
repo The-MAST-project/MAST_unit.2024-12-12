@@ -1,4 +1,4 @@
-This repository contains the 'unit' part of the **MAST** project.  It needs the `MAST_common` repo as submodule
+This repository contains the 'unit' part of the **MAST** project.  It needs the `MAST_common` repo as a sibling clone (`<top>/common/`, reached through the venv's `mast.pth` — not a submodule; see `DECISIONS.md` 2026-08-06)
 
 The software controls a **MAST** unit which includes:
 * An EDGE class computer
@@ -11,6 +11,27 @@ The software controls a **MAST** unit which includes:
 
 Provides (via FastAPI) `autofocus` and `acquisition` interfaces
 
+## Running the service
+
+```
+python app.py [--log-level DEBUG]
+```
+
+`app.py` splits into three pieces, and the split matters if you import it:
+
+- `start_supporting_processes()` starts PWI4, PWShutter and ps3cli and waits up to 30 s
+  for PWI4 to answer. Called from `main()` only. **Importing `app` starts nothing.**
+- `create_app(unit)` builds the FastAPI app — exception handlers, CORS, the favicon
+  route — and mounts the unit router plus every component router the unit managed to
+  build. Called with no argument it returns the bare app, which is what a schema-only
+  or test caller wants.
+- `main()` validates the configuration, builds the `Unit`, calls the other two, and
+  hands the app to uvicorn.
+
+There is no module-level `app` object: an app needs a `Unit`, and building one needs
+Windows, the device drivers and Mongo. `uvicorn app:app` therefore does not work —
+use `python app.py`, or `create_app()` if you are constructing one yourself.
+
 ## Tests
 
 `tests/` holds a pytest suite that drives the real connector code with mocked
@@ -22,6 +43,12 @@ Install `requirements-dev.txt` into the venv, then from the repo root:
 ```
 python -m pytest tests/ -v
 ```
+
+`test_app_factory.py` is the exception to "Windows-only": it covers `create_app()`
+without importing a component module, so it runs anywhere. It pins the three defects
+that made the HTTP surface untestable — routers mounted only under `__main__`,
+processes spawned at import, and a `lifespan` that reached for a global the `__main__`
+block happened to bind.
 
 `test_response_envelope.py` covers invariant 4 of the endpoint contract (#42):
 every routed handler returns a `CanonicalResponse`, with refusals as `errors`.

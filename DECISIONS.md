@@ -2,6 +2,54 @@
 
 ---
 
+## [2026-08-10] `app.py` is a factory, not a module with side effects
+
+**Why:** The HTTP surface was unreachable from anything but `python app.py`, which made
+the endpoint contract (#42) unenforceable — you cannot assert a route table you cannot
+construct. Three separate couplings did it:
+
+- All six `app.include_router(...)` calls sat inside `if __name__ == "__main__"`, so an
+  imported `app` had one route (`/favicon.ico`) while the tree registered 74 operations.
+- Module scope started PWI4, PWShutter and ps3cli and blocked up to 30 s connecting to
+  PWI4. On a unit machine that drives the real telescope, so `tests/conftest.py` blocks
+  process launches wholesale — a tripwire whose own docstring names this file as the
+  reason and asks for this fix.
+- `lifespan` called `Unit()` while `Unit` was imported only inside the `__main__` block.
+  Under `python app.py` the global happened to be bound in time; under any other entry
+  point the call raised `NameError` into a bare `except Exception`, and the unit's
+  lifespan hooks were skipped silently. (`Unit` is a singleton with an `_initialized`
+  guard, so the second construction was a no-op rather than a duplicate instance — what
+  was broken was the dependency on a global another code path happened to bind.)
+
+**What:** `create_app(unit=None)` builds the app and mounts the routers;
+`start_supporting_processes()` holds the spawns; `main()` sequences configuration
+validation, `Unit()`, both of those, and uvicorn. `lifespan` closes over the unit the
+factory was given. `python app.py` performs the same steps in the same order as before —
+the spawns still run ahead of the configuration check, because that is the order module
+import used to impose.
+
+`create_app`'s `unit` parameter is deliberately unannotated: annotating it `Unit` would
+require a module-scope `from unit import Unit`, which drags in the Windows / driver /
+Mongo chain the factory exists to keep out of app construction.
+
+Router mounting also became a loop over `COMPONENT_ATTRIBUTES` rather than six
+`if unit.<component>:` branches. Same semantics, same order, and it gives #52's manifest
+a single place to read the component list from.
+
+**Implications:** `TestClient(create_app(unit))` reaches the real routes, which unblocks
+#52's Phases 1-4. There is no module-level `app` object any more, so `uvicorn app:app`
+is no longer a usable entry point — nothing used it, and it was one of the paths where
+the silent `lifespan` failure above would have bitten.
+
+One discovery worth carrying into #52: on FastAPI 0.139 `include_router()` does **not**
+flatten into `app.routes`. It appends a single `_IncludedRouter` wrapper whose entire
+interface is private, so mounted paths are not enumerable there. The public reading is
+`app.openapi()["paths"]`, which is what `tests/test_app_factory.py` uses and what the
+anchor test will have to use — with the caveat that a route registered
+`include_in_schema=False` is invisible in it (nothing in the unit sets it today).
+
+---
+
 ## [2026-08-06] Retire the `src/common` submodule; MAST_common is a sibling clone
 
 **Why:** Two mechanisms were resolving the same package, and only one of them was
