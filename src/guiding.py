@@ -72,11 +72,11 @@ class Guider(GuiderInterface):
     def __repr__(self):
         return f"Guider(_backend={self._backend.__repr__()})"
 
-    def status(self):
+    def status(self) -> GuiderStatus:
         return GuiderStatus(
             activities=self.activities,
             activities_verbal=self.activities_verbal,
-            backend=self._backend.status(capacity="guider") if self._backend else None,  # type: ignore
+            backend=self._backend.guider_status() if self._backend else None,
         )
 
     def start_guiding(self):
