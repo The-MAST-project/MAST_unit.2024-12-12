@@ -22,8 +22,8 @@ import pytest
 
 pytest.importorskip("win32com", reason="the unit's component modules are Windows-only")
 
-from common.canonical import CanonicalResponse  # noqa: E402
-from common.models.statuses import AscomDriverInfoModel, CoversState, CoverStatus  # noqa: E402
+from common.canonical import CanonicalResponse
+from common.models.statuses import AscomDriverInfoModel, CoversState, CoverStatus
 
 
 def assert_refused(response, *, expected: str | None = None) -> None:

@@ -16,8 +16,8 @@ import pytest
 
 pytest.importorskip("win32com", reason="mount.py is Windows-only")
 
-from common.activities import MountActivities  # noqa: E402
-from common.canonical import CanonicalResponse  # noqa: E402
+from common.activities import MountActivities
+from common.canonical import CanonicalResponse
 
 
 class _RecordingPw:
