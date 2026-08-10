@@ -378,9 +378,9 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             return CanonicalResponse(value=self.position)
 
         router = APIRouter()
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
-        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown)
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
+        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
+        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown, methods=["PUT"])
+        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["PUT"])
         router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
         router.add_api_route(base_path + "/connect", tags=[tag], endpoint=self.connect)
         router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
@@ -395,10 +395,11 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             base_path + "/goto_known_as_good_position",
             tags=[tag],
             endpoint=self.endpoint_goto_known_as_good_position,
+            methods=["PUT"],
         )
-        router.add_api_route(base_path + "/move", tags=[tag], endpoint=self.move)
-        router.add_api_route(base_path + "/move_in", tags=[tag], endpoint=self.endpoint_move_in)
-        router.add_api_route(base_path + "/move_out", tags=[tag], endpoint=self.endpoint_move_out)
+        router.add_api_route(base_path + "/move", tags=[tag], endpoint=self.move, methods=["PUT"])
+        router.add_api_route(base_path + "/move_in", tags=[tag], endpoint=self.endpoint_move_in, methods=["PUT"])
+        router.add_api_route(base_path + "/move_out", tags=[tag], endpoint=self.endpoint_move_out, methods=["PUT"])
 
         return router
 

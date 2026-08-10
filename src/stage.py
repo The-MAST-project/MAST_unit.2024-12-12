@@ -923,9 +923,9 @@ from pyximc import *
         tag = "Stage"
 
         router = APIRouter()
-        router.add_api_route(base_stage_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
-        router.add_api_route(base_stage_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown)
-        router.add_api_route(base_stage_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
+        router.add_api_route(base_stage_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
+        router.add_api_route(base_stage_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown, methods=["PUT"])
+        router.add_api_route(base_stage_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["PUT"])
         router.add_api_route(base_stage_path + "/status", tags=[tag], endpoint=self.endpoint_status)
         router.add_api_route(
             base_stage_path + "/position",
@@ -940,11 +940,12 @@ from pyximc import *
         )
         router.add_api_route(base_stage_path + "/connect", tags=[tag], endpoint=self.connect)
         router.add_api_route(base_stage_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
-        router.add_api_route(base_stage_path + "/move", tags=[tag], endpoint=self.move_relative)
+        router.add_api_route(base_stage_path + "/move", tags=[tag], endpoint=self.move_relative, methods=["PUT"])
         router.add_api_route(
             base_stage_path + "/move_to_preset",
             tags=[tag],
             endpoint=self.move_to_preset,
+            methods=["PUT"],
         )
 
         return router
