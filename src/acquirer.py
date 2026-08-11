@@ -12,6 +12,7 @@ from common import asi
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import FcuVersion, SkyRoiConfig
+from common.endpoints import Tier, endpoint
 from common.filer import MoveGuardian
 from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification, UnitAssignment
@@ -394,6 +395,7 @@ class Acquirer:
                 )
             )
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_start_acquisition_and_guiding(
         self,
         seconds: float | None = 5.0,

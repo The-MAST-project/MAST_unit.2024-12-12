@@ -13,6 +13,7 @@ from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.endpoints import Stability, Tier, add_api_route, endpoint
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import MountStatus, SpiralSettings
@@ -140,6 +141,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self._initialized = True
         logger.info("initialized")
 
+    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
     def connect(self):
         """
         Connects to the MAST mount controller
@@ -150,6 +152,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self.connected = True
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
     def disconnect(self):
         """
         Disconnects from the MAST mount controller
@@ -205,6 +208,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         except Exception:
             logger.exception("mount connect/disconnect failed")
 
+    @endpoint(tier=Tier.INTERFACE)
     def endpoint_startup(self):
         return self.startup()
 
@@ -223,6 +227,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self.find_home()
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.INTERFACE)
     def endpoint_shutdown(self):
         return self.shutdown()
 
@@ -251,6 +256,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
 
         self.power_off()
 
+    @endpoint(tier=Tier.OPERATION)
     def park(self):
         """
         Parks the MAST mount
@@ -261,6 +267,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.pw.mount_park()
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION)
     def find_home(self):
         """
         Tells the MAST mount to find it's HOME indexes
@@ -274,6 +281,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.pw.mount_find_home()
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_goto(self, ra_j2000_hours: float, dec_j2000_degs: float) -> CanonicalResponse:
         """
         Slews the mount to equatorial (J2000) coordinates, in decimal hours and degrees.
@@ -582,6 +590,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"{op}: dist_to_target settled (< {tol_arcsec:.3f} arcsec for {stable_samples} samples)")
         return True
 
+    @endpoint(tier=Tier.INTERFACE)
     def endpoint_status(self) -> CanonicalResponse:
         return CanonicalResponse(value=self.status())
 
@@ -649,6 +658,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             date=time_stamp(),
         )
 
+    @endpoint(tier=Tier.OPERATION)
     def start_tracking(self):
         """
         Tell the ``mount`` to start tracking
@@ -666,6 +676,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"started tracking (from {caller_name()})")
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION)
     def stop_tracking(self):
         """
         Tell the ``mount`` to stop tracking
@@ -689,6 +700,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self.pw.mount_goto_ra_dec_j2000(ra, dec)
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.INTERFACE)
     def endpoint_abort(self):
         return self.abort()
 
@@ -775,6 +787,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def was_shut_down(self) -> bool:
         return self._was_shut_down
 
+    @endpoint(tier=Tier.DEMO)
     def dance(self):
         coordinates = cone_coordinates_generator()
         logger.info("dance: starting to dance")
@@ -802,18 +815,18 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         tag = "Mount"
 
         router = APIRouter()
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
-        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown, methods=["PUT"])
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["PUT"])
-        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
-        router.add_api_route(base_path + "/connect", tags=[tag], endpoint=self.connect)
-        router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
-        router.add_api_route(base_path + "/start_tracking", tags=[tag], endpoint=self.start_tracking, methods=["PUT"])
-        router.add_api_route(base_path + "/stop_tracking", tags=[tag], endpoint=self.stop_tracking, methods=["PUT"])
-        router.add_api_route(base_path + "/park", tags=[tag], endpoint=self.park, methods=["PUT"])
-        router.add_api_route(base_path + "/find_home", tags=[tag], endpoint=self.find_home, methods=["PUT"])
-        router.add_api_route(base_path + "/goto", methods=["PUT"], tags=[tag], endpoint=self.endpoint_goto)
-        router.add_api_route(base_path + "/dance", tags=[tag], endpoint=self.dance, methods=["PUT"])
+        add_api_route(router, base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
+        add_api_route(router, base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown, methods=["PUT"])
+        add_api_route(router, base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["PUT"])
+        add_api_route(router, base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
+        add_api_route(router, base_path + "/connect", tags=[tag], endpoint=self.connect)
+        add_api_route(router, base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
+        add_api_route(router, base_path + "/start_tracking", tags=[tag], endpoint=self.start_tracking, methods=["PUT"])
+        add_api_route(router, base_path + "/stop_tracking", tags=[tag], endpoint=self.stop_tracking, methods=["PUT"])
+        add_api_route(router, base_path + "/park", tags=[tag], endpoint=self.park, methods=["PUT"])
+        add_api_route(router, base_path + "/find_home", tags=[tag], endpoint=self.find_home, methods=["PUT"])
+        add_api_route(router, base_path + "/goto", methods=["PUT"], tags=[tag], endpoint=self.endpoint_goto)
+        add_api_route(router, base_path + "/dance", tags=[tag], endpoint=self.dance, methods=["PUT"])
 
         return router
 

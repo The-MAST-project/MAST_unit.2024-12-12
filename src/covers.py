@@ -11,6 +11,7 @@ from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.endpoints import Stability, Tier, add_api_route, endpoint
 from common.interfaces.components import Component
 from common.models.statuses import CoversState, CoverStatus
 from common.utils import RepeatTimer, time_stamp
@@ -74,6 +75,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         self._initialized = True
         logger.info("initialized")
 
+    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
     def connect(self):
         """
         Connects to the **MAST** mirror cover controller
@@ -88,6 +90,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             self._connected = True
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
     def disconnect(self):
         """
         Disconnects from the **MAST** mirror cover controller
@@ -125,6 +128,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         else:
             return CoversState.Error
 
+    @endpoint(tier=Tier.INTERFACE)
     def endpoint_status(self) -> CanonicalResponse:
         return CanonicalResponse(value=self.status())
 
@@ -149,6 +153,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             date=time_stamp(),
         )
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_open(self):
         return self.open()
 
@@ -168,6 +173,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             logger.error(f"failed to open covers (failure='{response.failure}')")
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_close(self):
         return self.close()
 
@@ -186,6 +192,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             logger.error(f"failed to close covers (failure='{response.failure}')")
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.INTERFACE)
     def endpoint_startup(self):
         return self.startup()
 
@@ -205,6 +212,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             self.open()
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.INTERFACE)
     def shutdown(self):
         """
         Performs the ``shutdown`` procedure for the **MAST** mirror covers controller
@@ -230,6 +238,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             time.sleep(1)
         self.power_off()
 
+    @endpoint(tier=Tier.INTERFACE)
     def endpoint_abort(self):
         return self.abort()
 
@@ -327,13 +336,13 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         tag = "Covers"
 
         router = APIRouter()
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
-        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown, methods=["PUT"])
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["PUT"])
-        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
-        router.add_api_route(base_path + "/connect", tags=[tag], endpoint=self.connect)
-        router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
-        router.add_api_route(base_path + "/open", tags=[tag], endpoint=self.endpoint_open, methods=["PUT"])
-        router.add_api_route(base_path + "/close", tags=[tag], endpoint=self.endpoint_close, methods=["PUT"])
+        add_api_route(router, base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
+        add_api_route(router, base_path + "/shutdown", tags=[tag], endpoint=self.shutdown, methods=["PUT"])
+        add_api_route(router, base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["PUT"])
+        add_api_route(router, base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
+        add_api_route(router, base_path + "/connect", tags=[tag], endpoint=self.connect)
+        add_api_route(router, base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
+        add_api_route(router, base_path + "/open", tags=[tag], endpoint=self.endpoint_open, methods=["PUT"])
+        add_api_route(router, base_path + "/close", tags=[tag], endpoint=self.endpoint_close, methods=["PUT"])
 
         return router
