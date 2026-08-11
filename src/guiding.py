@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 from common.activities import Activities
 from common.config.rois import FcuVersion, SpecRoiConfig
+from common.endpoints import Tier, endpoint
 from common.interfaces.guiding import GuiderInterface, GuiderTypes
 from common.interfaces.imager import ImagerRoi, ImagerSettings
 from common.mast_logging import get_logger
@@ -164,6 +165,7 @@ class Guider(GuiderInterface):
             save=save,
         )
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_start_guiding(self):
         """
         Manually start guiding after an acquisition-tuning run (handover_automatically_to_guider
@@ -191,6 +193,7 @@ class Guider(GuiderInterface):
         Thread(name="guiding", target=self.start_guiding).start()
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_stop_acquisition_and_guiding(self):
         return self.stop_acquisition_and_guiding()
 

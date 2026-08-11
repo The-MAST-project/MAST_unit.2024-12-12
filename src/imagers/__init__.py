@@ -6,6 +6,7 @@ from fastapi import APIRouter
 from common.canonical import CanonicalResponse
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.endpoints import Stability, Tier, add_api_route, endpoint
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerTypes
 from common.mast_logging import get_logger
 from common.models.statuses import ImagerSettings, ImagerStatus
@@ -124,6 +125,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
     def can_send_image_saved_event(self) -> bool:
         return self._backend.can_send_image_saved_event
 
+    @endpoint(tier=Tier.INTERFACE)
     def endpoint_startup(self) -> CanonicalResponse:
         return self.startup()
 
@@ -144,6 +146,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
             time.sleep(1)
         self.power_off()
 
+    @endpoint(tier=Tier.INTERFACE)
     def endpoint_shutdown(self) -> CanonicalResponse:
         return self.shutdown()
 
@@ -212,6 +215,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         """
         return self._backend.why_not_operational
 
+    @endpoint(tier=Tier.INTERFACE)
     def endpoint_abort(self) -> CanonicalResponse:
         return self.abort()
 
@@ -222,6 +226,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         """
         return self._backend.endpoint_abort()
 
+    @endpoint(tier=Tier.INTERFACE)
     def endpoint_status(self) -> CanonicalResponse:
         return CanonicalResponse(value=self.status())
 
@@ -248,9 +253,11 @@ class Imager(ImagerInterface, SwitchedOutlet):
             backend=self._backend.status(),
         )
 
+    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
     def connect(self) -> CanonicalResponse | None:  # obsoleted by connected property
         self._backend.connected = True
 
+    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
     def disconnect(self) -> CanonicalResponse | None:  # obsoleted by connected property
         self.connected = False
 
@@ -281,6 +288,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         logger.info(f"Ending exposure series id='{series.series_id}', purpose='{series.purpose}'")
         self._backend.end_exposure_series(series)
 
+    @endpoint(tier=Tier.OPERATION)
     def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:
         """
         Starts an exposure with the given settings.
@@ -290,6 +298,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         self.latest_settings = settings
         return self._backend.start_exposure(settings)
 
+    @endpoint(tier=Tier.OPERATION)
     def stop_exposure(self) -> CanonicalResponse:
         """
         Stops the current exposure.
@@ -297,6 +306,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         """
         return self._backend.stop_exposure()
 
+    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
     def abort_exposure(self) -> CanonicalResponse:
         """
         Aborts the current exposure.
@@ -367,6 +377,14 @@ class Imager(ImagerInterface, SwitchedOutlet):
     def default_settings(self):
         return self._backend.default_settings
 
+    @endpoint(tier=Tier.OPERATION)
+    def turn_cooler_on(self):
+        self.cooler_on = True
+
+    @endpoint(tier=Tier.OPERATION)
+    def turn_cooler_off(self):
+        self.cooler_on = False
+
     @property
     def api_router(self) -> APIRouter:
         """
@@ -376,33 +394,29 @@ class Imager(ImagerInterface, SwitchedOutlet):
         base_imager_path = Const.BASE_UNIT_PATH + "/imager"
         tag = "Imager"
 
-        def cooler_on():
-            self.cooler_on = True
-
-        def cooler_off():
-            self.cooler_on = False
-
         router = APIRouter()
-        router.add_api_route(base_imager_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
-        router.add_api_route(base_imager_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown, methods=["PUT"])
-        router.add_api_route(base_imager_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["PUT"])
-        router.add_api_route(base_imager_path + "/status", tags=[tag], endpoint=self.endpoint_status)
-        router.add_api_route(base_imager_path + "/connect", tags=[tag], endpoint=self.connect)
-        router.add_api_route(base_imager_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
-        router.add_api_route(
+        add_api_route(router, base_imager_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
+        add_api_route(router, base_imager_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown, methods=["PUT"])
+        add_api_route(router, base_imager_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["PUT"])
+        add_api_route(router, base_imager_path + "/status", tags=[tag], endpoint=self.endpoint_status)
+        add_api_route(router, base_imager_path + "/connect", tags=[tag], endpoint=self.connect)
+        add_api_route(router, base_imager_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
+        add_api_route(
+            router,
             base_imager_path + "/start_exposure",
             tags=[tag],
             endpoint=self.start_exposure,
             methods=["PUT"],
         )
-        router.add_api_route(base_imager_path + "/stop_exposure", tags=[tag], endpoint=self.stop_exposure, methods=["PUT"])
-        router.add_api_route(
+        add_api_route(router, base_imager_path + "/stop_exposure", tags=[tag], endpoint=self.stop_exposure, methods=["PUT"])
+        add_api_route(
+            router,
             base_imager_path + "/abort_exposure",
             tags=[tag],
             endpoint=self.abort_exposure,
             methods=["PUT"],
         )
-        router.add_api_route(base_imager_path + "/cooler_on", tags=[tag], endpoint=cooler_on, methods=["PUT"])
-        router.add_api_route(base_imager_path + "/cooler_off", tags=[tag], endpoint=cooler_off, methods=["PUT"])
+        add_api_route(router, base_imager_path + "/cooler_on", tags=[tag], endpoint=self.turn_cooler_on, methods=["PUT"])
+        add_api_route(router, base_imager_path + "/cooler_off", tags=[tag], endpoint=self.turn_cooler_off, methods=["PUT"])
 
         return router

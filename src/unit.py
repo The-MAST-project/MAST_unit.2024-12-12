@@ -38,6 +38,7 @@ from common.config.rois import FcuVersion
 from common.config.unit import UnitConfig
 from common.const import Const
 from common.dlipowerswitch import PowerSwitchFactory, SwitchedOutlet
+from common.endpoints import Tier, add_api_route, endpoint
 from common.filer import Filer
 from common.interfaces.components import Component
 
@@ -220,6 +221,7 @@ class Unit(Component):
         self.start_activity(UnitActivities.StartingUp)
         [comp.startup() for comp in self.components]
 
+    @endpoint(tier=Tier.CONTRACT)
     def endpoint_startup(self):
         return self.startup()
 
@@ -259,6 +261,7 @@ class Unit(Component):
         self.power_all_off()
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.CONTRACT)
     def endpoint_shutdown(self):
         return self.shutdown()
 
@@ -324,6 +327,7 @@ class Unit(Component):
         for c in self.components:
             c.powerdown()
 
+    @endpoint(tier=Tier.CONTRACT)
     def endpoint_status(self) -> CanonicalResponse:
         return CanonicalResponse(value=serialize_ip_addresses(self.status()))
 
@@ -390,6 +394,7 @@ class Unit(Component):
 
         app_quit(reason="quit()")
 
+    @endpoint(tier=Tier.CONTRACT)
     def endpoint_abort(self):
         return self.abort()
 
@@ -557,6 +562,7 @@ class Unit(Component):
             except Exception:
                 logger.exception("websocket.send error")
 
+    @endpoint(tier=Tier.OPERATION)
     def expose(
         self,
         ra_j2000_hours: Annotated[
@@ -837,6 +843,7 @@ class Unit(Component):
                 self.mount.start_tracking()
             self.guider.start_guiding()
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_start_sequence_of_exposures(self, sequence: ImagerSequenceOfExposures) -> CanonicalResponse:
         self.start_activity(UnitActivities.SequenceOfExposures)
         Thread(name="sequence-of-exposures", target=self.do_start_sequence_of_exposures, args=[sequence]).start()
@@ -847,6 +854,7 @@ class Unit(Component):
             self.guider.stop_acquisition_and_guiding()
         self.end_activity(UnitActivities.SequenceOfExposures)
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_test_stage_repeatability(
         self,
         start_position: int | str = 50000,
@@ -1003,6 +1011,7 @@ class Unit(Component):
                     )
                 )
 
+    @endpoint(tier=Tier.CONTRACT)
     async def endpoint_execute_assignment(self, assignment: UnitAssignment):
         if not self.operational:
             return CanonicalResponse(errors=self.why_not_operational)
@@ -1014,11 +1023,13 @@ class Unit(Component):
 
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION)
     async def endpoint_start_dancing(self, style: str = "foxtrot"):
         logger.info(f"unit.dance: dancing the {style} ...")
         self.start_activity(UnitActivities.Dancing, details=[style])
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION)
     async def endpoint_stop_dancing(self):
         logger.info("unit.dance: stopping dancing ...")
         self.end_activity(UnitActivities.Dancing)
@@ -1041,6 +1052,7 @@ class Unit(Component):
 
     #     return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_spiral_new_path(self, x_step_arcsec: float, y_step_arcsec: float):
         """
         Defines a new spiral path<br>
@@ -1063,6 +1075,7 @@ class Unit(Component):
         Filer().move_ram_to_shared(image_path)
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_spiral_next_step(self):
         """
         Takes the next step in the currently defined spiral path
@@ -1084,6 +1097,7 @@ class Unit(Component):
 
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_spiral_previous_step(self):
         """
         Goes back one step in the currently defined spiral path
@@ -1105,6 +1119,7 @@ class Unit(Component):
 
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_spiral_end_path(self):
         """
         Ends the currently defined spiral path
@@ -1124,108 +1139,120 @@ class Unit(Component):
         base_path = Const.BASE_UNIT_PATH
         tag = "Unit"
 
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
-        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown, methods=["PUT"])
+        add_api_route(router, base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
+        add_api_route(router, base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown, methods=["PUT"])
         # The one state-changing verb kept on GET as well as PUT, deliberately and
         # temporarily. MAST_common's shared plan client aborts every committed unit with
         # method="GET" (models/plans.py:830-831), so PUT-only would answer 405 on the
         # fleet's abort path -- the last verb that should fail quietly. Accepting both is
         # the migration step: the client moves to PUT, then GET comes off here. Tracked
         # on #48; every other state-changing route in this file is PUT-only.
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["GET", "PUT"])
-        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
+        add_api_route(router, base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["GET", "PUT"])
+        add_api_route(router, base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
         if self.autofocuser:
-            router.add_api_route(
+            add_api_route(
+                router,
                 base_path + "/start_autofocus",
                 tags=[tag],
                 endpoint=self.autofocuser.start_autofocus,
                 methods=["PUT"],
             )
-            router.add_api_route(
+            add_api_route(
+                router,
                 base_path + "/stop_autofocus",
                 tags=[tag],
                 endpoint=self.autofocuser.endpoint_stop_autofocus,
                 methods=["PUT"],
             )
         if self.acquirer:
-            router.add_api_route(
+            add_api_route(
+                router,
                 base_path + "/start_acquisition_and_guiding",
                 tags=[tag],
                 endpoint=self.acquirer.endpoint_start_acquisition_and_guiding,
                 methods=["PUT"],
             )
         if self.guider:
-            router.add_api_route(
+            add_api_route(
+                router,
                 base_path + "/start_guiding",
                 tags=[tag],
                 endpoint=self.guider.endpoint_start_guiding,
                 methods=["PUT"],
             )
-            router.add_api_route(
+            add_api_route(
+                router,
                 base_path + "/stop_acquisition_and_guiding",
                 tags=[tag],
                 endpoint=self.guider.endpoint_stop_acquisition_and_guiding,
                 methods=["PUT"],
             )
-        router.add_api_route(base_path + "/expose", tags=[tag], endpoint=self.expose, methods=["PUT"])
-        router.add_api_route(
+        add_api_route(router, base_path + "/expose", tags=[tag], endpoint=self.expose, methods=["PUT"])
+        add_api_route(
+            router,
             base_path + "/start_sequence_of_exposures",
             methods=["PUT"],
             tags=[tag],
             endpoint=self.endpoint_start_sequence_of_exposures,
         )
         if self.guider:
-            router.add_api_route(
+            add_api_route(
+                router,
                 base_path + "/stop_sequence_of_exposures",
                 tags=[tag],
                 endpoint=self.guider.endpoint_stop_acquisition_and_guiding,
                 methods=["PUT"],
             )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/test_stage_repeatability",
             tags=[tag],
             endpoint=self.endpoint_test_stage_repeatability,
             methods=["PUT"],
         )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/execute_assignment",
             methods=["PUT"],
             tags=[tag],
             endpoint=self.endpoint_execute_assignment,
         )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/start_dancing",
             tags=[tag],
             endpoint=self.endpoint_start_dancing,
             methods=["PUT"],
         )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/stop_dancing",
             tags=[tag],
             endpoint=self.endpoint_stop_dancing,
             methods=["PUT"],
         )
-        # router.add_api_route(
+        # add_api_route(router,
         #     base_path + "/calculate_sky_pixel",
         #     tags=[tag],
         #     endpoint=self.set_sky_and_spec_pixel_values,
         # , methods=["PUT"])
 
         tag = "PlaneWave mount - spiral path"
-        router.add_api_route(
-            base_path + "/spiral_new_path", tags=[tag], endpoint=self.endpoint_spiral_new_path, methods=["PUT"]
+        add_api_route(
+            router, base_path + "/spiral_new_path", tags=[tag], endpoint=self.endpoint_spiral_new_path, methods=["PUT"]
         )
-        router.add_api_route(
-            base_path + "/spiral_next_step", tags=[tag], endpoint=self.endpoint_spiral_next_step, methods=["PUT"]
+        add_api_route(
+            router, base_path + "/spiral_next_step", tags=[tag], endpoint=self.endpoint_spiral_next_step, methods=["PUT"]
         )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/spiral_previous_step",
             tags=[tag],
             endpoint=self.endpoint_spiral_previous_step,
             methods=["PUT"],
         )
-        router.add_api_route(
-            base_path + "/spiral_end_path", tags=[tag], endpoint=self.endpoint_spiral_end_path, methods=["PUT"]
+        add_api_route(
+            router, base_path + "/spiral_end_path", tags=[tag], endpoint=self.endpoint_spiral_end_path, methods=["PUT"]
         )
 
         return router

@@ -17,6 +17,7 @@ from common.config import Config
 from common.config.rois import FcuVersion
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.endpoints import Stability, Tier, add_api_route, endpoint
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import StageStatus
@@ -427,6 +428,7 @@ from pyximc import *
 
         logger.info(f"connected = {value} => {self.connected}")
 
+    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
     def connect(self):
         """
         Connects to the **MAST** stage controller
@@ -439,6 +441,7 @@ from pyximc import *
         self.connected = True
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
     def disconnect(self):
         """
         Disconnects from the **MAST** stage controller
@@ -450,6 +453,7 @@ from pyximc import *
             self.connected = False
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.INTERFACE)
     def endpoint_startup(self):
         return self.startup()
 
@@ -473,6 +477,7 @@ from pyximc import *
             self.move_to_preset(StagePresetPosition.Sky)
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.INTERFACE)
     def endpoint_shutdown(self):
         return self.shutdown()
 
@@ -523,6 +528,7 @@ from pyximc import *
         else:
             raise Exception(f"Could not start move to {value} ({result=})")
 
+    @endpoint(tier=Tier.INTERFACE)
     def endpoint_status(self) -> CanonicalResponse:
         return CanonicalResponse(value=self.status())
 
@@ -729,6 +735,7 @@ from pyximc import *
             if self.is_active(StageActivities.Homing):
                 self.end_activity(StageActivities.Homing)
 
+    @endpoint(tier=Tier.OPERATION)
     def move_to_preset(
         self,
         preset: Const.SolvingPhase | Literal["Min", "Mid", "Max"] | StagePresetPosition,
@@ -798,6 +805,7 @@ from pyximc import *
 
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION)
     def move_relative(self, direction: StageDirection | str, amount: int | str):
         """
         Starts moving the stage in the specified direction by the specified number of native units
@@ -837,6 +845,7 @@ from pyximc import *
             return CanonicalResponse(errors=[msg])
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.INTERFACE)
     def endpoint_abort(self):
         return self.abort()
 
@@ -904,12 +913,14 @@ from pyximc import *
     def was_shut_down(self) -> bool:
         return self._was_shut_down
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_get_position(self) -> CanonicalResponse:
         return self.get_position()
 
     def get_position(self) -> CanonicalResponse:
         return CanonicalResponse(value=self.position)
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_set_position(self, pos: int):
         return self.set_position(pos)
 
@@ -923,25 +934,28 @@ from pyximc import *
         tag = "Stage"
 
         router = APIRouter()
-        router.add_api_route(base_stage_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
-        router.add_api_route(base_stage_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown, methods=["PUT"])
-        router.add_api_route(base_stage_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["PUT"])
-        router.add_api_route(base_stage_path + "/status", tags=[tag], endpoint=self.endpoint_status)
-        router.add_api_route(
+        add_api_route(router, base_stage_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
+        add_api_route(router, base_stage_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown, methods=["PUT"])
+        add_api_route(router, base_stage_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["PUT"])
+        add_api_route(router, base_stage_path + "/status", tags=[tag], endpoint=self.endpoint_status)
+        add_api_route(
+            router,
             base_stage_path + "/position",
             tags=[tag],
             endpoint=self.endpoint_get_position,
         )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_stage_path + "/position",
             methods=["PUT"],
             tags=[tag],
             endpoint=self.endpoint_set_position,
         )
-        router.add_api_route(base_stage_path + "/connect", tags=[tag], endpoint=self.connect)
-        router.add_api_route(base_stage_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
-        router.add_api_route(base_stage_path + "/move", tags=[tag], endpoint=self.move_relative, methods=["PUT"])
-        router.add_api_route(
+        add_api_route(router, base_stage_path + "/connect", tags=[tag], endpoint=self.connect)
+        add_api_route(router, base_stage_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
+        add_api_route(router, base_stage_path + "/move", tags=[tag], endpoint=self.move_relative, methods=["PUT"])
+        add_api_route(
+            router,
             base_stage_path + "/move_to_preset",
             tags=[tag],
             endpoint=self.move_to_preset,
