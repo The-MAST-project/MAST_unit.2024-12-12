@@ -63,10 +63,6 @@ KNOWN_UNBALANCED = {
     ("ImagerActivities", "CoolingDown: started, never ended"): "MAST_unit#44",
     ("ImagerActivities", "StartingUp: declared, never started or ended"): "MAST_unit#44",
     ("UnitActivities", "PreGuiding: declared, never started or ended"): "MAST_unit#44",
-    # Became dead upstream on 2026-08-11: `6750f70` dropped the sequence-of-exposures
-    # endpoints and the `do_start_sequence_of_exposures` that set this flag, but left the
-    # enum member in MAST_common's activities.py. The member should follow the feature out.
-    ("UnitActivities", "SequenceOfExposures: declared, never started or ended"): "MAST_unit#44",
 }
 
 

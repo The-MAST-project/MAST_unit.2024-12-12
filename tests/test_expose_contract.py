@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import pytest
 
+pytest.importorskip("win32com", reason="unit.py imports win32com through its component modules")
+
 from common.canonical import CanonicalResponse_Ok
 from unit import Unit
 
