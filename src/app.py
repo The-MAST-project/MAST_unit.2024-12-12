@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import ValidationError
 
 from common.config import Config, ConfigError
+from common.filer import Filer
 from common.mast_logging import configure_logging, get_logger
 from common.process import ensure_process_is_running
 from common.utils import boxed_info
@@ -118,6 +119,13 @@ else:
 
 @asynccontextmanager
 async def lifespan(fast_app: FastAPI):
+    # Before anything is operational, so everything on the ram disk is by definition a
+    # leftover from a previous run -- no live folder to race, and no product/scratch
+    # judgement to get wrong. Deliberately here rather than in a component's startup():
+    # that is an HTTP endpoint an operator can call again mid-night, when a sweep would
+    # relocate folders that are in use. MAST_common#52.
+    Filer(logger).start_product_relocation_sweep(logger=logger)
+
     try:
         unit = Unit()
     except Exception:
@@ -127,6 +135,11 @@ async def lifespan(fast_app: FastAPI):
     unit.start_lifespan()
     yield
     unit.end_lifespan()
+
+    # Drain outstanding ram->shared moves while the process is still healthy. Without
+    # this they are abandoned at interpreter teardown, which is how MAST_common#52 was
+    # first seen: a solve's cleanup racing service shutdown.
+    Filer(logger).flush()
 
 
 async def websocket_disconnect_handler(websocket: WebSocket, exc: WebSocketDisconnect):
