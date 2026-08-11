@@ -209,9 +209,6 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             )
         return val / 10.0
 
-    def endpoint_startup(self):
-        return self.startup()
-
     def startup(self) -> CanonicalResponse:
         # self.set_control(asi.Control.ASI_HIGH_SPEED_MODE, 1)
         self.set_control(asi.Control.TargetTemp, -5)
@@ -219,9 +216,6 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         # Was `return super().startup()`, which resolved to `Component.startup` -- an
         # abstract method with an empty body -- so it did nothing and returned None.
         return CanonicalResponse_Ok
-
-    def endpoint_shutdown(self):
-        return self.shutdown()
 
     def shutdown(self) -> CanonicalResponse:
         self.start_activity(ImagerActivities.ShuttingDown)
@@ -321,9 +315,6 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
 
         zwoasi.stopExposure(self.cam_id)
         return CanonicalResponse_Ok
-
-    def endpoint_status(self) -> ImagerBackendStatus:
-        return self.status()
 
     def status(self) -> ImagerBackendStatus:
         """What the **ZWO** backend reports about itself.
