@@ -1177,9 +1177,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def __repr__(self):
         return f"PHD2Connector(profile='{self.conf.profile}')"
 
-    def endpoint_status(self):
-        return self.status()
-
     def status(self) -> PHD2ImagerStatus:
         """PHD2 in its **imager** role, for embedding under `ImagerStatus.backend`.
 
@@ -1250,9 +1247,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         """
         res = self.call("save_image")
         return res["result"]["filename"]
-
-    def endpoint_shutdown(self) -> CanonicalResponse:
-        return self.shutdown()
 
     def shutdown(self) -> CanonicalResponse:
         self.start_activity(PHD2Activities.ShuttingDown)
@@ -1384,9 +1378,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         under `epic:unit-lifecycle`.
         """
         return CanonicalResponse_Ok
-
-    def endpoint_startup(self) -> CanonicalResponse:
-        return self.startup()
 
     def abort(self) -> CanonicalResponse:
         return CanonicalResponse_Ok

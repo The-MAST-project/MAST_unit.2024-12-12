@@ -538,9 +538,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         return CanonicalResponse(errors=self.errors) if self.errors else CanonicalResponse_Ok
 
-    def endpoint_status(self) -> ImagerBackendStatus:
-        return self.status()
-
     def status(self) -> ImagerBackendStatus:
         """What the **ASCOM** backend reports about itself.
 
@@ -587,12 +584,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             self.errors.append(f"cooler_on.setter: {response.errors}")
             logger.error(f"cooler_on.setter: {response.errors}")
 
-    def endpoint_startup(self):
-        """
-        Starts the **MAST** camera up (cooling down , if needed)
-        """
-        return self.startup()
-
     def startup(self):
         """
         Starts the **MAST** camera up (cooling down , if needed)
@@ -622,14 +613,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
             self.cooler_on = True
         return CanonicalResponse_Ok
-
-    def endpoint_shutdown(self):
-        """
-        Shuts the **MAST** camera down (warms up, if needed)
-
-        :mastapi:
-        """
-        return self.shutdown()
 
     def shutdown(self):
         """
