@@ -25,3 +25,10 @@ docs/*.zip
 # Claude Code settings (machine/identity-scoped — never commit)
 .claude/settings.json
 .claude/settings.local.json
+
+# The MAST_common sibling clone, which developers commonly place here even though it is
+# reached through the venv's mast.pth (#94 retired the submodule). Untracked and
+# unignored, a stray `git add -A src` captures it as a 160000 gitlink and silently
+# re-creates the submodule that was deliberately removed. Ignoring it makes that
+# impossible rather than merely discouraged.
+/src/common/
