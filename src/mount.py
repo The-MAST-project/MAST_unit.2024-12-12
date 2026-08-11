@@ -17,6 +17,12 @@ from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import MountStatus, SpiralSettings
+from common.parsers import (
+    DEC_PATTERN,
+    RA_PATTERN,
+    sexagesimal_degrees_to_decimal,
+    sexagesimal_hours_to_decimal,
+)
 from common.utils import RepeatTimer, caller_name, function_name, time_stamp
 from PlaneWave import pwi4_client
 
@@ -291,44 +297,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.last_axis0_position_degrees = -99999
             self.last_axis1_position_degrees = -99999
             self.pw.mount_find_home()
-        return CanonicalResponse_Ok
-
-    def goto(
-        self,
-        primary_coord: float | str,
-        secondary_coord: float | str,
-        # frame: str = "icrs",
-    ):
-        op = function_name()
-
-        if not self.connected:
-            msg = f"{op}: not connected"
-            logger.error(msg)
-            return CanonicalResponse(errors=[msg])
-
-        # frame_names = frame_transform_graph.get_names()
-        # if frame not in frame_names:
-        #     error = f"{op}: '{frame}' not in [{frame_names}]"
-        #     logger.error(error)
-        #     return CanonicalResponse(errors=[error])
-
-        # if frame != "icrs" and primary_coord is not None and secondary_coord is not None:
-        #     try:
-        #         j2000_coord = SkyCoord(primary_coord, secondary_coord, frame)
-        #         primary_coord = j2000_coord.ra.hour
-        #         secondary_coord = j2000_coord.dec.deg
-        #     except Exception as e:
-        #         error = f"{op}: {e}"
-        #         logger.error(error)
-        #         return CanonicalResponse(errors=[error])
-
-        try:
-            self.pw.mount_goto_ra_dec_j2000(primary_coord, secondary_coord)
-        except Exception as e:
-            error = f"{op}: {e}"
-            logger.exception(error)
-            return CanonicalResponse(errors=[error])
-
         return CanonicalResponse_Ok
 
     def ontimer(self):
@@ -717,9 +685,82 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         return CanonicalResponse_Ok
 
     def goto_ra_dec_j2000(self, ra: float, dec: float):
-        self.start_activity(MountActivities.Slewing)
+        """Slew to an equatorial J2000 position. Internal API: RAISES on failure.
+
+        Four callers (acquirer, autofocusing, stage_geometry, dance) invoke this directly
+        and ignore the return value, so a failure reported by returning would become a
+        silent no-op -- an acquisition carrying on believing it had slewed.
+        `endpoint_goto_ra_dec_j2000` is what converts a failure into a CanonicalResponse.
+        """
         self.target = (ra, dec)
-        self.pw.mount_goto_ra_dec_j2000(ra, dec)
+        self.start_activity(MountActivities.Slewing, details=[f"target={self.target}"])
+        try:
+            self.pw.mount_goto_ra_dec_j2000(ra, dec)
+        except Exception:
+            # `ontimer` only ends Slewing after seeing the mount move and stop; a slew
+            # PWI4 never accepted never moves, so without this the activity sticks.
+            self.end_activity(MountActivities.Slewing)
+            self.target = None
+            raise
+
+    def endpoint_goto_ra_dec_j2000(
+        self,
+        ra_j2000_hours: Annotated[
+            str | float,
+            Query(
+                pattern=RA_PATTERN,
+                description=(
+                    "### Right Ascension (J2000), as decimal hours (e.g. `12.5`) or "
+                    "sexagesimal (e.g. `12:30:45.123`).\n"
+                    "- range: `0 <= RA < 24`"
+                ),
+            ),
+        ],
+        dec_j2000_degs: Annotated[
+            str | float,
+            Query(
+                pattern=DEC_PATTERN,
+                description=(
+                    "### Declination (J2000), as decimal degrees (e.g. `-45.5`) or "
+                    "sexagesimal (e.g. `-45:30:00.123`).\n"
+                    "- range: `-90 <= DEC <= 90`"
+                ),
+            ),
+        ],
+    ) -> CanonicalResponse:
+        """
+        Slew the ``mount`` to an equatorial J2000 position.<br>
+        Both sexagesimal and decimal forms are accepted, as `unit.expose` accepts them.<br>
+        Tracking is **not** touched -- unlike `goto_alt_az`, an equatorial target is meant
+        to be tracked.<br>
+        Returns as soon as PWI4 has accepted the slew; the **Slewing** activity, which
+        carries the target, is what says when it finishes.
+        :mastapi:
+        """
+        op = function_name()
+
+        if not self.connected:
+            msg = f"{op}: not connected"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
+
+        # The patterns above accept the FORM; these enforce the ranges and convert.
+        try:
+            ra = sexagesimal_hours_to_decimal(ra_j2000_hours)
+            dec = sexagesimal_degrees_to_decimal(dec_j2000_degs)
+        except ValueError as e:
+            logger.error(f"{op}: {e}")
+            return CanonicalResponse(errors=[f"{op}: {e}"])
+
+        try:
+            self.goto_ra_dec_j2000(ra, dec)
+        except Exception as e:
+            error = f"{op}: {e}"
+            logger.exception(error)
+            return CanonicalResponse(errors=[error])
+
+        logger.info(f"{op}: slewing to ra={ra}, dec={dec}")
+        return CanonicalResponse_Ok
 
     def goto_ra_dec_apparent(self, ra: float, dec: float):
         self.start_activity(MountActivities.Slewing)
@@ -918,7 +959,14 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         router.add_api_route(base_path + "/stop_tracking", tags=[tag], endpoint=self.stop_tracking)
         router.add_api_route(base_path + "/park", tags=[tag], endpoint=self.park)
         router.add_api_route(base_path + "/find_home", tags=[tag], endpoint=self.find_home)
-        router.add_api_route(base_path + "/goto", tags=[tag], endpoint=self.goto)
+        # PUT per invariant 5 (#48). `/goto` and the divergent `goto()` it pointed at
+        # were retired in #37: the equatorial and horizontal slews are separate verbs.
+        router.add_api_route(
+            base_path + "/goto_ra_dec_j2000",
+            methods=["PUT"],
+            tags=[tag],
+            endpoint=self.endpoint_goto_ra_dec_j2000,
+        )
         # PUT, not GET: invariant 5 of the endpoint contract (#48, decided 2026-07-20) --
         # state-changing routes are PUT so a caching proxy, a link prefetch or a Swagger
         # "try it out" cannot fire a slew. The sibling verbs are still GET pending that

@@ -6,6 +6,8 @@ the method is called on a stand-in carrying only what it touches.
 
 from __future__ import annotations
 
+import pytest
+
 from common.activities import MountActivities
 from mount import Mount
 
@@ -19,6 +21,11 @@ class FakePw:
         if self.raises:
             raise RuntimeError("PWI4 refused the slew")
         self.calls.append((alt_degs, az_degs))
+
+    def mount_goto_ra_dec_j2000(self, ra, dec):
+        if self.raises:
+            raise RuntimeError("PWI4 refused the slew")
+        self.calls.append((ra, dec))
 
 
 class Stub:
@@ -44,6 +51,10 @@ class Stub:
 
     def stop_tracking(self):
         self.stopped_tracking += 1
+
+    def goto_ra_dec_j2000(self, ra, dec):
+        # The real implementation, so the endpoint exercises it rather than a fake of it.
+        return Mount.goto_ra_dec_j2000(self, ra, dec)  # type: ignore[arg-type]
 
 
 def goto(stub, alt=45.0, az=180.0):
@@ -131,3 +142,63 @@ class TestWhenPwi4Fails:
         assert response.failed
         assert not stub.is_active(MountActivities.Slewing), "the activity must not be left set"
         assert stub.target is None, "and the stale target must be cleared with it"
+
+
+class TestGotoRaDecJ2000:
+    """The equatorial sibling. `/mount/goto` and the divergent `goto()` it pointed at
+    were retired in #37; these two verbs are what is left.
+    """
+
+    def test_the_retired_goto_is_gone(self):
+        assert not hasattr(Mount, "goto"), "#37 retired the divergent goto()"
+
+    def test_the_internal_method_raises_rather_than_returning_an_error(self):
+        """Four callers (acquirer, autofocusing, stage_geometry, dance) invoke this
+        directly and ignore the return value. Reporting a failure by returning would make
+        it a silent no-op -- an acquisition carrying on believing it had slewed."""
+        stub = Stub(raises=True)
+
+        with pytest.raises(RuntimeError):
+            Mount.goto_ra_dec_j2000(stub, 12.5, -45.0)  # type: ignore[arg-type]
+
+        assert not stub.is_active(MountActivities.Slewing), "and the activity must not stick"
+        assert stub.target is None
+
+    def test_the_target_is_a_tuple_here(self):
+        """The opposite of goto_alt_az: status() renders a tuple as RA/Dec, which is
+        exactly right for an equatorial target."""
+        stub = Stub()
+        Mount.goto_ra_dec_j2000(stub, 12.5, -45.0)  # type: ignore[arg-type]
+
+        assert stub.target == (12.5, -45.0)
+        assert stub.is_active(MountActivities.Slewing)
+        details = stub.activity_details[MountActivities.Slewing]
+        assert "12.5" in details[0], f"the activity must carry the target: {details}"
+
+    def test_the_endpoint_turns_a_failure_into_a_canonical_response(self):
+        stub = Stub(raises=True)
+        response = Mount.endpoint_goto_ra_dec_j2000(stub, 12.5, -45.0)  # type: ignore[arg-type]
+
+        assert response.failed, "the endpoint reports, where the internal method raises"
+        assert not stub.is_active(MountActivities.Slewing)
+
+    def test_the_endpoint_refuses_a_disconnected_mount(self):
+        stub = Stub(connected=False)
+        response = Mount.endpoint_goto_ra_dec_j2000(stub, 12.5, -45.0)  # type: ignore[arg-type]
+
+        assert response.failed and "not connected" in response.errors[0]
+        assert stub.pw.calls == []
+
+    @pytest.mark.parametrize(("ra", "dec"), [("12:30:45", "-45:30:00"), (12.5, -45.5)], ids=["sexagesimal", "decimal"])
+    def test_both_coordinate_forms_are_accepted(self, ra, dec):
+        """As unit.expose accepts them. #78 notes RA/Dec is conventionally sexagesimal."""
+        stub = Stub()
+        assert Mount.endpoint_goto_ra_dec_j2000(stub, ra, dec).succeeded  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(("ra", "dec"), [(25.0, 0.0), (0.0, 95.0)], ids=["ra past 24h", "dec past 90"])
+    def test_out_of_range_coordinates_are_refused(self, ra, dec):
+        stub = Stub()
+        response = Mount.endpoint_goto_ra_dec_j2000(stub, ra, dec)  # type: ignore[arg-type]
+
+        assert response.failed
+        assert stub.pw.calls == [], "the mount must not be driven with a value that failed validation"
