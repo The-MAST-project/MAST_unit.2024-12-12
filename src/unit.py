@@ -57,6 +57,7 @@ from common.paths import PathMaker
 from common.rois import UnitRoi
 from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers
+from exposure_roi import resolve_exposure_roi
 from focuser import Focuser
 from imagers import Imager
 from mount import Mount, SettleMode
@@ -658,13 +659,12 @@ class Unit(Component):
                 return CanonicalResponse(errors=[f"dec_offsets must have {repeats} elements"])
             dec_offsets = [float(dec_offsets[0])] * repeats if len(dec_offsets) == 1 else [float(val) for val in dec_offsets]
 
-        if fiber_x is None and fiber_y is None and width is None and height is None:
-            width = self.imager.camera_x_size
-            height = self.imager.camera_y_size
-            if not width or not height:
-                return CanonicalResponse(errors=["cannot get width and height from the imager"])
-            fiber_x = int(width / 2)
-            fiber_y = int(height / 2)
+        try:
+            fiber_x, fiber_y, width, height = resolve_exposure_roi(
+                fiber_x, fiber_y, width, height, self.imager.camera_x_size, self.imager.camera_y_size
+            )
+        except ValueError as e:
+            return CanonicalResponse(errors=[f"expose: {e}"])
 
         Thread(
             name="expose-thread",
