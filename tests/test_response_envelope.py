@@ -214,9 +214,10 @@ def _cover_status() -> CoverStatus:
 
 @pytest.fixture
 def client():
-    from fastapi import FastAPI
+    from fastapi import APIRouter, FastAPI
     from fastapi.testclient import TestClient
 
+    from common.endpoints import add_api_route
     from covers import Covers
 
     status = _cover_status()
@@ -230,14 +231,24 @@ def client():
         def connected(self):
             return False
 
+    # Registered through common.endpoints.add_api_route, not FastAPI's own: since #34 stage 3
+    # the envelope is applied at REGISTRATION, so a route wired up directly would bypass the
+    # very thing this test asserts. That is also what tests/contract's
+    # test_no_route_bypasses_the_declaring_helper enforces for src/.
+    router = APIRouter()
+    add_api_route(router, "/covers/status", endpoint=object.__new__(_StatusCovers).endpoint_status)
+    add_api_route(router, "/covers/open", endpoint=object.__new__(_RefusingCovers).endpoint_open, methods=["PUT"])
     app = FastAPI()
-    app.add_api_route("/covers/status", endpoint=object.__new__(_StatusCovers).endpoint_status)
-    app.add_api_route("/covers/open", endpoint=object.__new__(_RefusingCovers).endpoint_open, methods=["PUT"])
+    app.include_router(router)
     return TestClient(app)
 
 
 def test_component_status_is_enveloped_on_the_wire(client):
-    """``endpoint_status`` wraps; ``status()`` keeps returning its bare typed model."""
+    """Registration wraps; ``status()`` keeps returning its bare typed model.
+
+    Before #34 stage 3 the wrapping was done by ``endpoint_status`` itself. It now happens in
+    the registration helper, so this asserts the same wire shape through the real path.
+    """
     body = client.get("/covers/status").json()
 
     assert body["api_version"] == "1.0"
