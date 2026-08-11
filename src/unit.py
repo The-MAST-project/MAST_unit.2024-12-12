@@ -626,13 +626,13 @@ class Unit(Component):
             try:
                 ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
             except ValueError as e:
-                return CanonicalResponse(errors=[f"expose: bad ra_j2000_hours -- {e}"])
+                return CanonicalResponse(errors=[f"expose: bad ra_j2000_hours '{ra_j2000_hours}' -- {e}"])
 
         if dec_j2000_degs:
             try:
                 dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
             except ValueError as e:
-                return CanonicalResponse(errors=[f"expose: bad dec_j2000_degs -- {e}"])
+                return CanonicalResponse(errors=[f"expose: bad dec_j2000_degs '{dec_j2000_degs}' -- {e}"])
 
         assert self.mount is not None
         if (ra_j2000_hours is not None and isinstance(ra_j2000_hours, float)) and (
@@ -979,7 +979,12 @@ class Unit(Component):
                     AssignmentNotification(
                         assignment_id=assignment.plan.ulid,
                         state="in-progress",
-                        shared_top=Path(self.imager.latest_settings.image_path).parent.name,
+                        # Relative to the shared root. This sent `.parent.name` -- the bare
+                        # directory name, with no path at all -- so the controller symlinked
+                        # something it could never resolve. MAST_spec#39.
+                        shared_top=os.path.relpath(
+                            Path(self.imager.latest_settings.image_path).parent, filer.ram.root
+                        ),
                         shared_subpath="autofocus",
                     )
                 )
@@ -997,7 +1002,10 @@ class Unit(Component):
                     AssignmentNotification(
                         assignment_id=assignment.plan.ulid,
                         state="in-progress",
-                        shared_top=self.acquirer.latest_acquisition.folder,
+                        # Relative to the shared root, not the absolute ram path: the
+                        # controller symlinks this, and its shared root is spelled
+                        # differently from ours. MAST_spec#39.
+                        shared_top=os.path.relpath(self.acquirer.latest_acquisition.folder, filer.ram.root),
                         shared_subpath="acquisition",
                     )
                 )
