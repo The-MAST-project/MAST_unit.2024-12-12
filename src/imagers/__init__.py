@@ -3,7 +3,7 @@ import time
 import numpy as np
 from fastapi import APIRouter
 
-from common.canonical import CanonicalResponse
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.endpoints import Stability, Tier, add_api_route, endpoint
@@ -254,12 +254,14 @@ class Imager(ImagerInterface, SwitchedOutlet):
         )
 
     @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
-    def connect(self) -> CanonicalResponse | None:  # obsoleted by connected property
+    def connect(self) -> CanonicalResponse:  # obsoleted by connected property
         self._backend.connected = True
+        return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
-    def disconnect(self) -> CanonicalResponse | None:  # obsoleted by connected property
+    def disconnect(self) -> CanonicalResponse:  # obsoleted by connected property
         self.connected = False
+        return CanonicalResponse_Ok
 
     def start_exposure_series(self, purpose: str | None = None) -> ImagerExposureSeries:
         """

@@ -129,8 +129,11 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             return CoversState.Error
 
     @endpoint(tier=Tier.INTERFACE)
-    def endpoint_status(self) -> CanonicalResponse:
-        return CanonicalResponse(value=self.status())
+    def endpoint_status(self) -> CoverStatus:
+        # The registration helper envelopes this; `status()` keeps returning the bare typed
+        # model, which is what MAST_common#70 requires -- FullUnitStatus's fields are typed as
+        # these models, so an envelope inside the payload would break control/gui/SSE.
+        return self.status()
 
     def status(self) -> CoverStatus:
         """
