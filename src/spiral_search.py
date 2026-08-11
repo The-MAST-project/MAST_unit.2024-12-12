@@ -38,7 +38,14 @@ from common.interfaces.imager import ImagerSettings
 from common.mast_logging import get_logger
 from common.paths import PathMaker
 from common.utils import function_name, isoformat_zulu
-from imaging.frame_shift import DEFAULT_USABLE_FRACTION, MIN_CONFIDENCE, max_reliable_shift, measure_shift
+from imaging.frame_shift import (
+    DEFAULT_MARGIN_HORIZONTAL,
+    DEFAULT_MARGIN_VERTICAL,
+    MIN_CONFIDENCE,
+    margins_from_fraction,
+    max_reliable_shift,
+    measure_shift,
+)
 from mount import SettleMode
 
 if TYPE_CHECKING:
@@ -72,7 +79,10 @@ class SpiralSearch:
         self.x_step_arcsec: float = 0.0
         self.y_step_arcsec: float = 0.0
         self.exposure_seconds: float = 0.0
-        self.usable_fraction: float = DEFAULT_USABLE_FRACTION
+        self.margin_horizontal: int = DEFAULT_MARGIN_HORIZONTAL
+        self.margin_vertical: int = DEFAULT_MARGIN_VERTICAL
+        self.center_source: str = ""
+        self.margin_source: str = ""
         self.center_x: int = 0
         self.center_y: int = 0
         self.save_intermediate_exposures: bool = False
@@ -136,7 +146,7 @@ class SpiralSearch:
         save_intermediate_exposures: bool = False,
         center_x: int | None = None,
         center_y: int | None = None,
-        usable_fraction: float = DEFAULT_USABLE_FRACTION,
+        usable_fraction: float | None = None,
     ) -> CanonicalResponse:
         op = function_name()
         with self._lock:
@@ -155,10 +165,6 @@ class SpiralSearch:
             self.x_step_arcsec = x_step_arcsec
             self.y_step_arcsec = y_step_arcsec
             self.exposure_seconds = exposure_seconds
-            configured_x, configured_y = guiding_roi_center()
-            self.center_x = configured_x if center_x is None else center_x
-            self.center_y = configured_y if center_y is None else center_y
-            self.usable_fraction = usable_fraction
             self.save_intermediate_exposures = save_intermediate_exposures
             self.started_at = isoformat_zulu(datetime.datetime.now(datetime.UTC))
 
@@ -168,6 +174,15 @@ class SpiralSearch:
             self.exposure_series = self.unit.imager.start_exposure_series(purpose="spiral")
 
             _path, self.reference = self._expose(REFERENCE_IMAGE)
+            # Resolved here, not above: the frame-centre fallback needs a frame to exist.
+            self.center_x, self.center_y, self.center_source = resolve_center(center_x, center_y, self.reference.shape)
+            self.margin_horizontal, self.margin_vertical, self.margin_source = resolve_margins(
+                usable_fraction, self.reference.shape
+            )
+            logger.info(
+                f"{op}: usable region centred on ({self.center_x}, {self.center_y}) from {self.center_source}, "
+                f"margins ({self.margin_horizontal}, {self.margin_vertical}) from {self.margin_source}"
+            )
             self._log_step(direction="reference", image=REFERENCE_IMAGE)
 
             self._timer = threading.Timer(SESSION_TIMEOUT_SECONDS, self._on_timeout)
@@ -214,15 +229,17 @@ class SpiralSearch:
                 final,
                 center_x=self.center_x,
                 center_y=self.center_y,
-                usable_fraction=self.usable_fraction,
+                margin_horizontal=self.margin_horizontal,
+                margin_vertical=self.margin_vertical,
             )
-            limit = max_reliable_shift(self.reference.shape, self.usable_fraction)
+            limit = max_reliable_shift(self.reference.shape, self.margin_horizontal)
             magnitude = (shift.dx**2 + shift.dy**2) ** 0.5
             beyond_limit = magnitude > limit
             if beyond_limit:
                 logger.warning(
                     f"{op}: measured shift {magnitude:.2f} px exceeds the reliable range of {limit:.0f} px "
-                    f"at a usable fraction of {self.usable_fraction} -- too little sky is common to both frames, "
+                    f"at margins ({self.margin_horizontal}, {self.margin_vertical}) -- too little sky is common "
+                    "to both frames, "
                     "so dx/dy should not be trusted"
                 )
 
@@ -254,7 +271,10 @@ class SpiralSearch:
             "x_step_arcsec": self.x_step_arcsec,
             "y_step_arcsec": self.y_step_arcsec,
             "exposure_seconds": self.exposure_seconds,
-            "usable_fraction": self.usable_fraction,
+            "margin_horizontal": self.margin_horizontal,
+            "margin_vertical": self.margin_vertical,
+            "center_source": self.center_source,
+            "margin_source": self.margin_source,
             "center_x": self.center_x,
             "center_y": self.center_y,
             "save_intermediate_exposures": self.save_intermediate_exposures,
@@ -320,16 +340,59 @@ class SpiralSearch:
         self._clear()
 
 
-def guiding_roi_center() -> tuple[int, int]:
-    """The fibre position from ``guiding.rois[fcu_v2]``, used to centre the correlation window.
+def guiding_roi() -> SpecRoiConfig | None:
+    """``guiding.rois[fcu_v2]``, or None if it is missing or not the expected shape.
 
-    Centred on the fibre rather than on the sensor because that is where the field of
-    interest is; fcu_v1 is deprecated and is not consulted. Raises rather than guessing
-    if the configuration is not the expected shape -- a silently wrong window would give
-    a confident, wrong measurement.
+    fcu_v1 is deprecated and is never consulted. Returns None -- rather than raising or
+    guessing -- so the resolvers below can fall back. A silently wrong window would give
+    a confident, wrong measurement; a fallback that says so in the log and in the result
+    will not.
     """
-    rois = Config().get_unit().guiding.rois
-    roi = rois.get(FcuVersion.v2)
+    try:
+        roi = Config().get_unit().guiding.rois.get(FcuVersion.v2)
+    except Exception:
+        logger.exception("could not read guiding.rois[fcu_v2] from the configuration")
+        return None
     if not isinstance(roi, SpecRoiConfig):
-        raise TypeError(f"guiding.rois[fcu_v2] is {type(roi).__name__}, expected SpecRoiConfig")
-    return roi.fiber_x, roi.fiber_y
+        logger.warning(f"guiding.rois[fcu_v2] is {type(roi).__name__}, expected SpecRoiConfig")
+        return None
+    return roi
+
+
+def resolve_center(center_x: int | None, center_y: int | None, shape: tuple[int, int]) -> tuple[int, int, str]:
+    """Centre of the usable region, by descending precedence. Returns (x, y, source).
+
+    1. the caller's parameters, but only if BOTH were given -- one coordinate on its own
+       is ambiguous about what the other should be, so it is not mixed with a fallback;
+    2. the configured fibre position, if both fiber_x and fiber_y are defined;
+    3. the centre of the frame.
+
+    The frame centre is only knowable once a frame exists, which is why this resolves
+    after the reference exposure rather than when the session opens.
+    """
+    if center_x is not None and center_y is not None:
+        return center_x, center_y, "parameters"
+    roi = guiding_roi()
+    if roi is not None and roi.fiber_x is not None and roi.fiber_y is not None:
+        return int(roi.fiber_x), int(roi.fiber_y), "guiding.rois[fcu_v2]"
+    ny, nx = shape
+    return nx // 2, ny // 2, "frame centre"
+
+
+def resolve_margins(usable_fraction: float | None, shape: tuple[int, int]) -> tuple[int, int, str]:
+    """Size of the usable region, by descending precedence. Returns (horizontal, vertical, source).
+
+    1. the caller's `usable_fraction`, converted to margins;
+    2. the configured ROI's own margins;
+    3. `DEFAULT_MARGIN_HORIZONTAL` / `DEFAULT_MARGIN_VERTICAL`.
+
+    Resolved independently of the centre, since the operator may want a different area
+    around the configured fibre, or the configured area around a different point.
+    """
+    if usable_fraction is not None:
+        horizontal, vertical = margins_from_fraction(shape, usable_fraction)
+        return horizontal, vertical, f"usable_fraction={usable_fraction}"
+    roi = guiding_roi()
+    if roi is not None and roi.margin_horizontal is not None and roi.margin_vertical is not None:
+        return int(roi.margin_horizontal), int(roi.margin_vertical), "guiding.rois[fcu_v2]"
+    return DEFAULT_MARGIN_HORIZONTAL, DEFAULT_MARGIN_VERTICAL, "default"

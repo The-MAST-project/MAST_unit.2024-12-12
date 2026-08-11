@@ -20,14 +20,31 @@ Three preparation steps matter, and each is there for a reason:
   on a coarse grid and removes them.
 * **Flatten isolated spikes.** The mount moves between the two frames but the DETECTOR
   DOES NOT, so hot pixels, dust and amp glow sit at identical detector coordinates in
-  both and correlate perfectly at zero shift. Phase correlation is especially prone to
-  this: a single-pixel spike is delta-like, so its spectrum is flat and it plants a peak
-  at exactly (0, 0), which on a sparse field can beat the real one. Subtracting a
-  3x3-median-filtered copy flattens those spikes while barely touching stars, which at
-  0.26"/px and ~2" seeing are ~8 px across.
+  both and correlate perfectly at zero shift. A 3x3 median replaces isolated spikes with
+  their neighbourhood while barely touching stars, which at 0.26"/px and ~2" seeing are
+  ~8 px across.
+
+The same fixed pattern is why the correlation is **plain, not phase-normalised**
+(``normalization=None``). Phase normalisation rescales every spatial frequency to unit
+magnitude, so a one-pixel defect contributes as much as a bright star -- exactly
+backwards here. On real MAST acquisition frames it lost outright: measured against a
+star-matched reference over 19 pairs across six nights, phase correlation collapsed onto
+the zero-lag fixed-pattern peak in 18 of 19 cases (median error 15.4 px), while plain
+cross-correlation, which weights by actual signal power, collapsed in **none** (median
+error 1.2 px). Anything above a 3x3 median -- larger medians, bandpass, apodization,
+tighter windows, star-map correlation -- was tried and did not fix it; only the
+normalisation did.
 
 Sub-pixel accuracy is nominally 1/``upsample`` px, but seeing, SNR and tracking drift
 over an operator-paced sequence dominate long before that. Two decimals is honest.
+
+What predicts a bad answer, on the real-frame sample: **how many stars the field has**,
+more than any property of the correlation itself. Of 18 pairs, those with fewer than ~30
+matchable stars failed 5 times in 6, while those with 45 or more failed once in 13. If a
+stronger guard is wanted than `confidence` (which only catches outright nonsense -- see
+MIN_CONFIDENCE), counting sources in the reference frame is the measurement most likely
+to provide it. Not done here: it costs a detection pass, and 18 pairs is too thin a basis
+for a threshold that would refuse to answer.
 
 Two things deliberately NOT done here:
 
@@ -58,14 +75,31 @@ from .hfd import _bg_subtract
 
 logger = get_logger(__name__)
 
-#: Fraction of each sensor axis kept before correlating. See the coma note above.
-DEFAULT_USABLE_FRACTION = 0.66
+#: Margins trimmed from each edge when nothing else specifies them. See the coma note above.
+#: Chosen to keep about two thirds of each axis on the 8288x5644 sensor these units carry:
+#: 8288 - 2*1400 = 5488 (66.2%) and 5644 - 2*950 = 3744 (66.3%). Stated as margins rather
+#: than a fraction because that is what `guiding.rois[fcu_v2]` states, and because margins
+#: stay meaningful on a sub-frame, where a fraction would silently mean a smaller area.
+DEFAULT_MARGIN_HORIZONTAL = 1400
+DEFAULT_MARGIN_VERTICAL = 950
 
 #: Sub-pixel refinement passed to phase_cross_correlation.
 DEFAULT_UPSAMPLE = 100
 
 #: Below this post-registration correlation the answer is not worth acting on.
-MIN_CONFIDENCE = 0.5
+#:
+#: Calibrated against star-matched truth on 18 real acquisition pairs, NOT from synthetic
+#: frames -- a synthetic pair differs by a rigid shift and scores ~1.0, whereas real pairs
+#: carry 3-10 px of differential motion across the field (the sky does not translate
+#: rigidly between two solves), so no correct answer scores anywhere near 1.0. An earlier
+#: value of 0.5, set from synthetic data, would have warned on EVERY real measurement.
+#:
+#: On that sample it separates cleanly: every correct answer scored >= 0.144, and all
+#: three catastrophic failures (errors of 1500-1900 px) scored <= 0.036. It does NOT
+#: catch moderate failures -- three pairs wrong by 9-12 px scored 0.05, 0.14 and 0.93 --
+#: and nothing tested does, peak-to-runner-up ratio included (measured: good 2.68 vs bad
+#: 2.65, indistinguishable). Treat this as a guard against nonsense, not a quality score.
+MIN_CONFIDENCE = 0.10
 
 
 @dataclass
@@ -76,13 +110,20 @@ class ShiftResult:
     dy: float
     confidence: float
     """Pearson correlation between the reference and the registered final, over their
-    overlap: ~1.0 when the frames genuinely match, ~0 when the answer is noise.
+    overlap: ~1.0 when the frames genuinely match, ~0 when the answer is read off noise.
 
-    This is computed here rather than taken from ``phase_cross_correlation``, whose
-    documented ``error`` return is a constant 1.0 under the default
-    ``normalization="phase"`` -- it discriminates nothing. tests/test_frame_shift.py
-    pins that this one does."""
-    usable_fraction: float
+    Computed here rather than taken from ``phase_cross_correlation``, whose documented
+    ``error`` return is a constant 1.0 under phase normalisation and discriminates
+    nothing at all.
+
+    KNOWN BLIND SPOT: it cannot detect fixed-pattern capture. If the correlation locks
+    onto the detector pattern instead of the sky, the frames still agree well at that
+    shift -- the pattern really is aligned -- and this scores ~0.94 while dx/dy are
+    flatly wrong. It catches "these frames do not match", not "it matched the wrong
+    thing". `at_origin` is the (weak) signal for the latter; plain cross-correlation is
+    what actually prevents it."""
+    margin_horizontal: int
+    margin_vertical: int
     center_x: int
     center_y: int
     crop_shape: tuple[int, int]
@@ -94,15 +135,33 @@ class ShiftResult:
         return asdict(self)
 
 
-def _window(shape: tuple[int, int], center_x: int, center_y: int, usable_fraction: float) -> tuple[slice, slice]:
-    """The usable window: `usable_fraction` of each axis, centred on (center_x, center_y).
+def margins_from_fraction(shape: tuple[int, int], usable_fraction: float) -> tuple[int, int]:
+    """Margins equivalent to keeping `usable_fraction` of each axis.
+
+    Margins are the single internal representation -- the configured ROI states them
+    directly, so a caller-supplied fraction is converted rather than carried alongside.
+    """
+    ny, nx = shape
+    return int(nx * (1.0 - usable_fraction) / 2), int(ny * (1.0 - usable_fraction) / 2)
+
+
+def _window(
+    shape: tuple[int, int], center_x: int, center_y: int, margin_horizontal: int, margin_vertical: int
+) -> tuple[slice, slice]:
+    """The usable window, centred on (center_x, center_y).
+
+    The margins say how much of each edge is unusable, so the window's half-extents are
+    what remains: `nx // 2 - margin_horizontal` and `ny // 2 - margin_vertical`. The
+    window keeps that SIZE but sits on the given centre, which is the fibre rather than
+    the middle of the sensor.
 
     Clipped to the sensor, so a centre near an edge yields a smaller window rather than
     an out-of-bounds one. Both frames are windowed identically, so clipping shifts the
     region but never the measurement.
     """
     ny, nx = shape
-    half_x, half_y = int(nx * usable_fraction) // 2, int(ny * usable_fraction) // 2
+    half_x = max(1, nx // 2 - margin_horizontal)
+    half_y = max(1, ny // 2 - margin_vertical)
     x0, x1 = max(0, center_x - half_x), min(nx, center_x + half_x)
     y0, y1 = max(0, center_y - half_y), min(ny, center_y + half_y)
     return slice(y0, y1), slice(x0, x1)
@@ -126,7 +185,8 @@ def measure_shift(
     final: np.ndarray,
     center_x: int,
     center_y: int,
-    usable_fraction: float = DEFAULT_USABLE_FRACTION,
+    margin_horizontal: int = DEFAULT_MARGIN_HORIZONTAL,
+    margin_vertical: int = DEFAULT_MARGIN_VERTICAL,
     upsample: int = DEFAULT_UPSAMPLE,
 ) -> ShiftResult:
     """Pixel shift that registers `final` onto `reference`.
@@ -146,12 +206,12 @@ def measure_shift(
     if reference.shape != final.shape:
         raise ValueError(f"frames differ in shape: reference {reference.shape}, final {final.shape}")
 
-    window = _window(reference.shape, center_x, center_y, usable_fraction)  # type: ignore[arg-type]
+    window = _window(reference.shape, center_x, center_y, margin_horizontal, margin_vertical)  # type: ignore[arg-type]
     ref_prepared = _prepare(reference, window)
     final_prepared = _prepare(final, window)
 
     (registration_y, registration_x), _error, _phase = phase_cross_correlation(
-        ref_prepared, final_prepared, upsample_factor=upsample
+        ref_prepared, final_prepared, upsample_factor=upsample, normalization=None
     )
     # Negate: registration shift -> how the content actually moved.
     shift_y, shift_x = -registration_y, -registration_x
@@ -160,7 +220,8 @@ def measure_shift(
         dx=round(float(shift_x), 2),
         dy=round(float(shift_y), 2),
         confidence=_confidence(ref_prepared, final_prepared, registration_y, registration_x),
-        usable_fraction=usable_fraction,
+        margin_horizontal=margin_horizontal,
+        margin_vertical=margin_vertical,
         center_x=center_x,
         center_y=center_y,
         crop_shape=tuple(ref_prepared.shape),  # type: ignore[arg-type]
@@ -200,11 +261,11 @@ def _confidence(reference: np.ndarray, final: np.ndarray, registration_y: float,
     return 0.0 if np.isnan(correlation) else round(float(correlation), 4)
 
 
-def max_reliable_shift(shape: tuple[int, int], usable_fraction: float = DEFAULT_USABLE_FRACTION) -> float:
+def max_reliable_shift(shape: tuple[int, int], margin_horizontal: int = DEFAULT_MARGIN_HORIZONTAL) -> float:
     """Rough upper bound, in pixels, on a shift this method can still measure.
 
     The sky common to both crops shrinks by the shift, so the correlation degrades as
     the overlap does. A third of the cropped width is a conservative working limit.
     """
     _ny, nx = shape
-    return (nx * usable_fraction) / 3.0
+    return max(1.0, (nx - 2 * margin_horizontal)) / 3.0

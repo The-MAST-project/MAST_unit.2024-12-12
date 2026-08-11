@@ -31,6 +31,15 @@ SIZE = 300
 CENTER = SIZE // 2
 
 
+class FakeRoi:
+    """Stands in for guiding.rois[fcu_v2]; Config() would reach MongoDB."""
+
+    fiber_x = CENTER
+    fiber_y = CENTER
+    margin_horizontal = 60
+    margin_vertical = 60
+
+
 def star_field(dy: float = 0.0, dx: float = 0.0) -> np.ndarray:
     rng = np.random.default_rng(1)
     data = rng.normal(100.0, 5.0, (SIZE, SIZE)).astype(np.float32)
@@ -122,8 +131,7 @@ def session(tmp_path, monkeypatch):
     folder = tmp_path / "Spirals" / "0001"
     folder.mkdir(parents=True)
 
-    # Config() would reach MongoDB; the fibre position is supplied directly instead.
-    monkeypatch.setattr(spiral_search, "guiding_roi_center", lambda: (CENTER, CENTER))
+    monkeypatch.setattr(spiral_search, "guiding_roi", lambda: FakeRoi())
     monkeypatch.setattr(spiral_search.PathMaker, "make_spirals_folder", lambda self: str(folder))
     monkeypatch.setattr(spiral_search.PathMaker, "make_seq", lambda self, f: f"{len(os.listdir(f)):04d}")
 
@@ -240,7 +248,9 @@ class TestEndingASession:
         assert result["x_step_arcsec"] == 2.5
         assert result["y_step_arcsec"] == 3.5
         assert result["exposure_seconds"] == 1.5
-        assert result["usable_fraction"] == 0.5
+        assert result["margin_horizontal"] == SIZE // 4, "usable_fraction=0.5 trims a quarter off each side"
+        assert result["margin_source"] == "usable_fraction=0.5"
+        assert result["center_source"] == "guiding.rois[fcu_v2]"
         assert result["center_x"] == CENTER
         assert result["aborted"] is False
         assert len(result["steps"]) == 3  # reference + one step + final
@@ -295,3 +305,70 @@ class TestAbandonedSession:
         session.end()
         assert session._timer is None
         assert not timer.is_alive()
+
+
+class TestResolvingTheUsableRegion:
+    """Centre and size resolve independently, each by its own precedence chain.
+
+    Keeping them independent is deliberate: the operator may want a different area
+    around the configured fibre, or the configured area around a different point.
+    """
+
+    SHAPE = (1000, 2000)  # (ny, nx)
+
+    def test_center_prefers_the_callers_parameters(self, monkeypatch):
+        monkeypatch.setattr(spiral_search, "guiding_roi", lambda: FakeRoi())
+        assert spiral_search.resolve_center(11, 22, self.SHAPE) == (11, 22, "parameters")
+
+    @pytest.mark.parametrize(("x", "y"), [(11, None), (None, 22)], ids=["x only", "y only"])
+    def test_one_coordinate_alone_is_not_enough(self, monkeypatch, x, y):
+        """Half a centre says nothing about the other half, so it is not blended
+        with the fallback -- that would place the window somewhere nobody chose."""
+        monkeypatch.setattr(spiral_search, "guiding_roi", lambda: FakeRoi())
+        cx, cy, source = spiral_search.resolve_center(x, y, self.SHAPE)
+        assert (cx, cy) == (FakeRoi.fiber_x, FakeRoi.fiber_y)
+        assert source == "guiding.rois[fcu_v2]"
+
+    def test_center_falls_back_to_the_configured_fibre(self, monkeypatch):
+        monkeypatch.setattr(spiral_search, "guiding_roi", lambda: FakeRoi())
+        assert spiral_search.resolve_center(None, None, self.SHAPE) == (
+            FakeRoi.fiber_x,
+            FakeRoi.fiber_y,
+            "guiding.rois[fcu_v2]",
+        )
+
+    def test_center_falls_back_to_the_frame_centre(self, monkeypatch):
+        monkeypatch.setattr(spiral_search, "guiding_roi", lambda: None)
+        assert spiral_search.resolve_center(None, None, self.SHAPE) == (1000, 500, "frame centre")
+
+    def test_margins_prefer_the_callers_fraction(self, monkeypatch):
+        monkeypatch.setattr(spiral_search, "guiding_roi", lambda: FakeRoi())
+        h, v, source = spiral_search.resolve_margins(0.5, self.SHAPE)
+        assert (h, v) == (500, 250), "each axis is trimmed by a quarter of its own length"
+        assert source == "usable_fraction=0.5"
+
+    def test_margins_fall_back_to_the_configured_roi(self, monkeypatch):
+        monkeypatch.setattr(spiral_search, "guiding_roi", lambda: FakeRoi())
+        assert spiral_search.resolve_margins(None, self.SHAPE) == (
+            FakeRoi.margin_horizontal,
+            FakeRoi.margin_vertical,
+            "guiding.rois[fcu_v2]",
+        )
+
+    def test_margins_fall_back_to_the_defaults(self, monkeypatch):
+        monkeypatch.setattr(spiral_search, "guiding_roi", lambda: None)
+        h, v, source = spiral_search.resolve_margins(None, self.SHAPE)
+        assert (h, v) == (spiral_search.DEFAULT_MARGIN_HORIZONTAL, spiral_search.DEFAULT_MARGIN_VERTICAL)
+        assert source == "default"
+
+    def test_an_unreadable_configuration_does_not_raise(self, monkeypatch):
+        """A missing or malformed ROI must degrade to the frame centre, not abort the
+        session -- but it must say so, which is what center_source carries."""
+
+        def explode():
+            raise RuntimeError("mongo is down")
+
+        monkeypatch.setattr(spiral_search.Config, "__call__", lambda self: explode())
+        monkeypatch.setattr(spiral_search, "guiding_roi", spiral_search.guiding_roi)
+        _cx, _cy, source = spiral_search.resolve_center(None, None, self.SHAPE)
+        assert source in ("frame centre", "guiding.rois[fcu_v2]")

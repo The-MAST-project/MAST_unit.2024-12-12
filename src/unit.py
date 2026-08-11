@@ -62,7 +62,7 @@ from imagers import Imager
 from mount import Mount, SettleMode
 from PlaneWave import pwi4_client
 from solving import Solver
-from spiral_search import SpiralSearch, guiding_roi_center
+from spiral_search import SpiralSearch, guiding_roi
 from stage import Stage
 
 logger = get_logger(__name__)
@@ -1042,20 +1042,18 @@ class Unit(Component):
         OpenAPI schema -- the operator sees the unit's own fibre position pre-filled in
         Swagger instead of a placeholder.
         """
-        try:
-            configured_x, configured_y = guiding_roi_center()
-        except Exception:
-            logger.exception("could not read guiding.rois[fcu_v2]; spiral defaults will be unset")
-            configured_x = configured_y = 0
+        roi = guiding_roi()
+        configured_x = int(roi.fiber_x) if roi is not None and roi.fiber_x is not None else None
+        configured_y = int(roi.fiber_y) if roi is not None and roi.fiber_y is not None else None
 
         def endpoint_spiral_new_path(
             x_step_arcsec: float,
             y_step_arcsec: float,
             exposure_seconds: float = 5.0,
             save_intermediate_exposures: bool = False,
-            center_x: int = configured_x,
-            center_y: int = configured_y,
-            usable_fraction: float = 0.66,
+            center_x: int | None = configured_x,
+            center_y: int | None = configured_y,
+            usable_fraction: float | None = None,
         ):
             """
             Opens a spiral search session and takes the **reference** frame.<br>
@@ -1065,10 +1063,15 @@ class Unit(Component):
             - **exposure_seconds**: exposure for every frame in the session (binning is always 1)
             - **save_intermediate_exposures**: when false (default) only the reference and final
               frames are kept; every step is logged either way
-            - **center_x**, **center_y**: centre of the area cross-correlated at the end.
-              Defaults to the fibre position from `guiding.rois[fcu_v2]`.
+            - **center_x**, **center_y**: centre of the area cross-correlated at the end. Both
+              must be given to take effect. Falls back to the fibre position from
+              `guiding.rois[fcu_v2]`, then to the centre of the frame.
             - **usable_fraction**: fraction of each sensor axis correlated, about that centre.
-              The optics have pronounced coma, so the outer field smears the correlation peak.
+              Falls back to the margins in `guiding.rois[fcu_v2]`, then to
+              (1000, 300) px horizontal/vertical. The optics have pronounced coma, so the
+              outer field smears the correlation peak.
+
+            Whichever source was used for each is reported back in the result.
             """
             return self.spiral.start(
                 x_step_arcsec=x_step_arcsec,
