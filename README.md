@@ -58,3 +58,22 @@ drives two cases through a real FastAPI app to pin the wire shape.
 
 MAST_common carries its own platform-independent suite, run from its own clone
 (`<top>/common/tests/`). It is a sibling of this repo, not a submodule.
+
+### Static contract checks
+
+`tests/contract/` holds the endpoint contract's static half (#52): pure AST passes that
+need no hardware, no Mongo and no app fixture, and so run on any platform. Each asks a
+question about the shape of the source that running the code cannot answer —
+
+| module | invariant | asserts |
+|---|---|---|
+| `test_abstract_declarations.py` | 10 (interface half) | no `@abstractmethod` in `common` lacks a return annotation |
+| `test_dead_preconditions.py` | 4 | every `require_*` precondition has a caller |
+| `test_activity_flag_balance.py` | 3 | every activity flag that starts also ends |
+| `test_dispatch_naming.py` | 9 | every thread dispatch targets a `do_<operation>` |
+
+Each carries a `KNOWN_*` dict of the violations present today, keyed to the issue that owns
+fixing them. The assertion is **set equality**, not "no new findings": landing a fix
+removes its entry in the same PR, and a stale entry fails the check just as a new violation
+does. Every detector also runs over a synthetic source with a known answer, so a broken
+detector cannot pass by finding nothing.
