@@ -227,8 +227,9 @@ class Imager(ImagerInterface, SwitchedOutlet):
         return self._backend.endpoint_abort()
 
     @endpoint(tier=Tier.INTERFACE)
-    def endpoint_status(self) -> CanonicalResponse:
-        return CanonicalResponse(value=self.status())
+    def endpoint_status(self) -> ImagerStatus:
+        # Enveloped at registration; `status()` stays a bare typed model (MAST_common#70).
+        return self.status()
 
     def status(self) -> ImagerStatus:
         """
@@ -380,12 +381,14 @@ class Imager(ImagerInterface, SwitchedOutlet):
         return self._backend.default_settings
 
     @endpoint(tier=Tier.OPERATION)
-    def turn_cooler_on(self):
+    def turn_cooler_on(self) -> CanonicalResponse:
         self.cooler_on = True
+        return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION)
-    def turn_cooler_off(self):
+    def turn_cooler_off(self) -> CanonicalResponse:
         self.cooler_on = False
+        return CanonicalResponse_Ok
 
     @property
     def api_router(self) -> APIRouter:

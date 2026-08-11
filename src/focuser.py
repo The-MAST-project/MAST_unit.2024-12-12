@@ -313,8 +313,9 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
                 self.target = None
 
     @endpoint(tier=Tier.INTERFACE)
-    def endpoint_status(self) -> CanonicalResponse:
-        return CanonicalResponse(value=self.status())
+    def endpoint_status(self) -> FocuserStatus:
+        # Enveloped at registration; `status()` stays a bare typed model (MAST_common#70).
+        return self.status()
 
     def status(self) -> FocuserStatus | None:
         pw_stat = self.pw.status()
@@ -381,8 +382,9 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         return self._was_shut_down
 
     @endpoint(tier=Tier.OPERATION)
-    def get_position(self):
-        return CanonicalResponse(value=self.position)
+    def get_position(self) -> int | None:
+        # Enveloped at registration (#34 stage 3).
+        return self.position
 
     @property
     def api_router(self) -> APIRouter:

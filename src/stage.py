@@ -529,8 +529,9 @@ from pyximc import *
             raise Exception(f"Could not start move to {value} ({result=})")
 
     @endpoint(tier=Tier.INTERFACE)
-    def endpoint_status(self) -> CanonicalResponse:
-        return CanonicalResponse(value=self.status())
+    def endpoint_status(self) -> StageStatus:
+        # Enveloped at registration; `status()` stays a bare typed model (MAST_common#70).
+        return self.status()
 
     def status(self) -> StageStatus:
         at_preset = None
@@ -749,19 +750,23 @@ from pyximc import *
             Name of a preset position
         """
         if not self.detected or not self.connected:
-            return
+            return CanonicalResponse(errors=["not detected or not connected"])
 
         if isinstance(preset, str):
             try:
                 preset = StagePresetPosition.__getitem__(preset)
             except KeyError:
-                logger.warning(f"No such preset position '{preset}'")
-                return
+                msg = f"no such preset position '{preset}'"
+                logger.warning(msg)
+                # Was a bare return, i.e. HTTP null: this is exactly how #85's
+                # 'sky'/'spec' no-op presents as a silent success.
+                return CanonicalResponse(errors=[msg])
 
         preset_position = self.presets[preset]
         if self.close_enough(preset_position):
             logger.info(f"Not moving {self.position=} is close enough to {preset_position=}")
-            return
+            # Genuinely succeeded with nothing to do -- distinct from the refusals above.
+            return CanonicalResponse_Ok
 
         return self.move_absolute(preset_position)
 
