@@ -54,6 +54,11 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 filer = Filer(logger)
 
+
+class SpiralSearchError(Exception):
+    """A spiral session could not do something it needs to do."""
+
+
 REFERENCE_IMAGE = "reference.fits"
 FINAL_IMAGE = "final.fits"
 RESULT_FILE = "result.json"
@@ -103,18 +108,33 @@ class SpiralSearch:
         file while astropy has it open, and protect() also marks the path as a product
         so release_folder keeps it.
         """
-        assert self.unit.imager is not None and self.folder is not None
+        imager, conf = self.unit.imager, self.unit.unit_conf
+        assert imager is not None and conf is not None and self.folder is not None
         path = os.path.join(self.folder, file_name)
 
         with MoveGuardian().protect(path):
-            self.unit.imager.latest_settings = ImagerSettings(
+            # roi and gain are NOT optional. PHD2's non-guiding path -- which is the one a
+            # spiral takes -- does `assert settings.roi` and converts settings.gain, so
+            # omitting either raises inside the backend. Full frame at bin 1: the whole
+            # point is to compare the same detector area before and after.
+            imager.latest_settings = ImagerSettings(
                 seconds=self.exposure_seconds,
                 save=True,
                 image_path=path,
                 binning=1,  # always 1: the correlation wants full detector sampling
+                roi=imager.full_frame,
+                gain=conf.acquisition.gain,
             )
-            self.unit.imager.start_exposure(self.unit.imager.latest_settings)
-            self.unit.imager.wait_for_image_saved()
+            response = imager.start_exposure(imager.latest_settings)
+            # Checked, not ignored. PHD2 returns errors (rather than raising) when it is
+            # disconnected or when the requested binning does not match its profile, and
+            # in that case no image is ever saved -- so `wait_for_image_saved` would block
+            # on an event that will never be set, with no timeout, holding the session
+            # lock forever. Failing here turns an indefinite hang into an error.
+            if response is not None and response.failed:
+                raise SpiralSearchError(f"exposure of '{file_name}' failed: {response.errors}")
+
+            imager.wait_for_image_saved()
             data = fits.getdata(path)
 
         filer.move_ram_to_shared(path)
@@ -173,7 +193,18 @@ class SpiralSearch:
             self.folder = PathMaker().make_spirals_folder()
             self.exposure_series = self.unit.imager.start_exposure_series(purpose="spiral")
 
-            _path, self.reference = self._expose(REFERENCE_IMAGE)
+            try:
+                _path, self.reference = self._expose(REFERENCE_IMAGE)
+            except Exception as ex:
+                # Tracking is already on and a series is already open. Without this the
+                # session would be left half-built: no reference frame, so no `end` is
+                # possible, but the mount still tracking and the series still open with
+                # nothing to close them.
+                logger.exception(f"{op}: the reference exposure failed; closing the session down")
+                self._close()
+                self._clear()
+                return CanonicalResponse(errors=[f"{op}: reference exposure failed: {ex}"])
+
             # Resolved here, not above: the frame-centre fallback needs a frame to exist.
             self.center_x, self.center_y, self.center_source = resolve_center(center_x, center_y, self.reference.shape)
             self.margin_horizontal, self.margin_vertical, self.margin_source = resolve_margins(
@@ -209,7 +240,13 @@ class SpiralSearch:
             image = None
             if self.save_intermediate_exposures:
                 image = "step-" + PathMaker().make_seq(self.folder) + ".fits"
-                self._expose(image)
+                try:
+                    self._expose(image)
+                except Exception:
+                    # A lost intermediate frame is a nuisance, not a reason to end the
+                    # session: the measurement needs only the reference and the final.
+                    logger.exception(f"{op}: intermediate exposure '{image}' failed; continuing")
+                    image = None
 
             entry = self._log_step(direction="next" if forward else "previous", image=image)
             return CanonicalResponse(value=entry)
@@ -221,7 +258,16 @@ class SpiralSearch:
                 return CanonicalResponse(errors=[f"{op}: no spiral session is open"])
 
             self._cancel_timer()
-            _path, final = self._expose(FINAL_IMAGE)
+            try:
+                _path, final = self._expose(FINAL_IMAGE)
+            except Exception as ex:
+                # No final frame means no measurement -- but the session must still close,
+                # or tracking stays on and the folder is never released. Recorded as an
+                # abort so result.json says why there is no shift, rather than nothing.
+                logger.exception(f"{op}: the final exposure failed; closing the session without a measurement")
+                self._abandon(f"final exposure failed: {ex}")
+                return CanonicalResponse(errors=[f"{op}: final exposure failed: {ex}"])
+
             self._log_step(direction="final", image=FINAL_IMAGE)
 
             shift = measure_shift(

@@ -25,6 +25,8 @@ pytest.importorskip("photutils", reason="photutils unavailable")
 from astropy.io import fits
 
 import spiral_search
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from common.models.statuses import ImagerRoi
 from spiral_search import FINAL_IMAGE, REFERENCE_IMAGE, RESULT_FILE, SpiralSearch
 
 SIZE = 300
@@ -92,11 +94,15 @@ class FakeMount:
 class FakeImager:
     """Writes a real FITS, like PHD2 does -- this class cannot image to memory either."""
 
+    #: PHD2's non-guiding path asserts on settings.roi, so a real one is required.
+    full_frame = ImagerRoi(x=0, y=0, width=SIZE, height=SIZE)
+
     def __init__(self):
         self.latest_settings = None
         self.series_open = 0
         self.shift = (0.0, 0.0)
         self.exposures: list[str] = []
+        self.fail_next = False
 
     def start_exposure_series(self, purpose=None):
         self.series_open += 1
@@ -107,8 +113,15 @@ class FakeImager:
 
     def start_exposure(self, settings):
         self.latest_settings = settings
+        if self.fail_next:
+            # PHD2 RETURNS errors rather than raising -- when disconnected, or when the
+            # requested binning does not match its profile. Nothing is saved in that case.
+            return CanonicalResponse(errors=["fake imager was told to fail"])
+        return CanonicalResponse_Ok
 
     def wait_for_image_saved(self):
+        if self.fail_next:
+            raise AssertionError("wait_for_image_saved must not be reached after a failed start_exposure")
         path = self.latest_settings.image_path
         self.exposures.append(os.path.basename(path))
         # The final frame is the shifted one; everything before it is the unshifted field.
@@ -116,10 +129,15 @@ class FakeImager:
         fits.writeto(path, star_field(dy, dx), overwrite=True)
 
 
+class FakeConf:
+    acquisition = type("A", (), {"gain": 170})()
+
+
 class FakeUnit:
     def __init__(self):
         self.mount = FakeMount()
         self.imager = FakeImager()
+        self.unit_conf = FakeConf()
 
     def is_active(self, _activity):
         return False
@@ -372,3 +390,67 @@ class TestResolvingTheUsableRegion:
         monkeypatch.setattr(spiral_search, "guiding_roi", spiral_search.guiding_roi)
         _cx, _cy, source = spiral_search.resolve_center(None, None, self.SHAPE)
         assert source in ("frame centre", "guiding.rois[fcu_v2]")
+
+
+class TestExposureFailures:
+    """PHD2 signals failure by RETURNING errors, not raising -- when it is disconnected,
+    or when the requested binning does not match its configured profile. Nothing is saved
+    in that case, and `wait_for_image_saved` waits on an event that will never be set,
+    with no timeout. Ignoring the return value therefore hangs the session forever while
+    holding its lock. These pin that every exposure site checks it.
+    """
+
+    def test_a_failed_reference_exposure_closes_the_session_down(self, session):
+        session.unit.imager.fail_next = True
+
+        response = session.start(1.0, 1.0, exposure_seconds=1.0)
+
+        assert response.failed
+        assert "reference exposure failed" in response.errors[0]
+        assert not session.is_active, "a session with no reference frame is unusable"
+        assert not session.unit.mount.tracking, "tracking must not be left on"
+        assert session.unit.imager.series_open == 0, "the exposure series must not be left open"
+
+    def test_a_failed_final_exposure_still_closes_and_records(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        session.unit.imager.fail_next = True
+
+        response = session.end()
+
+        assert response.failed
+        assert not session.unit.mount.tracking, "tracking must not be left on"
+        assert not session.is_active
+        result = read_result(session.test_folder)
+        assert result["aborted"] is True, "the operator must be able to see why there is no shift"
+        assert result["shift"] is None
+        assert "final exposure failed" in result["abort_reason"]
+
+    def test_a_failed_intermediate_exposure_does_not_end_the_session(self, session):
+        """The measurement needs only the reference and the final, so a lost step frame
+        is a nuisance rather than a reason to throw away the operator's work."""
+        session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=True)
+        session.unit.imager.fail_next = True
+
+        response = session.step(forward=True)
+
+        assert response.succeeded
+        assert session.is_active, "the session must survive a lost intermediate frame"
+        assert session.steps[-1]["image"] is None, "no filename may be recorded for a frame never written"
+
+        session.unit.imager.fail_next = False
+        assert session.end().succeeded, "and the session must still be able to finish"
+
+    def test_the_exposure_asks_for_a_full_frame_and_a_gain(self, session):
+        """Both are required by PHD2's non-guiding path: it does `assert settings.roi`
+        and converts settings.gain, so omitting either raises inside the backend."""
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+
+        settings = session.unit.imager.latest_settings
+        assert settings.roi is not None, "PHD2 asserts on this"
+        full = session.unit.imager.full_frame
+        # Compared against the imager's own full_frame rather than the raw frame size:
+        # ImagerRoi conditions its dimensions (width to a multiple of 8, height of 2), so
+        # the two agree on a real 8288x5644 sensor but not on an arbitrary test size.
+        assert (settings.roi.width, settings.roi.height) == (full.width, full.height), "the full frame"
+        assert settings.gain == 170
+        assert settings.binning == 1
