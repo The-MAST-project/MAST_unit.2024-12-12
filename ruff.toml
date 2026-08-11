@@ -10,6 +10,31 @@
 line-length = 125
 target-version = "py312"
 
+# Code we did not write and do not maintain. Excluded rather than fixed: a lint fix in
+# a vendor file becomes a merge conflict at the next drop, and the findings are not
+# ours to answer for. This keeps `ruff format` off them too, so they stay diffable
+# against the supplier's original.
+#
+# src/Standa is absent from this list only because .gitignore already names it and ruff
+# respects that -- same intent, different mechanism.
+#
+# Listed file by file rather than by directory: src/PlaneWave also holds our own
+# ps3cli_locate.py and ps3cli_server.py, which should stay linted.
+extend-exclude = [
+    # PlaneWave-supplied clients and their demo/startup helpers.
+    "src/PlaneWave/pwi4_client.py",
+    "src/PlaneWave/pwi4_client_demo.py",
+    "src/PlaneWave/pwi4_build_model.py",
+    "src/PlaneWave/pwi4_startup.py",
+    "src/PlaneWave/ps3cli_client.py",
+    "src/PlaneWave/platesolve.py",
+    # A dated copy of ps3cli_client.py, superseded but kept for reference.
+    "src/PlaneWave/ps3cli_client-2024-08-29.py",
+    # Simulator for the retired PlaneWave SHM solving path. Nothing imports it; kept
+    # for reference rather than deleted.
+    "src/PlateSolveSimulator/PSSImulator.py",
+]
+
 # MAST_common is no longer checked out inside this repo (it was the src/common
 # submodule; it is now a sibling clone, <top>/common/), so there is nothing here
 # to exclude. Keep this file scoped to this repo's own sources.

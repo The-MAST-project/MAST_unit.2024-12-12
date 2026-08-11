@@ -14,6 +14,8 @@ harness over a bundle of previously-captured FITS files (see
 import time
 from pathlib import Path
 
+from pydantic import Field
+
 from common.extended_basemodel import ExtendedBaseModel
 from common.mast_logging import get_logger
 from PlaneWave.ps3cli_client import PS3CLIClient
@@ -37,8 +39,8 @@ class PS3FocusAnalysisResult(ExtendedBaseModel):
     vcurve_a: float | None
     vcurve_b: float | None
     vcurve_c: float | None
-    focus_samples: list[PS3FocusSample] | None = []
-    errors: list[str] | None = []
+    focus_samples: list[PS3FocusSample] | None = Field(default_factory=list)
+    errors: list[str] | None = Field(default_factory=list)
 
 
 class PS3AutofocusStatus(ExtendedBaseModel):
