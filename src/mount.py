@@ -25,19 +25,6 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-#: Bounds for `goto_alt_az`, enforced by FastAPI/pydantic on the query parameters, so a
-#: bad value is refused before the method runs and the limits appear in the OpenAPI schema.
-#:
-#: Nothing else in this codebase bounds altitude -- not the config, not this class -- so
-#: below the floor the only thing between a typo and the mount driving into its pier or
-#: the enclosure is PWI4's axis limits, whose configuration this code cannot see.
-#:
-#: 15 degrees is a conservative observing floor rather than a mechanical one. If a
-#: pointing model or a horizon test legitimately needs lower, this is the number to
-#: change -- and by then it probably belongs in unit configuration, since the useful
-#: floor depends on the local horizon.
-MIN_ALTITUDE_DEGREES = 15.0
-MAX_ALTITUDE_DEGREES = 90.0
 # class SpiralSettings(BaseModel):
 #     x: float
 #     y: float
@@ -98,6 +85,23 @@ def _gradual_ramp_complete(prog) -> bool:
 
 
 class Mount(Component, SwitchedOutlet, AscomDispatcher):
+    #: Bounds for `goto_alt_az`, enforced by FastAPI/pydantic on the query parameters, so
+    #: a bad value is refused before the method runs and the limits appear in the OpenAPI
+    #: schema. Referenced unqualified in that signature, which works because they are
+    #: defined earlier in this class body and mount.py does not use string annotations.
+    #:
+    #: Nothing else in this codebase bounds altitude -- not the config, not this class --
+    #: so below the floor the only thing between a typo and the mount driving into its
+    #: pier or the enclosure is PWI4's axis limits, whose configuration this code cannot
+    #: see.
+    #:
+    #: 15 degrees is a conservative observing floor rather than a mechanical one. If a
+    #: pointing model or a horizon test legitimately needs lower, this is the number to
+    #: change -- and by then it probably belongs in unit configuration, since the useful
+    #: floor depends on the local horizon.
+    MIN_ALTITUDE_DEGREES = 15.0
+    MAX_ALTITUDE_DEGREES = 90.0
+
     _instance = None
     _initialized = False
 

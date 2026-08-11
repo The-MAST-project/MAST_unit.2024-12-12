@@ -7,7 +7,7 @@ the method is called on a stand-in carrying only what it touches.
 from __future__ import annotations
 
 from common.activities import MountActivities
-from mount import MAX_ALTITUDE_DEGREES, MIN_ALTITUDE_DEGREES, Mount
+from mount import Mount
 
 
 class FakePw:
@@ -114,7 +114,7 @@ class TestRefusals:
 
         hints = typing.get_type_hints(Mount.goto_alt_az, include_extras=True)
 
-        assert bounds(hints["alt_degs"]) == {"ge": MIN_ALTITUDE_DEGREES, "le": MAX_ALTITUDE_DEGREES}
+        assert bounds(hints["alt_degs"]) == {"ge": Mount.MIN_ALTITUDE_DEGREES, "le": Mount.MAX_ALTITUDE_DEGREES}
         assert bounds(hints["az_degs"]) == {"ge": 0.0, "lt": 360.0}, (
             "azimuth must be [0, 360) -- 360 excluded, not folded to 0"
         )
