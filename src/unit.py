@@ -982,9 +982,7 @@ class Unit(Component):
                         # Relative to the shared root. This sent `.parent.name` -- the bare
                         # directory name, with no path at all -- so the controller symlinked
                         # something it could never resolve. MAST_spec#39.
-                        shared_top=os.path.relpath(
-                            Path(self.imager.latest_settings.image_path).parent, filer.ram.root
-                        ),
+                        shared_top=os.path.relpath(Path(self.imager.latest_settings.image_path).parent, filer.ram.root),
                         shared_subpath="autofocus",
                     )
                 )
