@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from astropy.coordinates import Angle
 from astropy.io import fits
+from pydantic import Field
 
 from common.extended_basemodel import ExtendedBaseModel
 from common.filer import Filer, MoveGuardian
@@ -35,7 +36,7 @@ class PlaneWaveCliSolverResult(ExtendedBaseModel):
     dec_j2000_degrees: float | None = None
     arcsec_per_pixel: float | None = None
     rot_angle_degs: float | None = None
-    errors: list[str] | None = []
+    errors: list[str] | None = Field(default_factory=list)
 
 
 class PlaneWaveCli(SolverInterface):

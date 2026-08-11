@@ -13,7 +13,7 @@ from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import FcuVersion, SkyRoiConfig
 from common.endpoints import Tier, endpoint
-from common.filer import MoveGuardian
+from common.filer import Filer, MoveGuardian
 from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification, UnitAssignment
 from common.notifications import Notifier
@@ -390,7 +390,11 @@ class Acquirer:
                 AssignmentNotification(
                     assignment_id=assignment.plan.ulid,
                     state="in-progress",
-                    shared_top=acquisition.folder,
+                    # Relative to the shared root, not the absolute ram path: the controller
+                    # symlinks this, and its shared root is spelled differently from ours --
+                    # `/Storage/mast-share/MAST/<host>` against our `Z:/MAST/<host>/`.
+                    # MAST_spec#39.
+                    shared_top=os.path.relpath(acquisition.folder, Filer().ram.root),
                     shared_subpath="acquisition",
                 )
             )
