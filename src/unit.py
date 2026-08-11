@@ -38,7 +38,7 @@ from common.config.rois import FcuVersion
 from common.config.unit import UnitConfig
 from common.const import Const
 from common.dlipowerswitch import PowerSwitchFactory, SwitchedOutlet
-from common.filer import Filer
+from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 
 # from guiding import Guider
@@ -593,7 +593,7 @@ class Unit(Component):
         fiber_y: int | None = None,
         width: int | None = None,
         height: int | None = None,
-        binning: int = 1,
+        binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
         gain: int = asi.ASI_294MM_DEFAULT_GAIN,
         ra_offsets: Annotated[
             str | list[str] | list[float] | None,
@@ -619,6 +619,22 @@ class Unit(Component):
 
         if self.imager is None:
             return CanonicalResponse(errors=["imager is not initialized"])
+
+        # Both or neither. A coordinate on its own used to be accepted and then quietly
+        # dropped: the slew below requires BOTH to be floats, so supplying only RA meant
+        # no slew, no error, and a caller believing it had pointed somewhere it had not.
+        if (ra_j2000_hours is None) != (dec_j2000_degs is None):
+            given, missing = (
+                ("ra_j2000_hours", "dec_j2000_degs") if dec_j2000_degs is None else ("dec_j2000_degs", "ra_j2000_hours")
+            )
+            return CanonicalResponse(
+                errors=[
+                    (
+                        f"expose: {given} was supplied without {missing}; "
+                        "supply both to slew, or neither to expose where the telescope is pointing"
+                    )
+                ]
+            )
 
         # One call, whatever the form -- see the note in acquirer.py. This endpoint's
         # pattern was the colon-only copy, so the space-separated form was rejected
@@ -710,6 +726,51 @@ class Unit(Component):
 
         self.mount.start_tracking()
         exposure_series = self.imager.start_exposure_series(purpose="unit.do_exposure")
+        try:
+            self._expose_repeatedly(
+                repeats,
+                seconds,
+                subfolder,
+                gain,
+                binning,
+                fiber_x,
+                fiber_y,
+                width,
+                height,
+                ra_offsets,
+                dec_offsets,
+                seconds_between_exposures,
+            )
+        except Exception:
+            # This runs in `expose-thread`, where an exception would otherwise vanish
+            # entirely -- the endpoint has already returned "ok" to the caller. Logging
+            # is the only trace there is; the finally below is what stops the mount
+            # tracking forever and the exposure series dangling.
+            logger.exception(f"{op}: exposure run failed")
+            return CanonicalResponse(errors=[f"{op}: exposure run failed, see the log"])
+        finally:
+            self.imager.end_exposure_series(exposure_series)
+            self.mount.stop_tracking()
+        return CanonicalResponse_Ok
+
+    def _expose_repeatedly(
+        self,
+        repeats: int,
+        seconds: float,
+        subfolder: str | None,
+        gain: int,
+        binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL,
+        fiber_x: int,
+        fiber_y: int,
+        width: int,
+        height: int,
+        ra_offsets: list[float] | None,
+        dec_offsets: list[float] | None,
+        seconds_between_exposures: float,
+    ) -> None:
+        assert self.mount is not None
+        assert self.imager is not None
+        op = function_name()
         for repeat in range(repeats):
             end = None
             if seconds_between_exposures != 0.0:
@@ -732,11 +793,19 @@ class Unit(Component):
             self.imager.latest_settings = imager_settings
 
             logger.info(f"{op}: starting exposure #{repeat} (of {repeats})")
-            self.imager.start_exposure(imager_settings)
-
-            if not (self.imager.latest_settings is None or self.imager.latest_settings.image_path is None):
-                self.imager.wait_for_image_saved()
-                filer.move_ram_to_shared(self.imager.latest_settings.image_path)
+            # image_path is already set: ImagerSettings.model_post_init calls
+            # make_file_name() when base_folder is given, so the name exists before the
+            # exposure starts -- which is what lets the file be protected while it is
+            # being written. protect() also marks it a product, so a release_folder on
+            # the containing folder cannot discard it.
+            image_path = imager_settings.image_path
+            if image_path is None:
+                self.imager.start_exposure(imager_settings)
+            else:
+                with MoveGuardian().protect(image_path):
+                    self.imager.start_exposure(imager_settings)
+                    self.imager.wait_for_image_saved()
+                filer.move_ram_to_shared(image_path)
 
             if end is not None and seconds_between_exposures != 0.0:
                 now = datetime.datetime.now(tz=datetime.UTC)
@@ -759,10 +828,8 @@ class Unit(Component):
                     logger.info(f"offsetting mount dec={dec_offsets[repeat]}")
                     self.mount.pw.mount_offset(dec_add_arcsec=dec_offsets[repeat])
                 self.mount.wait_until_settled(SettleMode.OFFSET_STEP)
-
-        self.imager.end_exposure_series(exposure_series)
-        self.mount.stop_tracking()
-        return CanonicalResponse_Ok
+        # Closing the series and stopping tracking belong to do_expose's `finally`, so
+        # that they happen whether or not this returns normally. They must NOT be here.
 
     def do_start_sequence_of_exposures(self, sequence: ImagerSequenceOfExposures):  # noqa: C901
 
