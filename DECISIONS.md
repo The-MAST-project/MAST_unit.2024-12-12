@@ -2,6 +2,54 @@
 
 ---
 
+## [2026-08-11] Contract checks assert set equality against a known-violations list
+
+**Why:** The endpoint contract's static invariants had no enforcement, and three of them
+regressed or were found inert *because nothing checked them*: invariant 9 broke within hours
+of being written down (#102's `run_acquisition`), MAST_common#45's twelve undeclared abstract
+signatures went uncounted until somebody thought to ask, and MAST_common#46's exposure-series
+guard had never executed once since it was written. All three are questions about the shape
+of the source, answerable statically, needing no hardware and no app fixture — so they could
+have been checked at any point in the last two years.
+
+**What:** `tests/contract/` — four AST checks (invariants 3, 4, 9, and the interface half of
+10), each with a `KNOWN_*` dict of today's violations keyed to the issue that owns fixing
+them. Three decisions inside that are worth recording:
+
+- **Set equality, not `xfail` per item.** #52's design says xfail-keyed, and for the
+  app-dependent rows that is right. For these it is not: an `xfail` catches a new violation
+  but not a *stale* marker — an item fixed elsewhere leaves an `xpass` that is easy to
+  configure into silence, and the list then encodes whatever was true the day it was written.
+  That is precisely the failure mode MAST_common#45 warns about for hand-kept lists. Checking
+  both directions means an issue landing must remove its entry, and a list that drifts from
+  the tree is red.
+- **Every detector is exercised over a synthetic source with a known answer.** Each real
+  assertion is "no unexpected findings", which a *broken* detector satisfies as perfectly as
+  a clean tree does. Without the synthetic case these checks would be unfalsifiable, which is
+  the same defect as having no check. This was not hypothetical: the first run of the common
+  scans passed over zero files, because the exclusion of `common` (correct for the unit tree,
+  where an untracked sibling clone sits inside `src/`) was matched against absolute path parts
+  and so also excluded everything under `COMMON_ROOT`.
+- **Known lists key on (module, subject), never on a line number.** #81's inventory recorded
+  `zwo.py:148` and `imagers/ascom.py:806`; both had drifted to 151 and 812 by the time the
+  check was written, with nothing about the dispatch sites having changed.
+
+**Implications:** the checks find more than the tickets recorded. The flag-balance check finds
+**seven** unbalanced activity flags where #44 listed four — `StageActivities.Aborting`,
+`ImagerActivities.StartingUp` and `UnitActivities.PreGuiding` were in no inventory. Two
+scoping rules were needed to get there and both are load-bearing: only unit-owned activity
+enums are judged (`common/activities.py` declares the whole fleet's, so scanning the unit tree
+against MAST_spec's and MAST_control's reports 60-odd findings that are all false), and
+zero-valued `Idle = 0` sentinels are not flags.
+
+The checks live in this repo rather than in MAST_common even though two of them scan `common`:
+#52 hosts the contract checks, the unit's CI already checks out `common` as a sibling, and the
+dead-precondition check *must* see both trees — `require_open_exposure_series` is defined in
+`common` and its callers would be the unit's backends, so a MAST_common-only check would start
+reporting a false positive the moment the unit wired it up.
+
+---
+
 ## [2026-08-10] `app.py` is a factory, not a module with side effects
 
 **Why:** The HTTP surface was unreachable from anything but `python app.py`, which made
