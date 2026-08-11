@@ -15,6 +15,7 @@ harness proposed in #118, not here.
 from __future__ import annotations
 
 import ast
+import os
 import pathlib
 from dataclasses import dataclass
 
@@ -70,7 +71,20 @@ class Site:
 
 
 def python_files(root: pathlib.Path) -> list[pathlib.Path]:
-    return [path for path in sorted(root.rglob("*.py")) if not set(path.relative_to(root).parts) & EXCLUDED_PARTS]
+    """Scannable `*.py` under `root`, pruning excluded directories during the walk.
+
+    Pruning rather than filtering an `rglob` result, because the excluded trees are most of
+    the repo: `src/Standa` alone is 903 of 968 tracked Python files and ~265 MB across two
+    vendored SDK copies (#119). Walking it and then discarding it cost 31 s per run on the
+    Windows bench, against 1.9 s for the whole suite before these checks existed -- all of it
+    spent enumerating files nobody looks at. `os.walk` lets the excluded directories be
+    dropped before descending into them.
+    """
+    found = []
+    for directory, subdirectories, filenames in os.walk(root):
+        subdirectories[:] = [name for name in subdirectories if name not in EXCLUDED_PARTS]
+        found.extend(pathlib.Path(directory) / name for name in filenames if name.endswith(".py"))
+    return sorted(found)
 
 
 def modules(root: pathlib.Path):
