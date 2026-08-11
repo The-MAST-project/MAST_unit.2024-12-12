@@ -2,10 +2,11 @@ import math
 import time
 from enum import StrEnum
 from logging import Logger
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
 import win32com.client
 from astropy.coordinates import Angle
+from fastapi import Query
 from fastapi.routing import APIRouter
 
 from common.activities import MountActivities
@@ -23,6 +24,20 @@ if TYPE_CHECKING:
     from unit import Unit
 
 logger = get_logger(__name__)
+
+#: Bounds for `goto_alt_az`, enforced by FastAPI/pydantic on the query parameters, so a
+#: bad value is refused before the method runs and the limits appear in the OpenAPI schema.
+#:
+#: Nothing else in this codebase bounds altitude -- not the config, not this class -- so
+#: below the floor the only thing between a typo and the mount driving into its pier or
+#: the enclosure is PWI4's axis limits, whose configuration this code cannot see.
+#:
+#: 15 degrees is a conservative observing floor rather than a mechanical one. If a
+#: pointing model or a horizon test legitimately needs lower, this is the number to
+#: change -- and by then it probably belongs in unit configuration, since the useful
+#: floor depends on the local horizon.
+MIN_ALTITUDE_DEGREES = 15.0
+MAX_ALTITUDE_DEGREES = 90.0
 # class SpiralSettings(BaseModel):
 #     x: float
 #     y: float
@@ -706,6 +721,76 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self.start_activity(MountActivities.Slewing)
         self.pw.mount_goto_ra_dec_apparent(ra, dec)
 
+    def goto_alt_az(
+        self,
+        alt_degs: Annotated[
+            float,
+            Query(
+                ge=MIN_ALTITUDE_DEGREES,
+                le=MAX_ALTITUDE_DEGREES,
+                description=(
+                    "#### Altitude above the horizon, in **degrees as a plain decimal**.\n"
+                    f"- range: `{MIN_ALTITUDE_DEGREES:g}` to `{MAX_ALTITUDE_DEGREES:g}`\n"
+                    "- the lower bound is an observing floor, not a mechanical one"
+                ),
+            ),
+        ],
+        az_degs: Annotated[
+            float,
+            Query(
+                ge=0.0,
+                lt=360.0,
+                description=(
+                    "#### Azimuth, in **degrees as a plain decimal**, measured from North through East.\n"
+                    "- range: `0` (inclusive) to `360` (exclusive)"
+                ),
+            ),
+        ],
+    ) -> CanonicalResponse:
+        """
+        Slew the ``mount`` to an altitude/azimuth.<br>
+        Tracking is **stopped** first: an alt/az target is a fixed direction -- a flat
+        panel, a pointing check, a spot on the horizon -- and sidereal tracking would
+        drag the mount straight off it.<br>
+        Returns as soon as PWI4 has accepted the slew, like the other goto verbs; the
+        **Slewing** activity, which carries the target, is what says when it finishes.
+        :mastapi:
+        """
+        op = function_name()
+
+        # Ranges are enforced by FastAPI/pydantic on the parameters above, so anything
+        # arriving here is already a float within bounds. What is left to check is the
+        # resource: whether there is a mount to drive at all.
+        if not self.connected:
+            msg = f"{op}: not connected"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
+
+        self.stop_tracking()
+
+        # A string, not a tuple: status() renders a tuple target as RA/Dec, so an alt/az
+        # pair put there would be displayed as a sky position it is not.
+        self.target = f"alt={alt_degs:g}, az={az_degs:g}"
+        # Carried on the activity as well as on `target`: the activity is what a client
+        # watching /status sees while the slew is in flight, and "Slewing" on its own does
+        # not say where to -- which is the first thing anyone asks of a moving telescope.
+        self.start_activity(MountActivities.Slewing, details=[f"target={self.target}"])
+        try:
+            self.pw.mount_goto_alt_az(alt_degs=alt_degs, az_degs=az_degs)
+        except Exception as e:
+            # Ended here because nothing else will: `ontimer` only ends Slewing after
+            # seeing the mount move and stop, and a slew PWI4 never accepted means it
+            # never moves -- so the activity would stay set until something unrelated
+            # cleared it, with the unit reporting a slew that is not happening.
+            self.end_activity(MountActivities.Slewing)
+            self.target = None
+            error = f"{op}: {e}"
+            logger.exception(error)
+            return CanonicalResponse(errors=[error])
+
+        logger.info(f"{op}: slewing to alt={alt_degs:g}, az={az_degs:g}")
+        return CanonicalResponse_Ok
+
     def endpoint_abort(self):
         return self.abort()
 
@@ -830,6 +915,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         router.add_api_route(base_path + "/park", tags=[tag], endpoint=self.park)
         router.add_api_route(base_path + "/find_home", tags=[tag], endpoint=self.find_home)
         router.add_api_route(base_path + "/goto", tags=[tag], endpoint=self.goto)
+        router.add_api_route(base_path + "/goto_alt_az", tags=[tag], endpoint=self.goto_alt_az)
         router.add_api_route(base_path + "/dance", tags=[tag], endpoint=self.dance)
 
         return router
