@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from common.activities import MountActivities
-from mount import Mount
+from mount import Mount, target_as_text
 
 
 class FakePw:
@@ -23,6 +23,11 @@ class FakePw:
         self.calls.append((alt_degs, az_degs))
 
     def mount_goto_ra_dec_j2000(self, ra, dec):
+        if self.raises:
+            raise RuntimeError("PWI4 refused the slew")
+        self.calls.append((ra, dec))
+
+    def mount_goto_ra_dec_apparent(self, ra, dec):
         if self.raises:
             raise RuntimeError("PWI4 refused the slew")
         self.calls.append((ra, dec))
@@ -52,9 +57,15 @@ class Stub:
     def stop_tracking(self):
         self.stopped_tracking += 1
 
+    # The real implementations, so the endpoints exercise them rather than fakes of them.
     def goto_ra_dec_j2000(self, ra, dec):
-        # The real implementation, so the endpoint exercises it rather than a fake of it.
         return Mount.goto_ra_dec_j2000(self, ra, dec)  # type: ignore[arg-type]
+
+    def goto_ra_dec_apparent(self, ra, dec):
+        return Mount.goto_ra_dec_apparent(self, ra, dec)  # type: ignore[arg-type]
+
+    def _goto_equatorial(self, slew, ra_in, dec_in, op):
+        return Mount._goto_equatorial(self, slew, ra_in, dec_in, op)  # type: ignore[arg-type]
 
 
 def goto(stub, alt=45.0, az=180.0):
@@ -202,3 +213,63 @@ class TestGotoRaDecJ2000:
 
         assert response.failed
         assert stub.pw.calls == [], "the mount must not be driven with a value that failed validation"
+
+
+class TestGotoRaDecApparent:
+    """The of-date sibling. PWI4 reports and accepts both frames, so both are routed."""
+
+    def test_it_slews_and_reports_ok(self):
+        stub = Stub()
+        assert Mount.endpoint_goto_ra_dec_apparent(stub, 12.5, -45.5).succeeded  # type: ignore[arg-type]
+        assert stub.pw.calls == [(12.5, -45.5)]
+
+    def test_the_target_names_the_frame(self):
+        """A bare RA/Dec target would be indistinguishable from a J2000 one in the
+        operator's status view, and the two frames differ by ~22 arcmin."""
+        stub = Stub()
+        Mount.goto_ra_dec_apparent(stub, 12.5, -45.5)  # type: ignore[arg-type]
+
+        assert isinstance(stub.target, str)
+        assert "apparent" in stub.target, f"the frame must be visible: {stub.target}"
+        assert "12:30:00" in stub.target and "-45:30:00" in stub.target
+
+    def test_it_raises_rather_than_returning(self):
+        stub = Stub(raises=True)
+        with pytest.raises(RuntimeError):
+            Mount.goto_ra_dec_apparent(stub, 12.5, -45.5)  # type: ignore[arg-type]
+        assert not stub.is_active(MountActivities.Slewing)
+        assert stub.target is None
+
+    def test_the_endpoint_refuses_a_disconnected_mount(self):
+        stub = Stub(connected=False)
+        response = Mount.endpoint_goto_ra_dec_apparent(stub, 12.5, -45.5)  # type: ignore[arg-type]
+        assert response.failed and "not connected" in response.errors[0]
+        assert stub.pw.calls == []
+
+    @pytest.mark.parametrize(("ra", "dec"), [(25.0, 0.0), (0.0, 95.0)], ids=["ra past 24h", "dec past 90"])
+    def test_out_of_range_is_refused(self, ra, dec):
+        stub = Stub()
+        assert Mount.endpoint_goto_ra_dec_apparent(stub, ra, dec).failed  # type: ignore[arg-type]
+        assert stub.pw.calls == []
+
+
+class TestTargetRendering:
+    """What `status()` shows the operator for `target`."""
+
+    def test_a_tuple_declination_is_read_as_degrees(self):
+        """It was read as ARCSECONDS, so a target at -45.5 degrees was displayed as
+        "-0:00:45.500" -- 3600x too small, and plausible enough to go unnoticed."""
+        rendered = target_as_text((12.5, -45.5))
+
+        assert rendered is not None
+        assert "12:30:00" in rendered, rendered
+        assert "-45:30:00" in rendered, f"declination must be read as degrees, got {rendered}"
+        assert "-0:00:45" not in rendered, "the arcsecond misreading"
+
+    def test_a_string_target_is_passed_through(self):
+        """Home, and the alt/az and apparent verbs, carry their own frame."""
+        assert target_as_text("Home") == "Home"
+        assert target_as_text("alt=45, az=180") == "alt=45, az=180"
+
+    def test_no_target_renders_as_nothing(self):
+        assert target_as_text(None) is None
