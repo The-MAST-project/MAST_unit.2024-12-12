@@ -919,7 +919,11 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         router.add_api_route(base_path + "/park", tags=[tag], endpoint=self.park)
         router.add_api_route(base_path + "/find_home", tags=[tag], endpoint=self.find_home)
         router.add_api_route(base_path + "/goto", tags=[tag], endpoint=self.goto)
-        router.add_api_route(base_path + "/goto_alt_az", tags=[tag], endpoint=self.goto_alt_az)
+        # PUT, not GET: invariant 5 of the endpoint contract (#48, decided 2026-07-20) --
+        # state-changing routes are PUT so a caching proxy, a link prefetch or a Swagger
+        # "try it out" cannot fire a slew. The sibling verbs are still GET pending that
+        # sweep; a new route has no reason to be added to the pile.
+        router.add_api_route(base_path + "/goto_alt_az", methods=["PUT"], tags=[tag], endpoint=self.goto_alt_az)
         router.add_api_route(base_path + "/dance", tags=[tag], endpoint=self.dance)
 
         return router
