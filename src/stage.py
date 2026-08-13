@@ -544,22 +544,35 @@ from pyximc import *
     def endpoint_status(self) -> StageStatus:
         return self.status()
 
-    def status(self) -> StageStatus:
-        at_preset = None
-        if self.detected:
-            for k in self.presets:
-                if self.close_enough(self.presets[k]):
-                    # `value`, not `name.lower()`: the latter reports "middle" for a preset
-                    # the API calls "mid", so status named a value the setter would reject.
-                    at_preset = k.value
-                    break
+    def at_preset_name(self) -> str | None:
+        """The preset the stage is currently parked at, as the API spells it.
 
-        target_verbal = f"{self.target}"
+        `value`, not `name.lower()`: the latter reported "middle" for a preset the API calls
+        "mid", so what status said did not round-trip into `move_to_preset` (#85).
+        """
+        if not self.detected:
+            return None
+        for preset, position in self.presets.items():
+            if self.close_enough(position):
+                return preset.value
+        return None
+
+    def target_preset_name(self) -> str:
+        """The preset being moved to, as the API spells it; the raw target if it is not one.
+
+        The comparison is against the preset's *position*. It used to be against the enum's
+        value -- a 1-tuple, and now a string -- neither of which can equal the integer
+        `target`, so this never once resolved to a preset name.
+        """
         if self.target is not None:
-            for preset in self.presets:
-                if self.target == preset.value:
-                    target_verbal = preset.name
-                    break
+            for preset, position in self.presets.items():
+                if self.target == position:
+                    return preset.value
+        return f"{self.target}"
+
+    def status(self) -> StageStatus:
+        at_preset = self.at_preset_name()
+        target_verbal = self.target_preset_name()
 
         return StageStatus(
             **self.power_status().model_dump(),

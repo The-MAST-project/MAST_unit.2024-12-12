@@ -57,7 +57,28 @@ def test_status_reports_a_value_the_setter_accepts():
     "mid" and would reject.
     """
     for preset in StagePresetPosition:
-        assert StagePresetPosition(preset.value) is preset
+        stub = _stub(presets={preset: 1000}, close_enough=lambda _p: True)
+
+        reported = Stage.at_preset_name(stub)
+
+        assert reported == preset.value
+        assert StagePresetPosition(reported) is preset
+
+
+def test_at_preset_is_none_when_undetected():
+    assert Stage.at_preset_name(_stub(detected=False, close_enough=lambda _p: True)) is None
+
+
+def test_target_verbal_resolves_a_preset_position():
+    """It compared `target` against the enum's value rather than the preset's position, so
+    it never resolved to a name at all."""
+    stub = _stub(target=321297)
+
+    assert Stage.target_preset_name(stub) == "spec"
+
+
+def test_target_verbal_falls_back_to_the_raw_target():
+    assert Stage.target_preset_name(_stub(target=250000)) == "250000"
 
 
 def test_startup_preset_is_not_an_api_value():
@@ -89,6 +110,7 @@ def _stub(**kw):
         "presets": {StagePresetPosition.Sky: 190000, StagePresetPosition.Spec: 321297},
         "position": 190000,
         "close_enough": lambda _p: False,
+        "target": None,
     }
     return SimpleNamespace(**{**base, **kw})
 
