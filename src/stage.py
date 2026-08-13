@@ -525,21 +525,20 @@ from pyximc import *
 
     @position.setter
     def position(self, value):
-        if not self.connected:
-            raise Exception("Not connected")
+        """Delegates to `move_absolute`, raising on refusal to keep the property contract.
 
-        if self.close_enough(value):
-            logger.info(f"Not changing position ({self.position} is close enough to {value}")
-            return
+        This was a parallel implementation of the same move, and it had drifted: no
+        `detected` check, no travel-limit range check, and `command_move(device, value)`
+        with two arguments where the C signature is `(id, Position, uPosition)`. `pyximc`
+        binds the library as a bare `WinDLL` with no `argtypes`, so ctypes never caught the
+        missing argument and the controller was handed an undefined micro-step offset.
 
-        self.target = value
-        with self.stage_lock:
-            assert ximclib, "No ximclib"
-            result = ximclib.command_move(self.device, value)
-        if result == Result.Ok:
-            self.start_activity(StageActivities.Moving, details=[f"to {self.target}"])
-        else:
-            raise Exception(f"Could not start move to {value} ({result=})")
+        It has no callers in this repository -- it exists for interactive use, which is
+        exactly why it went unnoticed.
+        """
+        response = self.move_absolute(value)
+        if response is not None and response.failed:
+            raise ValueError(f"cannot move to {value}: {'; '.join(response.errors or [])}")
 
     def endpoint_status(self) -> StageStatus:
         return self.status()
@@ -812,16 +811,22 @@ from pyximc import *
         op = function_name()
 
         if not self.detected:
-            return CanonicalResponse(errors=["not detected"])
+            return CanonicalResponse(errors=[f"{op}: not detected"])
         if not self.connected:
-            return CanonicalResponse(errors=["not connected"])
+            return CanonicalResponse(errors=[f"{op}: not connected"])
 
         if isinstance(position, str):
-            position = int(position)
+            try:
+                position = int(position)
+            except ValueError:
+                return CanonicalResponse(errors=[f"{op}: '{position}' is not a position"])
 
         if self.close_enough(position):
-            logger.info(f"{op}: Not moving {self.position=} is close enough to {position=}")
-            return
+            # Ok, not None: this is the "already there" success, and returning None from a
+            # route makes it HTTP 200 with a null body -- indistinguishable from a refusal
+            # (#85, #47). It matters more now that every absolute move comes through here.
+            logger.info(f"{op}: not moving, {self.position=} is close enough to {position=}")
+            return CanonicalResponse_Ok
 
         if self.max_travel is None or self.min_travel is None:
             return CanonicalResponse(errors=["cannot move - min_travel or max_travel is None"])
@@ -963,9 +968,17 @@ from pyximc import *
     def endpoint_set_position(self, pos: int):
         return self.set_position(pos)
 
-    def set_position(self, pos: int):
-        self.position = pos
-        return CanonicalResponse_Ok
+    def set_position(self, pos: int) -> CanonicalResponse:
+        """`PUT /stage/position`: the only way to command an absolute position over the API.
+
+        It used to assign the `position` property, which is a second implementation of the
+        same move that never acquired `move_absolute`'s guards -- so the one route an
+        operator has for an absolute move was the one that skipped the travel-limit check
+        and could drive the stage past `max_travel`. It also raised rather than returning,
+        so a refusal surfaced as a 500 with a traceback, while this returned `Ok`
+        unconditionally regardless of what happened.
+        """
+        return self.move_absolute(pos)
 
     @property
     def api_router(self) -> APIRouter:
