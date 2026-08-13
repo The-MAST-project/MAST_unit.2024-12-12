@@ -7,7 +7,7 @@ import time
 from collections import deque
 from enum import Enum, IntEnum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar
 
 from fastapi.routing import APIRouter
 
@@ -79,16 +79,34 @@ class StageDirection(IntEnum):
     Down = auto()
 
 
+# The values below are the wire format, and the member names are Python identifiers with no
+# meaning outside this file. Keeping those two apart is the fix for #85: the names used to
+# leak into the HTTP contract, leaving three of the five presets unreachable -- request
+# validation advertised the lowercase values while the handler resolved by member name, so
+# `spec` passed validation and then failed the lookup, `Spec` was rejected by validation
+# before the handler saw it, and `mid` failed because the member is `Middle`. Both
+# operationally meaningful presets were among the unreachable ones.
+#
+# Plain strings rather than the 1-tuples used previously, which made the OpenAPI schema an
+# *array* enum (`[["sky"], ["spec"], ...]`) and left `value` a tuple no caller could compare
+# against.
 class StagePresetPosition(Enum):
-    Sky = ("sky",)
-    Spec = ("spec",)
-    Min = ("min",)
-    Middle = ("mid",)
-    Max = ("max",)
-    StartUp = Sky
+    """Preset stage positions: `sky`, `spec`, `min`, `mid`, `max`."""
+
+    Sky = "sky"
+    Spec = "spec"
+    Min = "min"
+    Middle = "mid"
+    Max = "max"
 
 
-stage_position_names: list[str] = [k for k in StagePresetPosition.__dict__]
+#: Where the stage is sent on startup. Deliberately not an enum member: as an alias of `Sky`
+#: it published a duplicate "sky" in the OpenAPI enum, and it is a policy choice rather than
+#: a position anyone can command.
+STARTUP_PRESET = StagePresetPosition.Sky
+
+#: The preset names the API accepts, for anyone building a UI over it.
+stage_position_names: list[str] = [p.value for p in StagePresetPosition]
 
 stage_direction_str2int_dict: dict = {
     "Up": StageDirection.Up,
@@ -531,7 +549,9 @@ from pyximc import *
         if self.detected:
             for k in self.presets:
                 if self.close_enough(self.presets[k]):
-                    at_preset = k.name.lower()
+                    # `value`, not `name.lower()`: the latter reports "middle" for a preset
+                    # the API calls "mid", so status named a value the setter would reject.
+                    at_preset = k.value
                     break
 
         target_verbal = f"{self.target}"
@@ -723,38 +743,55 @@ from pyximc import *
                                 logger.error(f"{op}: attempt #{i} (of 3): successfully cleared MVCMD_ERROR")
                                 break
 
-            if self.is_active(StageActivities.StartingUp) and self.close_enough(self.presets[StagePresetPosition.StartUp]):
+            if self.is_active(StageActivities.StartingUp) and self.close_enough(self.presets[STARTUP_PRESET]):
                 self.end_activity(StageActivities.StartingUp)
 
             if self.is_active(StageActivities.Homing):
                 self.end_activity(StageActivities.Homing)
 
-    def move_to_preset(
-        self,
-        preset: Const.SolvingPhase | Literal["Min", "Mid", "Max"] | StagePresetPosition,
-    ):
+    def move_to_preset(self, preset: StagePresetPosition) -> CanonicalResponse:
         """
-        Starts moving the stage to one of the preset positions
+        Starts moving the stage to one of the preset positions.
 
         Parameters
         ----------
         preset
-            Name of a preset position
-        """
-        if not self.detected or not self.connected:
-            return
+            One of `sky`, `spec`, `min`, `mid`, `max`.
 
+        Notes
+        -----
+        Annotating this with the enum itself is what fixes #85: pydantic validates a query
+        string against an Enum **by value**, so `?preset=spec` arrives already resolved and
+        an unknown name is a 422 from FastAPI listing the valid ones. The previous signature
+        spliced together `Const.SolvingPhase` and a capitalised `Literal`, neither of which
+        matched the by-name lookup the body then performed.
+        """
+        op = function_name()
+
+        # Direct Python callers may still pass a string; the API path never reaches this,
+        # having been resolved by pydantic already.
         if isinstance(preset, str):
             try:
-                preset = StagePresetPosition.__getitem__(preset)
-            except KeyError:
-                logger.warning(f"No such preset position '{preset}'")
-                return
+                preset = StagePresetPosition(preset.lower())
+            except ValueError:
+                return CanonicalResponse(errors=[f"{op}: no such preset '{preset}', expected one of {stage_position_names}"])
+
+        # Each of these used to be a bare `return`, i.e. HTTP 200 with a null body and the
+        # stage motionless -- a failure the caller could not tell from success (#85, #47).
+        if not self.detected:
+            return CanonicalResponse(errors=[f"{op}: stage not detected"])
+        if not self.connected:
+            return CanonicalResponse(errors=[f"{op}: stage not connected"])
+
+        # min/mid/max are only populated once travel limits are known (see startup), so a
+        # preset can be valid yet have no position yet.
+        if preset not in self.presets:
+            return CanonicalResponse(errors=[f"{op}: preset '{preset.value}' has no position yet; is the stage up?"])
 
         preset_position = self.presets[preset]
         if self.close_enough(preset_position):
-            logger.info(f"Not moving {self.position=} is close enough to {preset_position=}")
-            return
+            logger.info(f"{op}: not moving, {self.position=} is close enough to {preset_position=}")
+            return CanonicalResponse_Ok
 
         return self.move_absolute(preset_position)
 
@@ -888,8 +925,8 @@ from pyximc import *
                 ret.append(f"{label}: not connected")
             elif not (self.at_preset(StagePresetPosition.Spec) or self.at_preset(StagePresetPosition.Sky)):
                 ret.append(
-                    f"{label}: at {self.position}, not at 'Spec' "
-                    + f"({self.presets[StagePresetPosition.Spec]}) or 'Sky' "
+                    f"{label}: at {self.position}, not at '{StagePresetPosition.Spec.value}' "
+                    + f"({self.presets[StagePresetPosition.Spec]}) or '{StagePresetPosition.Sky.value}' "
                     + f"({self.presets[StagePresetPosition.Sky]}) preset positions"
                 )
             if not self._currently_operational:
