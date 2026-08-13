@@ -6,20 +6,39 @@
   "editor.formatOnSave": true,
   "editor.formatOnSaveMode": "modifications",
   "[python]": {
-    "editor.defaultFormatter": "charliermarsh.ruff",
-    "editor.codeActionsOnSave": {
-      "source.organizeImports": "explicit",
-      "source.fixAll": "explicit"
-    }
+    // Deliberately NO "editor.codeActionsOnSave" here: lint code actions
+    // (source.fixAll, source.organizeImports) always rewrite the WHOLE file,
+    // bypassing the "modifications" mode above — touching one line in a legacy
+    // file would reorder its imports and apply every UP/SIM/B autofix in it.
+    // Run `ruff check --fix <file>` deliberately instead, so mechanical fixes
+    // land as their own commit.
+    "editor.defaultFormatter": "charliermarsh.ruff"
   },
   "ruff.enable": true,
-  "ruff.organizeImports": true,
+  // Use the pinned ruff from requirements-dev.txt (ruff==0.16.0), never the
+  // copy bundled with the extension — formatter output differs between ruff
+  // versions, and editor-vs-CI disagreement is pure churn. Requires ruff to be
+  // installed in the interpreter VS Code has selected.
+  // Window-scoped, so this line only takes effect when this folder is opened
+  // directly; mast-unit.code-workspace sets the same value for the multi-root
+  // case (where VS Code flags this line as "cannot be applied" — benign).
+  "ruff.importStrategy": "fromEnvironment",
+  "ruff.organizeImports": false,
   "editor.accessibilitySupport": "off",
   "terminal.integrated.accessibilitySupport": false,
   "files.eol": "\n",
   "python.analysis.autoImportCompletions": true,
   "python.languageServer": "Pylance",
   "python.analysis.typeCheckingMode": "basic",
+  // "./src" is the real runtime sys.path root: app.py is launched with
+  // cwd=src and PYTHONPATH=src (see launch.json and service/mast-service.ps1),
+  // so its siblings are imported absolutely -- "from unit import Unit".
+  // It must come BEFORE "..", because ".." exposes the repo's own root folder
+  // (top/unit/, which has no __init__.py) as a namespace package also called
+  // "unit"; without "./src" Pylance binds to that and reports '"Unit" is
+  // unknown import symbol'. At runtime a real module always wins over a
+  // namespace package, so this only ever affected static analysis.
+  //
   // ".." is the flat-layout top folder, where MAST_common is cloned as
   // "common/" alongside this repo (see MAST_provisioning tools/mast-clone.*).
   // The generated mast.code-workspace sets this at workspace level, but a
@@ -28,6 +47,7 @@
   // resolve in Pylance for this folder only. Harmless when the layout is not
   // in use: a non-existent path is simply ignored.
   "python.analysis.extraPaths": [
+    "./src",
     "..",
     "./src/Standa/ximc-2.13.6/ximc/crossplatform/wrappers/python"
   ],

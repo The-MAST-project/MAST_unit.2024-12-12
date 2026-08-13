@@ -2,10 +2,11 @@ import math
 import time
 from enum import StrEnum
 from logging import Logger
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
 import win32com.client
 from astropy.coordinates import Angle
+from fastapi import Query
 from fastapi.routing import APIRouter
 
 from common.activities import MountActivities
@@ -16,6 +17,12 @@ from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import MountStatus, SpiralSettings
+from common.parsers import (
+    DEC_PATTERN,
+    RA_PATTERN,
+    sexagesimal_degrees_to_decimal,
+    sexagesimal_hours_to_decimal,
+)
 from common.utils import RepeatTimer, caller_name, function_name, time_stamp
 from PlaneWave import pwi4_client
 
@@ -23,6 +30,7 @@ if TYPE_CHECKING:
     from unit import Unit
 
 logger = get_logger(__name__)
+
 # class SpiralSettings(BaseModel):
 #     x: float
 #     y: float
@@ -70,6 +78,27 @@ def _offset_channel(st, name: str):
     return getattr(offsets, f"{name}_arcsec", None)
 
 
+def target_as_text(target: str | tuple | None) -> str | None:
+    """Render a mount target for the operator's status view.
+
+    A tuple is an equatorial J2000 position, `(ra_hours, dec_DEGREES)`. A string is
+    already human-readable and carries its own frame -- "Home", or the alt/az and
+    apparent verbs, which must not render as bare RA/Dec.
+
+    A function rather than a few lines inside `status()` so it can be tested: reading
+    the declination as ARCSECONDS here displayed a target at -45.5 degrees as
+    "-0:00:45.500", 3600x too small and plausible enough to go unnoticed.
+    """
+    if isinstance(target, str):
+        return target
+    if isinstance(target, tuple):
+        return (
+            f"[{Angle(target[0], unit='hour').to_string(unit='hour', sep=':', precision=3)}, "
+            f"{Angle(target[1], unit='deg').to_string(unit='deg', sep=':', precision=3)}]"
+        )
+    return None
+
+
 def _gradual_ramp_complete(prog) -> bool:
     """True when a gradual offset's ramp has finished.
 
@@ -83,6 +112,23 @@ def _gradual_ramp_complete(prog) -> bool:
 
 
 class Mount(Component, SwitchedOutlet, AscomDispatcher):
+    #: Bounds for `goto_alt_az`, enforced by FastAPI/pydantic on the query parameters, so
+    #: a bad value is refused before the method runs and the limits appear in the OpenAPI
+    #: schema. Referenced unqualified in that signature, which works because they are
+    #: defined earlier in this class body and mount.py does not use string annotations.
+    #:
+    #: Nothing else in this codebase bounds altitude -- not the config, not this class --
+    #: so below the floor the only thing between a typo and the mount driving into its
+    #: pier or the enclosure is PWI4's axis limits, whose configuration this code cannot
+    #: see.
+    #:
+    #: 15 degrees is a conservative observing floor rather than a mechanical one. If a
+    #: pointing model or a horizon test legitimately needs lower, this is the number to
+    #: change -- and by then it probably belongs in unit configuration, since the useful
+    #: floor depends on the local horizon.
+    MIN_ALTITUDE_DEGREES = 15.0
+    MAX_ALTITUDE_DEGREES = 90.0
+
     _instance = None
     _initialized = False
 
@@ -202,8 +248,8 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                 if response.failed:
                     self.errors.append(response.failure)
                 logger.info(f"connected = {value}, axes disabled, disconnected")
-        except Exception as ex:
-            logger.exception(ex)
+        except Exception:
+            logger.exception("mount connect/disconnect failed")
 
     def endpoint_startup(self):
         return self.startup()
@@ -272,44 +318,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.last_axis0_position_degrees = -99999
             self.last_axis1_position_degrees = -99999
             self.pw.mount_find_home()
-        return CanonicalResponse_Ok
-
-    def goto(
-        self,
-        primary_coord: float | str,
-        secondary_coord: float | str,
-        # frame: str = "icrs",
-    ):
-        op = function_name()
-
-        if not self.connected:
-            msg = f"{op}: not connected"
-            logger.error(msg)
-            return CanonicalResponse(errors=[msg])
-
-        # frame_names = frame_transform_graph.get_names()
-        # if frame not in frame_names:
-        #     error = f"{op}: '{frame}' not in [{frame_names}]"
-        #     logger.error(error)
-        #     return CanonicalResponse(errors=[error])
-
-        # if frame != "icrs" and primary_coord is not None and secondary_coord is not None:
-        #     try:
-        #         j2000_coord = SkyCoord(primary_coord, secondary_coord, frame)
-        #         primary_coord = j2000_coord.ra.hour
-        #         secondary_coord = j2000_coord.dec.deg
-        #     except Exception as e:
-        #         error = f"{op}: {e}"
-        #         logger.error(error)
-        #         return CanonicalResponse(errors=[error])
-
-        try:
-            self.pw.mount_goto_ra_dec_j2000(primary_coord, secondary_coord)
-        except Exception as e:
-            error = f"{op}: {e}"
-            logger.error(error)
-            return CanonicalResponse(errors=[error])
-
         return CanonicalResponse_Ok
 
     def ontimer(self):
@@ -607,14 +615,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         return self.status()
 
     def status(self) -> MountStatus:
-        target_verbal = None
-        if isinstance(self.target, str):
-            target_verbal = self.target
-        elif isinstance(self.target, tuple):
-            target_verbal = (
-                f"[{Angle(self.target[0], unit='hour').to_string(unit='hour', sep=':', precision=3)}, "
-                + f"{Angle(self.target[1], unit='arcsec').to_string(unit='deg', sep=':', precision=3)}]"
-            )
+        target_verbal = target_as_text(self.target)
 
         activities = self.activities  # integrate activities we may have not started
         st = None
@@ -698,13 +699,223 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         return CanonicalResponse_Ok
 
     def goto_ra_dec_j2000(self, ra: float, dec: float):
-        self.start_activity(MountActivities.Slewing)
+        """Slew to an equatorial J2000 position. Internal API: RAISES on failure.
+
+        Four callers (acquirer, autofocusing, stage_geometry, dance) invoke this directly
+        and ignore the return value, so a failure reported by returning would become a
+        silent no-op -- an acquisition carrying on believing it had slewed.
+        `endpoint_goto_ra_dec_j2000` is what converts a failure into a CanonicalResponse.
+        """
         self.target = (ra, dec)
-        self.pw.mount_goto_ra_dec_j2000(ra, dec)
+        self.start_activity(MountActivities.Slewing, details=[f"target={self.target}"])
+        try:
+            self.pw.mount_goto_ra_dec_j2000(ra, dec)
+        except Exception:
+            # `ontimer` only ends Slewing after seeing the mount move and stop; a slew
+            # PWI4 never accepted never moves, so without this the activity sticks.
+            self.end_activity(MountActivities.Slewing)
+            self.target = None
+            raise
+
+    def endpoint_goto_ra_dec_j2000(
+        self,
+        ra_j2000_hours: Annotated[
+            str | float,
+            Query(
+                pattern=RA_PATTERN,
+                description=(
+                    "### Right Ascension (J2000), as decimal hours (e.g. `12.5`) or "
+                    "sexagesimal (e.g. `12:30:45.123`).\n"
+                    "- range: `0 <= RA < 24`"
+                ),
+            ),
+        ],
+        dec_j2000_degs: Annotated[
+            str | float,
+            Query(
+                pattern=DEC_PATTERN,
+                description=(
+                    "### Declination (J2000), as decimal degrees (e.g. `-45.5`) or "
+                    "sexagesimal (e.g. `-45:30:00.123`).\n"
+                    "- range: `-90 <= DEC <= 90`"
+                ),
+            ),
+        ],
+    ) -> CanonicalResponse:
+        """
+        Slew the ``mount`` to an equatorial J2000 position.<br>
+        Both sexagesimal and decimal forms are accepted, as `unit.expose` accepts them.<br>
+        Tracking is **not** touched -- unlike `goto_alt_az`, an equatorial target is meant
+        to be tracked.<br>
+        Returns as soon as PWI4 has accepted the slew; the **Slewing** activity, which
+        carries the target, is what says when it finishes.
+        :mastapi:
+        """
+        return self._goto_equatorial(self.goto_ra_dec_j2000, ra_j2000_hours, dec_j2000_degs, function_name())
 
     def goto_ra_dec_apparent(self, ra: float, dec: float):
-        self.start_activity(MountActivities.Slewing)
-        self.pw.mount_goto_ra_dec_apparent(ra, dec)
+        """Slew to an equatorial position of DATE. Internal API: RAISES on failure.
+
+        Apparent, not J2000: coordinates already reduced for precession, nutation and
+        aberration. Confusing the two mispoints by however far the frames have drifted --
+        about 22 arcmin by 2026, which is over half of this telescope's field, and the
+        two calls take identical-looking arguments. Hence the frame in `target` below.
+        """
+        # A string, and one that names the frame: a tuple renders as bare RA/Dec, which
+        # would be indistinguishable from a J2000 target in the operator's status view.
+        self.target = (
+            f"apparent [{Angle(ra, unit='hour').to_string(unit='hour', sep=':', precision=3)}, "
+            f"{Angle(dec, unit='deg').to_string(unit='deg', sep=':', precision=3)}]"
+        )
+        self.start_activity(MountActivities.Slewing, details=[f"target={self.target}"])
+        try:
+            self.pw.mount_goto_ra_dec_apparent(ra, dec)
+        except Exception:
+            self.end_activity(MountActivities.Slewing)
+            self.target = None
+            raise
+
+    def endpoint_goto_ra_dec_apparent(
+        self,
+        ra_apparent_hours: Annotated[
+            str | float,
+            Query(
+                pattern=RA_PATTERN,
+                description=(
+                    "### Right Ascension **of date**, as decimal hours (e.g. `12.5`) or "
+                    "sexagesimal (e.g. `12:30:45.123`).\n"
+                    "- range: `0 <= RA < 24`\n"
+                    "- **not J2000** -- already reduced for precession, nutation and aberration"
+                ),
+            ),
+        ],
+        dec_apparent_degs: Annotated[
+            str | float,
+            Query(
+                pattern=DEC_PATTERN,
+                description=(
+                    "### Declination **of date**, as decimal degrees (e.g. `-45.5`) or "
+                    "sexagesimal (e.g. `-45:30:00.123`).\n"
+                    "- range: `-90 <= DEC <= 90`\n"
+                    "- **not J2000** -- see above"
+                ),
+            ),
+        ],
+    ) -> CanonicalResponse:
+        """
+        Slew the ``mount`` to an equatorial position **of date** (apparent).<br>
+        Use `goto_ra_dec_j2000` for catalog coordinates -- which is nearly always what you
+        have, since plans, plate solves and catalogs are all J2000. This verb is for
+        coordinates already reduced to date, such as an ephemeris that hands you apparent
+        places directly.<br>
+        **Passing J2000 numbers here mispoints by roughly 22 arcmin (2026)** -- over half
+        this telescope's field -- and nothing can detect it, since both frames are valid
+        coordinates.<br>
+        Tracking is not touched. Returns as soon as PWI4 has accepted the slew; the
+        **Slewing** activity, which names the frame, is what says when it finishes.
+        :mastapi:
+        """
+        return self._goto_equatorial(self.goto_ra_dec_apparent, ra_apparent_hours, dec_apparent_degs, function_name())
+
+    def _goto_equatorial(self, slew, ra_in, dec_in, op: str) -> CanonicalResponse:
+        """Shared body of the two equatorial endpoints: guard, convert, slew, report.
+
+        The frames differ; everything around them does not. `slew` is the internal method,
+        which raises -- this is what turns that into a CanonicalResponse for HTTP callers.
+        """
+        if not self.connected:
+            msg = f"{op}: not connected"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
+
+        # The patterns on the parameters accept the FORM; these enforce the ranges and
+        # convert. Both frames share the same bounds -- RA [0, 24), Dec [-90, 90].
+        try:
+            ra = sexagesimal_hours_to_decimal(ra_in)
+            dec = sexagesimal_degrees_to_decimal(dec_in)
+        except ValueError as e:
+            logger.error(f"{op}: {e}")
+            return CanonicalResponse(errors=[f"{op}: {e}"])
+
+        try:
+            slew(ra, dec)
+        except Exception as e:
+            error = f"{op}: {e}"
+            logger.exception(error)
+            return CanonicalResponse(errors=[error])
+
+        logger.info(f"{op}: slewing to ra={ra}, dec={dec}")
+        return CanonicalResponse_Ok
+
+    def goto_alt_az(
+        self,
+        alt_degs: Annotated[
+            float,
+            Query(
+                ge=MIN_ALTITUDE_DEGREES,
+                le=MAX_ALTITUDE_DEGREES,
+                description=(
+                    "#### Altitude above the horizon, in **degrees as a plain decimal**.\n"
+                    f"- range: `{MIN_ALTITUDE_DEGREES:g}` to `{MAX_ALTITUDE_DEGREES:g}`\n"
+                    "- the lower bound is an observing floor, not a mechanical one"
+                ),
+            ),
+        ],
+        az_degs: Annotated[
+            float,
+            Query(
+                ge=0.0,
+                lt=360.0,
+                description=(
+                    "#### Azimuth, in **degrees as a plain decimal**, measured from North through East.\n"
+                    "- range: `0` (inclusive) to `360` (exclusive)"
+                ),
+            ),
+        ],
+    ) -> CanonicalResponse:
+        """
+        Slew the ``mount`` to an altitude/azimuth.<br>
+        Tracking is **stopped** first: an alt/az target is a fixed direction -- a flat
+        panel, a pointing check, a spot on the horizon -- and sidereal tracking would
+        drag the mount straight off it.<br>
+        Returns as soon as PWI4 has accepted the slew, like the other goto verbs; the
+        **Slewing** activity, which carries the target, is what says when it finishes.
+        :mastapi:
+        """
+        op = function_name()
+
+        # Ranges are enforced by FastAPI/pydantic on the parameters above, so anything
+        # arriving here is already a float within bounds. What is left to check is the
+        # resource: whether there is a mount to drive at all.
+        if not self.connected:
+            msg = f"{op}: not connected"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
+
+        self.stop_tracking()
+
+        # A string, not a tuple: status() renders a tuple target as RA/Dec, so an alt/az
+        # pair put there would be displayed as a sky position it is not.
+        self.target = f"alt={alt_degs:g}, az={az_degs:g}"
+        # Carried on the activity as well as on `target`: the activity is what a client
+        # watching /status sees while the slew is in flight, and "Slewing" on its own does
+        # not say where to -- which is the first thing anyone asks of a moving telescope.
+        self.start_activity(MountActivities.Slewing, details=[f"target={self.target}"])
+        try:
+            self.pw.mount_goto_alt_az(alt_degs=alt_degs, az_degs=az_degs)
+        except Exception as e:
+            # Ended here because nothing else will: `ontimer` only ends Slewing after
+            # seeing the mount move and stop, and a slew PWI4 never accepted means it
+            # never moves -- so the activity would stay set until something unrelated
+            # cleared it, with the unit reporting a slew that is not happening.
+            self.end_activity(MountActivities.Slewing)
+            self.target = None
+            error = f"{op}: {e}"
+            logger.exception(error)
+            return CanonicalResponse(errors=[error])
+
+        logger.info(f"{op}: slewing to alt={alt_degs:g}, az={az_degs:g}")
+        return CanonicalResponse_Ok
 
     def endpoint_abort(self):
         return self.abort()
@@ -829,7 +1040,25 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         router.add_api_route(base_path + "/stop_tracking", tags=[tag], endpoint=self.stop_tracking)
         router.add_api_route(base_path + "/park", tags=[tag], endpoint=self.park)
         router.add_api_route(base_path + "/find_home", tags=[tag], endpoint=self.find_home)
-        router.add_api_route(base_path + "/goto", tags=[tag], endpoint=self.goto)
+        # PUT per invariant 5 (#48). `/goto` and the divergent `goto()` it pointed at
+        # were retired in #37: the equatorial and horizontal slews are separate verbs.
+        router.add_api_route(
+            base_path + "/goto_ra_dec_j2000",
+            methods=["PUT"],
+            tags=[tag],
+            endpoint=self.endpoint_goto_ra_dec_j2000,
+        )
+        router.add_api_route(
+            base_path + "/goto_ra_dec_apparent",
+            methods=["PUT"],
+            tags=[tag],
+            endpoint=self.endpoint_goto_ra_dec_apparent,
+        )
+        # PUT, not GET: invariant 5 of the endpoint contract (#48, decided 2026-07-20) --
+        # state-changing routes are PUT so a caching proxy, a link prefetch or a Swagger
+        # "try it out" cannot fire a slew. The sibling verbs are still GET pending that
+        # sweep; a new route has no reason to be added to the pile.
+        router.add_api_route(base_path + "/goto_alt_az", methods=["PUT"], tags=[tag], endpoint=self.goto_alt_az)
         router.add_api_route(base_path + "/dance", tags=[tag], endpoint=self.dance)
 
         return router

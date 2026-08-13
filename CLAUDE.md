@@ -1,14 +1,16 @@
-@src/common/CLAUDE.md
+@../common/CLAUDE.md
 
 # MAST_unit — Claude Guidance
 
-Per-unit telescope-hardware backend. Runs on each unit machine (`mast01`…`mast20`). Submodules `MAST_common` as `./src/common/`.
+Per-unit telescope-hardware backend. Runs on each unit machine (`mast01`…`mast20`). Imports `MAST_common` as `common`, which is cloned as a **sibling** of this repo in the flat layout (`<top>/common/`, `<top>/unit/`) and put on `sys.path` by the `mast.pth` the provisioning writes into the venv. It is no longer a submodule.
 
 ## Running
 
 ```bash
 cd src
-MAST_PROJECT=unit python app.py
+python app.py   # role + identity come from the bootstrap config file
+                # (/etc/wis/config.toml, or C:\WIS\config.toml on Windows);
+                # set MAST_CONFIG to point elsewhere for dev/tests
 ```
 
 ## Gotchas

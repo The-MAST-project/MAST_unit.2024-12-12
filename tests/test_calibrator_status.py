@@ -26,7 +26,6 @@ from calibration.analysis.models import HFDAutofocusResult, HFDAutofocusStatus, 
 from calibration.analysis.stage_geometry import StageGeometryResult
 from calibration.calibrator import Calibrator, _jsonable
 from common.canonical import CanonicalResponse
-from common.extended_basemodel import ExtendedBaseModel
 
 
 @pytest.fixture
@@ -98,9 +97,7 @@ def test_status_serializes_when_empty(calibrator):
 # ------------------------------------------------- what the projection preserves
 def test_arrays_survive_as_lists(calibrator):
     """Converted, not dropped: they are ~5 points, so keeping them is free."""
-    calibrator.latest["stage"] = stage_result(
-        stage_positions=np.arange(5.0), distances=np.linspace(-5, 5, 5)
-    )
+    calibrator.latest["stage"] = stage_result(stage_positions=np.arange(5.0), distances=np.linspace(-5, 5, 5))
 
     stage = json.loads(serialized(calibrator))["value"]["latest"]["stage"]
 
@@ -133,9 +130,14 @@ def test_nan_survives_to_the_wire(calibrator):
 
     On the wire it is the *string* ``"NaN"``, not a bare ``NaN`` token --
     ``ExtendedBaseModel``'s convention, which keeps the payload valid JSON
-    (a bare NaN is not) and round-trips through ``custom_json_decoder``.  The
-    projection preserves it only because it dumps models with
-    ``mode="json"``; hand-rolling the dict would drop back to a raw float.
+    (a bare NaN is not).  The projection preserves it only because it dumps
+    models with ``mode="json"``; hand-rolling the dict would drop back to a raw
+    float.
+
+    Rehydrated with ``float()`` rather than ``ExtendedBaseModel.custom_json_decoder``,
+    which MAST_common removed when it left pydantic v1 behind: pydantic v2 coerces
+    these strings back to floats on its own, and ``float("NaN")`` serves a caller
+    holding one.
     """
     calibrator.latest["focuser"] = HFDAutofocusStatus(
         message="fit ok",
@@ -144,11 +146,7 @@ def test_nan_survives_to_the_wire(calibrator):
             has_solution=True,
             best_focus_position=24010.0,
             n_consistent_stars=41,
-            focus_samples=[
-                HFDFocusSample(
-                    is_valid=False, focus_position=23900.0, num_stars=0, hfd_pixels=float("nan")
-                )
-            ],
+            focus_samples=[HFDFocusSample(is_valid=False, focus_position=23900.0, num_stars=0, hfd_pixels=float("nan"))],
         ),
     )
 
@@ -157,7 +155,7 @@ def test_nan_survives_to_the_wire(calibrator):
 
     assert sample["is_valid"] is False
     assert sample["hfd_pixels"] == "NaN"
-    assert np.isnan(ExtendedBaseModel.custom_json_decoder(sample["hfd_pixels"]))
+    assert np.isnan(float(sample["hfd_pixels"]))
 
     # No bare NaN/Infinity token anywhere: those parse in Python but are invalid
     # JSON, and the GUI consuming this is not Python.

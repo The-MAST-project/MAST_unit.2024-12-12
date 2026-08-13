@@ -208,9 +208,7 @@ def find_optical_center(
     coma (``radiality < min_radiality`` -- the frame has no usable coma signal,
     so the center is indeterminate rather than wrong-but-confident).
     """
-    extracted = extract_sources(
-        image, nsigma=nsigma, npixels=npixels, box_size=box_size, exclude_mask=exclude_mask
-    )
+    extracted = extract_sources(image, nsigma=nsigma, npixels=npixels, box_size=box_size, exclude_mask=exclude_mask)
     if extracted is None:
         return None
     return solve_optical_center(
@@ -386,7 +384,12 @@ class ComaSlope:
 
 
 def fit_coma_slope(
-    x, y, ellipticity, weights, center, coma_tolerance: float,
+    x,
+    y,
+    ellipticity,
+    weights,
+    center,
+    coma_tolerance: float,
     min_sources: int = 12,
     max_radius_factor: float = 3.0,
 ) -> ComaSlope | None:
@@ -443,13 +446,21 @@ def fit_coma_slope(
             f"coma is too shallow to place the disk; recording None"
         )
         return ComaSlope(
-            slope=k, low_coma_radius=None, coma_tolerance=coma_tolerance,
-            n_sources=len(r), residual_rms=residual_rms, r_max=r_max,
+            slope=k,
+            low_coma_radius=None,
+            coma_tolerance=coma_tolerance,
+            n_sources=len(r),
+            residual_rms=residual_rms,
+            r_max=r_max,
         )
 
     return ComaSlope(
-        slope=k, low_coma_radius=float(radius), coma_tolerance=coma_tolerance,
-        n_sources=len(r), residual_rms=residual_rms, r_max=r_max,
+        slope=k,
+        low_coma_radius=float(radius),
+        coma_tolerance=coma_tolerance,
+        n_sources=len(r),
+        residual_rms=residual_rms,
+        r_max=r_max,
     )
 
 

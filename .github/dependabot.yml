@@ -1,0 +1,23 @@
+# Keeps the GitHub Actions used by ci.yml current.
+#
+# Added because checkout and setup-python drifted three majors behind and CI started
+# warning that Node 20 was deprecated -- a class of rot nobody goes looking for.
+# Dependabot opens the bump as a PR, so the workflow runs against the new version
+# before anyone merges it.
+#
+# Deliberately NOT watching pip. requirements-ci.txt and requirements.txt are pinned to
+# the versions the fleet actually runs, so that a red build means this repo changed
+# rather than a dependency having moved underneath it. Dependabot bumping them would
+# fight that on purpose, and the fleet's versions are advanced when the fleet is.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    commit-message:
+      prefix: "ci"
+    groups:
+      # One PR for all of them: they move together and each is a one-line change.
+      actions:
+        patterns: ["*"]

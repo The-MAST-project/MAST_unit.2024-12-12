@@ -1,7 +1,7 @@
-import logging
 import datetime
 import io
 import ipaddress
+import logging
 import os
 import socket
 import threading
@@ -12,18 +12,17 @@ from pathlib import Path
 from threading import Thread
 from typing import Annotated, Any
 
-import humanfriendly
 import numpy as np
 from fastapi import Query
 from fastapi.routing import APIRouter
 from PIL import Image
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-import common.asi as asi
 from acquirer import Acquirer
 from acquisition import Acquisition
 from autofocusing import Autofocuser, AutofocusResult
 from calibration.calibrator import Calibrator
+from common import asi
 from common.activities import (
     CoverActivities,
     FocuserActivities,
@@ -39,31 +38,32 @@ from common.config.rois import FcuVersion
 from common.config.unit import UnitConfig
 from common.const import Const
 from common.dlipowerswitch import PowerSwitchFactory, SwitchedOutlet
-from common.filer import Filer
+from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 
 # from guiding import Guider
-from common.interfaces.imager import ImagerExposureSeries, ImagerRoi, ImagerSequenceOfExposures, ImagerSettings, ImagerTypes
+from common.interfaces.imager import ImagerExposureSeries, ImagerRoi, ImagerSettings, ImagerTypes
 from common.mast_logging import DailyFileHandler, get_logger
 from common.models.assignments import AssignmentNotification, UnitAssignment
 from common.models.statuses import FullUnitStatus, StatusType
 from common.notifications import Notifier
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.parsers import (
+    DEC_PATTERN,
+    RA_PATTERN,
+    sexagesimal_degrees_to_decimal,
+    sexagesimal_hours_to_decimal,
+)
 from common.paths import PathMaker
 from common.rois import UnitRoi
 from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers
+from expose_params import MAX_OFFSET_ARCSEC, MAX_OFFSET_DEGREES, resolve_exposure_roi, resolve_offsets
 from focuser import Focuser
 from imagers import Imager
 from mount import Mount, SettleMode
-from phd2.phd2 import PHD2Connector
 from PlaneWave import pwi4_client
 from solving import Solver
 from stage import Stage
-from common.mast_logging import get_logger
-
-RA_REGEX = r"^(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
-DEC_REGEX = r"^([+-]?)(\d{1,2}):(\d{2}):(\d{2}(?:\.\d{1,3})?)$"
 
 logger = get_logger(__name__)
 filer = Filer(logger)
@@ -79,14 +79,14 @@ def configured_imager() -> ImagerTypes | None:
     return ImagerTypes(t)
 
 
-def get_imager_type(
-    imager_type: ImagerTypes = Query(default=configured_imager()),
-) -> ImagerTypes:
-    t = imager_type
-    if not t:
-        t = configured_imager()
-        assert t is not None, "No imager type configured"
-    return t
+# def get_imager_type(
+#     imager_type: ImagerTypes = Query(default=configured_imager()),
+# ) -> ImagerTypes:
+#     t = imager_type
+#     if not t:
+#         t = configured_imager()
+#         assert t is not None, "No imager type configured"
+#     return t
 
 
 class GuideDirections(Enum):
@@ -135,7 +135,7 @@ class Unit(Component):
             self.unit_conf = Config().get_unit()
         except Exception as ex:
             msg = f"unit configuration failed to load: {ex}"
-            logger.error(msg)
+            logger.exception(msg)
             self._init_errors.append(msg)
         if self.unit_conf is None and not self._init_errors:
             msg = "unit configuration could not be loaded (no config in database or TOML)"
@@ -159,7 +159,7 @@ class Unit(Component):
                 return factory()
             except Exception as ex:
                 msg = f"component '{name}' failed to initialize: {ex}"
-                logger.error(msg)
+                logger.exception(msg)
                 self._init_errors.append(msg)
                 return None
 
@@ -278,7 +278,7 @@ class Unit(Component):
 
     @property
     def connected(self):
-        return all([comp.connected for comp in self.components])
+        return all(comp.connected for comp in self.components)
 
     @connected.setter
     def connected(self, value: bool):
@@ -342,22 +342,22 @@ class Unit(Component):
 
         all_corrections: list = []
 
-        if self.acquirer and self.acquirer.latest_acquisition:
-            corrections_list = (
-                self.acquirer.latest_acquisition.corrections
-                if (self.acquirer.latest_acquisition and self.acquirer.latest_acquisition.corrections)
-                else []
-            )
+        # if self.acquirer and self.acquirer.latest_acquisition:
+        #     corrections_list = (
+        #         self.acquirer.latest_acquisition.corrections
+        #         if (self.acquirer.latest_acquisition and self.acquirer.latest_acquisition.corrections)
+        #         else []
+        #     )
 
-            # for phase in list(get_args(Const.CorrectionPhase)):
-            #     if isinstance(corrections_list, dict):
-            #         if phase not in corrections_list:
-            #             corrections_list[phase] = Corrections(phase=phase)
-            #         correction = corrections_list[phase]
-            #         if isinstance(correction, list):
-            #             all_corrections.extend(correction)
-            #         else:
-            #             all_corrections.append(correction)
+        #     for phase in list(get_args(Const.CorrectionPhase)):
+        #         if isinstance(corrections_list, dict):
+        #             if phase not in corrections_list:
+        #                 corrections_list[phase] = Corrections(phase=phase)
+        #             correction = corrections_list[phase]
+        #             if isinstance(correction, list):
+        #                 all_corrections.extend(correction)
+        #             else:
+        #                 all_corrections.append(correction)
 
         ret = FullUnitStatus(
             **self.component_status().model_dump(),
@@ -399,7 +399,9 @@ class Unit(Component):
         Aborts any in-progress activities
         """
 
-        if self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing):
+        if self.autofocuser is not None and (
+            self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing)
+        ):
             self.autofocuser.stop_autofocus()
             while self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing):
                 time.sleep(0.2)
@@ -438,7 +440,7 @@ class Unit(Component):
             self._was_shut_down = True
 
         # UnitActivities.AutofocusingPWI4
-        if self.is_active(UnitActivities.AutofocusingPWI4):
+        if self.pw is not None and self.autofocuser is not None and self.is_active(UnitActivities.AutofocusingPWI4):
             autofocus_status = self.pw.status().autofocus
             if not autofocus_status:
                 logger.error("Empty PWI4 autofocus status")
@@ -482,7 +484,7 @@ class Unit(Component):
                     logger.error("PlaneWave autofocus failed")
                     self.autofocus_result.best_position = None
                     self.autofocus_result.tolerance = None
-                self.autofocus_result.time_stamp = datetime.datetime.now().isoformat()
+                self.autofocus_result.time_stamp = datetime.datetime.now(tz=datetime.UTC).isoformat()
 
                 self.end_activity(UnitActivities.AutofocusingPWI4)
             else:
@@ -503,7 +505,7 @@ class Unit(Component):
         components = set(self.components)
         if self.unit_conf and self.unit_conf.name.lower() == "mastw":
             components.discard(self.covers)
-        return all([c.operational for c in components])
+        return all(c.operational for c in components)
 
     @property
     def why_not_operational(self) -> list[str]:
@@ -552,15 +554,15 @@ class Unit(Component):
                 await websocket.send_bytes(png_data)
                 # loop = asyncio.get_event_loop()
                 # loop.run_until_complete(websocket.send(png_data))
-            except Exception as e:
-                logger.error(f"websocket.send error: {e}")
+            except Exception:
+                logger.exception("websocket.send error")
 
     def expose(
         self,
         ra_j2000_hours: Annotated[
             str | float | None,
             Query(
-                pattern=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
+                pattern=RA_PATTERN,
                 description=(
                     "### Right Ascension (J2000) in either:\n"
                     "- decimal hours (e.g., `12.5`) or\n"
@@ -573,7 +575,7 @@ class Unit(Component):
         dec_j2000_degs: Annotated[
             str | float | None,
             Query(
-                pattern=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
+                pattern=DEC_PATTERN,
                 description=(
                     "### Declination (J2000) in either:\n"
                     "- decimal degrees (e.g., `-45.5`) or\n"
@@ -591,15 +593,20 @@ class Unit(Component):
         fiber_y: int | None = None,
         width: int | None = None,
         height: int | None = None,
-        binning: int = 1,
+        binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
         gain: int = asi.ASI_294MM_DEFAULT_GAIN,
         ra_offsets: Annotated[
             str | list[str] | list[float] | None,
             Query(
                 description=(
-                    "#### Optional list of RA offsets (arcsec) between exposures:\n"
-                    "- empty - no RA offsetting\n"
-                    "- list of floats - MUST be same length as `repeats`"
+                    "#### Optional RA offsets applied between exposures.\n"
+                    "**Arcseconds, as plain decimals.**\n"
+                    "- omitted or empty - no RA offsetting\n"
+                    "- one value - used after every repeat (e.g. `1.5`)\n"
+                    "- exactly `repeats` values - one each (e.g. `1.5 -2 0`)\n"
+                    f"- each value must be within **±{MAX_OFFSET_ARCSEC:g} arcsec "
+                    f"(±{MAX_OFFSET_DEGREES}°)**; to move further, slew with "
+                    "`ra_j2000_hours`/`dec_j2000_degs`"
                 ),
             ),
         ] = None,
@@ -607,31 +614,52 @@ class Unit(Component):
             str | list[str] | list[float] | None,
             Query(
                 description=(
-                    "#### Optional list of DEC offsets (arcsec) between exposures:\n"
-                    "- empty - no DEC offsetting\n"
-                    "- list of floats - MUST be same length as `repeats`"
+                    "#### Optional DEC offsets applied between exposures.\n"
+                    "**Arcseconds, as plain decimals.**\n"
+                    "- omitted or empty - no DEC offsetting\n"
+                    "- one value - used after every repeat (e.g. `1.5`)\n"
+                    "- exactly `repeats` values - one each (e.g. `1.5 -2 0`)\n"
+                    f"- each value must be within **±{MAX_OFFSET_ARCSEC:g} arcsec "
+                    f"(±{MAX_OFFSET_DEGREES}°)**; to move further, slew with "
+                    "`ra_j2000_hours`/`dec_j2000_degs`"
                 ),
             ),
         ] = None,
     ) -> CanonicalResponse:
 
+        if self.imager is None:
+            return CanonicalResponse(errors=["imager is not initialized"])
+
+        # Both or neither. A coordinate on its own used to be accepted and then quietly
+        # dropped: the slew below requires BOTH to be floats, so supplying only RA meant
+        # no slew, no error, and a caller believing it had pointed somewhere it had not.
+        if (ra_j2000_hours is None) != (dec_j2000_degs is None):
+            given, missing = (
+                ("ra_j2000_hours", "dec_j2000_degs") if dec_j2000_degs is None else ("dec_j2000_degs", "ra_j2000_hours")
+            )
+            return CanonicalResponse(
+                errors=[
+                    (
+                        f"expose: {given} was supplied without {missing}; "
+                        "supply both to slew, or neither to expose where the telescope is pointing"
+                    )
+                ]
+            )
+
+        # One call, whatever the form -- see the note in acquirer.py. This endpoint's
+        # pattern was the colon-only copy, so the space-separated form was rejected
+        # here while acquirer accepted it; both now share RA_PATTERN/DEC_PATTERN.
         if ra_j2000_hours:
-            if isinstance(ra_j2000_hours, str):
-                if ":" in ra_j2000_hours:
-                    ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
-                else:
-                    ra_j2000_hours = float(ra_j2000_hours)
-            elif isinstance(ra_j2000_hours, float):
-                pass
+            try:
+                ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
+            except ValueError as e:
+                return CanonicalResponse(errors=[f"expose: bad ra_j2000_hours '{ra_j2000_hours}' -- {e}"])
 
         if dec_j2000_degs:
-            if isinstance(dec_j2000_degs, str):
-                if ":" in dec_j2000_degs:
-                    dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
-                else:
-                    dec_j2000_degs = float(dec_j2000_degs)
-            elif isinstance(dec_j2000_degs, float):
-                pass
+            try:
+                dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
+            except ValueError as e:
+                return CanonicalResponse(errors=[f"expose: bad dec_j2000_degs '{dec_j2000_degs}' -- {e}"])
 
         assert self.mount is not None
         if (ra_j2000_hours is not None and isinstance(ra_j2000_hours, float)) and (
@@ -641,29 +669,18 @@ class Unit(Component):
             self.mount.goto_ra_dec_j2000(ra=ra_j2000_hours, dec=dec_j2000_degs)
             self.mount.wait_until_settled(SettleMode.SLEW)
 
-        if ra_offsets is not None:
-            if isinstance(ra_offsets, str):
-                ra_offsets = ra_offsets.split()
-            if len(ra_offsets) != 1 and len(ra_offsets) != repeats:  # one element or the same number of elements as repeats
-                return CanonicalResponse(errors=[f"ra_offsets must have {repeats} elements"])
-            ra_offsets = [float(ra_offsets[0])] * repeats if len(ra_offsets) == 1 else [float(val) for val in ra_offsets]
+        try:
+            ra_offsets = resolve_offsets(ra_offsets, repeats, "ra_offsets")
+            dec_offsets = resolve_offsets(dec_offsets, repeats, "dec_offsets")
+        except ValueError as e:
+            return CanonicalResponse(errors=[f"expose: {e}"])
 
-        if dec_offsets is not None:
-            if isinstance(dec_offsets, str):
-                dec_offsets = dec_offsets.split()
-            if (
-                len(dec_offsets) != 1 and len(dec_offsets) != repeats
-            ):  # one element or the same number of elements as repeats
-                return CanonicalResponse(errors=[f"dec_offsets must have {repeats} elements"])
-            dec_offsets = [float(dec_offsets[0])] * repeats if len(dec_offsets) == 1 else [float(val) for val in dec_offsets]
-
-        if fiber_x is None and fiber_y is None and width is None and height is None:
-            width = self.imager.camera_x_size
-            height = self.imager.camera_y_size
-            if not width or not height:
-                return CanonicalResponse(errors=["cannot get width and height from the imager"])
-            fiber_x = int(width / 2)
-            fiber_y = int(height / 2)
+        try:
+            fiber_x, fiber_y, width, height = resolve_exposure_roi(
+                fiber_x, fiber_y, width, height, self.imager.camera_x_size, self.imager.camera_y_size
+            )
+        except ValueError as e:
+            return CanonicalResponse(errors=[f"expose: {e}"])
 
         Thread(
             name="expose-thread",
@@ -685,7 +702,7 @@ class Unit(Component):
         ).start()
         return CanonicalResponse_Ok
 
-    def do_expose(  # noqa: C901
+    def do_expose(
         self,
         subfolder: str | None = None,
         exposure_seconds: float = 3,
@@ -709,10 +726,55 @@ class Unit(Component):
 
         self.mount.start_tracking()
         exposure_series = self.imager.start_exposure_series(purpose="unit.do_exposure")
+        try:
+            self._expose_repeatedly(
+                repeats,
+                seconds,
+                subfolder,
+                gain,
+                binning,
+                fiber_x,
+                fiber_y,
+                width,
+                height,
+                ra_offsets,
+                dec_offsets,
+                seconds_between_exposures,
+            )
+        except Exception:
+            # This runs in `expose-thread`, where an exception would otherwise vanish
+            # entirely -- the endpoint has already returned "ok" to the caller. Logging
+            # is the only trace there is; the finally below is what stops the mount
+            # tracking forever and the exposure series dangling.
+            logger.exception(f"{op}: exposure run failed")
+            return CanonicalResponse(errors=[f"{op}: exposure run failed, see the log"])
+        finally:
+            self.imager.end_exposure_series(exposure_series)
+            self.mount.stop_tracking()
+        return CanonicalResponse_Ok
+
+    def _expose_repeatedly(
+        self,
+        repeats: int,
+        seconds: float,
+        subfolder: str | None,
+        gain: int,
+        binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL,
+        fiber_x: int,
+        fiber_y: int,
+        width: int,
+        height: int,
+        ra_offsets: list[float] | None,
+        dec_offsets: list[float] | None,
+        seconds_between_exposures: float,
+    ) -> None:
+        assert self.mount is not None
+        assert self.imager is not None
+        op = function_name()
         for repeat in range(repeats):
             end = None
             if seconds_between_exposures != 0.0:
-                start = datetime.datetime.now()
+                start = datetime.datetime.now(tz=datetime.UTC)
                 end = start + datetime.timedelta(seconds=seconds_between_exposures)
 
             unit_roi = UnitRoi(fiber_x, fiber_y, width, height)
@@ -731,14 +793,22 @@ class Unit(Component):
             self.imager.latest_settings = imager_settings
 
             logger.info(f"{op}: starting exposure #{repeat} (of {repeats})")
-            self.imager.start_exposure(imager_settings)
-
-            if not (self.imager.latest_settings is None or self.imager.latest_settings.image_path is None):
-                self.imager.wait_for_image_saved()
-                filer.move_ram_to_shared(self.imager.latest_settings.image_path)
+            # image_path is already set: ImagerSettings.model_post_init calls
+            # make_file_name() when base_folder is given, so the name exists before the
+            # exposure starts -- which is what lets the file be protected while it is
+            # being written. protect() also marks it a product, so a release_folder on
+            # the containing folder cannot discard it.
+            image_path = imager_settings.image_path
+            if image_path is None:
+                self.imager.start_exposure(imager_settings)
+            else:
+                with MoveGuardian().protect(image_path):
+                    self.imager.start_exposure(imager_settings)
+                    self.imager.wait_for_image_saved()
+                filer.move_ram_to_shared(image_path)
 
             if end is not None and seconds_between_exposures != 0.0:
-                now = datetime.datetime.now()
+                now = datetime.datetime.now(tz=datetime.UTC)
                 if now < end:
                     period = (end - now).seconds
                     logger.info(f"{op}: sleeping {period} seconds till next exposure ...")
@@ -758,82 +828,8 @@ class Unit(Component):
                     logger.info(f"offsetting mount dec={dec_offsets[repeat]}")
                     self.mount.pw.mount_offset(dec_add_arcsec=dec_offsets[repeat])
                 self.mount.wait_until_settled(SettleMode.OFFSET_STEP)
-
-        self.imager.end_exposure_series(exposure_series)
-        self.mount.stop_tracking()
-        return CanonicalResponse_Ok
-
-    def do_start_sequence_of_exposures(self, sequence: ImagerSequenceOfExposures):  # noqa: C901
-        if not self.imager.connected:
-            self.imager.connect()
-
-        base_folder = Path(PathMaker().make_daily_folder_name()) / "sequence_of_exposures"
-        base_folder = str(base_folder / f"seq={PathMaker.make_seq(str(base_folder))}")
-        for _ in range(sequence.repeats):
-            settings = ImagerSettings(**sequence.exposure_settings.model_dump(), base_folder=base_folder)
-            settings.make_file_name(dont_bump_sequence=True)
-            self.imager.start_exposure(settings=settings)
-            self.imager.wait_for_image_saved()
-            if sequence.pause_between_exposures is not None:
-                time.sleep(sequence.pause_between_exposures)
-
-        msg = f"imager is '{type(self.imager._backend)}', guider is '{type(self.guider._backend)}': "
-        if sequence.disconnect_camera:
-            if isinstance(self.guider._backend, PHD2Connector):
-                if not isinstance(self.imager._backend, PHD2Connector):
-                    logger.info(msg + "disconecting imager camera")
-                    self.imager.disconnect()
-                else:
-                    logger.info(msg + "not disconnecting imager camera")
-        else:
-            logger.info("not disconnecting imager camera")
-
-        if self.guider is None or sequence.tell_guider_to_start is None or sequence.tell_guider_to_start == "nothing":
-            return
-
-        if sequence.delay_before_telling_guider is not None and sequence.delay_before_telling_guider != 0.0:
-            logger.info(
-                f"delaying {sequence.delay_before_telling_guider}s "
-                + f"before telling guider to '{sequence.tell_guider_to_start}'"
-            )
-            time.sleep(sequence.delay_before_telling_guider)
-
-        if not isinstance(self.guider._backend, PHD2Connector):
-            return
-
-        phd2 = self.guider._backend
-
-        if isinstance(self.guider._backend, PHD2Connector) and not isinstance(self.imager._backend, PHD2Connector):
-            start = datetime.datetime.now()
-            logger.debug(msg + "telling phd2 to disconnect equipment")
-            phd2.disconnect_equipment()
-            while phd2.equipment_is_connected():
-                time.sleep(0.1)
-            logger.debug("phd2 has disconnected the equipment")
-
-            logger.debug(msg + "telling phd2 to connect equipment")
-            self.guider._backend.connect_equipment()
-            while not phd2.equipment_is_connected():
-                time.sleep(0.1)
-            logger.debug(f"phd2 disconnect/connect took {humanfriendly.format_timespan(datetime.datetime.now() - start)}")
-
-        logger.debug(f"telling guider to start '{sequence.tell_guider_to_start}'")
-        if sequence.tell_guider_to_start == "loop":
-            self.guider.start_looping()
-        else:
-            self.was_tracking_before_guiding = self.mount.is_tracking
-            if not self.was_tracking_before_guiding:
-                self.mount.start_tracking()
-            self.guider.start_guiding()
-
-    def endpoint_start_sequence_of_exposures(self, sequence: ImagerSequenceOfExposures) -> CanonicalResponse:
-        self.start_activity(UnitActivities.SequenceOfExposures)
-        Thread(name="sequence-of-exposures", target=self.do_start_sequence_of_exposures, args=[sequence]).start()
-        return CanonicalResponse_Ok
-
-    def stop_sequence_of_exposures(self):
-        self.guider.stop_acquisition_and_guiding()
-        self.end_activity(UnitActivities.SequenceOfExposures)
+        # Closing the series and stopping tracking belong to do_expose's `finally`, so
+        # that they happen whether or not this returns normally. They must NOT be here.
 
     def endpoint_test_stage_repeatability(
         self,
@@ -860,6 +856,10 @@ class Unit(Component):
         binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
         gain: int | str = asi.ASI_294MM_DEFAULT_GAIN,
     ) -> CanonicalResponse:
+
+        assert self.imager is not None
+        assert self.stage is not None
+
         op = function_name()
 
         if isinstance(start_position, str):
@@ -938,6 +938,11 @@ class Unit(Component):
         :param assignment:
         :return:
         """
+        assert self.acquirer is not None
+        assert self.autofocuser is not None
+        assert self.guider is not None
+        assert self.imager is not None
+
         if assignment.plan.autofocus:
             self.autofocuser.start_autofocus(
                 ra_j2000_hours=assignment.plan.target.ra_hours,
@@ -959,7 +964,10 @@ class Unit(Component):
                     AssignmentNotification(
                         assignment_id=assignment.plan.ulid,
                         state="in-progress",
-                        shared_top=Path(self.imager.latest_settings.image_path).parent.name,
+                        # Relative to the shared root. This sent `.parent.name` -- the bare
+                        # directory name, with no path at all -- so the controller symlinked
+                        # something it could never resolve. MAST_spec#39.
+                        shared_top=os.path.relpath(Path(self.imager.latest_settings.image_path).parent, filer.ram.root),
                         shared_subpath="autofocus",
                     )
                 )
@@ -977,7 +985,10 @@ class Unit(Component):
                     AssignmentNotification(
                         assignment_id=assignment.plan.ulid,
                         state="in-progress",
-                        shared_top=self.acquirer.latest_acquisition.folder,
+                        # Relative to the shared root, not the absolute ram path: the
+                        # controller symlinks this, and its shared root is spelled
+                        # differently from ours. MAST_spec#39.
+                        shared_top=os.path.relpath(self.acquirer.latest_acquisition.folder, filer.ram.root),
                         shared_subpath="acquisition",
                     )
                 )
@@ -1126,23 +1137,16 @@ class Unit(Component):
             )
         if self.guider:
             router.add_api_route(
+                base_path + "/start_guiding",
+                tags=[tag],
+                endpoint=self.guider.endpoint_start_guiding,
+            )
+            router.add_api_route(
                 base_path + "/stop_acquisition_and_guiding",
                 tags=[tag],
                 endpoint=self.guider.endpoint_stop_acquisition_and_guiding,
             )
         router.add_api_route(base_path + "/expose", tags=[tag], endpoint=self.expose)
-        router.add_api_route(
-            base_path + "/start_sequence_of_exposures",
-            methods=["PUT"],
-            tags=[tag],
-            endpoint=self.endpoint_start_sequence_of_exposures,
-        )
-        if self.guider:
-            router.add_api_route(
-                base_path + "/stop_sequence_of_exposures",
-                tags=[tag],
-                endpoint=self.guider.endpoint_stop_acquisition_and_guiding,
-            )
         router.add_api_route(
             base_path + "/test_stage_repeatability",
             tags=[tag],

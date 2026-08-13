@@ -43,7 +43,6 @@ class StageMoveError(Exception):
     """The stage did not reach a commanded position (refused, stalled, or aborted)."""
 
 
-
 class StageCalibrator:
     """Drives the pick-off stage calibration loop on a live unit.
 
@@ -114,11 +113,7 @@ class StageCalibrator:
             return self._fail(f"{op}: file-only imager needs a 'folder' for the frames")
 
         # Sweep positions centered on the current spec estimate, clipped to travel.
-        spec_center = (
-            cal.products.stage.spec_position
-            if cal and cal.products.stage
-            else conf.stage.presets.spec
-        )
+        spec_center = cal.products.stage.spec_position if cal and cal.products.stage else conf.stage.presets.spec
         if span_steps is None:
             span_steps = max(2000, int(0.05 * (max_travel - min_travel)))
         lo = max(min_travel, int(spec_center - span_steps))
@@ -176,7 +171,10 @@ class StageCalibrator:
                 )
 
             result = find_spec_stage_position(
-                models, used, optical_center, require_bracketed=require_bracketed,
+                models,
+                used,
+                optical_center,
+                require_bracketed=require_bracketed,
             )
             logger.info(f"{op}: {result.message}")
             if not result.has_solution:
@@ -225,8 +223,7 @@ class StageCalibrator:
                 raise StageMoveError(f"aborted while moving to {position}")
             if time.monotonic() >= deadline:
                 raise StageMoveError(
-                    f"stage did not reach {position} within "
-                    f"{STAGE_MOVE_TIMEOUT_SECONDS:.0f}s -- stuck at {stage.position}"
+                    f"stage did not reach {position} within {STAGE_MOVE_TIMEOUT_SECONDS:.0f}s -- stuck at {stage.position}"
                 )
             time.sleep(0.5)
 

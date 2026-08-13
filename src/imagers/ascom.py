@@ -12,7 +12,7 @@ from typing import cast
 import numpy as np
 import win32com.client
 
-import common.asi as asi
+from common import asi
 from common.activities import ImagerActivities
 from common.ascom import AscomDispatcher, AscomStatus, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
@@ -20,8 +20,9 @@ from common.config import Config
 from common.config.imager import ImagerConfig
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings, ImagerStatus
+from common.interfaces.imager import ImagerExposureSeries, ImagerInterface
 from common.mast_logging import get_logger
+from common.models.statuses import ImagerRoi, ImagerSettings, ImagerStatus
 from common.paths import PathMaker
 from common.utils import RepeatTimer, function_name, time_stamp
 from imagers import Imager
@@ -31,6 +32,8 @@ from imagers.saving import save_to_fits_file
 #     from unit import Unit
 
 logger = get_logger(__name__)
+
+
 class Visualizer:
     def __init__(self, name: str, func: Callable):
         self.name = name
@@ -132,9 +135,9 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 self.power_on()
 
             self._ascom = win32com.client.Dispatch(self.prog_id)
-        except Exception as ex:
-            logger.exception(ex)
-            raise ex
+        except Exception:
+            logger.exception(f"could not create ASCOM imager driver '{self.prog_id}'")
+            raise
 
         self.latest_settings: ImagerSettings | None = None
         self.latest_temperature_check: datetime.datetime | None = None
@@ -411,7 +414,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
     def start_exposure(  # noqa: C901
         self, settings: ImagerSettings
-    ) -> CanonicalResponse:  # noqa: C901
+    ) -> CanonicalResponse:
         """
         Starts a *MAST* camera exposure
 
@@ -450,7 +453,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             if settings.roi:
                 self.roi = settings.roi
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- ASCOM/COM boundary: whatever the vendor driver raises is recorded in self.errors
             self.errors.append(f"{e}")
 
         if len(self.errors) > 0:
@@ -463,7 +466,9 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if response.value is None:
             if parent_imager:
                 parent_imager.start_activity(ImagerActivities.Exposing)
-            self.expected_mid_exposure = datetime.datetime.now() + datetime.timedelta(seconds=settings.seconds / 2)
+            self.expected_mid_exposure = datetime.datetime.now(datetime.UTC) + datetime.timedelta(
+                seconds=settings.seconds / 2
+            )
             self.image = None
             self.image_was_read = False
             self.latest_settings = settings
@@ -689,8 +694,8 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if self.connected:
             try:
                 self.disconnect()
-            except Exception as e:
-                logger.error(f"failed to disconnect from ASCOM camera: {e}")
+            except Exception:
+                logger.exception("failed to disconnect from ASCOM camera")
 
     def ontimer(self):  # noqa: C901
         """
@@ -713,7 +718,8 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         else:
             return
 
-        now = datetime.datetime.now()
+        # aware, to match expected_mid_exposure which it is compared against below.
+        now = datetime.datetime.now(datetime.UTC)
         # previous_state = self.last_state
         if self.last_state is None and current_state is not None:
             self.last_state = current_state

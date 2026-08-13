@@ -132,8 +132,7 @@ class FocuserCalibrator:
         temperature = get_mirror_temperature(pw) if pw is not None else None
         temperature_read_time = time_stamp()
         if pw is not None:
-            logger.debug(f"{op}: mirror={temperature} ambient={get_ambient_temperature(pw)} "
-                         f"read_at={temperature_read_time}")
+            logger.debug(f"{op}: mirror={temperature} ambient={get_ambient_temperature(pw)} read_at={temperature_read_time}")
         else:
             logger.debug(f"{op}: no PWI4 -- temperature unavailable (recorded as None)")
 
@@ -153,8 +152,7 @@ class FocuserCalibrator:
 
             seed = self._seed_position(conf)
             if seed is None:
-                return self._fail(f"{op}: no seed position -- no calibration product and "
-                                  f"the focuser reports no position")
+                return self._fail(f"{op}: no seed position -- no calibration product and the focuser reports no position")
             logger.info(f"{op}: seed position {seed}, regime triage next")
 
             # --- Phase 0: triage, and acquisition if we are far out ----------
@@ -169,8 +167,9 @@ class FocuserCalibrator:
                 self.tries_used = attempt + 1
                 if not self._still_calibrating():
                     return self._abort(f"{op}: stopped before sweep {self.tries_used}")
-                logger.info(f"{op}: sweep {self.tries_used}/{st.max_tries} centred on {seed} "
-                            f"({st.images} x {st.spacing} ticks)")
+                logger.info(
+                    f"{op}: sweep {self.tries_used}/{st.max_tries} centred on {seed} ({st.images} x {st.spacing} ticks)"
+                )
                 samples = self._sweep(seed, st, folder)
                 if samples is None:
                     return self._abort(f"{op}: stopped during sweep {self.tries_used}")
@@ -257,9 +256,11 @@ class FocuserCalibrator:
 
             best = int(round(result.best_focus_position))  # type: ignore[arg-type]
             best = self._clamp(best, st)
-            logger.info(f"{op}: best focus {best} (Dmin={result.best_focus_star_diameter:.2f}px, "
-                        f"tolerance={result.tolerance:.1f} ticks, "
-                        f"{result.n_consistent_stars} consistent stars)")
+            logger.info(
+                f"{op}: best focus {best} (Dmin={result.best_focus_star_diameter:.2f}px, "
+                f"tolerance={result.tolerance:.1f} ticks, "
+                f"{result.n_consistent_stars} consistent stars)"
+            )
             self._persist(result, best, temperature, temperature_read_time)
             self._move_focuser(best, st)
             return status
@@ -270,9 +271,7 @@ class FocuserCalibrator:
             # diagnosis of 2026-07-21 came from saved frames, not from logs), so
             # the plot, the result file and the move off the volatile RAM disk
             # must not be conditional on solving.
-            final = status or HFDAutofocusStatus(
-                message="run produced no analysis", errors=list(self.errors)
-            )
+            final = status or HFDAutofocusStatus(message="run produced no analysis", errors=list(self.errors))
             plot_vcurve(folder, final.analysis_result)
             save_status(folder, final)
             move_to_shared(folder)
@@ -344,8 +343,7 @@ class FocuserCalibrator:
         if not jump.has_solution or jump.best_focus_estimate is None:
             # Not fatal: the sweep may still bracket from here, and the V-curve
             # has its own not-bracketed retry.  Say so rather than failing.
-            self._log_error(f"{op}: no donut solution ({jump.message}); "
-                            f"continuing from {seed}")
+            self._log_error(f"{op}: no donut solution ({jump.message}); continuing from {seed}")
             return seed
         target = self._clamp(int(round(jump.best_focus_estimate)), st)
         logger.info(f"{op}: donut jump {seed} -> {target} ({jump.message})")
@@ -393,9 +391,9 @@ class FocuserCalibrator:
         if result is None:
             return None
         good = [
-            s for s in (result.focus_samples or [])
-            if s.is_valid and s.focus_position is not None
-            and s.hfd_pixels is not None and np.isfinite(s.hfd_pixels)
+            s
+            for s in (result.focus_samples or [])
+            if s.is_valid and s.focus_position is not None and s.hfd_pixels is not None and np.isfinite(s.hfd_pixels)
         ]
         if len(good) < 2:
             self._log_error("_recentre: fewer than 2 valid samples to re-centre on")
@@ -435,11 +433,12 @@ class FocuserCalibrator:
                 # would fling the focuser away from focus.
                 if np.sign(candidate - lowest) == direction:
                     target = candidate
-                    logger.debug(f"_recentre: arm slope={slope:.4f}px/tick -> extrapolated "
-                                 f"{lowest} + {step:.0f} = {target}")
+                    logger.debug(f"_recentre: arm slope={slope:.4f}px/tick -> extrapolated {lowest} + {step:.0f} = {target}")
                 else:
-                    logger.debug(f"_recentre: extrapolation to {candidate} disagrees with the "
-                                 f"downhill direction ({direction:+d}) -- ignoring it")
+                    logger.debug(
+                        f"_recentre: extrapolation to {candidate} disagrees with the "
+                        f"downhill direction ({direction:+d}) -- ignoring it"
+                    )
 
         if target is None:
             # Conservative fallback: step half a sweep span downhill, so the next
@@ -481,24 +480,29 @@ class FocuserCalibrator:
             if oc.matches(bin1_shape, epoch):
                 center = (oc.center_x / binning, oc.center_y / binning)
                 radius = oc.low_coma_radius / binning
-                logger.debug(f"low-coma zone: calibrated centre {center}, radius {radius:.1f}px "
-                             f"(bin {binning})")
+                logger.debug(f"low-coma zone: calibrated centre {center}, radius {radius:.1f}px (bin {binning})")
                 return center, radius
-            logger.debug(f"low-coma zone: optical centre rejected -- "
-                         f"shape/epoch mismatch (stored {tuple(oc.image_shape)} epoch {epoch})")
+            logger.debug(
+                f"low-coma zone: optical centre rejected -- "
+                f"shape/epoch mismatch (stored {tuple(oc.image_shape)} epoch {epoch})"
+            )
 
         if shape is None:
             # Should not happen -- but never silently fall back to the whole
             # frame, which would readmit the coma-heavy margins the metric
             # exists to exclude.  Say so loudly instead.
-            self._log_error("low-coma zone: could not determine frame shape -- "
-                            "HFD will use the WHOLE FRAME, including coma-heavy margins")
+            self._log_error(
+                "low-coma zone: could not determine frame shape -- "
+                "HFD will use the WHOLE FRAME, including coma-heavy margins"
+            )
             return None, None
         ny, nx = shape
         center = ((nx - 1) / 2.0, (ny - 1) / 2.0)
         radius = st.fallback_disk_frac * min(nx, ny) / 2.0
-        logger.debug(f"low-coma zone: no optical centre -- geometric disk r={radius:.1f}px "
-                     f"({st.fallback_disk_frac} x min({nx},{ny})/2)")
+        logger.debug(
+            f"low-coma zone: no optical centre -- geometric disk r={radius:.1f}px "
+            f"({st.fallback_disk_frac} x min({nx},{ny})/2)"
+        )
         return center, radius
 
     @staticmethod
@@ -545,8 +549,10 @@ class FocuserCalibrator:
         conf.calibration.products.focuser = record
         try:
             Config().set_unit(unit_name=self.unit.hostname, unit_conf=conf)
-            logger.info(f"saved calibration.products.focuser for '{self.unit.hostname}': "
-                        f"best_position={best} tolerance={record.tolerance} temp={temperature}")
+            logger.info(
+                f"saved calibration.products.focuser for '{self.unit.hostname}': "
+                f"best_position={best} tolerance={record.tolerance} temp={temperature}"
+            )
         except Exception as ex:
             self._log_error(f"could not save calibration.products.focuser for '{self.unit.hostname}': {ex}")
 
@@ -581,8 +587,7 @@ class FocuserCalibrator:
     def _clamp(self, position: int, st) -> int:
         clamped = max(st.min_position, min(st.max_position, int(position)))
         if clamped != int(position):
-            logger.debug(f"clamped focuser {int(position)} -> {clamped} "
-                         f"[{st.min_position}, {st.max_position}]")
+            logger.debug(f"clamped focuser {int(position)} -> {clamped} [{st.min_position}, {st.max_position}]")
         return clamped
 
     def _move_focuser(self, position: int, st):
@@ -696,9 +701,7 @@ class FocuserCalibrator:
 
         TODO(safety): also return False when the unit becomes unsafe, and stow.
         """
-        return self.unit.is_active(UnitActivities.CalibratingFocus) or self.unit.is_active(
-            UnitActivities.Calibrating
-        )
+        return self.unit.is_active(UnitActivities.CalibratingFocus) or self.unit.is_active(UnitActivities.Calibrating)
 
     def _log_error(self, message: str):
         logger.error(message)

@@ -147,13 +147,21 @@ def find_spec_stage_position(
         ang.append(float(model.angle))
     n = len(pos)
 
-    def fail(msg, spec=None, slope=None, intercept=None, resid=float("nan"),
-             arms=float("nan"), brk=False, cang=None):
+    def fail(msg, spec=None, slope=None, intercept=None, resid=float("nan"), arms=float("nan"), brk=False, cang=None):
         return StageGeometryResult(
-            has_solution=False, spec_position=spec, slope=slope, intercept=intercept,
-            n_frames=n, residual_rms=resid, angle_rms_deg=arms, bracketed=brk,
-            optical_center=(ocx, ocy), centerline_angle=cang, message=msg,
-            stage_positions=np.array(pos), distances=np.array(dist),
+            has_solution=False,
+            spec_position=spec,
+            slope=slope,
+            intercept=intercept,
+            n_frames=n,
+            residual_rms=resid,
+            angle_rms_deg=arms,
+            bracketed=brk,
+            optical_center=(ocx, ocy),
+            centerline_angle=cang,
+            message=msg,
+            stage_positions=np.array(pos),
+            distances=np.array(dist),
         )
 
     if n < 2 or len(set(pos)) < 2:
@@ -177,7 +185,8 @@ def find_spec_stage_position(
         return fail(
             f"shadow barely moved ({np.ptp(dist_a):.1f} < {min_span_px} px) across the "
             "stage range -- check stage motion or widen the range",
-            arms=angle_rms_deg, cang=mean_angle,
+            arms=angle_rms_deg,
+            cang=mean_angle,
         )
 
     w = prom_a if (weights_from_prominence and np.all(prom_a > 0)) else None
@@ -202,13 +211,23 @@ def find_spec_stage_position(
 
     result = StageGeometryResult(
         has_solution=not reasons,
-        spec_position=spec, slope=float(slope), intercept=float(intercept),
-        n_frames=n, residual_rms=residual_rms, angle_rms_deg=angle_rms_deg,
-        bracketed=bracketed, optical_center=(ocx, ocy), centerline_angle=mean_angle,
-        message=(f"spec stage position s*={spec:.1f} (slope {slope:+.4f} px/step, "
-                 f"n={n}, rms={residual_rms:.2f} px, bracketed={bracketed})"
-                 if not reasons else "; ".join(reasons)),
-        stage_positions=pos_a, distances=dist_a,
+        spec_position=spec,
+        slope=float(slope),
+        intercept=float(intercept),
+        n_frames=n,
+        residual_rms=residual_rms,
+        angle_rms_deg=angle_rms_deg,
+        bracketed=bracketed,
+        optical_center=(ocx, ocy),
+        centerline_angle=mean_angle,
+        message=(
+            f"spec stage position s*={spec:.1f} (slope {slope:+.4f} px/step, "
+            f"n={n}, rms={residual_rms:.2f} px, bracketed={bracketed})"
+            if not reasons
+            else "; ".join(reasons)
+        ),
+        stage_positions=pos_a,
+        distances=dist_a,
     )
     return result
 
@@ -224,10 +243,15 @@ def plot_stage_geometry(result: StageGeometryResult):
     ax.plot(s, d, "o", color="k", label="d(s): center-to-optical-center")
     if result.slope is not None and result.spec_position is not None:
         xs = np.linspace(min(s.min(), result.spec_position), max(s.max(), result.spec_position), 100)
-        ax.plot(xs, result.slope * xs + result.intercept, "-", color="crimson", lw=1,
-                label=f"fit (B={result.slope:+.3f} px/step)")
-        ax.axvline(result.spec_position, color="dodgerblue", lw=1.2,
-                   label=f"s* = {result.spec_position:.1f}")
+        ax.plot(
+            xs,
+            result.slope * xs + result.intercept,
+            "-",
+            color="crimson",
+            lw=1,
+            label=f"fit (B={result.slope:+.3f} px/step)",
+        )
+        ax.axvline(result.spec_position, color="dodgerblue", lw=1.2, label=f"s* = {result.spec_position:.1f}")
     ax.set_xlabel("stage position (steps)")
     ax.set_ylabel("signed perp. distance to optical center (pix)")
     ax.set_title("spec stage position" if result.has_solution else f"no solution: {result.message}")

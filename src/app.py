@@ -1,7 +1,5 @@
 import argparse
-import logging
 import os
-import socket
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -15,8 +13,10 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import ValidationError
 
 from common.config import Config, ConfigError
+from common.filer import Filer
 from common.mast_logging import configure_logging, get_logger
 from common.process import ensure_process_is_running
+from common.utils import boxed_info
 from PlaneWave import pwi4_client
 from PlaneWave.ps3cli_locate import locate_ps3cli_catalog, locate_ps3cli_dir
 
@@ -28,9 +28,7 @@ _parser.add_argument("--log-level", default=None, help="DEBUG, INFO, WARNING, ..
 configure_logging(_parser.parse_known_args()[0].log_level)
 
 logger = get_logger(__name__)
-logger.info("+--------------+")
-logger.info("| Starting ... |")
-logger.info("+--------------+")
+boxed_info(logger, "Starting ...")
 
 # Get rid of HTTP proxy environment variables.  We're talking to PWI4 which lives on this same machine
 if "http_proxy" in os.environ:
@@ -40,7 +38,7 @@ if "https_proxy" in os.environ:
 
 
 def app_quit(reason: str):
-    logger.info(f"Quiting ({reason=}) !")
+    boxed_info(logger, f"Quiting ({reason=}) !")
     parent_pid = os.getpid()
     parent = psutil.Process(parent_pid)
     for child in parent.children(recursive=True):  # or parent.children() for recursive=False
@@ -69,8 +67,8 @@ while time.monotonic() < _pwi4_deadline:
     except pwi4_client.PWException:
         logger.warning("PWI4 not ready yet, retrying ...")
         time.sleep(1)
-    except Exception as ex:
-        logger.error(f"cannot connect to PWI4: {ex}")
+    except Exception:
+        logger.exception("cannot connect to PWI4")
         break
 if not _pwi4_ok:
     logger.warning("PWI4 unavailable at startup - unit will start with mount unavailable")
@@ -121,15 +119,27 @@ else:
 
 @asynccontextmanager
 async def lifespan(fast_app: FastAPI):
+    # Before anything is operational, so everything on the ram disk is by definition a
+    # leftover from a previous run -- no live folder to race, and no product/scratch
+    # judgement to get wrong. Deliberately here rather than in a component's startup():
+    # that is an HTTP endpoint an operator can call again mid-night, when a sweep would
+    # relocate folders that are in use. MAST_common#52.
+    Filer(logger).start_product_relocation_sweep(logger=logger)
+
     try:
         unit = Unit()
-    except Exception as ex:
-        logger.error(f"Unit initialization failed in lifespan: {ex}")
+    except Exception:
+        logger.exception("Unit initialization failed in lifespan:")
         yield
         return
     unit.start_lifespan()
     yield
     unit.end_lifespan()
+
+    # Drain outstanding ram->shared moves while the process is still healthy. Without
+    # this they are abandoned at interpreter teardown, which is how MAST_common#52 was
+    # first seen: a solve's cleanup racing service shutdown.
+    Filer(logger).flush()
 
 
 async def websocket_disconnect_handler(websocket: WebSocket, exc: WebSocketDisconnect):
@@ -207,7 +217,7 @@ if __name__ == "__main__":
     try:
         unit = Unit()
     except Exception as ex:
-        logger.error(f"Unit initialization failed: {ex}")
+        logger.exception("Unit initialization failed")
         app_quit(reason=f"unit initialization failed: {ex}")
         unit = None
 
