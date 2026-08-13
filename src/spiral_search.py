@@ -220,7 +220,7 @@ class SpiralSearch:
             self._timer.daemon = True
             self._timer.start()
 
-            logger.info(f"{op}: spiral session open in '{self.folder}', steps ({x_step_arcsec}, {y_step_arcsec})″")
+            logger.info(f"{op}: spiral session open in '{self.folder}', steps ({x_step_arcsec}, {y_step_arcsec}) arcsec")
             return CanonicalResponse(value={"folder": self.folder, "reference_image": REFERENCE_IMAGE})
 
     def step(self, forward: bool) -> CanonicalResponse:

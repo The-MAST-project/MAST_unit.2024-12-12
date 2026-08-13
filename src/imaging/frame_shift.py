@@ -210,9 +210,19 @@ def measure_shift(
     ref_prepared = _prepare(reference, window)
     final_prepared = _prepare(final, window)
 
-    (registration_y, registration_x), _error, _phase = phase_cross_correlation(
-        ref_prepared, final_prepared, upsample_factor=upsample, normalization=None
-    )
+    # The overflow is real but confined to the discarded `_error` term: skimage sums
+    # |F|^2 over the window in float32 and multiplies the two totals, which exceeds
+    # float32 once the window is the whole sensor. It happens in _compute_error, called
+    # only in phase_cross_correlation's return expression, after the shift is final --
+    # so the shift is unaffected, and a run whose correlation overflowed still agreed
+    # with star-matched truth to 0.42 px (2026-08-13, Spirals/0002). Silenced rather
+    # than fixed by promoting to float64, which would double the working set on a
+    # 43-megapixel frame to buy a number we throw away. `error` is useless to us in any
+    # case -- see the module note on why `confidence` is computed here instead.
+    with np.errstate(over="ignore"):
+        (registration_y, registration_x), _error, _phase = phase_cross_correlation(
+            ref_prepared, final_prepared, upsample_factor=upsample, normalization=None
+        )
     # Negate: registration shift -> how the content actually moved.
     shift_y, shift_x = -registration_y, -registration_x
 
