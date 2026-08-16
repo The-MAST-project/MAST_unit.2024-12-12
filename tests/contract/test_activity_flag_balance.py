@@ -72,8 +72,6 @@ KNOWN_UNBALANCED = {
     # Started only in the uncalled cooldown(); its ontimer end is commented out. Unreachable
     # today, and a waiter would hang if it were ever reached.
     ("ImagerActivities", "CoolingDown: started, never ended"): "MAST_unit#149",
-    # The flag #80 exists to start: abort holds Aborting until the device is confirmed at rest.
-    ("StageActivities", "Aborting: declared, never started or ended"): "MAST_unit#80",
 }
 
 

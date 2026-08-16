@@ -369,6 +369,16 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.end_activity(MountActivities.Slewing)
             self.target = None
 
+        self._end_abort_when_at_rest(status)
+
+    def _end_abort_when_at_rest(self, status) -> None:
+        """End `Aborting` once the mount is stopped: no commanded slew, no residual motion."""
+        if not self.is_active(MountActivities.Aborting):
+            return
+
+        if not self.is_moving and not status.mount.is_slewing:  # type: ignore
+            self.end_activity(MountActivities.Aborting)
+
     @property
     def is_tracking(self) -> bool:
         if not self.connected:
@@ -955,6 +965,8 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         ):
             if self.is_active(activity):
                 self.end_activity(activity)
+
+        self.start_activity(MountActivities.Aborting)
         self.pw.mount_stop()
         self.pw.mount_tracking_off()
         return CanonicalResponse_Ok

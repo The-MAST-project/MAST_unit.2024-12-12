@@ -68,6 +68,8 @@ from stage import Stage
 logger = get_logger(__name__)
 filer = Filer(logger)
 
+AUTOFOCUS_STOP_TIMEOUT_SECONDS = 30.0
+
 
 def configured_imager() -> ImagerTypes | None:
     unit_conf = Config().get_unit()
@@ -413,8 +415,13 @@ class Unit(Component):
             self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing)
         ):
             self.autofocuser.stop_autofocus()
-            while self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing):
-                time.sleep(0.2)
+            for flag in (UnitActivities.AutofocusingPWI4, UnitActivities.Autofocusing):
+                if not self.await_activity_clear(flag, timeout=AUTOFOCUS_STOP_TIMEOUT_SECONDS):
+                    msg = (
+                        f"{function_name()}: autofocus did not stop within "
+                        f"{AUTOFOCUS_STOP_TIMEOUT_SECONDS} seconds ({flag!r} still set)"
+                    )
+                    return CanonicalResponse(errors=[msg])
 
         if self.guider:
             self.guider.abort()

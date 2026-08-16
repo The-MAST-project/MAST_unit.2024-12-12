@@ -596,6 +596,11 @@ from pyximc import *
         # logger.info(f"{self._position=}, {target=}")
         return abs(self._position - target) <= self.conf.close_enough
 
+    def _end_abort_when_at_rest(self) -> None:
+        """End `Aborting` once `MVCMD_RUNNING` clears. Not `is_stationary`, which is broken (#150)."""
+        if self.is_active(StageActivities.Aborting) and not self.is_moving:
+            self.end_activity(StageActivities.Aborting)
+
     @property
     def is_stationary(self) -> bool:
         """
@@ -714,6 +719,8 @@ from pyximc import *
         self.latest_positions.append(self._position)
 
         self.is_moving = (hw_status.MvCmdSts & MvcmdStatus.MVCMD_RUNNING) != 0
+
+        self._end_abort_when_at_rest()
 
         if not self.is_moving:
             if self.is_active(StageActivities.Moving):
@@ -917,6 +924,7 @@ from pyximc import *
             if self.is_active(activity):
                 self.end_activity(activity)
 
+        self.start_activity(StageActivities.Aborting)
         assert ximclib
         ximclib.command_stop(self.device)
         return CanonicalResponse_Ok

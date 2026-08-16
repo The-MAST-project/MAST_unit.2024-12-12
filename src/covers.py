@@ -252,6 +252,16 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         -------
 
         """
+        was_moving = any(
+            self.is_active(activity)
+            for activity in (
+                CoverActivities.StartingUp,
+                CoverActivities.ShuttingDown,
+                CoverActivities.Closing,
+                CoverActivities.Opening,
+            )
+        )
+
         response = ascom_run(self, "HaltCover()")
         if response.failed:
             logger.error(f"failed to halt covers (failure='{response.failure}')")
@@ -263,6 +273,9 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         ):
             if self.is_active(activity):
                 self.end_activity(activity)
+
+        if was_moving:
+            self.start_activity(CoverActivities.Aborting)
         return CanonicalResponse_Ok
 
     def ontimer(self):
@@ -285,6 +298,13 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
                 self.end_activity(CoverActivities.ShuttingDown)
                 self._was_shut_down = True
                 self.power_off()
+
+        self._end_abort_when_at_rest()
+
+    def _end_abort_when_at_rest(self) -> None:
+        """End `Aborting` once the covers leave `Moving`. `Error` and `Unknown` are at rest too."""
+        if self.is_active(CoverActivities.Aborting) and self.state != CoversState.Moving:
+            self.end_activity(CoverActivities.Aborting)
 
     @property
     def name(self) -> str:

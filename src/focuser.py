@@ -98,12 +98,8 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         self.pw.focuser_enable()
         self._was_shut_down = False
         if self.known_as_good_position is not None and self.position != self.known_as_good_position:
-            # The move is asynchronous; `ontimer` ends StartingUp when it arrives.
-            self.position = self.known_as_good_position
+            self.position = self.known_as_good_position  # `ontimer` ends StartingUp on arrival
         else:
-            # Nothing to move, so the startup completes here. Ending it now rather than
-            # leaving it for `ontimer` is what keeps the flag from outliving the operation --
-            # the failure mode #44's check exists to catch.
             self.end_activity(FocuserActivities.StartingUp)
         return CanonicalResponse_Ok
 
@@ -285,12 +281,16 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         """
         Aborts any in-progress focuser activities
         """
-        if self.is_active(FocuserActivities.Moving):
-            self.pw.focuser_stop()
+        was_moving = self.is_active(FocuserActivities.Moving)
+        if was_moving:
             self.end_activity(FocuserActivities.Moving)
 
         if self.is_active(FocuserActivities.StartingUp):
             self.end_activity(FocuserActivities.StartingUp)
+
+        if was_moving:
+            self.start_activity(FocuserActivities.Aborting)
+            self.pw.focuser_stop()
         return CanonicalResponse_Ok
 
     @property
@@ -325,11 +325,12 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
                 self.end_activity(FocuserActivities.Moving)
                 self.target = None
 
-        # Mirrors the stage, which ends StartingUp on arrival at its startup preset. Keyed on
-        # the destination rather than on the move ending, so an operator move that happens to
-        # complete during startup does not report the startup as finished.
         if self.is_active(FocuserActivities.StartingUp) and self.close_enough(self.known_as_good_position):
             self.end_activity(FocuserActivities.StartingUp)
+
+        # Not `is_stationary`, which is broken (#150).
+        if self.is_active(FocuserActivities.Aborting) and not self.pw.status().focuser.is_moving:  # type: ignore
+            self.end_activity(FocuserActivities.Aborting)
 
     @endpoint(tier=Tier.INTERFACE)
     def endpoint_status(self) -> FocuserStatus:
