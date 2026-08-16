@@ -13,7 +13,7 @@ from common.endpoints import Stability, Tier, add_api_route, endpoint
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import FocuserStatus
-from common.utils import RepeatTimer, boxed_log, time_stamp
+from common.utils import RepeatTimer, boxed_log, function_name, time_stamp
 from PlaneWave import pwi4_client
 
 logger = get_logger(__name__)
@@ -212,7 +212,13 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         """
 
         if isinstance(position, str):
-            position = int(position)
+            try:
+                position = int(position)
+            except ValueError:
+                # Matches stage.move_absolute, the sibling absolute-move handler. Without it
+                # the refusal reads as a bare ValueError from int(), which names the exception
+                # rather than what was rejected.
+                return CanonicalResponse(errors=[f"{function_name()}: '{position}' is not a position"])
         return self.goto_position(position)
 
     @endpoint(tier=Tier.OPERATION)
