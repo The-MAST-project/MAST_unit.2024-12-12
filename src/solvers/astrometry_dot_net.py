@@ -1,8 +1,10 @@
-import datetime
 import os
 import re
+import shutil
 import subprocess
 import sys
+import time
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -205,21 +207,20 @@ class AstrometryDotNet(SolverInterface):
             args += ["--new-fits", win_to_wsl(new_fits_path)]
             args += [win_to_wsl(input_fits_path)]
 
-        start = datetime.datetime.now()
+        start = time.monotonic()
         command = " ".join([cmd] + args)
         # logger.info(f"AstrometryDotNet.solve: {command=}")
 
         # The astrometry.net subprocess writes new_fits_path (the solved FITS); protect it
         # so a ram->shared move can't grab a partially-written solved frame.
         with MoveGuardian().protect(new_fits_path):
-            completed_process = subprocess.run(command, capture_output=True, shell=True)
+            completed_process = subprocess.run(
+                command, capture_output=True, shell=True, check=False
+            )  # returncode is inspected below
         stdout_lines = completed_process.stdout.decode().strip().splitlines()
         stderr_lines = completed_process.stderr.decode().strip().splitlines()
-        elapsed = datetime.datetime.now() - start
-        logger.info(
-            f"{'succeeded' if completed_process.returncode == 0 else 'failed'}"
-            + f" in {elapsed.total_seconds():.2f} seconds"
-        )
+        elapsed = time.monotonic() - start
+        logger.info(f"{'succeeded' if completed_process.returncode == 0 else 'failed'}" + f" in {elapsed:.2f} seconds")
 
         result_file = cygwin_to_win(new_fits_path).replace(".fits", "-result.txt")
         with MoveGuardian().protect(result_file), open(result_file, "w") as file:
@@ -232,7 +233,7 @@ class AstrometryDotNet(SolverInterface):
             for line in stderr_lines:
                 file.writelines(line + "\n")
             file.write("\n--- timing ---\n")
-            file.writelines(f"elapsed: {elapsed.total_seconds():.2f} seconds\n")
+            file.writelines(f"elapsed: {elapsed:.2f} seconds\n")
 
         if completed_process.returncode == 0:
             ret = parse_solver_output(stdout_lines)
@@ -268,8 +269,23 @@ class AstrometryDotNet(SolverInterface):
                     ", ".join(stderr_lines),
                 ],
             )
-        filer.move_ram_to_shared([result_file, input_fits_path, cygwin_to_win(new_fits_path)])
-        # shutil.rmtree(win_tmp_dir, ignore_errors=True)
+        # input_fits_path is deliberately absent: Solver.solve owns it and moves it on both
+        # outcomes. Moving it here too raced that move and logged a spurious "path does not
+        # exist" ERROR for whichever mover lost. What remains are this solver's OWN
+        # artifacts -- the result file and the annotated copy it wrote.
+        filer.move_ram_to_shared([result_file, cygwin_to_win(new_fits_path)])
+
+        # Drop the astrometry.net scratch (.axy/.xyls/.wcs and the downsampled frame).
+        # Safe to do synchronously: both artifacts above derive from input_fits_path, so
+        # they live in the acquisition folder, not in here -- nothing the mover still wants
+        # is under this directory.
+        #
+        # The previous attempt was commented out AND referred to `win_tmp_dir`, which the
+        # lines near the top of this method leave commented out too, so it could never have
+        # been simply re-enabled. The directory actually created is the cygwin one below.
+        assert filer.ram is not None
+        with suppress(Exception):
+            shutil.rmtree(Path(filer.ram.root, "tmp", tmp_dir))
 
         return ret
 
@@ -391,8 +407,8 @@ def parse_solver_output(lines: list[str]) -> SolvingResult | None:
                 ret.solution.confidence = None
                 ret.solution.confidence_level = SolvingConfidenceLevel.Unsolved
 
-    except Exception as e:
-        logger.error(f"{op}: exception: {e}")
+    except Exception:
+        logger.exception(f"{op}: exception")
 
     return ret
 

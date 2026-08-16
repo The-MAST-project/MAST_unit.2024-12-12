@@ -1,12 +1,10 @@
 # !/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 Created on Sun Oct 27 16:51:56 2024
 
 @author: Oyaron
 """
 
-import numpy as np
 from astropy.io import fits
 from skimage.registration import phase_cross_correlation
 

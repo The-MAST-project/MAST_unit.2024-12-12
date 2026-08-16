@@ -2,6 +2,39 @@
 
 ---
 
+## [2026-08-06] Retire the `src/common` submodule; MAST_common is a sibling clone
+
+**Why:** Two mechanisms were resolving the same package, and only one of them was
+real. At runtime the service starts with `AppDirectory = <ProjectDir>\src` and no
+`PYTHONPATH`; `import common` was satisfied by the venv's `mast.pth`, which puts the
+flat top folder (`<top>/`) on `sys.path`, so it resolved to the **sibling clone**
+`<top>/common/` — never to `src/common`. The submodule was carrying a gitlink that
+nothing consumed, pinned at `07cee90` and by 2026-08-06 several merges stale.
+
+Worse than redundant: an *uninitialised* `src/common` is an empty directory, which
+Python can treat as a namespace-package portion named `common`. A real package with
+`__init__.py` still wins, so nothing broke — but the same emptiness did make ruff's
+first-party classification machine-dependent (see `ruff.toml`), and it is a
+shadowing hazard that only ever resolves correctly by luck of precedence.
+
+**What:**
+- `git rm` of the `src/common` gitlink and of `.gitmodules` (it held nothing else).
+- `CLAUDE.md` imports `@../common/CLAUDE.md` instead of `@src/common/CLAUDE.md`.
+- `ruff.toml` drops `extend-exclude = ["src/common"]` — there is nothing inside this
+  repo to exclude. `known-first-party = ["common"]` stays, and matters *more* now:
+  the package is outside the repo, so ruff's path-based resolver cannot classify it
+  at all.
+- `tests/conftest.py`, `README.md`, `.vscode/launch.json` updated to the sibling path.
+
+**Consequence:** a clone of this repo alone is not runnable. It needs the flat layout
+(`<top>/common/` beside `<top>/unit/`) and the `mast.pth` that MAST_provisioning
+writes into the venv. `git submodule update --remote` is no longer how this repo gets
+its `common`; a `git pull` in the sibling clone is. The fleet-wide `MAST_common/CLAUDE.md`
+still documents the submodule layout for the other consumers and now disagrees with
+this repo — it should be reconciled when they follow.
+
+---
+
 ## [2026-07-23] Fixed limit frame sent verbatim; per-call endpoint override dropped
 
 **Why (verbatim):** The `fixed` arm routed the DB rectangle through `ImagerRoi`,

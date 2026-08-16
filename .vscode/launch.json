@@ -136,7 +136,7 @@
             "type": "debugpy",
             "request": "launch",
             "program": "common/config/backup/mast-config.py",
-            "args": "--dump ${workspaceFolder}/src/common/config/backup/mast-config-db.json",
+            "args": "--dump ${workspaceFolder}/../common/config/backup/mast-config-db.json",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/src",
             // "jinja": true,

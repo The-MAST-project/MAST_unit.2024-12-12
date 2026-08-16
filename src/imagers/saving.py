@@ -2,7 +2,7 @@ import datetime
 import socket
 from pathlib import Path
 
-import astropy.io.fits as fits
+from astropy.io import fits
 
 from common.activities import ImagerActivities
 from common.filer import MoveGuardian
@@ -11,6 +11,8 @@ from common.utils import function_name
 from imagers import ImagerInterface
 
 logger = get_logger(__name__)
+
+
 def save_to_fits_file(imager_backend: ImagerInterface):
     op = function_name()
 
@@ -75,7 +77,7 @@ def save_to_fits_file(imager_backend: ImagerInterface):
         # this file or its folder blocks until the write completes.
         with MoveGuardian().protect(settings.image_path):
             hdu_list.writeto(settings.image_path, checksum=True, overwrite=True)
-    except Exception as ex:
+    except OSError as ex:
         logger.error(f"failed to save to '{settings.image_path}', {ex=}")
 
     if imager_backend.parent_imager:

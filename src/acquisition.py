@@ -3,7 +3,7 @@ import os
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
-import common.asi as asi
+from common import asi
 from common.config.unit import AcquisitionConfig
 from common.corrections import Corrections
 from common.filer import Filer, MoveGuardian
@@ -17,6 +17,8 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 filer = Filer(logger)
+
+
 class ApproachMode(IntEnum):
     """
     How `solve_and_correct` applies a mount correction. IntEnum, so existing
@@ -97,7 +99,7 @@ class Acquisition:
                         with open(path, "w") as fp:
                             fp.write(self.corrections[phase].model_dump_json(indent=2))
                             break
-                    except Exception as e:
+                    except OSError as e:
                         logger.error(f"failed to write {path} (error: {e})")
                         continue
                 plot_phase_corrections(
@@ -110,5 +112,8 @@ class Acquisition:
                 filer.move_ram_to_shared(png)
 
     def post_process(self):
+        # NB: the ram-disk folder is NOT released here. post_process() is only reached by
+        # acquisitions that ran to completion, and the ones worth clearing are the ones that
+        # did not. Acquirer.run_acquisition owns the release, in a finally.
         if filer.ram and filer.ram.root is not None:
             plot_acquisition_corrections(self.folder.replace(filer.ram.root, filer.shared.root))

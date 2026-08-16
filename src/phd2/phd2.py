@@ -9,32 +9,30 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import IntFlag, auto
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
-import common.asi as asi
 from astropy.coordinates import Angle
+from pydantic import BaseModel
+
+from common import asi
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.config.phd2 import LimitFrameMode
-from common.config.rois import FcuVersion
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
 from common.mast_logging import get_logger
 from common.models.statuses import PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
 from common.process import WatchedProcess
-from common.utils import Coord, RepeatTimer, Timeout, boxed_debug, function_name
+from common.utils import Coord, RepeatTimer, boxed_debug, function_name
 from phd2.fits_header import stamp_cooling
 from phd2.phd2_locate import locate_phd2_exe
-from pydantic import BaseModel
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
-from stage import StagePresetPosition
-
-if TYPE_CHECKING:
-    pass  # type: ignore[name-defined]
 
 logger = get_logger(__name__)
+
+
 class CoolerStatus(BaseModel):
     temperature: float
     coolerOn: bool  # noqa: N815
@@ -104,8 +102,6 @@ class PHD2ConnectorError(Exception):
 
     """
 
-    pass
-
 
 class PHD2Accumulator:
     def __init__(self):
@@ -119,8 +115,7 @@ class PHD2Accumulator:
 
     def add(self, x):
         ax = abs(x)
-        if ax > self._peak:
-            self._peak = ax
+        self._peak = max(self._peak, ax)
         self.n += 1
         d = x - self.a
         self.a += d / self.n
@@ -403,8 +398,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             except PHD2ConnectorError as ex:
                 self.connected = False
                 logger.error(f"{function_name()}: Failed to connect {ex=}")
-            except Exception as ex:
-                logger.error(f"{function_name()}: reconnect: caught {ex=}")
+            except Exception:
+                logger.exception(f"{function_name()}: reconnect: caught")
 
             # self.cooler_on = True
 
@@ -509,7 +504,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             if not within_tolerance:
                 # TBD: what to do if the target is not within tolerance?
                 logger.error(f"{function_name()}: OUT OF TOLERANCE!, WHAT TO DO?")
-                pass
 
         self.end_activity(PHD2Activities.SolvingForValidation)
         self.end_activity(PHD2Activities.Validating)
@@ -526,26 +520,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         stats.peak_ra = ra._peak
         stats.peak_dec = dec._peak
         return stats
-
-    def _wait_for_stage_at_spec(self, stage):
-        while not stage.at_preset(StagePresetPosition.Spec):
-            time.sleep(1)
-
-    def _wait_for_fcu_v2_at_spec(self, timeout: int = 60):
-        op = f"{function_name()}"
-        assert self.parent is not None and self.parent.unit is not None
-        stage = self.parent.unit.stage
-
-        try:
-            with Timeout(timeout) as t:
-                t.run(self._wait_for_stage_at_spec, stage)
-        except TimeoutError:
-            logger.error(f"{op}: timeout waiting for stage to reach SPEC position after {timeout} seconds")
-            return
-
-        self.parent.unit.end_activity(UnitActivities.PreGuiding)
-        self.parent.unit.start_activity(UnitActivities.Guiding)
-        boxed_debug(logger, ["stage reached SPEC position", "starting guiding"])
 
     def _handle_event(self, ev):  # noqa: C901
         e = ev["Event"]
@@ -566,14 +540,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 boxed_debug(lines=[f"{function_name()}: {e}, {self.version=}, {self.sub_version=}"], logger=logger)
 
             case "StartGuiding":
-                if (
-                    self.parent is not None
-                    and self.parent.unit is not None
-                    and self.parent.unit.fcu_version == FcuVersion.v2
-                ):
-                    boxed_debug(lines=[f"{function_name()}: {e}, waiting for FCU v2 to reach SPEC"], logger=logger)
-                    threading.Thread(target=self._wait_for_fcu_v2_at_spec).start()
-
                 self.start_activity(PHD2Activities.Guiding)
                 if self.guiding_verification_timer is not None:
                     self.guiding_verification_timer.start()
@@ -816,7 +782,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 pass
             case _:
                 logger.warning(f"{function_name()}: TODO: Unhandled event {e}")
-                pass
 
     def _worker(self):
         if not self.conn:
@@ -870,8 +835,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.worker.start()
             self._connected = True
             # print("DBG: connect done")
-        except Exception as ex:
-            logger.error(f"{function_name()}: connect: {ex=}")
+        except Exception:
+            logger.exception(f"{function_name()}: connect:")
             # self.disconnect()
             # raise
 
@@ -1132,7 +1097,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def stop_capture(self, timeout_seconds=DEFAULT_STOP_CAPTURE_TIMEOUT):
         """stop looping and guiding"""
         res = self.call("stop_capture")
-        for _ in range(0, timeout_seconds):
+        for _ in range(timeout_seconds):
             with self.lock:
                 if self.app_state == "Stopped":
                     return
@@ -1160,7 +1125,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         exp_ms = res["result"]
         self.call("loop")
         time.sleep((exp_ms * 1.5) / 1000)
-        for _ in range(0, timeout_seconds):
+        for _ in range(timeout_seconds):
             with self.lock:
                 if self.app_state == "Looping":
                     return
@@ -1609,8 +1574,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             reply = self.call("get_ccd_temperature")
             if reply and "result" in reply and "temperature" in reply["result"]:
                 return reply["result"]["temperature"]
-        except Exception as ex:
-            logger.error(f"{function_name()}: could not get temperature {ex=}")
+        except Exception:
+            logger.exception(f"{function_name()}: could not get temperature")
             return None
 
     @property
@@ -1624,8 +1589,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             if reply and "result" in reply and "coolerOn" in reply["result"]:
                 self._setpoint = reply["result"]["setpoint"]
                 return reply["result"]["coolerOn"]
-        except Exception as ex:
-            logger.error(f"{function_name()}: could not get coolerOn {ex=}")
+        except Exception:
+            logger.exception(f"{function_name()}: could not get coolerOn")
             return None
 
     @cooler_on.setter
@@ -1638,8 +1603,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             reply = self.call("get_cooler_status")
             if "result" in reply and "power" in reply["result"]:
                 return reply["result"]["power"]
-        except Exception as ex:
-            logger.error(f"{function_name()}: could not get power {ex=}")
+        except Exception:
+            logger.exception(f"{function_name()}: could not get power")
             return None
 
     @property

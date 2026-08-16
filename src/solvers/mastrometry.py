@@ -1,8 +1,8 @@
-import datetime
 import json
 import os
 import shutil
 import subprocess
+import time
 from contextlib import suppress
 from pathlib import Path
 from threading import Thread
@@ -14,7 +14,7 @@ from astropy.io import fits
 from common.config import Config
 from common.config.rois import FcuVersion, SkyRoiConfig, SpecRoiConfig
 from common.const import Const
-from common.filer import Filer
+from common.filer import Filer, MoveGuardian
 from common.interfaces.imager import ImagerRoi
 from common.interfaces.solving import SolverInterface, SolvingResult
 from common.mast_logging import get_logger
@@ -173,7 +173,7 @@ class MastrometryDotNet(SolverInterface):
                     imager_roi = ImagerRoi.from_other(sky_roi)
 
                 case "spec":
-                    import common.asi as asi
+                    from common import asi
 
                     camera_x_size = asi.ASI_294MM_WIDTH
                     camera_y_size = asi.ASI_294MM_HEIGHT
@@ -257,7 +257,7 @@ class MastrometryDotNet(SolverInterface):
 
             # Save downsampled image to temporary directory
             assert full_frame_input_image_path is not None
-            downsampled_image_path = win_tmp_dir / f"downsampled_{str(Path(full_frame_input_image_path).name)}"
+            downsampled_image_path = win_tmp_dir / f"downsampled_{Path(full_frame_input_image_path).name!s}"
             fits.writeto(downsampled_image_path, downsampled, header, overwrite=True)
             logger.info(f"{function_name()}: Saved downsampled image to '{downsampled_image_path}'")
 
@@ -340,19 +340,29 @@ class MastrometryDotNet(SolverInterface):
 
         command = " ".join([r"C:/cygwin64/usr/local/astrometry/bin/solve-field"] + args)
         logger.info(f"{function_name()}: Running astrometry.net with '{command}'")
-        start = datetime.datetime.now()
+        start = time.monotonic()
 
-        completed_process = subprocess.run(command, capture_output=True, shell=True, env=env)
+        # solve-field writes new_fits_path (the solved frame, carrying the WCS). Protect it
+        # for the duration: it keeps the mover off a half-written file, and -- since
+        # protect() is also what marks a path as a product -- it is what stops
+        # MoveGuardian.release_folder from discarding it as scratch. Every other writer in
+        # the fleet does this; this solver was the one that did not.
+        with MoveGuardian().protect(str(new_fits_path)):
+            completed_process = subprocess.run(
+                command, capture_output=True, shell=True, env=env, check=False
+            )  # returncode is inspected below
         stdout_lines = completed_process.stdout.decode().strip().splitlines()
         stderr_lines = completed_process.stderr.decode().strip().splitlines()
-        elapsed = datetime.datetime.now() - start
+        elapsed = time.monotonic() - start
         logger.info(
             f"{function_name()}: {'succeeded' if completed_process.returncode == 0 else 'failed'}"
-            + f" in {elapsed.total_seconds():.2f} seconds"
+            + f" in {elapsed:.2f} seconds"
         )
 
         result_file = cygwin_to_win(str(new_fits_path)).replace(".fits", "-result.txt")
-        with open(result_file, "w") as file:
+        # Protected for the same two reasons as new_fits_path above: no half-written file
+        # for the mover, and it counts as a product rather than as scratch.
+        with MoveGuardian().protect(result_file), open(result_file, "w") as file:
             file.write("--- command ---\n")
             file.write(f"{command}\n")
 
@@ -368,7 +378,7 @@ class MastrometryDotNet(SolverInterface):
                 file.writelines(line + "\n")
 
             file.write("\n--- timing ---\n")
-            file.writelines(f"elapsed: {elapsed.total_seconds():.2f} seconds\n")
+            file.writelines(f"elapsed: {elapsed:.2f} seconds\n")
 
         if completed_process.returncode == 0:
             ret = parse_solver_output(stdout_lines)
@@ -409,19 +419,64 @@ class MastrometryDotNet(SolverInterface):
                 ],
             )
 
-        Thread(target=self.cleanup, args=([Path(result_file), Path(new_fits_path)], win_tmp_dir)).start()
-        # logger.info(f"{function_name()}: Temporary files left in '{win_tmp_dir}' (TODO: clean up in background thread)")
+        # The solved frame (it carries the WCS -- MAST_unit#27) and the solver's own output
+        # are saved beside the frame they came from, then follow it to the shared area.
+        #
+        # This call used to pass two arguments to a three-parameter cleanup(), so every
+        # solve raised TypeError *inside the thread* -- where the default excepthook writes
+        # to stderr and never to the log. Result: both artifacts were discarded and the
+        # scratch dir was never removed (1.1GB across 28 of them by 2026-08-06). Note the
+        # missing argument was the middle one: target_folder was binding to win_tmp_dir, so
+        # merely fixing the arity would have "saved" the files into the directory the last
+        # line then deletes.
+        Thread(
+            target=self._run_logged,
+            name="mastrometry-cleanup",
+            args=(
+                self.cleanup,
+                [Path(result_file), Path(new_fits_path)],
+                Path(full_frame_input_image_path).parent,
+                win_tmp_dir,
+            ),
+        ).start()
         return ret
 
+    @staticmethod
+    def _run_logged(target, *args):
+        """Run `target` and log anything it raises.
+
+        A bare Thread(target=...) sends an exception to threading's excepthook, i.e. to
+        stderr -- which for the unit service is a file nobody reads. That is how a plain
+        TypeError in cleanup() stayed invisible for months.
+        """
+        try:
+            target(*args)
+        except Exception:
+            # logger.exception attaches the traceback itself; naming the exception here too
+            # would only duplicate it.
+            logger.exception(f"{function_name()}: {getattr(target, '__name__', target)} failed")
+
     def cleanup(self, files_to_move: list[Path], target_folder: Path, tmp_dir: Path):
+        """Keep the solver's own artifacts, discard its scratch.
+
+        `target_folder` is the acquisition folder holding the input frame, so the solved
+        FITS and the result text land beside it and are then handed to the mover -- the
+        frame itself is moved by Solver.solve, which owns it.
+        """
+        filer = Filer(logger)
         files_to_move = [f for f in files_to_move if f.exists()]
         if files_to_move:
-            if not target_folder.exists():
-                target_folder.mkdir(parents=True, exist_ok=True)
+            target_folder.mkdir(parents=True, exist_ok=True)
             for file in files_to_move:
-                shutil.move(file, target_folder / file.name)
-                logger.info(f"{function_name()}: saved '{(target_folder / file.name).as_posix()}'")
+                destination = target_folder / file.name
+                shutil.move(file, destination)
+                logger.info(f"{function_name()}: saved '{destination.as_posix()}'")
+                # Via the mover rather than a bare copy, so a dead share defers instead of
+                # losing the file, exactly as for every other artifact.
+                filer.move_ram_to_shared(str(destination))
 
+        # Only now: the artifacts worth keeping are out, the rest is astrometry.net
+        # intermediates (.axy/.xyls/.wcs and the downsampled frame).
         with suppress(Exception):
             shutil.rmtree(tmp_dir)
 

@@ -80,7 +80,6 @@ if ($Action -eq 'install') {
     Invoke-Nssm 'set',            $ServiceName, 'AppParameters',         $AppScript
     Invoke-Nssm 'set',            $ServiceName, 'AppDirectory',          "$ProjectDir\src"
     Invoke-Nssm 'set',            $ServiceName, 'DisplayName',           $DisplayName
-    Invoke-Nssm 'set',            $ServiceName, 'AppEnvironmentExtra',   'MAST_PROJECT=unit'
     Invoke-Nssm 'set',            $ServiceName, 'AppStdout',             $StdoutLog
     Invoke-Nssm 'set',            $ServiceName, 'AppStderr',             $StderrLog
     Invoke-Nssm 'set',            $ServiceName, 'AppStdoutCreationDisposition', '4'  # append

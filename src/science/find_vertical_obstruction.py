@@ -102,12 +102,7 @@ def plot_obstruction(image_data, umbra_mask, penumbra_mask, vmin=None, vmax=None
     plt.show()
 
 
-import numpy as np
 from astropy.convolution import Gaussian2DKernel, convolve
-from astropy.modeling.fitting import LevMarLSQFitter
-from astropy.modeling.models import Linear1D
-from astropy.stats import sigma_clipped_stats
-from photutils.segmentation import detect_sources
 
 
 def mask_linear_shadow(image, umbra_half_width=8, penumbra_half_width=20):

@@ -17,8 +17,8 @@ from matplotlib.patches import Patch
 from calibration.analysis.protocols import FocusAnalysisResultLike
 from common.const import Const
 from common.corrections import Corrections
-from common.mast_logging import get_logger
 from common.filer import MoveGuardian
+from common.mast_logging import get_logger
 from common.utils import Filer, fromisoformat_zulu, function_name
 
 logger = get_logger(__name__)
@@ -369,7 +369,7 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):  # noqa
         try:
             with open(file) as fp:
                 corrections: Corrections = Corrections.model_validate(json.load(fp))
-        except Exception as e:
+        except (OSError, ValueError) as e:
             logger.error(f"{op}: Could not get corrections from {file} ({e=})")
             continue
 
@@ -474,7 +474,7 @@ class DummyStatus:
 
 def test_corrections_plot():
 
-    start = datetime.datetime.now()
+    start = datetime.datetime.now(datetime.UTC)
     dt = [
         0,
         32,
@@ -568,4 +568,3 @@ if __name__ == "__main__":
     plot_acquisition_corrections(acq_folder)
     # plot_autofocus_analysis(DummyResult(), 'C:\\Temp')
     # test_corrections_plot()
-    pass

@@ -3,7 +3,7 @@
 Exists because the obvious spelling is wrong in a way that costs a whole night::
 
     mount.goto_ra_dec_j2000(ra, dec)
-    while mount.is_moving:          # <-- hangs forever
+    while mount.is_moving:  # <-- hangs forever
         time.sleep(0.5)
 
 ``Mount.is_moving`` is axis following-error (``axis0.rms_error > 3.0"`` or

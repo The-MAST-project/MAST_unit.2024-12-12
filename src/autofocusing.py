@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Annotated
 
 from fastapi import Query
 
-from acquirer import DEC_REGEX, RA_REGEX
 from common.activities import FocuserActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
@@ -15,7 +14,12 @@ from common.config.rois import SkyRoiConfig
 from common.filer import Filer, MoveGuardian
 from common.interfaces.imager import ImagerRoi, ImagerSettings
 from common.mast_logging import get_logger
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
+from common.parsers import (
+    DEC_PATTERN,
+    RA_PATTERN,
+    sexagesimal_degrees_to_decimal,
+    sexagesimal_hours_to_decimal,
+)
 from common.paths import PathMaker
 from common.rois import UnitRoi
 from common.utils import boxed_log
@@ -69,12 +73,12 @@ class Autofocuser:
             self.unit.is_active(UnitActivities.AutofocusingPWI4) and self.unit.pw.status().autofocus.is_running  # type: ignore[union-attr]
         )
 
-    def start_autofocus(  # noqa: C901
+    def start_autofocus(
         self,
         ra_j2000_hours: Annotated[
             str | float | None,
             Query(
-                pattern=RA_REGEX + r"|^\d{1,2}(\.\d+)?$",
+                pattern=RA_PATTERN,
                 description=(
                     "### Right Ascension (J2000) in either:\n"
                     "- decimal hours (e.g., `12.5`) or\n"
@@ -87,7 +91,7 @@ class Autofocuser:
         dec_j2000_degs: Annotated[
             str | float | None,
             Query(
-                pattern=DEC_REGEX + r"|^[-+]?\d{1,2}(\.\d+)?$",
+                pattern=DEC_PATTERN,
                 description=(
                     "### Declination (J2000) in either:\n"
                     "- decimal degrees (e.g., `-45.5`) or\n"
@@ -118,23 +122,20 @@ class Autofocuser:
         -------
 
         """
+        # One call, whatever the form -- see the note in acquirer.py: dispatching on
+        # `":" in value` sent the space-separated form, which the pattern allowed, to
+        # float() and raised an uncaught ValueError.
         if ra_j2000_hours:
-            if isinstance(ra_j2000_hours, str):
-                if ":" in ra_j2000_hours:
-                    ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
-                else:
-                    ra_j2000_hours = float(ra_j2000_hours)
-            elif isinstance(ra_j2000_hours, float):
-                pass
+            try:
+                ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
+            except ValueError as e:
+                return CanonicalResponse(errors=[f"start_autofocus: bad ra_j2000_hours -- {e}"])
 
         if dec_j2000_degs:
-            if isinstance(dec_j2000_degs, str):
-                if ":" in dec_j2000_degs:
-                    dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
-                else:
-                    dec_j2000_degs = float(dec_j2000_degs)
-            elif isinstance(dec_j2000_degs, float):
-                pass
+            try:
+                dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
+            except ValueError as e:
+                return CanonicalResponse(errors=[f"start_autofocus: bad dec_j2000_degs -- {e}"])
 
         assert self.unit.unit_conf is not None
         if number_of_images is None:
@@ -391,7 +392,7 @@ class Autofocuser:
                         f"saved unit '{self.unit.hostname}' configuration for "
                         + f"focuser known-as-good-position {position}"
                     )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 -- config write failure is reported to the caller, never fatal to an autofocus run
                     self.log_and_store_error(
                         f"could not save unit '{self.unit.hostname}' "
                         + f"configuration for focuser known-as-good-position (exception: {e})"

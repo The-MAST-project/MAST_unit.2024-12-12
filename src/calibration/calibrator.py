@@ -243,9 +243,7 @@ class Calibrator:
         settings = getattr(cal, "settings", None) if cal else None
         return settings if settings is not None else CalibrationSettings()
 
-    def resolve_coord(
-        self, ra: float | None, dec: float | None
-    ) -> tuple[float | None, float | None]:
+    def resolve_coord(self, ra: float | None, dec: float | None) -> tuple[float | None, float | None]:
         """Pointing for a phase -- **the zenith** by default.
 
         Explicit argument -> config -> observatory.  The two axes resolve at
@@ -305,8 +303,7 @@ class Calibrator:
                 return float(latitude)
         except Exception as ex:
             logger.warning(f"could not read the configured site latitude: {ex}")
-        logger.warning("no latitude available -- pointing is unresolved; "
-                       "the phase will calibrate at the current pointing")
+        logger.warning("no latitude available -- pointing is unresolved; the phase will calibrate at the current pointing")
         return None
 
     def _skip_if_present(self, phase: str, force: bool) -> bool:
@@ -328,9 +325,7 @@ class Calibrator:
     def status(self) -> dict:
         return {
             "calibrating": self.is_calibrating,
-            "umbrella": (
-                self.unit.is_active(UnitActivities.Calibrating) if self.unit else False
-            ),
+            "umbrella": (self.unit.is_active(UnitActivities.Calibrating) if self.unit else False),
             "phase": self.active_phase,
             "products": {p: self.product(p) is not None for p in PHASE_ORDER},
             "latest": _jsonable(self.latest),
@@ -399,9 +394,7 @@ class Calibrator:
             return CanonicalResponse(errors=[f"{target.__name__}: {reason}"])
         if self.is_calibrating:
             logger.debug(f"rejecting {target.__name__}: single-flight -- phase={self.active_phase} is active")
-            return CanonicalResponse(
-                errors=[f"a calibration is already running (phase={self.active_phase})"]
-            )
+            return CanonicalResponse(errors=[f"a calibration is already running (phase={self.active_phase})"])
         # Clear BOTH, not just errors.  `latest` used to survive into the next
         # run, so while a run was in flight `/calibrate/status` served the
         # PREVIOUS run's result as if it were current -- during run 0004 it
@@ -431,9 +424,7 @@ class Calibrator:
                 logger.exception(f"{target.__name__}: unexpected failure")
                 self._fail(f"{target.__name__}: unexpected failure: {ex!r}")
 
-        self._thread = threading.Thread(
-            name=f"mast-{target.__name__}", target=run, daemon=True
-        )
+        self._thread = threading.Thread(name=f"mast-{target.__name__}", target=run, daemon=True)
         self._thread.start()
         return CanonicalResponse_Ok
 
@@ -479,7 +470,10 @@ class Calibrator:
     def endpoint_config(
         self,
         refresh: Annotated[
-            bool, Query(description="Re-merge via Config (false: the copy bound at startup). Neither re-reads MongoDB -- restart to pick up DB edits.")
+            bool,
+            Query(
+                description="Re-merge via Config (false: the copy bound at startup). Neither re-reads MongoDB -- restart to pick up DB edits."
+            ),
         ] = True,
     ):
         """The unit's stored calibration settings + products."""
@@ -512,8 +506,9 @@ class Calibrator:
         }
         unit.start_activity(UnitActivities.Calibrating)
         logger.info(f"{op}: starting, order={' -> '.join(PHASE_ORDER)}, {force=}")
-        logger.debug(f"{op}: coord ra={ra} dec={dec}; existing products: "
-                     f"{ {p: self.product(p) is not None for p in PHASE_ORDER} }")
+        logger.debug(
+            f"{op}: coord ra={ra} dec={dec}; existing products: { {p: self.product(p) is not None for p in PHASE_ORDER} }"
+        )
         try:
             for phase in PHASE_ORDER:
                 if not unit.is_active(UnitActivities.Calibrating):
@@ -568,18 +563,22 @@ class Calibrator:
             folder = PathMaker().make_calibration_folder("focuser")
         except Exception as ex:
             folder = None
-            logger.warning(f"{op}: could not create the run folder ({ex}); "
-                           f"continuing without one (memory imager only)")
-        logger.debug(f"{op}: standalone={not _umbrella}; folder={folder}; "
-                     f"settings images={st.images} spacing={st.spacing} exposure={st.exposure} "
-                     f"binning={st.binning} max_tries={st.max_tries}")
+            logger.warning(f"{op}: could not create the run folder ({ex}); continuing without one (memory imager only)")
+        logger.debug(
+            f"{op}: standalone={not _umbrella}; folder={folder}; "
+            f"settings images={st.images} spacing={st.spacing} exposure={st.exposure} "
+            f"binning={st.binning} max_tries={st.max_tries}"
+        )
 
         unit.start_activity(UnitActivities.CalibratingFocus)
         with phase_logging("focuser"):
             try:
                 calibrator = FocuserCalibrator(unit)
                 status = calibrator.calibrate(
-                    settings=st, ra_j2000_hours=ra, dec_j2000_degs=dec, folder=folder,
+                    settings=st,
+                    ra_j2000_hours=ra,
+                    dec_j2000_degs=dec,
+                    folder=folder,
                 )
                 self.latest["focuser"] = status
                 self.errors.extend(calibrator.errors)
@@ -587,9 +586,11 @@ class Calibrator:
                 if result is None or not result.has_solution:
                     self._fail(f"{op}: no focus solution")
                 else:
-                    logger.info(f"{op}: best_position={result.best_focus_position:.1f} "
-                                f"Dmin={result.best_focus_star_diameter:.2f}px "
-                                f"tolerance={result.tolerance:.1f}")
+                    logger.info(
+                        f"{op}: best_position={result.best_focus_position:.1f} "
+                        f"Dmin={result.best_focus_star_diameter:.2f}px "
+                        f"tolerance={result.tolerance:.1f}"
+                    )
                 return status
             finally:
                 unit.end_activity(UnitActivities.CalibratingFocus)
@@ -635,24 +636,32 @@ class Calibrator:
                     folder = PathMaker().make_calibration_folder("optical_center")
                 except Exception as ex:
                     folder = None
-                    logger.warning(f"{op}: could not create the run folder ({ex}); "
-                                   f"continuing without one (memory imager only)")
-                logger.debug(f"{op}: folder={folder}; settings exposure={st.exposure} "
-                             f"number_of_frames={st.number_of_frames} "
-                             f"coma_tolerance={st.coma_tolerance} "
-                             f"min_frames_passing={st.min_frames_passing}")
+                    logger.warning(
+                        f"{op}: could not create the run folder ({ex}); continuing without one (memory imager only)"
+                    )
+                logger.debug(
+                    f"{op}: folder={folder}; settings exposure={st.exposure} "
+                    f"number_of_frames={st.number_of_frames} "
+                    f"coma_tolerance={st.coma_tolerance} "
+                    f"min_frames_passing={st.min_frames_passing}"
+                )
                 calibrator = OpticalCenterCalibrator(unit)
                 result = calibrator.calibrate(
-                    settings=st, ra_j2000_hours=ra, dec_j2000_degs=dec, folder=folder,
+                    settings=st,
+                    ra_j2000_hours=ra,
+                    dec_j2000_degs=dec,
+                    folder=folder,
                 )
                 self.latest["optical_center"] = result
                 self.errors.extend(calibrator.errors)
                 if result is None:
                     self._fail(f"{op}: no optical-center solution")
                 else:
-                    logger.info(f"{op}: center=({result.center_x:.1f}, {result.center_y:.1f}) "
-                                f"radiality={result.radiality:.2f} "
-                                f"residual_rms={result.residual_rms:.1f}px")
+                    logger.info(
+                        f"{op}: center=({result.center_x:.1f}, {result.center_y:.1f}) "
+                        f"radiality={result.radiality:.2f} "
+                        f"residual_rms={result.residual_rms:.1f}px"
+                    )
                 return result
             finally:
                 unit.end_activity(UnitActivities.CalibratingOpticalCenter)
@@ -678,8 +687,10 @@ class Calibrator:
             raise CalibrationError("no calibration.products.optical_center -- run 'optical_center' first")
         if focus is None:
             raise CalibrationError("no calibration.products.focuser -- run 'focuser' first")
-        logger.debug(f"{op}: prerequisites met -- optical_center=({oc.center_x:.1f}, {oc.center_y:.1f}) "
-                     f"epoch={oc.mechanical_epoch}, focus={focus.best_position}")
+        logger.debug(
+            f"{op}: prerequisites met -- optical_center=({oc.center_x:.1f}, {oc.center_y:.1f}) "
+            f"epoch={oc.mechanical_epoch}, focus={focus.best_position}"
+        )
 
         unit.start_activity(UnitActivities.CalibratingStage)
         with phase_logging("stage"):
@@ -702,12 +713,15 @@ class Calibrator:
                     folder = PathMaker().make_calibration_folder("stage")
                 except Exception as ex:
                     folder = None
-                    logger.warning(f"{op}: could not create the run folder ({ex}); "
-                                   f"continuing without one (memory imager only)")
-                logger.debug(f"{op}: folder={folder}; settings n_positions={st.n_positions} "
-                             f"span_steps={st.span_steps} "
-                             f"exposure={st.exposure} settle={st.settle_seconds} "
-                             f"require_bracketed={st.require_bracketed}")
+                    logger.warning(
+                        f"{op}: could not create the run folder ({ex}); continuing without one (memory imager only)"
+                    )
+                logger.debug(
+                    f"{op}: folder={folder}; settings n_positions={st.n_positions} "
+                    f"span_steps={st.span_steps} "
+                    f"exposure={st.exposure} settle={st.settle_seconds} "
+                    f"require_bracketed={st.require_bracketed}"
+                )
                 result = StageCalibrator(unit).calibrate(
                     folder=folder,
                     target_ra_j2000_hours=ra,
@@ -724,8 +738,10 @@ class Calibrator:
                 if result is None or not result.has_solution:
                     self._fail(f"{op}: no solution")
                 else:
-                    logger.info(f"{op}: spec_position={result.spec_position:.1f} "
-                                f"(bracketed={result.bracketed}, residual_rms={result.residual_rms:.2f}px)")
+                    logger.info(
+                        f"{op}: spec_position={result.spec_position:.1f} "
+                        f"(bracketed={result.bracketed}, residual_rms={result.residual_rms:.2f}px)"
+                    )
                 return result
             finally:
                 unit.end_activity(UnitActivities.CalibratingStage)
@@ -744,20 +760,24 @@ class Calibrator:
         router = APIRouter()
         router.add_api_route(base_path, methods=["POST"], tags=[tag], endpoint=self.endpoint_calibrate)
         router.add_api_route(
-            base_path + "/focuser", methods=["POST"], tags=[tag],
+            base_path + "/focuser",
+            methods=["POST"],
+            tags=[tag],
             endpoint=self.endpoint_calibrate_focuser,
         )
         router.add_api_route(
-            base_path + "/optical_center", methods=["POST"], tags=[tag],
+            base_path + "/optical_center",
+            methods=["POST"],
+            tags=[tag],
             endpoint=self.endpoint_calibrate_optical_center,
         )
         router.add_api_route(
-            base_path + "/stage", methods=["POST"], tags=[tag],
+            base_path + "/stage",
+            methods=["POST"],
+            tags=[tag],
             endpoint=self.endpoint_calibrate_stage,
         )
         router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
         router.add_api_route(base_path + "/config", tags=[tag], endpoint=self.endpoint_config)
-        router.add_api_route(
-            base_path + "/abort", methods=["POST"], tags=[tag], endpoint=self.endpoint_abort
-        )
+        router.add_api_route(base_path + "/abort", methods=["POST"], tags=[tag], endpoint=self.endpoint_abort)
         return router

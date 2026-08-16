@@ -1,16 +1,18 @@
+import json
+import logging
+import os
 import os.path
 import socket
 import time
-import numpy as np
 from multiprocessing.shared_memory import SharedMemory
 from time import sleep
+
+import numpy as np
 from astropy.io import fits
-import os
-import logging
+
 import guiding
-import json
-from unit import PLATE_SOLVING_SHM_NAME
 from common.mast_logging import get_logger
+from unit import PLATE_SOLVING_SHM_NAME
 
 image_params_shm: SharedMemory | None = None
 image_shm: SharedMemory | None = None
@@ -29,7 +31,7 @@ class ImageCounter:
     @property
     def value(self) -> int:
         try:
-            with open(self.filename, "r") as f:
+            with open(self.filename) as f:
                 ret = int(f.readline())
         except FileNotFoundError:
             ret = 0
@@ -145,7 +147,7 @@ if __name__ == "__main__":
             image_params = None
             try:
                 image_params = json.loads(s.decode("utf-8"))
-            except Exception as ex:
+            except json.JSONDecodeError:
                 pass  # TBD
             if not image_params:
                 logger.warning("bad image_params")
@@ -156,5 +158,5 @@ if __name__ == "__main__":
             socket_to_guider.send(json.dumps(response).encode("utf-8"))
             # logger.info('sent response to guider')
             time.sleep(1)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- obsolete simulator for the retired PlaneWave SHM solver
             logger.error("exception: ", e)

@@ -12,7 +12,6 @@ from common.canonical import CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.mast_logging import get_logger
 from common.models.statuses import CoversState, CoverStatus
 from common.utils import RepeatTimer, time_stamp
 
@@ -20,6 +19,8 @@ if TYPE_CHECKING:
     from unit import Unit
 
 logger: logging.Logger = logging.getLogger("mast.unit." + __name__)
+
+
 class Covers(Component, SwitchedOutlet, AscomDispatcher):
     _instance = None
     _initialized = False
@@ -51,10 +52,9 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         self.conf = self.unit.unit_conf.covers
         try:
             self._ascom = win32com.client.Dispatch(self.conf.ascom_driver)
-        except Exception as ex:
-            # logger.exception(ex)
-            logger.exception(ex)
-            raise ex
+        except Exception:
+            logger.exception(f"could not create ASCOM covers driver '{self.conf.ascom_driver}'")
+            raise
 
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Covers")
         Component.__init__(self, CoverActivities)
@@ -134,9 +134,9 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         """
 
         return CoverStatus(
-            **self.power_status().dict(),
-            **self.ascom_status().dict(),
-            **self.component_status().dict(),
+            **self.power_status().model_dump(),
+            **self.ascom_status().model_dump(),
+            **self.component_status().model_dump(),
             state=self.state,
             state_verbal=self.state.__repr__(),
             target_verbal=(

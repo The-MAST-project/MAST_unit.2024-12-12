@@ -165,8 +165,7 @@ class OpticalCenterCalibrator:
 
         if len(extractions) < need:
             return self._fail(
-                f"{op}: only {len(extractions)}/{st.number_of_frames} frames usable; "
-                f"need >= {need} (min_frames_passing)"
+                f"{op}: only {len(extractions)}/{st.number_of_frames} frames usable; need >= {need} (min_frames_passing)"
             )
 
         # --- pooled centre fit ------------------------------------------------
@@ -192,12 +191,16 @@ class OpticalCenterCalibrator:
             coma_tolerance=st.coma_tolerance,
         )
         if slope is None or slope.low_coma_radius is None:
-            logger.warning(f"{op}: no trustworthy coma slope -- persisting low_coma_radius=None "
-                           f"(autofocus falls back to its geometric disk)")
+            logger.warning(
+                f"{op}: no trustworthy coma slope -- persisting low_coma_radius=None "
+                f"(autofocus falls back to its geometric disk)"
+            )
         else:
-            logger.info(f"{op}: coma slope k={slope.slope:.3e}/px -> "
-                        f"low_coma_radius={slope.low_coma_radius:.0f}px "
-                        f"(tolerance={slope.coma_tolerance}, rms={slope.residual_rms:.4f})")
+            logger.info(
+                f"{op}: coma slope k={slope.slope:.3e}/px -> "
+                f"low_coma_radius={slope.low_coma_radius:.0f}px "
+                f"(tolerance={slope.coma_tolerance}, rms={slope.residual_rms:.4f})"
+            )
 
         self._persist(result, slope, st)
         return result
@@ -280,12 +283,13 @@ class OpticalCenterCalibrator:
         conf.calibration.products.optical_center = record
         try:
             Config().set_unit(unit_name=self.unit.hostname, unit_conf=conf)
-            logger.info(f"saved calibration.products.optical_center for '{self.unit.hostname}': "
-                        f"center=({record.center_x:.1f}, {record.center_y:.1f}) "
-                        f"low_coma_radius={record.low_coma_radius} epoch={epoch}")
+            logger.info(
+                f"saved calibration.products.optical_center for '{self.unit.hostname}': "
+                f"center=({record.center_x:.1f}, {record.center_y:.1f}) "
+                f"low_coma_radius={record.low_coma_radius} epoch={epoch}"
+            )
         except Exception as ex:
-            self._log_error(f"could not save calibration.products.optical_center "
-                            f"for '{self.unit.hostname}': {ex}")
+            self._log_error(f"could not save calibration.products.optical_center for '{self.unit.hostname}': {ex}")
 
     def _still_calibrating(self) -> bool:
         """Cooperative abort -- the operator clearing the flags stops the loop."""
