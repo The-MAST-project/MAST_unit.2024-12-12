@@ -53,8 +53,6 @@ UNIT_ENUMS = {
 KNOWN_UNBALANCED = {
     # Declared, never set: start_tracking/stop_tracking block instead of flagging.
     ("MountActivities", "Tracking: declared, never started or ended"): "MAST_unit#44",
-    # Ended in focuser.abort, started nowhere.
-    ("FocuserActivities", "StartingUp: ended, never started"): "MAST_unit#44",
     # Never set; `is_shutting_down` hard-returns False.
     ("StageActivities", "ShuttingDown: declared, never started or ended"): "MAST_unit#44",
     ("StageActivities", "Aborting: declared, never started or ended"): "MAST_unit#44",
