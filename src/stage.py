@@ -597,12 +597,7 @@ from pyximc import *
         return abs(self._position - target) <= self.conf.close_enough
 
     def _end_abort_when_at_rest(self) -> None:
-        """End `Aborting` once the controller reports the move finished (#80).
-
-        `is_moving` is `MVCMD_RUNNING` straight from the controller, so the abort ends on
-        hardware truth rather than on a settling heuristic -- deliberately not `is_stationary`,
-        which is broken (#150).
-        """
+        """End `Aborting` once `MVCMD_RUNNING` clears. Not `is_stationary`, which is broken (#150)."""
         if self.is_active(StageActivities.Aborting) and not self.is_moving:
             self.end_activity(StageActivities.Aborting)
 
@@ -929,9 +924,6 @@ from pyximc import *
             if self.is_active(activity):
                 self.end_activity(activity)
 
-        # Held until `ontimer` sees MVCMD_RUNNING clear. The flag has been declared here since
-        # before this branch and set by nothing -- one of #44's findings, and this is what it
-        # was declared for (#80, §5.2).
         self.start_activity(StageActivities.Aborting)
         assert ximclib
         ximclib.command_stop(self.device)

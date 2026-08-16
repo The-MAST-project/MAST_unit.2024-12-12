@@ -68,9 +68,6 @@ from stage import Stage
 logger = get_logger(__name__)
 filer = Filer(logger)
 
-# How long `abort()` waits for a commanded autofocus stop to take effect. Generous rather than
-# tight: the point of the bound is that the endpoint always returns, not that it returns quickly,
-# and a stop that needs longer than this is a fault worth reporting either way (#80).
 AUTOFOCUS_STOP_TIMEOUT_SECONDS = 30.0
 
 
@@ -418,10 +415,6 @@ class Unit(Component):
             self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing)
         ):
             self.autofocuser.stop_autofocus()
-            # Was an unbounded `while ...: time.sleep(0.2)`: an autofocus stop that never took
-            # effect wedged this endpoint for the life of the process, with nothing in `status`
-            # to say why. Bounded now -- a flag that does not clear stays set and visible, and
-            # the abort reports it rather than hanging on it (#80, guidelines §5.2).
             for flag in (UnitActivities.AutofocusingPWI4, UnitActivities.Autofocusing):
                 if not self.await_activity_clear(flag, timeout=AUTOFOCUS_STOP_TIMEOUT_SECONDS):
                     msg = (

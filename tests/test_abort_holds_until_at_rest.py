@@ -1,20 +1,11 @@
-"""Abort holds an `Aborting` activity until the device is at rest (#80, guidelines §5.2).
+"""Abort holds an `Aborting` activity until the device is at rest (#80).
 
-Before this, every component ended the operation's activity at the moment the stop was
-*issued*, so `/status` read idle while the mount was still decelerating and the next endpoint
-commanded a moving device. The flag is what closes that window, and these are the two
-decisions worth pinning:
+Two decisions are pinned here: the flag is raised only when there was motion to stop, and it
+comes down on the controller's own signal rather than on the stop having been sent.
 
-1. `abort()` raises the flag **only when there was motion to stop** -- a flag raised over an
-   idle component would be cleared by the next `ontimer` tick and mean nothing.
-2. the flag comes down on **hardware truth**, not on the stop having been sent.
-
-Windows-only, like the rest of the component suite: `mount`/`focuser`/`covers` import
-`win32com` at module scope.
-
-`start_activity` publishes a UI notification, which wants real configuration, so the
-components here record flag transitions instead. That keeps the assertions on what #80
-changed -- which flags move, and when -- rather than on the notification machinery.
+Windows-only, like the rest of the component suite. The components record flag transitions
+instead of using `Activities`, whose `start_activity` publishes a notification and wants real
+configuration.
 """
 
 from __future__ import annotations

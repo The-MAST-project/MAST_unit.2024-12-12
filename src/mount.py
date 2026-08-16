@@ -372,12 +372,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self._end_abort_when_at_rest(status)
 
     def _end_abort_when_at_rest(self, status) -> None:
-        """End `Aborting` once the mount has actually stopped, not when the stop was commanded.
-
-        Both signals are needed: `is_slewing` is PWI4's own answer for a commanded slew, and
-        `is_moving` catches the residual servo motion any other operation leaves behind. A
-        method rather than four more lines in `ontimer`, which is at the complexity ceiling (#80).
-        """
+        """End `Aborting` once the mount is stopped: no commanded slew, no residual motion."""
         if not self.is_active(MountActivities.Aborting):
             return
 
@@ -971,9 +966,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             if self.is_active(activity):
                 self.end_activity(activity)
 
-        # Held until `ontimer` sees the mount actually stopped. Stopping is itself a
-        # long-running operation, and reporting idle the moment the command is issued is what
-        # let the next endpoint command a mount that was still decelerating (#80, §5.2).
         self.start_activity(MountActivities.Aborting)
         self.pw.mount_stop()
         self.pw.mount_tracking_off()
