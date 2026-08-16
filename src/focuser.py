@@ -90,6 +90,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         return self.startup()
 
     def startup(self):
+        self.start_activity(FocuserActivities.StartingUp)
         if not self.is_on():
             self.power_on()
         if not self.connected:
@@ -97,7 +98,13 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         self.pw.focuser_enable()
         self._was_shut_down = False
         if self.known_as_good_position is not None and self.position != self.known_as_good_position:
+            # The move is asynchronous; `ontimer` ends StartingUp when it arrives.
             self.position = self.known_as_good_position
+        else:
+            # Nothing to move, so the startup completes here. Ending it now rather than
+            # leaving it for `ontimer` is what keeps the flag from outliving the operation --
+            # the failure mode #44's check exists to catch.
+            self.end_activity(FocuserActivities.StartingUp)
         return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.INTERFACE)
@@ -317,6 +324,12 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             elif self.close_enough(self.target):
                 self.end_activity(FocuserActivities.Moving)
                 self.target = None
+
+        # Mirrors the stage, which ends StartingUp on arrival at its startup preset. Keyed on
+        # the destination rather than on the move ending, so an operator move that happens to
+        # complete during startup does not report the startup as finished.
+        if self.is_active(FocuserActivities.StartingUp) and self.close_enough(self.known_as_good_position):
+            self.end_activity(FocuserActivities.StartingUp)
 
     @endpoint(tier=Tier.INTERFACE)
     def endpoint_status(self) -> FocuserStatus:
