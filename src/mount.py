@@ -620,6 +620,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
 
     @endpoint(tier=Tier.INTERFACE)
     def endpoint_status(self) -> MountStatus:
+        # Enveloped at registration; `status()` stays a bare typed model (MAST_common#70).
         return self.status()
 
     def status(self) -> MountStatus:
@@ -679,7 +680,9 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         :mastapi:
         """
         if not self.connected:
-            return
+            # Was a bare `return`, which answered HTTP `null` -- indistinguishable from the
+            # success path, which also returned nothing (invariant 4).
+            return CanonicalResponse(errors=["not connected"])
 
         self.pw.mount_tracking_on()
         time.sleep(1)
@@ -697,7 +700,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         :mastapi:
         """
         if not self.connected:
-            return
+            return CanonicalResponse(errors=["not connected"])
 
         self.pw.mount_tracking_off()
         time.sleep(1)
@@ -1036,6 +1039,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info("dance: done dancing")
         self.find_home()
         self.end_activity(MountActivities.Dancing)
+        return CanonicalResponse_Ok
 
     @property
     def api_router(self) -> APIRouter:

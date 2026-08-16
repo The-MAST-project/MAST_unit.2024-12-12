@@ -327,8 +327,15 @@ class Unit(Component):
             c.powerdown()
 
     @endpoint(tier=Tier.CONTRACT)
-    def endpoint_status(self) -> CanonicalResponse:
-        return CanonicalResponse(value=serialize_ip_addresses(self.status()))
+    def endpoint_status(self) -> Any:
+        # Enveloped at registration; `status()` stays a bare FullUnitStatus, which
+        # MAST_common#70 requires -- its fields are typed as the component status models.
+        #
+        # `serialize_ip_addresses` is kept as-is, deliberately: it is a no-op on a Pydantic
+        # model (it handles dict / list / IPv4Address and falls through on everything else),
+        # so it almost certainly does nothing here. Removing it is a separate question from
+        # moving the envelope, and this pass changes no behaviour.
+        return serialize_ip_addresses(self.status())
 
     def status(self) -> FullUnitStatus:
         autofocus = (

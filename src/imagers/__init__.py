@@ -3,7 +3,7 @@ import time
 import numpy as np
 from fastapi import APIRouter
 
-from common.canonical import CanonicalResponse
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.endpoints import Stability, Tier, add_api_route, endpoint
@@ -227,8 +227,9 @@ class Imager(ImagerInterface, SwitchedOutlet):
         return self._backend.endpoint_abort()
 
     @endpoint(tier=Tier.INTERFACE)
-    def endpoint_status(self) -> CanonicalResponse:
-        return CanonicalResponse(value=self.status())
+    def endpoint_status(self) -> ImagerStatus:
+        # Enveloped at registration; `status()` stays a bare typed model (MAST_common#70).
+        return self.status()
 
     def status(self) -> ImagerStatus:
         """
@@ -254,12 +255,14 @@ class Imager(ImagerInterface, SwitchedOutlet):
         )
 
     @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
-    def connect(self) -> CanonicalResponse | None:  # obsoleted by connected property
+    def connect(self) -> CanonicalResponse:  # obsoleted by connected property
         self._backend.connected = True
+        return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
-    def disconnect(self) -> CanonicalResponse | None:  # obsoleted by connected property
+    def disconnect(self) -> CanonicalResponse:  # obsoleted by connected property
         self.connected = False
+        return CanonicalResponse_Ok
 
     def start_exposure_series(self, purpose: str | None = None) -> ImagerExposureSeries:
         """
@@ -378,12 +381,14 @@ class Imager(ImagerInterface, SwitchedOutlet):
         return self._backend.default_settings
 
     @endpoint(tier=Tier.OPERATION)
-    def turn_cooler_on(self):
+    def turn_cooler_on(self) -> CanonicalResponse:
         self.cooler_on = True
+        return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION)
-    def turn_cooler_off(self):
+    def turn_cooler_off(self) -> CanonicalResponse:
         self.cooler_on = False
+        return CanonicalResponse_Ok
 
     @property
     def api_router(self) -> APIRouter:
