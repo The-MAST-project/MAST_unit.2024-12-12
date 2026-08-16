@@ -285,12 +285,18 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         """
         Aborts any in-progress focuser activities
         """
-        if self.is_active(FocuserActivities.Moving):
-            self.pw.focuser_stop()
+        was_moving = self.is_active(FocuserActivities.Moving)
+        if was_moving:
             self.end_activity(FocuserActivities.Moving)
 
         if self.is_active(FocuserActivities.StartingUp):
             self.end_activity(FocuserActivities.StartingUp)
+
+        if was_moving:
+            # Only when there was motion to stop: an Aborting flag raised over an idle focuser
+            # would be cleared by the very next `ontimer` tick and mean nothing (#80, §5.2).
+            self.start_activity(FocuserActivities.Aborting)
+            self.pw.focuser_stop()
         return CanonicalResponse_Ok
 
     @property
@@ -330,6 +336,11 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         # complete during startup does not report the startup as finished.
         if self.is_active(FocuserActivities.StartingUp) and self.close_enough(self.known_as_good_position):
             self.end_activity(FocuserActivities.StartingUp)
+
+        # PWI4's own answer for the focuser, the same signal `status()` reports as `moving`.
+        # Not `is_stationary`, which cannot be used here -- see #150 (#80).
+        if self.is_active(FocuserActivities.Aborting) and not self.pw.status().focuser.is_moving:  # type: ignore
+            self.end_activity(FocuserActivities.Aborting)
 
     @endpoint(tier=Tier.INTERFACE)
     def endpoint_status(self) -> FocuserStatus:
