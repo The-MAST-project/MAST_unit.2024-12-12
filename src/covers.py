@@ -356,16 +356,15 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         :return: APIRouter instance with Covers endpoints
         """
         base_path = Const.BASE_UNIT_PATH + "/covers"
-        tag = "Covers"
 
         router = APIRouter()
-        add_api_route(router, base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
-        add_api_route(router, base_path + "/shutdown", tags=[tag], endpoint=self.shutdown, methods=["PUT"])
-        add_api_route(router, base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["PUT"])
-        add_api_route(router, base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
-        add_api_route(router, base_path + "/connect", tags=[tag], endpoint=self.connect)
-        add_api_route(router, base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
-        add_api_route(router, base_path + "/open", tags=[tag], endpoint=self.endpoint_open, methods=["PUT"])
-        add_api_route(router, base_path + "/close", tags=[tag], endpoint=self.endpoint_close, methods=["PUT"])
+        add_api_route(router, base_path + "/startup", endpoint=self.endpoint_startup, methods=["PUT"])
+        add_api_route(router, base_path + "/shutdown", endpoint=self.shutdown, methods=["PUT"])
+        add_api_route(router, base_path + "/abort", endpoint=self.endpoint_abort, methods=["PUT"])
+        add_api_route(router, base_path + "/status", endpoint=self.endpoint_status)
+        add_api_route(router, base_path + "/connect", endpoint=self.connect)
+        add_api_route(router, base_path + "/disconnect", endpoint=self.disconnect)
+        add_api_route(router, base_path + "/open", endpoint=self.endpoint_open, methods=["PUT"])
+        add_api_route(router, base_path + "/close", endpoint=self.endpoint_close, methods=["PUT"])
 
         return router

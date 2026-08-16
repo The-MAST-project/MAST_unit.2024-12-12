@@ -156,3 +156,21 @@ def test_the_scan_found_the_surface():
     routed = _routed_method_names(trees)
     assert len(routed) >= 40, f"expected the unit's routed methods, found {len(routed)}"
     assert _declared_method_names(trees) == routed
+
+
+def test_no_route_carries_a_tag_of_its_own():
+    """#39: the tag is the tier, read from the declaration.
+
+    The helper raises on a `tags=` argument, so this is belt-and-braces -- but the raise
+    happens at import on Windows, and this runs everywhere and names the line.
+    """
+    trees = _unit_modules()
+    offenders = []
+    for module in ROUTER_MODULES:
+        for call in astscan.calls(trees[module]):
+            if astscan.called_name(call) != "add_api_route":
+                continue
+            if any(keyword.arg == "tags" for keyword in call.keywords):
+                offenders.append(f"{module}:{call.lineno}")
+
+    assert not offenders, "the tag is the tier; drop the `tags=` argument:\n    " + "\n    ".join(offenders)

@@ -397,31 +397,28 @@ class Imager(ImagerInterface, SwitchedOutlet):
         This is used to register the imager's API endpoints.
         """
         base_imager_path = Const.BASE_UNIT_PATH + "/imager"
-        tag = "Imager"
 
         router = APIRouter()
-        add_api_route(router, base_imager_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
-        add_api_route(router, base_imager_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown, methods=["PUT"])
-        add_api_route(router, base_imager_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["PUT"])
-        add_api_route(router, base_imager_path + "/status", tags=[tag], endpoint=self.endpoint_status)
-        add_api_route(router, base_imager_path + "/connect", tags=[tag], endpoint=self.connect)
-        add_api_route(router, base_imager_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
+        add_api_route(router, base_imager_path + "/startup", endpoint=self.endpoint_startup, methods=["PUT"])
+        add_api_route(router, base_imager_path + "/shutdown", endpoint=self.endpoint_shutdown, methods=["PUT"])
+        add_api_route(router, base_imager_path + "/abort", endpoint=self.endpoint_abort, methods=["PUT"])
+        add_api_route(router, base_imager_path + "/status", endpoint=self.endpoint_status)
+        add_api_route(router, base_imager_path + "/connect", endpoint=self.connect)
+        add_api_route(router, base_imager_path + "/disconnect", endpoint=self.disconnect)
         add_api_route(
             router,
             base_imager_path + "/start_exposure",
-            tags=[tag],
             endpoint=self.start_exposure,
             methods=["PUT"],
         )
-        add_api_route(router, base_imager_path + "/stop_exposure", tags=[tag], endpoint=self.stop_exposure, methods=["PUT"])
+        add_api_route(router, base_imager_path + "/stop_exposure", endpoint=self.stop_exposure, methods=["PUT"])
         add_api_route(
             router,
             base_imager_path + "/abort_exposure",
-            tags=[tag],
             endpoint=self.abort_exposure,
             methods=["PUT"],
         )
-        add_api_route(router, base_imager_path + "/cooler_on", tags=[tag], endpoint=self.turn_cooler_on, methods=["PUT"])
-        add_api_route(router, base_imager_path + "/cooler_off", tags=[tag], endpoint=self.turn_cooler_off, methods=["PUT"])
+        add_api_route(router, base_imager_path + "/cooler_on", endpoint=self.turn_cooler_on, methods=["PUT"])
+        add_api_route(router, base_imager_path + "/cooler_off", endpoint=self.turn_cooler_off, methods=["PUT"])
 
         return router

@@ -1003,33 +1003,29 @@ from pyximc import *
     @property
     def api_router(self) -> APIRouter:
         base_stage_path = Const.BASE_UNIT_PATH + "/stage"
-        tag = "Stage"
 
         router = APIRouter()
-        add_api_route(router, base_stage_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
-        add_api_route(router, base_stage_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown, methods=["PUT"])
-        add_api_route(router, base_stage_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["PUT"])
-        add_api_route(router, base_stage_path + "/status", tags=[tag], endpoint=self.endpoint_status)
+        add_api_route(router, base_stage_path + "/startup", endpoint=self.endpoint_startup, methods=["PUT"])
+        add_api_route(router, base_stage_path + "/shutdown", endpoint=self.endpoint_shutdown, methods=["PUT"])
+        add_api_route(router, base_stage_path + "/abort", endpoint=self.endpoint_abort, methods=["PUT"])
+        add_api_route(router, base_stage_path + "/status", endpoint=self.endpoint_status)
         add_api_route(
             router,
             base_stage_path + "/position",
-            tags=[tag],
             endpoint=self.endpoint_get_position,
         )
         add_api_route(
             router,
             base_stage_path + "/position",
             methods=["PUT"],
-            tags=[tag],
             endpoint=self.endpoint_set_position,
         )
-        add_api_route(router, base_stage_path + "/connect", tags=[tag], endpoint=self.connect)
-        add_api_route(router, base_stage_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
-        add_api_route(router, base_stage_path + "/move", tags=[tag], endpoint=self.move_relative, methods=["PUT"])
+        add_api_route(router, base_stage_path + "/connect", endpoint=self.connect)
+        add_api_route(router, base_stage_path + "/disconnect", endpoint=self.disconnect)
+        add_api_route(router, base_stage_path + "/move", endpoint=self.move_relative, methods=["PUT"])
         add_api_route(
             router,
             base_stage_path + "/move_to_preset",
-            tags=[tag],
             endpoint=self.move_to_preset,
             methods=["PUT"],
         )
