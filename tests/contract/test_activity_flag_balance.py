@@ -46,21 +46,34 @@ UNIT_ENUMS = {
     "ImagerActivities",
 }
 
-# Unbalanced flags, keyed to the issue that owns fixing them. #44 recorded four; this check
-# finds seven. The three it adds -- StageActivities.Aborting, ImagerActivities.StartingUp and
-# UnitActivities.PreGuiding -- were not in any inventory, which is the argument for the check
-# over the inventory.
+# Unbalanced flags, keyed to the issue that owns each one. #44 recorded four; this check found
+# seven, and the three it added -- StageActivities.Aborting, ImagerActivities.StartingUp and
+# UnitActivities.PreGuiding -- were in no inventory, which is the argument for the check over
+# the inventory.
+#
+# Reviewed one by one 2026-08-16, and they are not one population. FocuserActivities.StartingUp
+# was a real defect and is fixed (#147). Of the six below, two are **correct as they stand**:
+# the operation they would flag is synchronous in the unit, so there is no in-progress window
+# to report. They stay listed because the check is a set-equality check -- an entry here is
+# "accounted for", not "owed a fix". The rest carry the issue that owns them, so nothing is
+# tracked only in this dict.
 KNOWN_UNBALANCED = {
-    # Declared, never set: start_tracking/stop_tracking block instead of flagging.
-    ("MountActivities", "Tracking: declared, never started or ended"): "MAST_unit#44",
-    # Never set; `is_shutting_down` hard-returns False.
-    ("StageActivities", "ShuttingDown: declared, never started or ended"): "MAST_unit#44",
-    ("StageActivities", "Aborting: declared, never started or ended"): "MAST_unit#44",
-    # Set only in an uncalled cooldown(); its ontimer end is commented out. The worst of the
-    # seven -- a waiter on this bit never returns.
-    ("ImagerActivities", "CoolingDown: started, never ended"): "MAST_unit#44",
-    ("ImagerActivities", "StartingUp: declared, never started or ended"): "MAST_unit#44",
-    ("UnitActivities", "PreGuiding: declared, never started or ended"): "MAST_unit#44",
+    # Composed into the reported bitmask at mount.py:634 rather than flagged: it is mount
+    # STATE, not an operation in progress. Retirement needs an IntFlag-renumbering check.
+    ("MountActivities", "Tracking: declared, never started or ended"): "MAST_unit#148",
+    ("UnitActivities", "PreGuiding: declared, never started or ended"): "MAST_unit#148",
+    # CORRECT AS IS: the unit's stage shutdown is synchronous (disconnect, return), so nothing
+    # is ever "shutting down" asynchronously and `is_shutting_down` returning False is honest.
+    # MAST_spec shares this enum and DOES use the flag asynchronously (spec/stage/stage.py:317).
+    ("StageActivities", "ShuttingDown: declared, never started or ended"): "by design",
+    # CORRECT AS IS: both imager backends' startup() is synchronous. Whether it SHOULD be --
+    # it returns while the sensor is still at ambient -- is #149, not this flag's problem.
+    ("ImagerActivities", "StartingUp: declared, never started or ended"): "by design",
+    # Started only in the uncalled cooldown(); its ontimer end is commented out. Unreachable
+    # today, and a waiter would hang if it were ever reached.
+    ("ImagerActivities", "CoolingDown: started, never ended"): "MAST_unit#149",
+    # The flag #80 exists to start: abort holds Aborting until the device is confirmed at rest.
+    ("StageActivities", "Aborting: declared, never started or ended"): "MAST_unit#80",
 }
 
 
