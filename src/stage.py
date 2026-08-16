@@ -7,7 +7,7 @@ import time
 from collections import deque
 from enum import Enum, IntEnum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar
 
 from fastapi.routing import APIRouter
 
@@ -80,16 +80,34 @@ class StageDirection(IntEnum):
     Down = auto()
 
 
+# The values below are the wire format, and the member names are Python identifiers with no
+# meaning outside this file. Keeping those two apart is the fix for #85: the names used to
+# leak into the HTTP contract, leaving three of the five presets unreachable -- request
+# validation advertised the lowercase values while the handler resolved by member name, so
+# `spec` passed validation and then failed the lookup, `Spec` was rejected by validation
+# before the handler saw it, and `mid` failed because the member is `Middle`. Both
+# operationally meaningful presets were among the unreachable ones.
+#
+# Plain strings rather than the 1-tuples used previously, which made the OpenAPI schema an
+# *array* enum (`[["sky"], ["spec"], ...]`) and left `value` a tuple no caller could compare
+# against.
 class StagePresetPosition(Enum):
-    Sky = ("sky",)
-    Spec = ("spec",)
-    Min = ("min",)
-    Middle = ("mid",)
-    Max = ("max",)
-    StartUp = Sky
+    """Preset stage positions: `sky`, `spec`, `min`, `mid`, `max`."""
+
+    Sky = "sky"
+    Spec = "spec"
+    Min = "min"
+    Middle = "mid"
+    Max = "max"
 
 
-stage_position_names: list[str] = [k for k in StagePresetPosition.__dict__]
+#: Where the stage is sent on startup. Deliberately not an enum member: as an alias of `Sky`
+#: it published a duplicate "sky" in the OpenAPI enum, and it is a policy choice rather than
+#: a position anyone can command.
+STARTUP_PRESET = StagePresetPosition.Sky
+
+#: The preset names the API accepts, for anyone building a UI over it.
+stage_position_names: list[str] = [p.value for p in StagePresetPosition]
 
 stage_direction_str2int_dict: dict = {
     "Up": StageDirection.Up,
@@ -512,41 +530,55 @@ from pyximc import *
 
     @position.setter
     def position(self, value):
-        if not self.connected:
-            raise Exception("Not connected")
+        """Delegates to `move_absolute`, raising on refusal to keep the property contract.
 
-        if self.close_enough(value):
-            logger.info(f"Not changing position ({self.position} is close enough to {value}")
-            return
+        This was a parallel implementation of the same move, and it had drifted: no
+        `detected` check, no travel-limit range check, and `command_move(device, value)`
+        with two arguments where the C signature is `(id, Position, uPosition)`. `pyximc`
+        binds the library as a bare `WinDLL` with no `argtypes`, so ctypes never caught the
+        missing argument and the controller was handed an undefined micro-step offset.
 
-        self.target = value
-        with self.stage_lock:
-            assert ximclib, "No ximclib"
-            result = ximclib.command_move(self.device, value)
-        if result == Result.Ok:
-            self.start_activity(StageActivities.Moving, details=[f"to {self.target}"])
-        else:
-            raise Exception(f"Could not start move to {value} ({result=})")
+        It has no callers in this repository -- it exists for interactive use, which is
+        exactly why it went unnoticed.
+        """
+        response = self.move_absolute(value)
+        if response is not None and response.failed:
+            raise ValueError(f"cannot move to {value}: {'; '.join(response.errors or [])}")
 
     @endpoint(tier=Tier.INTERFACE)
     def endpoint_status(self) -> StageStatus:
         # Enveloped at registration; `status()` stays a bare typed model (MAST_common#70).
         return self.status()
 
-    def status(self) -> StageStatus:
-        at_preset = None
-        if self.detected:
-            for k in self.presets:
-                if self.close_enough(self.presets[k]):
-                    at_preset = k.name.lower()
-                    break
+    def at_preset_name(self) -> str | None:
+        """The preset the stage is currently parked at, as the API spells it.
 
-        target_verbal = f"{self.target}"
+        `value`, not `name.lower()`: the latter reported "middle" for a preset the API calls
+        "mid", so what status said did not round-trip into `move_to_preset` (#85).
+        """
+        if not self.detected:
+            return None
+        for preset, position in self.presets.items():
+            if self.close_enough(position):
+                return preset.value
+        return None
+
+    def target_preset_name(self) -> str:
+        """The preset being moved to, as the API spells it; the raw target if it is not one.
+
+        The comparison is against the preset's *position*. It used to be against the enum's
+        value -- a 1-tuple, and now a string -- neither of which can equal the integer
+        `target`, so this never once resolved to a preset name.
+        """
         if self.target is not None:
-            for preset in self.presets:
-                if self.target == preset.value:
-                    target_verbal = preset.name
-                    break
+            for preset, position in self.presets.items():
+                if self.target == position:
+                    return preset.value
+        return f"{self.target}"
+
+    def status(self) -> StageStatus:
+        at_preset = self.at_preset_name()
+        target_verbal = self.target_preset_name()
 
         return StageStatus(
             **self.power_status().model_dump(),
@@ -730,42 +762,55 @@ from pyximc import *
                                 logger.error(f"{op}: attempt #{i} (of 3): successfully cleared MVCMD_ERROR")
                                 break
 
-            if self.is_active(StageActivities.StartingUp) and self.close_enough(self.presets[StagePresetPosition.StartUp]):
+            if self.is_active(StageActivities.StartingUp) and self.close_enough(self.presets[STARTUP_PRESET]):
                 self.end_activity(StageActivities.StartingUp)
 
             if self.is_active(StageActivities.Homing):
                 self.end_activity(StageActivities.Homing)
 
     @endpoint(tier=Tier.OPERATION)
-    def move_to_preset(
-        self,
-        preset: Const.SolvingPhase | Literal["Min", "Mid", "Max"] | StagePresetPosition,
-    ):
+    def move_to_preset(self, preset: StagePresetPosition) -> CanonicalResponse:
         """
-        Starts moving the stage to one of the preset positions
+        Starts moving the stage to one of the preset positions.
 
         Parameters
         ----------
         preset
-            Name of a preset position
-        """
-        if not self.detected or not self.connected:
-            return CanonicalResponse(errors=["not detected or not connected"])
+            One of `sky`, `spec`, `min`, `mid`, `max`.
 
+        Notes
+        -----
+        Annotating this with the enum itself is what fixes #85: pydantic validates a query
+        string against an Enum **by value**, so `?preset=spec` arrives already resolved and
+        an unknown name is a 422 from FastAPI listing the valid ones. The previous signature
+        spliced together `Const.SolvingPhase` and a capitalised `Literal`, neither of which
+        matched the by-name lookup the body then performed.
+        """
+        op = function_name()
+
+        # Direct Python callers may still pass a string; the API path never reaches this,
+        # having been resolved by pydantic already.
         if isinstance(preset, str):
             try:
-                preset = StagePresetPosition.__getitem__(preset)
-            except KeyError:
-                msg = f"no such preset position '{preset}'"
-                logger.warning(msg)
-                # Was a bare return, i.e. HTTP null: this is exactly how #85's
-                # 'sky'/'spec' no-op presents as a silent success.
-                return CanonicalResponse(errors=[msg])
+                preset = StagePresetPosition(preset.lower())
+            except ValueError:
+                return CanonicalResponse(errors=[f"{op}: no such preset '{preset}', expected one of {stage_position_names}"])
+
+        # Each of these used to be a bare `return`, i.e. HTTP 200 with a null body and the
+        # stage motionless -- a failure the caller could not tell from success (#85, #47).
+        if not self.detected:
+            return CanonicalResponse(errors=[f"{op}: stage not detected"])
+        if not self.connected:
+            return CanonicalResponse(errors=[f"{op}: stage not connected"])
+
+        # min/mid/max are only populated once travel limits are known (see startup), so a
+        # preset can be valid yet have no position yet.
+        if preset not in self.presets:
+            return CanonicalResponse(errors=[f"{op}: preset '{preset.value}' has no position yet; is the stage up?"])
 
         preset_position = self.presets[preset]
         if self.close_enough(preset_position):
-            logger.info(f"Not moving {self.position=} is close enough to {preset_position=}")
-            # Genuinely succeeded with nothing to do -- distinct from the refusals above.
+            logger.info(f"{op}: not moving, {self.position=} is close enough to {preset_position=}")
             return CanonicalResponse_Ok
 
         return self.move_absolute(preset_position)
@@ -774,16 +819,22 @@ from pyximc import *
         op = function_name()
 
         if not self.detected:
-            return CanonicalResponse(errors=["not detected"])
+            return CanonicalResponse(errors=[f"{op}: not detected"])
         if not self.connected:
-            return CanonicalResponse(errors=["not connected"])
+            return CanonicalResponse(errors=[f"{op}: not connected"])
 
         if isinstance(position, str):
-            position = int(position)
+            try:
+                position = int(position)
+            except ValueError:
+                return CanonicalResponse(errors=[f"{op}: '{position}' is not a position"])
 
         if self.close_enough(position):
-            logger.info(f"{op}: Not moving {self.position=} is close enough to {position=}")
-            return
+            # Ok, not None: this is the "already there" success, and returning None from a
+            # route makes it HTTP 200 with a null body -- indistinguishable from a refusal
+            # (#85, #47). It matters more now that every absolute move comes through here.
+            logger.info(f"{op}: not moving, {self.position=} is close enough to {position=}")
+            return CanonicalResponse_Ok
 
         if self.max_travel is None or self.min_travel is None:
             return CanonicalResponse(errors=["cannot move - min_travel or max_travel is None"])
@@ -902,8 +953,8 @@ from pyximc import *
                 ret.append(f"{label}: not connected")
             elif not (self.at_preset(StagePresetPosition.Spec) or self.at_preset(StagePresetPosition.Sky)):
                 ret.append(
-                    f"{label}: at {self.position}, not at 'Spec' "
-                    + f"({self.presets[StagePresetPosition.Spec]}) or 'Sky' "
+                    f"{label}: at {self.position}, not at '{StagePresetPosition.Spec.value}' "
+                    + f"({self.presets[StagePresetPosition.Spec]}) or '{StagePresetPosition.Sky.value}' "
                     + f"({self.presets[StagePresetPosition.Sky]}) preset positions"
                 )
             if not self._currently_operational:
@@ -929,9 +980,17 @@ from pyximc import *
     def endpoint_set_position(self, pos: int):
         return self.set_position(pos)
 
-    def set_position(self, pos: int):
-        self.position = pos
-        return CanonicalResponse_Ok
+    def set_position(self, pos: int) -> CanonicalResponse:
+        """`PUT /stage/position`: the only way to command an absolute position over the API.
+
+        It used to assign the `position` property, which is a second implementation of the
+        same move that never acquired `move_absolute`'s guards -- so the one route an
+        operator has for an absolute move was the one that skipped the travel-limit check
+        and could drive the stage past `max_travel`. It also raised rather than returning,
+        so a refusal surfaced as a 500 with a traceback, while this returned `Ok`
+        unconditionally regardless of what happened.
+        """
+        return self.move_absolute(pos)
 
     @property
     def api_router(self) -> APIRouter:
