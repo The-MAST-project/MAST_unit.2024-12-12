@@ -37,15 +37,30 @@ def _unit_modules() -> dict[str, ast.Module]:
 
 
 def _routed_method_names(trees: dict[str, ast.Module]) -> set[str]:
-    """Method names reached by a route, from any of the router modules."""
+    """Method names reached by a route, from any of the router modules.
+
+    Two forms reach a handler, and both name a declared method:
+
+        endpoint=self.status                    the method is the handler
+        endpoint=self._new_path_endpoint()      a factory builds the handler at registration
+
+    The second exists because some defaults are only knowable after construction -- a unit's
+    configured fibre position cannot be written into a signature evaluated at import. The
+    declaration sits on the factory (`@endpoint(..., factory=True)`), so the trailing call is
+    stripped and the factory's own name is what must be declared.
+    """
     routed = set()
     for module in ROUTER_MODULES:
         for call in astscan.calls(trees[module]):
             if astscan.called_name(call) != "add_api_route":
                 continue
-            target = next((ast.unparse(kw.value) for kw in call.keywords if kw.arg == "endpoint"), None)
-            if target:
-                routed.add(target.rsplit(".", 1)[-1])
+            target = next((kw.value for kw in call.keywords if kw.arg == "endpoint"), None)
+            if target is None:
+                continue
+            # `self._new_path_endpoint()` -> `self._new_path_endpoint`
+            if isinstance(target, ast.Call):
+                target = target.func
+            routed.add(ast.unparse(target).rsplit(".", 1)[-1])
     return routed
 
 
@@ -92,6 +107,46 @@ def test_every_declaration_is_routed():
     orphaned = sorted(_declared_method_names(trees) - _routed_method_names(trees))
 
     assert not orphaned, f"declared @endpoint but not routed: {orphaned}"
+
+
+FACTORY_BUILT_ROUTE = '''
+class Unit:
+    """A component whose handler is built after construction, not defined at import."""
+
+    @endpoint(tier=Tier.OPERATION, factory=True)
+    def _new_path_endpoint(self):
+        def new_path(steps: int, center: int = configured):
+            return {}
+
+        return new_path
+
+    @endpoint(tier=Tier.INTERFACE)
+    def status(self):
+        return {}
+
+    def api_router(self):
+        add_api_route(router, "/unit/spiral_new_path", endpoint=self._new_path_endpoint(), methods=["PUT"])
+        add_api_route(router, "/unit/status", endpoint=self.status)
+'''
+
+
+def test_a_factory_built_route_reconciles_with_its_declaration():
+    """Both halves of the scan must agree on a route registered as `endpoint=self.<factory>()`.
+
+    Exercised against a synthetic source rather than waiting for the first real one: the scan
+    reading `_new_path_endpoint()` (with the parentheses) would silently report the route as
+    undeclared, and the two names would never meet. The nested `new_path` is deliberately left
+    undeclared -- the declaration belongs on the factory, which is the class attribute.
+    """
+    tree = ast.parse(FACTORY_BUILT_ROUTE)
+    trees = dict.fromkeys(ROUTER_MODULES + tuple(CROSS_MODULE_OWNERS.values()), tree)
+
+    routed = _routed_method_names(trees)
+    declared = _declared_method_names(trees)
+
+    assert routed == {"_new_path_endpoint", "status"}
+    assert not routed - declared
+    assert "new_path" not in declared
 
 
 def test_the_scan_found_the_surface():

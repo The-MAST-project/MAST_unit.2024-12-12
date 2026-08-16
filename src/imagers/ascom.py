@@ -23,7 +23,6 @@ from common.interfaces.components import Component
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface
 from common.mast_logging import get_logger
 from common.models.statuses import ImagerBackendStatus, ImagerRoi, ImagerSettings, ImagerStatus
-from common.paths import PathMaker
 from common.utils import RepeatTimer, function_name
 from imagers import Imager
 from imagers.saving import save_to_fits_file
@@ -374,43 +373,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         """
         self.connected = False
         return CanonicalResponse_Ok
-
-    def endpoint_start_exposure(
-        self,
-        seconds: float | None = 5,
-        gain: int | None = asi.ASI_294MM_DEFAULT_GAIN,
-        binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
-        center_x: int | None = None,
-        center_y: int | None = None,
-        width: int | None = None,
-        height: int | None = None,
-    ):
-
-        if self.cameraXSize is None or self.cameraYSize is None:
-            return CanonicalResponse(errors=["cameraXSize or cameraYSize is not set, cannot start exposure"])
-        center_x = center_x if center_x is not None else int(self.cameraXSize / 2)
-        center_y = center_y if center_y is not None else int(self.cameraYSize / 2)
-        width = width if width is not None else self.cameraXSize
-        height = height if height is not None else self.cameraYSize
-
-        roi = ImagerRoi(
-            x=center_x - int(width / 2),
-            y=center_y - int(height / 2),
-            width=width,
-            height=height,
-        )
-
-        settings = ImagerSettings(
-            seconds=seconds if isinstance(seconds, int | float) else 5,
-            base_folder=PathMaker().make_exposures_folder(),
-            gain=gain,
-            binning=binning,
-            roi=roi,
-            tags=None,
-            save=True,
-        )
-
-        self.start_exposure(settings)
 
     def start_exposure(  # noqa: C901
         self, settings: ImagerSettings

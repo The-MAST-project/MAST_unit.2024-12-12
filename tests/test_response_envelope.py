@@ -65,6 +65,17 @@ def test_focuser_set_position_endpoint_refuses_instead_of_reporting_ok():
     assert_refused(_unpowered_focuser().endpoint_set_position("1000"))
 
 
+def test_focuser_set_position_names_what_it_rejected():
+    """A non-numeric position is refused as a position, not as a ``ValueError``.
+
+    The annotation is ``int | str``, so pydantic passes any string through and the ``int()``
+    underneath is what decides. Before the guard it raised, and the registration wrapper
+    reported the refusal as ``ValueError: invalid literal for int()`` -- naming the exception
+    type rather than the input. Matches ``stage.move_absolute``, the sibling absolute move.
+    """
+    assert_refused(_unpowered_focuser().endpoint_set_position("kaboom"), expected="'kaboom' is not a position")
+
+
 # ---------------------------------------------------------------------------- covers
 
 
