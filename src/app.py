@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import ValidationError
 
 from common.config import Config, ConfigError
+from common.endpoints import OPENAPI_TAGS
 from common.filer import Filer
 from common.mast_logging import configure_logging, get_logger
 from common.process import ensure_process_is_running
@@ -203,6 +204,7 @@ def create_app(unit=None) -> FastAPI:
         redocs_url=None,
         lifespan=lifespan,
         openapi_url="/openapi.json",
+        openapi_tags=OPENAPI_TAGS,
         debug=True,
         # exception_handlers={WebSocketDisconnect: websocket_disconnect_handler},
     )

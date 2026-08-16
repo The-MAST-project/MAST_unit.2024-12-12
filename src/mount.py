@@ -1058,41 +1058,38 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         """
         Returns a FastAPI router with all the mount API endpoints."""
         base_path = Const.BASE_UNIT_PATH + "/mount"
-        tag = "Mount"
 
         router = APIRouter()
-        add_api_route(router, base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
-        add_api_route(router, base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown, methods=["PUT"])
-        add_api_route(router, base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["PUT"])
-        add_api_route(router, base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
-        add_api_route(router, base_path + "/connect", tags=[tag], endpoint=self.connect)
-        add_api_route(router, base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
-        add_api_route(router, base_path + "/start_tracking", tags=[tag], endpoint=self.start_tracking, methods=["PUT"])
-        add_api_route(router, base_path + "/stop_tracking", tags=[tag], endpoint=self.stop_tracking, methods=["PUT"])
-        add_api_route(router, base_path + "/park", tags=[tag], endpoint=self.park, methods=["PUT"])
-        add_api_route(router, base_path + "/find_home", tags=[tag], endpoint=self.find_home, methods=["PUT"])
+        add_api_route(router, base_path + "/startup", endpoint=self.endpoint_startup, methods=["PUT"])
+        add_api_route(router, base_path + "/shutdown", endpoint=self.endpoint_shutdown, methods=["PUT"])
+        add_api_route(router, base_path + "/abort", endpoint=self.endpoint_abort, methods=["PUT"])
+        add_api_route(router, base_path + "/status", endpoint=self.endpoint_status)
+        add_api_route(router, base_path + "/connect", endpoint=self.connect)
+        add_api_route(router, base_path + "/disconnect", endpoint=self.disconnect)
+        add_api_route(router, base_path + "/start_tracking", endpoint=self.start_tracking, methods=["PUT"])
+        add_api_route(router, base_path + "/stop_tracking", endpoint=self.stop_tracking, methods=["PUT"])
+        add_api_route(router, base_path + "/park", endpoint=self.park, methods=["PUT"])
+        add_api_route(router, base_path + "/find_home", endpoint=self.find_home, methods=["PUT"])
         # PUT per invariant 5 (#48). `/goto` and the divergent `goto()` it pointed at
         # were retired in #37: the equatorial and horizontal slews are separate verbs.
         add_api_route(
             router,
             base_path + "/goto_ra_dec_j2000",
             methods=["PUT"],
-            tags=[tag],
             endpoint=self.endpoint_goto_ra_dec_j2000,
         )
         add_api_route(
             router,
             base_path + "/goto_ra_dec_apparent",
             methods=["PUT"],
-            tags=[tag],
             endpoint=self.endpoint_goto_ra_dec_apparent,
         )
         # PUT, not GET: invariant 5 of the endpoint contract (#48, decided 2026-07-20) --
         # state-changing routes are PUT so a caching proxy, a link prefetch or a Swagger
         # "try it out" cannot fire a slew. The sibling verbs are still GET pending that
         # sweep; a new route has no reason to be added to the pile.
-        add_api_route(router, base_path + "/goto_alt_az", methods=["PUT"], tags=[tag], endpoint=self.goto_alt_az)
-        add_api_route(router, base_path + "/dance", tags=[tag], endpoint=self.dance, methods=["PUT"])
+        add_api_route(router, base_path + "/goto_alt_az", methods=["PUT"], endpoint=self.goto_alt_az)
+        add_api_route(router, base_path + "/dance", endpoint=self.dance, methods=["PUT"])
 
         return router
 

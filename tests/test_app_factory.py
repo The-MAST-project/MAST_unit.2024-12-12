@@ -25,6 +25,7 @@ from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
 import app as app_module
+from common.endpoints import TIER_TAGS, Tier
 
 # Defect 2's real assertion: reaching this line means importing `app` spawned nothing.
 # `conftest` installs the process guard before collection, so a module-level spawn would
@@ -126,3 +127,11 @@ def test_lifespan_without_a_unit_starts_and_stops_cleanly():
         # The favicon route redirects into `/static`, which nothing mounts here; the
         # redirect itself is the evidence that the route is wired and serving.
         assert client.get("/favicon.ico", follow_redirects=False).status_code == 307
+
+
+def test_the_schema_declares_the_tier_groups_in_display_order():
+    """#39: Swagger groups by contract tier, most depended-upon first, each with its promise."""
+    schema = app_module.create_app().openapi()
+
+    assert [group["name"] for group in schema["tags"]] == [TIER_TAGS[tier] for tier in Tier]
+    assert all(group["description"] for group in schema["tags"])

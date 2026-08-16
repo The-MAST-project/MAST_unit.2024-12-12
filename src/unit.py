@@ -1139,30 +1139,27 @@ class Unit(Component):
         router = APIRouter()
 
         base_path = Const.BASE_UNIT_PATH
-        tag = "Unit"
 
-        add_api_route(router, base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup, methods=["PUT"])
-        add_api_route(router, base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown, methods=["PUT"])
+        add_api_route(router, base_path + "/startup", endpoint=self.endpoint_startup, methods=["PUT"])
+        add_api_route(router, base_path + "/shutdown", endpoint=self.endpoint_shutdown, methods=["PUT"])
         # The one state-changing verb kept on GET as well as PUT, deliberately and
         # temporarily. MAST_common's shared plan client aborts every committed unit with
         # method="GET" (models/plans.py:830-831), so PUT-only would answer 405 on the
         # fleet's abort path -- the last verb that should fail quietly. Accepting both is
         # the migration step: the client moves to PUT, then GET comes off here. Tracked
         # on #48; every other state-changing route in this file is PUT-only.
-        add_api_route(router, base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["GET", "PUT"])
-        add_api_route(router, base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
+        add_api_route(router, base_path + "/abort", endpoint=self.endpoint_abort, methods=["GET", "PUT"])
+        add_api_route(router, base_path + "/status", endpoint=self.endpoint_status)
         if self.autofocuser:
             add_api_route(
                 router,
                 base_path + "/start_autofocus",
-                tags=[tag],
                 endpoint=self.autofocuser.start_autofocus,
                 methods=["PUT"],
             )
             add_api_route(
                 router,
                 base_path + "/stop_autofocus",
-                tags=[tag],
                 endpoint=self.autofocuser.endpoint_stop_autofocus,
                 methods=["PUT"],
             )
@@ -1170,7 +1167,6 @@ class Unit(Component):
             add_api_route(
                 router,
                 base_path + "/start_acquisition_and_guiding",
-                tags=[tag],
                 endpoint=self.acquirer.endpoint_start_acquisition_and_guiding,
                 methods=["PUT"],
             )
@@ -1178,22 +1174,19 @@ class Unit(Component):
             add_api_route(
                 router,
                 base_path + "/start_guiding",
-                tags=[tag],
                 endpoint=self.guider.endpoint_start_guiding,
                 methods=["PUT"],
             )
             add_api_route(
                 router,
                 base_path + "/stop_acquisition_and_guiding",
-                tags=[tag],
                 endpoint=self.guider.endpoint_stop_acquisition_and_guiding,
                 methods=["PUT"],
             )
-        add_api_route(router, base_path + "/expose", tags=[tag], endpoint=self.expose, methods=["PUT"])
+        add_api_route(router, base_path + "/expose", endpoint=self.expose, methods=["PUT"])
         add_api_route(
             router,
             base_path + "/test_stage_repeatability",
-            tags=[tag],
             endpoint=self.endpoint_test_stage_repeatability,
             methods=["PUT"],
         )
@@ -1201,46 +1194,34 @@ class Unit(Component):
             router,
             base_path + "/execute_assignment",
             methods=["PUT"],
-            tags=[tag],
             endpoint=self.endpoint_execute_assignment,
         )
         add_api_route(
             router,
             base_path + "/start_dancing",
-            tags=[tag],
             endpoint=self.endpoint_start_dancing,
             methods=["PUT"],
         )
         add_api_route(
             router,
             base_path + "/stop_dancing",
-            tags=[tag],
             endpoint=self.endpoint_stop_dancing,
             methods=["PUT"],
         )
         # add_api_route(router,
         #     base_path + "/calculate_sky_pixel",
-        #     tags=[tag],
-        #     endpoint=self.set_sky_and_spec_pixel_values,
+        #     #     endpoint=self.set_sky_and_spec_pixel_values,
         # , methods=["PUT"])
 
-        tag = "PlaneWave mount - spiral path"
-        add_api_route(
-            router, base_path + "/spiral_new_path", tags=[tag], endpoint=self.endpoint_spiral_new_path, methods=["PUT"]
-        )
-        add_api_route(
-            router, base_path + "/spiral_next_step", tags=[tag], endpoint=self.endpoint_spiral_next_step, methods=["PUT"]
-        )
+        add_api_route(router, base_path + "/spiral_new_path", endpoint=self.endpoint_spiral_new_path, methods=["PUT"])
+        add_api_route(router, base_path + "/spiral_next_step", endpoint=self.endpoint_spiral_next_step, methods=["PUT"])
         add_api_route(
             router,
             base_path + "/spiral_previous_step",
-            tags=[tag],
             endpoint=self.endpoint_spiral_previous_step,
             methods=["PUT"],
         )
-        add_api_route(
-            router, base_path + "/spiral_end_path", tags=[tag], endpoint=self.endpoint_spiral_end_path, methods=["PUT"]
-        )
+        add_api_route(router, base_path + "/spiral_end_path", endpoint=self.endpoint_spiral_end_path, methods=["PUT"])
 
         return router
 
