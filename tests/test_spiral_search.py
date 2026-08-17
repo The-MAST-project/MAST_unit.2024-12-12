@@ -198,6 +198,26 @@ class TestOpeningASession:
         assert read_result(Path(first_folder))["aborted"] is True, "the abandoned run must leave a trace"
         assert session.is_active, "the new session is open"
 
+    def test_a_session_refuses_to_open_if_tracking_cannot_start(self, session):
+        """The measurement is meaningless on an untracked mount.
+
+        On 2026-08-17 `start_tracking()` returned a bare `None` because the mount's
+        `connected` was false, the session opened regardless, and three runs produced
+        trailed frames -- the last reporting a shift of (-0.0, 0.01) at confidence 0.93.
+        One clear error beats a night of plausible-looking wrong answers.
+        """
+        refusal = CanonicalResponse(errors=["mount not connected, cannot start tracking"])
+        session.unit.mount.start_tracking = lambda: refusal
+
+        response = session.start(x_step_arcsec=5.0, y_step_arcsec=5.0, exposure_seconds=2.0)
+
+        assert response.failed
+        assert "not connected" in response.errors[0]
+        assert not session.is_active, "no session may be left half-open"
+        assert session.unit.mount.pw.calls == [], "the spiral must not be armed"
+        assert session.unit.imager.series_open == 0, "no exposure series may be opened"
+        assert not (session.test_folder / REFERENCE_IMAGE).exists(), "no frame may be taken"
+
 
 class TestStepping:
     def test_steps_are_logged_without_saving_frames(self, session):

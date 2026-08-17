@@ -188,7 +188,20 @@ class SpiralSearch:
             self.save_intermediate_exposures = save_intermediate_exposures
             self.started_at = isoformat_zulu(datetime.datetime.now(datetime.UTC))
 
-            self.unit.mount.start_tracking()
+            # Checked, not fired and forgotten. The whole method measures how far the sky
+            # moved between two frames, which is meaningless if the mount is not holding the
+            # field: an untracked exposure trails, and consecutive trailed frames give the
+            # correlation nothing coherent to lock onto. On 2026-08-17 three sessions ran to
+            # completion against a mount that had never been told to track -- `start_tracking`
+            # returned bare because `connected` was false -- and the last of them reported a
+            # shift of (-0.0, 0.01) with confidence 0.93, an answer that was wrong and looked
+            # healthy. Refusing here is the difference between one clear error and a night's
+            # worth of unusable frames.
+            response = self.unit.mount.start_tracking()
+            if response is not None and response.failed:
+                logger.error(f"{op}: cannot start the session -- {response.errors}")
+                return response
+
             self.unit.mount.pw.mount_spiral_offset_new(x_step_arcsec=x_step_arcsec, y_step_arcsec=y_step_arcsec)
             self.folder = PathMaker().make_spirals_folder()
             self.exposure_series = self.unit.imager.start_exposure_series(purpose="spiral")

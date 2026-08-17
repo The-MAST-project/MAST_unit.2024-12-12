@@ -129,6 +129,11 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     MIN_ALTITUDE_DEGREES = 15.0
     MAX_ALTITUDE_DEGREES = 90.0
 
+    #: How long to wait for PWI4 to report tracking engaged or disengaged. The wait used to
+    #: be unbounded, so a mount that would not engage hung its caller for ever -- including
+    #: `spiral_search.start()`, which holds the session lock while it waits.
+    TRACKING_TIMEOUT_SECONDS = 30
+
     _instance = None
     _initialized = False
 
@@ -674,37 +679,66 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             date=time_stamp(),
         )
 
-    def start_tracking(self):
+    def _await_tracking(self, desired: bool) -> bool:
+        """Wait for PWI4 to report tracking as `desired`. False if it never does.
+
+        Bounded. Both callers previously spun on `while ... is_tracking` with no deadline,
+        so a mount that would not engage hung the caller for ever -- and these are called
+        from `spiral_search.start()`, which holds the session lock.
+        """
+        deadline = time.time() + self.TRACKING_TIMEOUT_SECONDS
+        while time.time() < deadline:
+            time.sleep(1)
+            if self.pw.status().mount.is_tracking == desired:  # type: ignore
+                return True
+        return False
+
+    def start_tracking(self) -> CanonicalResponse:
         """
         Tell the ``mount`` to start tracking
-        :mastapi:
         """
+        op = function_name()
+
+        # Deliberately NOT connecting here. Connecting is `startup()`'s job -- it enables
+        # both axes and goes on to find home, i.e. it moves the telescope. An operation
+        # asking to track must not acquire the device as a side effect; if the mount is not
+        # connected mid-session that is a fault worth surfacing, not papering over.
+        #
+        # This used to `return` bare. Nothing was commanded, nothing logged, and the caller
+        # got None: on 2026-08-17 a spiral ran three sessions to completion against a mount
+        # that was never told to track, producing trailed frames and a measured shift of
+        # (-0.0, 0.01) that passed its own confidence check.
         if not self.connected:
-            return
+            msg = f"{op}: mount not connected, cannot start tracking"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
 
         self.pw.mount_tracking_on()
-        time.sleep(1)
-        st = self.pw.status()
-        while not st.mount.is_tracking:  # type: ignore
-            time.sleep(1)
-            st = self.pw.status()
+        if not self._await_tracking(True):
+            msg = f"{op}: tracking did not engage within {self.TRACKING_TIMEOUT_SECONDS}s"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
+
         logger.info(f"started tracking (from {caller_name()})")
         return CanonicalResponse_Ok
 
-    def stop_tracking(self):
+    def stop_tracking(self) -> CanonicalResponse:
         """
         Tell the ``mount`` to stop tracking
-        :mastapi:
         """
+        op = function_name()
+
         if not self.connected:
-            return
+            msg = f"{op}: mount not connected, cannot stop tracking"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
 
         self.pw.mount_tracking_off()
-        time.sleep(1)
-        st = self.pw.status()
-        while st.mount.is_tracking:  # type: ignore
-            time.sleep(1)
-            st = self.pw.status()
+        if not self._await_tracking(False):
+            msg = f"{op}: tracking did not disengage within {self.TRACKING_TIMEOUT_SECONDS}s"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
+
         logger.info(f"stopped tracking (from {caller_name()})")
         return CanonicalResponse_Ok
 
