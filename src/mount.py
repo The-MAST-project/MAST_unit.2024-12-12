@@ -642,7 +642,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                 x=st.mount.spiral_offset.x,  # type: ignore
                 y=st.mount.spiral_offset.y,  # type: ignore
                 x_step_arcsec=st.mount.spiral_offset.x_step_arcsec,  # type: ignore
-                y_step_arcsec=st.mount.spiral_offset.x_step_arcsec,  # type: ignore
+                y_step_arcsec=st.mount.spiral_offset.y_step_arcsec,  # type: ignore
             )
             if st
             else None
