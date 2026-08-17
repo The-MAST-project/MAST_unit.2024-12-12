@@ -54,7 +54,7 @@ jobs:
         with:
           repository: The-MAST-project/MAST_common
           # TEMPORARY -- MUST REVERT TO `master` BEFORE #77 MERGES. Checklist on #39.
-          ref: 4ca15f105db59e1abc2b806dfe155e4dae070c76  # MAST_common#72
+          ref: bc1dcac005cdf518fac811727a84d1b7341d5007  # MAST_common#72
           path: common
 
       - uses: actions/setup-python@v7
