@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("win32com", reason="the unit's component modules are Windows-only")
-
+# No platform guard: `conftest` stubs the absent hardware modules, so this runs on a dev
+# machine as well as on a unit (#52). Windows keeps the real modules -- only absent ones
+# are stubbed -- so nothing here can mask genuine Windows behaviour.
 from common.activities import (
     CoverActivities,
     FocuserActivities,

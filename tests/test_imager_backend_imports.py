@@ -16,7 +16,9 @@ import importlib
 
 import pytest
 
-pytest.importorskip("win32com", reason="the unit's imager backends are Windows-only")
+# No platform guard: `conftest` stubs the absent hardware modules, so this runs on a dev
+# machine as well as on a unit (#52). Windows keeps the real modules -- only absent ones
+# are stubbed -- so nothing here can mask genuine Windows behaviour.
 
 # Every backend a configured `imager_type` can select. `Imager` itself is the delegating
 # wrapper, imported here too because a break in it hides every backend behind it.

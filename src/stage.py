@@ -38,6 +38,9 @@ for path in [
 ]:
     sys.path.append(str(path))
 
+# The DLL search path is a Windows concern; the import below is not. Splitting them is what
+# lets this module be imported where pyximc resolves but Windows does not -- previously the
+# names came in only inside the platform test, while the module body used them unconditionally.
 if platform.system() == "Windows":
     # Determining the directory with dependencies for windows depending on the bit depth.
     arch_dir = "win64" if "64" in platform.architecture()[0] else "win32"
@@ -46,25 +49,27 @@ if platform.system() == "Windows":
         raise FileNotFoundError(f"Directory with ximc library not found: {lib_dir=}. ")
     os.add_dll_directory(str(lib_dir))  # add dll path into an environment variable
 
-    from pyximc import (
-        POINTER,
-        BorderFlags,
-        EnumerateFlags,  # type: ignore[name]
-        MvcmdStatus,
-        Result,  # type: ignore[name]
-        StateFlags,
-        byref,
-        c_char_p,
-        c_int,
-        cast,
-        device_information_t,
-        edges_settings_t,
-        secure_settings_t,
-        serial_number_t,
-        status_t,
-        string_at,
-    )
-    from pyximc import lib as ximclib  # type: ignore[name]
+# Must follow `add_dll_directory` above, which is what makes the ximc DLL resolvable on
+# Windows, so it cannot move to the top of the file.
+from pyximc import (  # noqa: E402
+    POINTER,
+    BorderFlags,
+    EnumerateFlags,  # type: ignore[name]
+    MvcmdStatus,
+    Result,  # type: ignore[name]
+    StateFlags,
+    byref,
+    c_char_p,
+    c_int,
+    cast,
+    device_information_t,
+    edges_settings_t,
+    secure_settings_t,
+    serial_number_t,
+    status_t,
+    string_at,
+)
+from pyximc import lib as ximclib  # type: ignore[name]  # noqa: E402
 
 RESULT_MAP = {
     Result.Ok: "Ok",
