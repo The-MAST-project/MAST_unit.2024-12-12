@@ -492,6 +492,7 @@ from pyximc import *
             self.move_to_preset(StagePresetPosition.Sky)
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.INTERFACE, completion=Completion.IMMEDIATE)
     def shutdown(self):
         """
         Shutdown routine for the **MAST** stage.  Makes it ``idle``
