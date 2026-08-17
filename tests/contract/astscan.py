@@ -46,6 +46,21 @@ VENDORED = {"Standa", "PlaneWave", "PlateSolveSimulator"}
 EXCLUDED_PARTS = VENDORED | {"__pycache__", "common", "tests", ".venv", "venv"}
 
 
+#: The modules that build routers. Kept explicit rather than discovered: a new one should be a
+#: deliberate addition here, not something that quietly starts being scanned.
+ROUTER_MODULES = ("unit.py", "mount.py", "covers.py", "focuser.py", "stage.py", "imagers/__init__.py")
+
+#: `self.<attr>.<method>` routes reach methods that live elsewhere; this is where.
+CROSS_MODULE_OWNERS = {"acquirer": "acquirer.py", "autofocuser": "autofocusing.py", "guider": "guiding.py"}
+
+DECLARED_MODULES = ROUTER_MODULES + tuple(CROSS_MODULE_OWNERS.values())
+
+#: The components whose routers call the generator, and the verbs it emits. `unit.py` is absent
+#: on purpose: its lifecycle verbs are CONTRACT-tier and stay hand-registered (MAST_unit#40).
+GENERATED_INTERFACE_MODULES = ("mount.py", "covers.py", "focuser.py", "stage.py", "imagers/__init__.py")
+GENERATED_INTERFACE_VERBS = ("startup", "shutdown", "abort", "status")
+
+
 @dataclass(frozen=True)
 class Site:
     """One located finding. Carries no line number in equality -- see `key`."""
