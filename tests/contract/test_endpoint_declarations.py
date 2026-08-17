@@ -31,6 +31,11 @@ CROSS_MODULE_OWNERS = {"acquirer": "acquirer.py", "autofocuser": "autofocusing.p
 
 DECLARED_MODULES = ROUTER_MODULES + tuple(CROSS_MODULE_OWNERS.values())
 
+#: The components whose routers call the generator, and the verbs it emits. `unit.py` is absent
+#: on purpose: its lifecycle verbs are CONTRACT-tier and stay hand-registered (#40).
+GENERATED_INTERFACE_MODULES = ("mount.py", "covers.py", "focuser.py", "stage.py", "imagers/__init__.py")
+GENERATED_INTERFACE_VERBS = ("startup", "shutdown", "abort", "status")
+
 
 def _unit_modules() -> dict[str, ast.Module]:
     return dict(astscan.modules(astscan.UNIT_SRC))
@@ -38,6 +43,10 @@ def _unit_modules() -> dict[str, ast.Module]:
 
 def _routed_method_names(trees: dict[str, ast.Module]) -> set[str]:
     """Method names reached by a route, from any of the router modules.
+
+    Includes the interface verbs `register_component_endpoints` emits: they are routed, and a
+    scan that only counted `add_api_route` arguments would report every one of them as a
+    declaration with no route the moment a component declared its own completion (#43, #157).
 
     Two forms reach a handler, and both name a declared method:
 
@@ -51,6 +60,8 @@ def _routed_method_names(trees: dict[str, ast.Module]) -> set[str]:
     """
     routed = set()
     for module in ROUTER_MODULES:
+        if module in GENERATED_INTERFACE_MODULES:
+            routed.update(GENERATED_INTERFACE_VERBS)
         for call in astscan.calls(trees[module]):
             if astscan.called_name(call) != "add_api_route":
                 continue
@@ -144,8 +155,10 @@ def test_a_factory_built_route_reconciles_with_its_declaration():
     routed = _routed_method_names(trees)
     declared = _declared_method_names(trees)
 
-    assert routed == {"_new_path_endpoint", "status"}
-    assert not routed - declared
+    # The generated verbs are injected for every real component module, so this asserts the
+    # property under test rather than an exact population.
+    assert "_new_path_endpoint" in routed
+    assert not routed - declared - set(GENERATED_INTERFACE_VERBS)
     assert "new_path" not in declared
 
 
@@ -174,11 +187,6 @@ def test_no_route_carries_a_tag_of_its_own():
                 offenders.append(f"{module}:{call.lineno}")
 
     assert not offenders, "the tag is the tier; drop the `tags=` argument:\n    " + "\n    ".join(offenders)
-
-
-#: The components whose routers must call the generator. `unit.py` is absent on purpose: its
-#: lifecycle verbs are CONTRACT-tier and stay hand-registered (#40).
-GENERATED_INTERFACE_MODULES = ("mount.py", "covers.py", "focuser.py", "stage.py", "imagers/__init__.py")
 
 
 def test_every_component_generates_its_interface_verbs():

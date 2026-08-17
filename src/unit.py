@@ -37,7 +37,7 @@ from common.config.rois import FcuVersion
 from common.config.unit import UnitConfig
 from common.const import Const
 from common.dlipowerswitch import PowerSwitchFactory, SwitchedOutlet
-from common.endpoints import Tier, add_api_route, endpoint
+from common.endpoints import Completion, Tier, add_api_route, endpoint
 from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 
@@ -222,7 +222,7 @@ class Unit(Component):
         self.start_activity(UnitActivities.StartingUp)
         [comp.startup() for comp in self.components]
 
-    @endpoint(tier=Tier.CONTRACT)
+    @endpoint(tier=Tier.CONTRACT, completion=UnitActivities.StartingUp)
     def endpoint_startup(self):
         return self.startup()
 
@@ -262,7 +262,7 @@ class Unit(Component):
         self.power_all_off()
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.CONTRACT)
+    @endpoint(tier=Tier.CONTRACT, completion=UnitActivities.ShuttingDown)
     def endpoint_shutdown(self):
         return self.shutdown()
 
@@ -328,7 +328,7 @@ class Unit(Component):
         for c in self.components:
             c.powerdown()
 
-    @endpoint(tier=Tier.CONTRACT)
+    @endpoint(tier=Tier.CONTRACT, completion=Completion.IMMEDIATE)
     def endpoint_status(self) -> Any:
         # Enveloped at registration; `status()` stays a bare FullUnitStatus, which
         # MAST_common#70 requires -- its fields are typed as the component status models.
@@ -1025,13 +1025,13 @@ class Unit(Component):
 
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=UnitActivities.Dancing)
     async def endpoint_start_dancing(self, style: str = "foxtrot"):
         logger.info(f"unit.dance: dancing the {style} ...")
         self.start_activity(UnitActivities.Dancing, details=[style])
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
     async def endpoint_stop_dancing(self):
         logger.info("unit.dance: stopping dancing ...")
         self.end_activity(UnitActivities.Dancing)

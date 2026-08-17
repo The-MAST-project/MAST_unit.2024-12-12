@@ -3,10 +3,11 @@ import time
 import numpy as np
 from fastapi import APIRouter
 
+from common.activities import ImagerActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.endpoints import Stability, Tier, add_api_route, endpoint, register_component_endpoints
+from common.endpoints import Completion, Stability, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerTypes
 from common.mast_logging import get_logger
 from common.models.statuses import ImagerSettings, ImagerStatus
@@ -125,9 +126,11 @@ class Imager(ImagerInterface, SwitchedOutlet):
     def can_send_image_saved_event(self) -> bool:
         return self._backend.can_send_image_saved_event
 
+    @endpoint(tier=Tier.INTERFACE, completion=Completion.IMMEDIATE)
     def startup(self) -> CanonicalResponse:
         return self._backend.startup()
 
+    @endpoint(tier=Tier.INTERFACE, completion=ImagerActivities.ShuttingDown)
     def shutdown(self) -> CanonicalResponse:
         return self._backend.shutdown()
 
@@ -214,6 +217,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         """
         return self._backend.endpoint_abort()
 
+    @endpoint(tier=Tier.INTERFACE, completion=Completion.IMMEDIATE)
     def status(self) -> ImagerStatus:
         """
         Returns the imager's current status.
@@ -237,12 +241,12 @@ class Imager(ImagerInterface, SwitchedOutlet):
             backend=self._backend.status(),
         )
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
+    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def connect(self) -> CanonicalResponse:  # obsoleted by connected property
         self._backend.connected = True
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
+    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def disconnect(self) -> CanonicalResponse:  # obsoleted by connected property
         self.connected = False
         return CanonicalResponse_Ok
@@ -363,12 +367,12 @@ class Imager(ImagerInterface, SwitchedOutlet):
     def default_settings(self):
         return self._backend.default_settings
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
     def turn_cooler_on(self) -> CanonicalResponse:
         self.cooler_on = True
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
     def turn_cooler_off(self) -> CanonicalResponse:
         self.cooler_on = False
         return CanonicalResponse_Ok
