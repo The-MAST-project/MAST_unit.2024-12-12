@@ -43,6 +43,12 @@ class RecordingActivities:
         self.ended.append(activity)
 
 
+class _Response:
+    """What `_mirrorcover_command` answers; only `failed` is read on the abort path."""
+
+    failed = False
+
+
 class FakePw:
     """The PWI4 client surface the abort paths touch."""
 
@@ -146,14 +152,11 @@ def test_focuser_abort_over_an_idle_focuser_flags_nothing():
 # -------------------------------------------------------------------------------- covers
 
 
-def test_covers_abort_flags_when_they_were_moving(monkeypatch):
-    import covers as covers_module
+def test_covers_abort_flags_when_they_were_moving():
     from covers import Covers
 
-    monkeypatch.setattr(covers_module, "ascom_run", lambda *args, **kwargs: type("_R", (), {"failed": False})())
-
     recorder = RecordingActivities(active={CoverActivities.Opening})
-    covers = _component(Covers, recorder)
+    covers = _component(Covers, recorder, _mirrorcover_command=lambda verb: _Response())
 
     covers.abort()
 
@@ -161,14 +164,11 @@ def test_covers_abort_flags_when_they_were_moving(monkeypatch):
     assert CoverActivities.Aborting in recorder.active
 
 
-def test_covers_abort_over_idle_covers_flags_nothing(monkeypatch):
-    import covers as covers_module
+def test_covers_abort_over_idle_covers_flags_nothing():
     from covers import Covers
 
-    monkeypatch.setattr(covers_module, "ascom_run", lambda *args, **kwargs: type("_R", (), {"failed": False})())
-
     recorder = RecordingActivities()
-    covers = _component(Covers, recorder)
+    covers = _component(Covers, recorder, _mirrorcover_command=lambda verb: _Response())
 
     covers.abort()
 

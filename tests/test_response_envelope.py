@@ -249,7 +249,7 @@ def client():
     router = APIRouter()
     # /covers/status comes from the generator now (#40), which is how a component gets it.
     register_component_endpoints(router, object.__new__(_StatusCovers), "/covers")
-    add_api_route(router, "/covers/open", endpoint=object.__new__(_RefusingCovers).endpoint_open, methods=["PUT"])
+    add_api_route(router, "/covers/open", endpoint=object.__new__(_RefusingCovers).open, methods=["PUT"])
     app = FastAPI()
     app.include_router(router)
     return TestClient(app)
