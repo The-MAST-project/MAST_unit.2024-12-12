@@ -1,28 +1,76 @@
 import logging
 import time
-from logging import Logger
 from typing import TYPE_CHECKING
 
-import win32com.client
 from fastapi.routing import APIRouter
 
 from common.activities import CoverActivities
-from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.endpoints import Completion, Stability, Tier, add_api_route, endpoint, register_component_endpoints
+from common.endpoints import (
+    Completion,
+    Stability,
+    Tier,
+    add_api_route,
+    endpoint,
+    register_component_endpoints,
+)
 from common.interfaces.components import Component
 from common.models.statuses import CoversState, CoverStatus
 from common.utils import RepeatTimer, time_stamp
+from PlaneWave import pwi4_client
 
 if TYPE_CHECKING:
     from unit import Unit
 
 logger: logging.Logger = logging.getLogger("mast.unit." + __name__)
 
+#: The oldest PWI4 exposing `/mirrorcover/*`. Below this the endpoints 404 and the status
+#: has no `mirrorcover` section, so the covers must report unavailable rather than guess.
+MINIMUM_PWI4_VERSION = (4, 1, 6)
 
-class Covers(Component, SwitchedOutlet, AscomDispatcher):
+#: How long a full open or close takes, measured over three cycles on mast00 (MAST_unit#134):
+#: `Closing(3) @0.4s -> PartlyOpen(5) @24.7s -> Closed(1) @25.5s`. The timeout is derived
+#: from that rather than guessed, with room for a slower unit.
+MOVE_TIMEOUT_SECONDS = 60
+
+#: PWI4's `mirrorcover.overall_state_name` -> our `CoversState`.
+#:
+#: Keyed on the NAME, never the integer. The two enumerations overlap numerically and
+#: disagree: PWI4's 0 is `Open` where `CoversState(0)` is `NotPresent`, and PWI4's 3 is
+#: `Closing` where `CoversState(3)` is `Open`. Only 1 (`Closed`) coincides. A `CoversState(int)`
+#: cast on a PWI4 value therefore returns a wrong answer rather than raising -- and reports a
+#: closing cover as open, which is the reading that matters most.
+#:
+#: `PartlyOpen` is a normal transitional state in BOTH directions, not a fault; it maps to
+#: `Moving` alongside `Opening`/`Closing`.
+_PWI4_STATE_NAMES: dict[str, CoversState] = {
+    "Open": CoversState.Open,
+    "Closed": CoversState.Closed,
+    "Opening": CoversState.Moving,
+    "Closing": CoversState.Moving,
+    "PartlyOpen": CoversState.Moving,
+}
+
+
+class Covers(Component, SwitchedOutlet):
+    """
+    Drives the **MAST** mirror covers through PWI4's `mirrorcover` HTTP API.
+
+    Replaces the ASCOM `CoverCalibrator` driver, whose ProgID is unregistered on at least one
+    unit so the component failed at construction (#95). PWI4 is already installed, running and
+    connected to the hardware, and its state machine is sensor-backed rather than a command
+    echo. See MAST_unit#134 for the on-hardware verification and `retire-pwshutter-and-ascom-covers.md`
+    for the plan.
+
+    The `mirrorcover` section is not exposed by the vendored `pwi4_client` -- that client
+    predates the feature ("Added in 4.0.99 Beta 2" is its newest annotation; PWI4 here is
+    4.1.6). Rather than patch vendored PlaneWave code, the four commands and the status read
+    are wrapped below on top of `PWI4.request()` and `PWI4Status.raw`, which already carries
+    every key PWI4 returns.
+    """
+
     _instance = None
     _initialized = False
 
@@ -31,19 +79,6 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    """
-    Uses the PlaneWave ASCOM driver for the **MAST** mirror covers
-    """
-
-    @property
-    def ascom(self) -> win32com.client.Dispatch:  # type: ignore
-        return self._ascom
-
-    @property
-    def logger(self) -> Logger:
-        # return logger
-        return logger
-
     def __init__(self, unit: "Unit"):  # type: ignore[name]
         if self._initialized:
             return
@@ -51,15 +86,14 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         self.unit = unit
         assert self.unit is not None and self.unit.unit_conf is not None
         self.conf = self.unit.unit_conf.covers
-        try:
-            self._ascom = win32com.client.Dispatch(self.conf.ascom_driver)
-        except Exception:
-            logger.exception(f"could not create ASCOM covers driver '{self.conf.ascom_driver}'")
-            raise
+
+        # A private client, as Mount and Focuser hold. Not a style choice: Unit builds Covers
+        # before it assigns `self.pw`, so `unit.pw` does not exist yet at this point. It costs
+        # nothing -- PWI4 holds a host, a port and a timeout, opening a connection per request.
+        self.pw: pwi4_client.PWI4 = pwi4_client.PWI4()
 
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Covers")
         Component.__init__(self, CoverActivities)
-        self._connected: bool = False
         self.activities = CoverActivities(0)
 
         if not self.is_on():
@@ -69,77 +103,127 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         self.timer.name = "covers-timer-thread"
         self.timer.start()
 
-        self._connected: bool = False
         self._was_shut_down = False
 
         self._initialized = True
         logger.info("initialized")
 
+    # ----------------------------------------------------------------- PWI4 wrappers
+
+    def _mirrorcover_status(self) -> dict[str, str] | None:
+        """The `mirrorcover.*` keys from PWI4's status, or None if PWI4 cannot be reached.
+
+        Returns the raw strings; interpretation is the callers' job. None means "PWI4 did not
+        answer", which is different from "PWI4 answered and the covers are absent" -- the
+        distinction the `state` property depends on.
+        """
+        try:
+            raw = self.pw.status().raw
+        except Exception as e:  # noqa: BLE001 -- PWException, urllib errors, socket timeouts
+            logger.debug(f"PWI4 status unavailable: {e}")
+            return None
+        return {k: v for k, v in raw.items() if k.startswith("mirrorcover.")}
+
+    def _mirrorcover_command(self, verb: str) -> CanonicalResponse:
+        """Issue `/mirrorcover/<verb>`, returning the failure rather than raising.
+
+        These endpoints exist only from PWI4 4.1.6; an older PWI4 answers 404, which surfaces
+        here as a failed response rather than an exception on the path that closes the mirror.
+        """
+        try:
+            self.pw.request(f"/mirrorcover/{verb}")
+        except Exception as e:  # noqa: BLE001 -- as above; a cover command must not raise
+            msg = f"covers: PWI4 '/mirrorcover/{verb}' failed ({e})"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
+        return CanonicalResponse_Ok
+
+    @property
+    def pwi4_is_viable(self) -> bool:
+        """Whether PWI4 answered, and is new enough to have `/mirrorcover/*`.
+
+        NOT `self.pw is not None`: `PWI4()` never contacts the server -- it stores a host and a
+        port -- so constructing one succeeds on a machine with no PWI4 installed at all. Only a
+        `status()` that answered means anything.
+        """
+        try:
+            raw = self.pw.status().raw
+        except Exception:  # noqa: BLE001 -- unreachable PWI4 is a normal, reportable state
+            return False
+
+        # Read the version out of `raw` rather than `status.pwi4.version_field`. `Section` is
+        # an empty class that PWI4Status populates by assigning attributes to the instance, so
+        # a type checker sees no `version_field` on it at all. `raw` is a plain dict and is
+        # typed. Its values are strings, hence the int().
+        try:
+            version = tuple(int(raw[f"pwi4.version_field[{i}]"]) for i in range(3))
+        except (KeyError, ValueError):
+            return False
+        if version < MINIMUM_PWI4_VERSION:
+            return False
+
+        # The version is a proxy; this is the capability itself.
+        return "mirrorcover.overall_state_name" in raw
+
+    # ----------------------------------------------------------------- connection
+
     @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def connect(self):
         """
-        Connects to the **MAST** mirror cover controller
+        Connects to the **MAST** mirror covers, through PWI4.
 
-        :mastapi:
+        Explicit, not implicit in open/close: PWI4 reports the last known `overall_state`
+        verbatim while disconnected -- observed saying `Closed` with `is_connected=false`, and
+        `Open` for covers that were physically shut.
         """
-        response = ascom_run(self, "Connected = True")
-        if response.failed:
-            logger.error(f"failed to connect {response.failure=}")
-            self._connected = False
-        else:
-            self._connected = True
-        return CanonicalResponse_Ok
+        return self._mirrorcover_command("connect")
 
     @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def disconnect(self):
         """
-        Disconnects from the **MAST** mirror cover controller
-        :mastapi:
+        Disconnects from the **MAST** mirror covers.
         """
-        self.connected = False
-        return CanonicalResponse_Ok
+        return self._mirrorcover_command("disconnect")
 
     @property
-    def connected(self):
-        # if self.ascom:
-        #     return self.ascom.Connected
-        # else:
-        #     return False
-        return self._connected
+    def connected(self) -> bool:
+        """PWI4's own `mirrorcover.is_connected`, not a local flag.
 
-    @connected.setter
-    def connected(self, value):
-        logger.info(f"connected = {value}")
-        try:
-            response = ascom_run(self, f"Connected = {value}")
-            if response.succeeded:
-                self._connected = value
-        finally:
-            self._connected = False
+        Reading it from PWI4 rather than caching a boolean removes the bug in the ASCOM
+        version, where the setter's `finally: self._connected = False` overwrote the success
+        case unconditionally, so `connected` was never true and `shutdown()` never closed the
+        covers (#133).
+        """
+        mirrorcover = self._mirrorcover_status()
+        if not mirrorcover:
+            return False
+        return mirrorcover.get("mirrorcover.is_connected", "false").lower() == "true"
 
     @property
     def state(self) -> CoversState:
-        if not self.connected:
+        mirrorcover = self._mirrorcover_status()
+        if mirrorcover is None:
+            return CoversState.Unknown  # PWI4 unreachable -- not the same as "no covers"
+        if mirrorcover.get("mirrorcover.is_connected", "false").lower() != "true":
+            # The state field is stale while disconnected; do not report it as fact.
             return CoversState.NotPresent
 
-        response = ascom_run(self, "CoverState")
-        if response.succeeded:
-            return CoversState(response.value)
-        else:
+        name = mirrorcover.get("mirrorcover.overall_state_name")
+        if name not in _PWI4_STATE_NAMES:
+            logger.error(f"covers: unmapped PWI4 state '{name}'")
             return CoversState.Error
+        return _PWI4_STATE_NAMES[name]
+
+    # ----------------------------------------------------------------- status
 
     @endpoint(tier=Tier.INTERFACE, completion=Completion.IMMEDIATE)
     def status(self) -> CoverStatus:
-        """
-        :mastapi:
-        """
-
+        state = self.state
         return CoverStatus(
             **self.power_status().model_dump(),
-            **self.ascom_status().model_dump(),
             **self.component_status().model_dump(),
-            state=self.state,
-            state_verbal=self.state.__repr__(),
+            state=state,
+            state_verbal=state.name,
             target_verbal=(
                 "Open"
                 if self.is_active(CoverActivities.Opening)
@@ -150,51 +234,76 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             date=time_stamp(),
         )
 
-    @endpoint(tier=Tier.OPERATION, completion=CoverActivities.Opening)
-    def endpoint_open(self):
-        return self.open()
+    # ----------------------------------------------------------------- motion
 
+    @endpoint(tier=Tier.OPERATION, completion=CoverActivities.Opening)
     def open(self):
         """
         Starts opening the **MAST** mirror covers
-
-        :mastapi:
         """
         if not self.connected:
-            return CanonicalResponse(errors=["not connected"])
+            return CanonicalResponse(errors=["covers: not connected"])
 
-        logger.info("opening covers")
         self.start_activity(CoverActivities.Opening)
-        response = ascom_run(self, "OpenCover()")
+        response = self._mirrorcover_command("open")
         if response.failed:
-            logger.error(f"failed to open covers (failure='{response.failure}')")
-        return CanonicalResponse_Ok
+            self.end_activity(CoverActivities.Opening)
+        return response
 
     @endpoint(tier=Tier.OPERATION, completion=CoverActivities.Closing)
-    def endpoint_close(self):
-        return self.close()
-
     def close(self):
         """
         Starts closing the **MAST** mirror covers
-        :mastapi:
         """
         if not self.connected:
-            return CanonicalResponse(errors=["not connected"])
+            return CanonicalResponse(errors=["covers: not connected"])
 
         logger.info("closing covers")
         self.start_activity(CoverActivities.Closing)
-        response = ascom_run(self, "CloseCover()")
+        response = self._mirrorcover_command("close")
         if response.failed:
-            logger.error(f"failed to close covers (failure='{response.failure}')")
-        return CanonicalResponse_Ok
+            self.end_activity(CoverActivities.Closing)
+        return response
+
+    @endpoint(tier=Tier.INTERFACE, completion=CoverActivities.Aborting)
+    def abort(self):
+        """
+        Halts cover motion.
+
+        `/mirrorcover/stop` is the PWI4 equivalent of ASCOM's `HaltCover()`. It is not listed
+        in MAST_unit#134 -- it was found by probing 4.1.6, which answers 200 with a status body
+        for `/mirrorcover/stop` and 404 for `/mirrorcover/halt` and `/mirrorcover/abort`.
+        """
+        was_moving = any(
+            self.is_active(activity)
+            for activity in (
+                CoverActivities.StartingUp,
+                CoverActivities.ShuttingDown,
+                CoverActivities.Closing,
+                CoverActivities.Opening,
+            )
+        )
+
+        response = self._mirrorcover_command("stop")
+        for activity in (
+            CoverActivities.StartingUp,
+            CoverActivities.ShuttingDown,
+            CoverActivities.Closing,
+            CoverActivities.Opening,
+        ):
+            if self.is_active(activity):
+                self.end_activity(activity)
+
+        if was_moving:
+            self.start_activity(CoverActivities.Aborting)
+        return response
+
+    # ----------------------------------------------------------------- lifecycle
 
     @endpoint(tier=Tier.INTERFACE, completion=CoverActivities.StartingUp)
     def startup(self):
         """
-        Performs the ``startup`` routine for the **MAST** mirror covers controller
-
-        :mastapi:
+        Performs the ``startup`` routine for the **MAST** mirror covers
         """
         self._was_shut_down = False
         if not self.is_on():
@@ -209,10 +318,9 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
     @endpoint(tier=Tier.INTERFACE, completion=CoverActivities.ShuttingDown)
     def shutdown(self):
         """
-        Performs the ``shutdown`` procedure for the **MAST** mirror covers controller
+        Performs the ``shutdown`` procedure for the **MAST** mirror covers
         """
         if not self.connected:
-            # Powering off *is* the shutdown for a disconnected cover -- success, not a refusal.
             self.power_off()
             return CanonicalResponse_Ok
 
@@ -228,43 +336,12 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
     def powerdown(self):
         if not self._was_shut_down:
             self.shutdown()
-        while self.is_shutting_down:
+        deadline = time.time() + MOVE_TIMEOUT_SECONDS
+        while self.is_shutting_down and time.time() < deadline:
             time.sleep(1)
+        if self.is_shutting_down:
+            logger.error(f"covers: still closing after {MOVE_TIMEOUT_SECONDS}s; powering off anyway")
         self.power_off()
-
-    @endpoint(tier=Tier.INTERFACE, completion=CoverActivities.Aborting)
-    def abort(self):
-        """
-        :mastapi:
-        Returns
-        -------
-
-        """
-        was_moving = any(
-            self.is_active(activity)
-            for activity in (
-                CoverActivities.StartingUp,
-                CoverActivities.ShuttingDown,
-                CoverActivities.Closing,
-                CoverActivities.Opening,
-            )
-        )
-
-        response = ascom_run(self, "HaltCover()")
-        if response.failed:
-            logger.error(f"failed to halt covers (failure='{response.failure}')")
-        for activity in (
-            CoverActivities.StartingUp,
-            CoverActivities.ShuttingDown,
-            CoverActivities.Closing,
-            CoverActivities.Opening,
-        ):
-            if self.is_active(activity):
-                self.end_activity(activity)
-
-        if was_moving:
-            self.start_activity(CoverActivities.Aborting)
-        return CanonicalResponse_Ok
 
     def ontimer(self):
         if self.unit.unit_shutdown_event.is_set():
@@ -274,13 +351,17 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         if not self.connected:
             return
 
-        # logger.debug(f"activities: {self.activities}, state: {self.state()}")
-        if self.is_active(CoverActivities.Opening) and self.state == CoversState.Open:
+        # Terminal states matched exactly. `PartlyOpen` CONTAINS `Open` as a substring, so any
+        # `in` / `startswith` / unanchored check here reports completion ~0.8 s early, in both
+        # directions, with the covers still moving (MAST_unit#134).
+        state = self.state
+
+        if self.is_active(CoverActivities.Opening) and state == CoversState.Open:
             self.end_activity(CoverActivities.Opening)
             if self.is_active(CoverActivities.StartingUp):
                 self.end_activity(CoverActivities.StartingUp)
 
-        if self.is_active(CoverActivities.Closing) and self.state == CoversState.Closed:
+        if self.is_active(CoverActivities.Closing) and state == CoversState.Closed:
             self.end_activity(CoverActivities.Closing)
             if self.is_active(CoverActivities.ShuttingDown):
                 self.end_activity(CoverActivities.ShuttingDown)
@@ -294,6 +375,8 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         if self.is_active(CoverActivities.Aborting) and self.state != CoversState.Moving:
             self.end_activity(CoverActivities.Aborting)
 
+    # ----------------------------------------------------------------- component contract
+
     @property
     def name(self) -> str:
         return "covers"
@@ -303,8 +386,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         return all(
             [
                 self.is_on(),
-                self.detected,
-                self.ascom,
+                self.pwi4_is_viable,
                 self.connected,
                 self.state == CoversState.Open,
             ]
@@ -315,18 +397,14 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         ret = []
         if not self.is_on():
             ret.append(f"{self.name}: not powered")
-        elif not self.detected:
-            ret.append(f"{self.name}: (via ASCOM) not detected")
+        elif not self.pwi4_is_viable:
+            ret.append(f"{self.name}: PWI4 not answering, or older than {'.'.join(map(str, MINIMUM_PWI4_VERSION))}")
+        elif not self.connected:
+            ret.append(f"{self.name}: (via PWI4) not connected")
         else:
-            if not self.ascom:
-                ret.append(f"{self.name}: (via ASCOM) - no handle")
-            else:
-                if not self.connected:
-                    ret.append(f"{self.name}: (via ASCOM) - not connected")
-                else:
-                    state = self.state
-                    if self.state != CoversState.Open:
-                        ret.append(f"{self.name}: not open (state='{state.name}')")
+            state = self.state
+            if state != CoversState.Open:
+                ret.append(f"{self.name}: not open (state='{state.name}')")
         return ret
 
     @property
@@ -349,7 +427,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         register_component_endpoints(router, self, base_path)
         add_api_route(router, base_path + "/connect", endpoint=self.connect)
         add_api_route(router, base_path + "/disconnect", endpoint=self.disconnect)
-        add_api_route(router, base_path + "/open", endpoint=self.endpoint_open, methods=["PUT"])
-        add_api_route(router, base_path + "/close", endpoint=self.endpoint_close, methods=["PUT"])
+        add_api_route(router, base_path + "/open", endpoint=self.open, methods=["PUT"])
+        add_api_route(router, base_path + "/close", endpoint=self.close, methods=["PUT"])
 
         return router
