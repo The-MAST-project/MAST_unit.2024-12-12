@@ -14,7 +14,7 @@ from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.endpoints import Stability, Tier, add_api_route, endpoint
+from common.endpoints import Stability, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import MountStatus, SpiralSettings
@@ -254,10 +254,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         except Exception:
             logger.exception("mount connect/disconnect failed")
 
-    @endpoint(tier=Tier.INTERFACE)
-    def endpoint_startup(self):
-        return self.startup()
-
     def startup(self):
         """
         Performs the MAST startup routine (power ON, fans on and find home)
@@ -266,16 +262,12 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         if not self.connected:
             self.connect()
         if not self.detected:
-            return
+            return CanonicalResponse(errors=[f"{function_name()}: mount not detected"])
         self.start_activity(MountActivities.StartingUp)
         self._was_shut_down = False
         self.pw.request("/fans/on")
         self.find_home()
         return CanonicalResponse_Ok
-
-    @endpoint(tier=Tier.INTERFACE)
-    def endpoint_shutdown(self):
-        return self.shutdown()
 
     def shutdown(self):
         """
@@ -628,11 +620,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"{op}: dist_to_target settled (< {tol_arcsec:.3f} arcsec for {stable_samples} samples)")
         return True
 
-    @endpoint(tier=Tier.INTERFACE)
-    def endpoint_status(self) -> MountStatus:
-        # Enveloped at registration; `status()` stays a bare typed model (MAST_common#70).
-        return self.status()
-
     def status(self) -> MountStatus:
         target_verbal = target_as_text(self.target)
 
@@ -943,10 +930,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"{op}: slewing to alt={alt_degs:g}, az={az_degs:g}")
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.INTERFACE)
-    def endpoint_abort(self):
-        return self.abort()
-
     def abort(self):
         """
         Aborts any in-progress mount activities
@@ -1060,10 +1043,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         base_path = Const.BASE_UNIT_PATH + "/mount"
 
         router = APIRouter()
-        add_api_route(router, base_path + "/startup", endpoint=self.endpoint_startup, methods=["PUT"])
-        add_api_route(router, base_path + "/shutdown", endpoint=self.endpoint_shutdown, methods=["PUT"])
-        add_api_route(router, base_path + "/abort", endpoint=self.endpoint_abort, methods=["PUT"])
-        add_api_route(router, base_path + "/status", endpoint=self.endpoint_status)
+        register_component_endpoints(router, self, base_path)
         add_api_route(router, base_path + "/connect", endpoint=self.connect)
         add_api_route(router, base_path + "/disconnect", endpoint=self.disconnect)
         add_api_route(router, base_path + "/start_tracking", endpoint=self.start_tracking, methods=["PUT"])

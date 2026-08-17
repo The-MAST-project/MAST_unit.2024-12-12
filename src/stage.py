@@ -17,7 +17,7 @@ from common.config import Config
 from common.config.rois import FcuVersion
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.endpoints import Stability, Tier, add_api_route, endpoint
+from common.endpoints import Stability, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import StageStatus
@@ -471,10 +471,6 @@ from pyximc import *
             self.connected = False
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.INTERFACE)
-    def endpoint_startup(self):
-        return self.startup()
-
     def startup(self):
         """
         Startup routine for the **MAST** stage.  Makes it ``operational``:
@@ -494,10 +490,6 @@ from pyximc import *
             self.start_activity(StageActivities.StartingUp)
             self.move_to_preset(StagePresetPosition.Sky)
         return CanonicalResponse_Ok
-
-    @endpoint(tier=Tier.INTERFACE)
-    def endpoint_shutdown(self):
-        return self.shutdown()
 
     def shutdown(self):
         """
@@ -544,11 +536,6 @@ from pyximc import *
         response = self.move_absolute(value)
         if response is not None and response.failed:
             raise ValueError(f"cannot move to {value}: {'; '.join(response.errors or [])}")
-
-    @endpoint(tier=Tier.INTERFACE)
-    def endpoint_status(self) -> StageStatus:
-        # Enveloped at registration; `status()` stays a bare typed model (MAST_common#70).
-        return self.status()
 
     def at_preset_name(self) -> str | None:
         """The preset the stage is currently parked at, as the API spells it.
@@ -908,10 +895,6 @@ from pyximc import *
             return CanonicalResponse(errors=[msg])
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.INTERFACE)
-    def endpoint_abort(self):
-        return self.abort()
-
     def abort(self):
         """
         Aborts any in-progress stage activities
@@ -1005,10 +988,7 @@ from pyximc import *
         base_stage_path = Const.BASE_UNIT_PATH + "/stage"
 
         router = APIRouter()
-        add_api_route(router, base_stage_path + "/startup", endpoint=self.endpoint_startup, methods=["PUT"])
-        add_api_route(router, base_stage_path + "/shutdown", endpoint=self.endpoint_shutdown, methods=["PUT"])
-        add_api_route(router, base_stage_path + "/abort", endpoint=self.endpoint_abort, methods=["PUT"])
-        add_api_route(router, base_stage_path + "/status", endpoint=self.endpoint_status)
+        register_component_endpoints(router, self, base_stage_path)
         add_api_route(
             router,
             base_stage_path + "/position",

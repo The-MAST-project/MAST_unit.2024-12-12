@@ -37,10 +37,29 @@ DECLARING_MODULES = (
 )
 
 
+#: The lifecycle verbs `register_component_endpoints` emits (#40). They are routed, so
+#: invariant 4 binds them -- but their declaration lives on the `Component` ABC in
+#: MAST_common, not on the override, so a decorator scan of this tree cannot see them.
+GENERATED_INTERFACE_VERBS = ("startup", "shutdown", "abort", "status")
+
+#: The components whose routers call the generator. `unit.py` is not one -- its lifecycle verbs
+#: are CONTRACT-tier and hand-registered -- and neither are the helper classes in the remaining
+#: declaring modules, whose same-named methods are internal.
+GENERATED_INTERFACE_MODULES = ("mount.py", "covers.py", "focuser.py", "stage.py", "imagers/__init__.py")
+
+
 def _declared_handlers(trees):
+    """Every routed handler in the unit tree, however it got routed.
+
+    Two provenances: a method carrying `@endpoint(`, and the interface verbs the generator
+    emits for every component. Scanning only the first would silently stop checking twenty
+    handlers the moment #40 moved their declaration to the ABC.
+    """
     for module in DECLARING_MODULES:
         for class_node, function in astscan.methods(trees[module]):
-            if any(d.startswith("endpoint(") for d in astscan.decorators(function)):
+            declared = any(d.startswith("endpoint(") for d in astscan.decorators(function))
+            generated = module in GENERATED_INTERFACE_MODULES and function.name in GENERATED_INTERFACE_VERBS
+            if declared or generated:
                 yield module, class_node.name, function
 
 

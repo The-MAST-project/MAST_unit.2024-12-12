@@ -11,7 +11,7 @@ from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.endpoints import Stability, Tier, add_api_route, endpoint
+from common.endpoints import Stability, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.components import Component
 from common.models.statuses import CoversState, CoverStatus
 from common.utils import RepeatTimer, time_stamp
@@ -128,13 +128,6 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         else:
             return CoversState.Error
 
-    @endpoint(tier=Tier.INTERFACE)
-    def endpoint_status(self) -> CoverStatus:
-        # The registration helper envelopes this; `status()` keeps returning the bare typed
-        # model, which is what MAST_common#70 requires -- FullUnitStatus's fields are typed as
-        # these models, so an envelope inside the payload would break control/gui/SSE.
-        return self.status()
-
     def status(self) -> CoverStatus:
         """
         :mastapi:
@@ -195,10 +188,6 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             logger.error(f"failed to close covers (failure='{response.failure}')")
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.INTERFACE)
-    def endpoint_startup(self):
-        return self.startup()
-
     def startup(self):
         """
         Performs the ``startup`` routine for the **MAST** mirror covers controller
@@ -215,7 +204,6 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             self.open()
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.INTERFACE)
     def shutdown(self):
         """
         Performs the ``shutdown`` procedure for the **MAST** mirror covers controller
@@ -240,10 +228,6 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         while self.is_shutting_down:
             time.sleep(1)
         self.power_off()
-
-    @endpoint(tier=Tier.INTERFACE)
-    def endpoint_abort(self):
-        return self.abort()
 
     def abort(self):
         """
@@ -358,10 +342,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         base_path = Const.BASE_UNIT_PATH + "/covers"
 
         router = APIRouter()
-        add_api_route(router, base_path + "/startup", endpoint=self.endpoint_startup, methods=["PUT"])
-        add_api_route(router, base_path + "/shutdown", endpoint=self.shutdown, methods=["PUT"])
-        add_api_route(router, base_path + "/abort", endpoint=self.endpoint_abort, methods=["PUT"])
-        add_api_route(router, base_path + "/status", endpoint=self.endpoint_status)
+        register_component_endpoints(router, self, base_path)
         add_api_route(router, base_path + "/connect", endpoint=self.connect)
         add_api_route(router, base_path + "/disconnect", endpoint=self.disconnect)
         add_api_route(router, base_path + "/open", endpoint=self.endpoint_open, methods=["PUT"])
