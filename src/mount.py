@@ -654,9 +654,19 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             **component_status.model_dump(),
             errors=self.errors,
             target_verbal=target_verbal,
+            # tracking/slewing/dec were declared on MountStatus but never passed, so they
+            # always reported their defaults -- `tracking: false` while PWI4 said the mount
+            # was tracking, and `dec_j2000_degs: null` throughout. The values were already
+            # being read a few lines up (to integrate the activity bits) and then dropped,
+            # which is why the payload contradicted itself: activities said "Tracking" while
+            # the field said false. Nothing outside the unit could tell whether the mount was
+            # tracking.
+            tracking=st.mount.is_tracking if st else False,  # type: ignore
+            slewing=st.mount.is_slewing if st else False,  # type: ignore
             axis0_enabled=st.mount.axis0.is_enabled if st else False,  # type: ignore
             axis1_enabled=st.mount.axis1.is_enabled if st else False,  # type: ignore
             ra_j2000_hours=st.mount.ra_j2000_hours if st else None,  # type: ignore
+            dec_j2000_degs=st.mount.dec_j2000_degs if st else None,  # type: ignore
             ha_hours=(st.site.lmst_hours - st.mount.ra_j2000_hours) if st else None,  # type: ignore
             lmst_hours=st.site.lmst_hours if st else None,  # type: ignore
             fans=True,
