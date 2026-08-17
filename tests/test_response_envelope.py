@@ -274,4 +274,4 @@ def test_refusal_reaches_the_wire_as_errors(client):
 
     assert body["api_version"] == "1.0"
     assert body["value"] is None
-    assert body["errors"] == ["not connected"]
+    assert body["errors"] == ["covers: not connected"]
