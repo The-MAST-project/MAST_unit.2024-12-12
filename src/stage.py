@@ -17,7 +17,7 @@ from common.config import Config
 from common.config.rois import FcuVersion
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.endpoints import Stability, Tier, add_api_route, endpoint, register_component_endpoints
+from common.endpoints import Completion, Stability, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import StageStatus
@@ -446,7 +446,7 @@ from pyximc import *
 
         logger.info(f"connected = {value} => {self.connected}")
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
+    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def connect(self):
         """
         Connects to the **MAST** stage controller
@@ -459,7 +459,7 @@ from pyximc import *
         self.connected = True
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
+    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def disconnect(self):
         """
         Disconnects from the **MAST** stage controller
@@ -471,6 +471,7 @@ from pyximc import *
             self.connected = False
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.INTERFACE, completion=StageActivities.StartingUp)
     def startup(self):
         """
         Startup routine for the **MAST** stage.  Makes it ``operational``:
@@ -563,6 +564,7 @@ from pyximc import *
                     return preset.value
         return f"{self.target}"
 
+    @endpoint(tier=Tier.INTERFACE, completion=Completion.IMMEDIATE)
     def status(self) -> StageStatus:
         at_preset = self.at_preset_name()
         target_verbal = self.target_preset_name()
@@ -762,7 +764,7 @@ from pyximc import *
             if self.is_active(StageActivities.Homing):
                 self.end_activity(StageActivities.Homing)
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=StageActivities.Moving)
     def move_to_preset(self, preset: StagePresetPosition) -> CanonicalResponse:
         """
         Starts moving the stage to one of the preset positions.
@@ -855,7 +857,7 @@ from pyximc import *
 
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=StageActivities.Moving)
     def move_relative(self, direction: StageDirection | str, amount: int | str):
         """
         Starts moving the stage in the specified direction by the specified number of native units
@@ -895,6 +897,7 @@ from pyximc import *
             return CanonicalResponse(errors=[msg])
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.INTERFACE, completion=StageActivities.Aborting)
     def abort(self):
         """
         Aborts any in-progress stage activities
@@ -960,14 +963,14 @@ from pyximc import *
     def was_shut_down(self) -> bool:
         return self._was_shut_down
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
     def endpoint_get_position(self) -> CanonicalResponse:
         return self.get_position()
 
     def get_position(self) -> CanonicalResponse:
         return CanonicalResponse(value=self.position)
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=StageActivities.Moving)
     def endpoint_set_position(self, pos: int):
         return self.set_position(pos)
 

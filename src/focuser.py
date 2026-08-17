@@ -9,7 +9,7 @@ from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.endpoints import Stability, Tier, add_api_route, endpoint, register_component_endpoints
+from common.endpoints import Completion, Stability, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import FocuserStatus
@@ -85,6 +85,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
     def position_sampler(self):
         return self.position
 
+    @endpoint(tier=Tier.INTERFACE, completion=FocuserActivities.StartingUp)
     def startup(self):
         self.start_activity(FocuserActivities.StartingUp)
         if not self.is_on():
@@ -99,6 +100,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             self.end_activity(FocuserActivities.StartingUp)
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.INTERFACE, completion=FocuserActivities.ShuttingDown)
     def shutdown(self):
         self.start_activity(FocuserActivities.ShuttingDown)
         if self.connected:
@@ -118,7 +120,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             time.sleep(1)
         self.power_off()
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
+    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def connect(self):
         if not self.is_on():
             self.power_on()
@@ -132,7 +134,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             self.connected = True
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
+    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def disconnect(self):
         """
         :mastapi:
@@ -195,7 +197,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
     def close_enough(self, position):
         return abs(self.position - position) <= self.CLOSE_ENOUGH
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=FocuserActivities.Moving)
     def endpoint_set_position(self, position: int | str):
         """
         Sends the focuser to the specified position
@@ -216,7 +218,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
                 return CanonicalResponse(errors=[f"{function_name()}: '{position}' is not a position"])
         return self.goto_position(position)
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=FocuserActivities.Moving)
     def endpoint_goto_known_as_good_position(self):
         """
         Go to the 'known-as-good' position
@@ -227,15 +229,15 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
         return self.goto_position(self.known_as_good_position)
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=FocuserActivities.Moving)
     def endpoint_move_in(self, amount):
         return self.move(amount, direction=FocusDirection.In)
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=FocuserActivities.Moving)
     def endpoint_move_out(self, amount):
         return self.move(amount, direction=FocusDirection.Out)
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=FocuserActivities.Moving)
     def move(self, amount: int, direction: FocusDirection):
         """
         Move the focuser in or out by the specified amount
@@ -265,6 +267,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
         return self.goto_position(target)
 
+    @endpoint(tier=Tier.INTERFACE, completion=FocuserActivities.Aborting)
     def abort(self):
         """
         Aborts any in-progress focuser activities
@@ -320,6 +323,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         if self.is_active(FocuserActivities.Aborting) and not self.pw.status().focuser.is_moving:  # type: ignore
             self.end_activity(FocuserActivities.Aborting)
 
+    @endpoint(tier=Tier.INTERFACE, completion=Completion.IMMEDIATE)
     def status(self) -> FocuserStatus | None:
         pw_stat = self.pw.status()
         ascom_response = ascom_run(self, "IsMoving")
@@ -384,7 +388,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
     def was_shut_down(self) -> bool:
         return self._was_shut_down
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
     def get_position(self) -> int | None:
         # Enveloped at registration (#34 stage 3).
         return self.position

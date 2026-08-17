@@ -14,7 +14,7 @@ from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.endpoints import Stability, Tier, add_api_route, endpoint, register_component_endpoints
+from common.endpoints import Completion, Stability, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import MountStatus, SpiralSettings
@@ -187,7 +187,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self._initialized = True
         logger.info("initialized")
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
+    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def connect(self):
         """
         Connects to the MAST mount controller
@@ -198,7 +198,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self.connected = True
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
+    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def disconnect(self):
         """
         Disconnects from the MAST mount controller
@@ -254,6 +254,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         except Exception:
             logger.exception("mount connect/disconnect failed")
 
+    @endpoint(tier=Tier.INTERFACE, completion=MountActivities.StartingUp)
     def startup(self):
         """
         Performs the MAST startup routine (power ON, fans on and find home)
@@ -269,6 +270,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self.find_home()
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.INTERFACE, completion=MountActivities.ShuttingDown)
     def shutdown(self):
         """
         Performs the MAST shutdown routine (fans off, park, power OFF)
@@ -294,7 +296,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
 
         self.power_off()
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=MountActivities.Parking)
     def park(self):
         """
         Parks the MAST mount
@@ -305,7 +307,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.pw.mount_park()
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=MountActivities.FindingHome)
     def find_home(self):
         """
         Tells the MAST mount to find it's HOME indexes
@@ -620,6 +622,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"{op}: dist_to_target settled (< {tol_arcsec:.3f} arcsec for {stable_samples} samples)")
         return True
 
+    @endpoint(tier=Tier.INTERFACE, completion=Completion.IMMEDIATE)
     def status(self) -> MountStatus:
         target_verbal = target_as_text(self.target)
 
@@ -670,7 +673,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             date=time_stamp(),
         )
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=Completion.BLOCKING)
     def start_tracking(self):
         """
         Tell the ``mount`` to start tracking
@@ -690,7 +693,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"started tracking (from {caller_name()})")
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=Completion.BLOCKING)
     def stop_tracking(self):
         """
         Tell the ``mount`` to stop tracking
@@ -727,7 +730,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.target = None
             raise
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=MountActivities.Slewing)
     def endpoint_goto_ra_dec_j2000(
         self,
         ra_j2000_hours: Annotated[
@@ -786,7 +789,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.target = None
             raise
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=MountActivities.Slewing)
     def endpoint_goto_ra_dec_apparent(
         self,
         ra_apparent_hours: Annotated[
@@ -859,7 +862,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"{op}: slewing to ra={ra}, dec={dec}")
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=MountActivities.Slewing)
     def goto_alt_az(
         self,
         alt_degs: Annotated[
@@ -930,6 +933,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"{op}: slewing to alt={alt_degs:g}, az={az_degs:g}")
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.INTERFACE, completion=MountActivities.Aborting)
     def abort(self):
         """
         Aborts any in-progress mount activities
@@ -1015,7 +1019,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def was_shut_down(self) -> bool:
         return self._was_shut_down
 
-    @endpoint(tier=Tier.DEMO)
+    @endpoint(tier=Tier.DEMO, completion=Completion.BLOCKING)
     def dance(self):
         coordinates = cone_coordinates_generator()
         logger.info("dance: starting to dance")

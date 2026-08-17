@@ -11,7 +11,7 @@ from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.endpoints import Stability, Tier, add_api_route, endpoint, register_component_endpoints
+from common.endpoints import Completion, Stability, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.components import Component
 from common.models.statuses import CoversState, CoverStatus
 from common.utils import RepeatTimer, time_stamp
@@ -75,7 +75,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         self._initialized = True
         logger.info("initialized")
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
+    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def connect(self):
         """
         Connects to the **MAST** mirror cover controller
@@ -90,7 +90,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             self._connected = True
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
+    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def disconnect(self):
         """
         Disconnects from the **MAST** mirror cover controller
@@ -128,6 +128,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
         else:
             return CoversState.Error
 
+    @endpoint(tier=Tier.INTERFACE, completion=Completion.IMMEDIATE)
     def status(self) -> CoverStatus:
         """
         :mastapi:
@@ -149,7 +150,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             date=time_stamp(),
         )
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=CoverActivities.Opening)
     def endpoint_open(self):
         return self.open()
 
@@ -169,7 +170,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             logger.error(f"failed to open covers (failure='{response.failure}')")
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=CoverActivities.Closing)
     def endpoint_close(self):
         return self.close()
 
@@ -188,6 +189,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             logger.error(f"failed to close covers (failure='{response.failure}')")
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.INTERFACE, completion=CoverActivities.StartingUp)
     def startup(self):
         """
         Performs the ``startup`` routine for the **MAST** mirror covers controller
@@ -204,6 +206,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             self.open()
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.INTERFACE, completion=CoverActivities.ShuttingDown)
     def shutdown(self):
         """
         Performs the ``shutdown`` procedure for the **MAST** mirror covers controller
@@ -229,6 +232,7 @@ class Covers(Component, SwitchedOutlet, AscomDispatcher):
             time.sleep(1)
         self.power_off()
 
+    @endpoint(tier=Tier.INTERFACE, completion=CoverActivities.Aborting)
     def abort(self):
         """
         :mastapi:
