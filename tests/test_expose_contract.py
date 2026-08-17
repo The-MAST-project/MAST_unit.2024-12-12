@@ -102,14 +102,43 @@ class TestCoordinatePairing:
 
 
 class TestBinning:
-    def test_only_the_camera_s_binnings_are_accepted(self):
-        """Typed as a Literal so FastAPI rejects anything else at the door with a 422.
-        As a plain `int` it reached ImagerSettings inside the thread, where the
-        ValidationError died unseen."""
+    """Only the camera's binnings are accepted, and the ones that are must actually work.
+
+    This class previously asserted the annotation *was*
+    `ASI_294MM_SUPPORTED_BINNINGS_LITERAL` -- identity of an implementation detail rather
+    than behaviour. It passed while `?binning=1` returned 422 for every request, because a
+    Literal is exactly what breaks a query parameter: values arrive as strings and pydantic
+    will not coerce `"1"` into `Literal[1, 2]`. The parameter was omittable but never
+    settable, so bin 2 was unreachable over HTTP, and the test enforced the cause.
+
+    Asserted through the parameter's own validation now, so it says what a caller can do.
+    """
+
+    @staticmethod
+    def _validate(value):
+        """Run `value` through the binning parameter exactly as a request would."""
         import typing
 
-        from common import asi
+        from pydantic import TypeAdapter
 
-        annotation = typing.get_type_hints(Unit.expose)["binning"]
-        assert annotation is asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL
-        assert set(typing.get_args(annotation)) == {1, 2}
+        return TypeAdapter(typing.get_type_hints(Unit.expose)["binning"]).validate_python(value)
+
+    @pytest.mark.parametrize("supplied", ["1", "2", 1, 2])
+    def test_the_camera_s_binnings_are_accepted_as_strings_and_ints(self, supplied):
+        """A query parameter arrives as a string; both forms must work."""
+        assert self._validate(supplied) == int(supplied)
+
+    @pytest.mark.parametrize("supplied", ["0", "3", "4", 3, "two", ""])
+    def test_anything_else_is_refused(self, supplied):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            self._validate(supplied)
+
+    def test_the_accepted_value_is_an_int_downstream(self):
+        """`ImagerSettings.binning` is still the Literal, so whatever this yields has to
+        satisfy it -- an IntEnum member does, a string would not."""
+        value = self._validate("2")
+
+        assert isinstance(value, int)
+        assert value == 2

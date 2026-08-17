@@ -591,7 +591,14 @@ class Unit(Component):
         fiber_y: int | None = None,
         width: int | None = None,
         height: int | None = None,
-        binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
+        # An IntEnum, not ASI_294MM_SUPPORTED_BINNINGS_LITERAL. This is a QUERY parameter,
+        # so its value arrives as a string, and pydantic will not coerce "1" into
+        # Literal[1, 2] -- every request that supplied a binning was rejected before this
+        # method ran, with `Input should be 1 or 2` against an input of '1'. The parameter
+        # was therefore unusable: omittable, never settable, so bin 2 was unreachable over
+        # HTTP. Members are ints, so everything downstream (ImagerSettings.binning is still
+        # the literal) takes it unchanged.
+        binning: asi.Asi294mmBinning = asi.Asi294mmBinning.one,
         gain: int = asi.ASI_294MM_DEFAULT_GAIN,
         ra_offsets: Annotated[
             str | list[str] | list[float] | None,
