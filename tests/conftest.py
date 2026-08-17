@@ -144,5 +144,13 @@ def _shim_filer_for_tests() -> None:
 
 _shim_filer_for_tests()
 
+# Same reason as the Filer shim, and before collection for the same reason: the component
+# modules bind win32com / pyximc / pyzwoasi at module scope, so without these they cannot be
+# imported at all off a unit -- which is why the behavioural half of this suite has only ever
+# run on Windows. Only absent modules are stubbed, so Windows keeps the real ones (#52).
+from fakes import install_hardware_stubs  # noqa: E402
+
+install_hardware_stubs()
+
 
 _block_external_processes()
