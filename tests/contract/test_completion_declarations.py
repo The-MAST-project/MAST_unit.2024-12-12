@@ -37,6 +37,7 @@ KNOWN_UNDECLARED = {
     "endpoint_execute_assignment": "MAST_unit#156",
     "endpoint_test_stage_repeatability": "MAST_unit#156",
     # The same route means "started" on ZWO and "finished" on ASCOM.
+    "imagers/__init__.py:abort": "MAST_unit#154",
     "start_exposure": "MAST_unit#154",
     "stop_exposure": "MAST_unit#154",
     "abort_exposure": "MAST_unit#154",
@@ -103,6 +104,11 @@ def _declarations(trees: dict[str, ast.Module]) -> dict[str, str | None]:
     return found
 
 
+def _split(key: str) -> tuple[str, int, str]:
+    module, _, name = key.rpartition(":")
+    return (module or "routed", 0, name)
+
+
 def _form(completion: str) -> str:
     """The contract a declaration expresses: immediate, blocking, or watch-a-flag."""
     if completion.startswith("Completion."):
@@ -114,11 +120,15 @@ def test_every_routed_operation_declares_how_it_finishes():
     trees = _trees()
     declarations = _declarations(trees)
 
-    undeclared = {name.rsplit(":", 1)[-1] for name in _routed_names(trees) if declarations.get(name, "missing") is None}
+    # `.get(name)` rather than a sentinel: a routed method carrying no `@endpoint` at all --
+    # legitimate for a generated verb, which inherits its tier from the ABC -- still declares
+    # no completion, and skipping it would hide exactly the case this check exists for.
+    undeclared = {name for name in _routed_names(trees) if declarations.get(name) is None}
 
+    # Keyed by module for a generated verb: `abort` alone names five different routes.
     astscan.report(
-        {astscan.Site("routed", 0, name) for name in undeclared},
-        {("routed", name): issue for name, issue in KNOWN_UNDECLARED.items()},
+        {astscan.Site(*_split(name)) for name in undeclared},
+        {(_split(name)[0], _split(name)[2]): issue for name, issue in KNOWN_UNDECLARED.items()},
         "undeclared-completion",
     )
 
