@@ -17,3 +17,17 @@
 # Shell scripts must keep LF so they run on the Linux hosts (already implied by
 # the default above; stated explicitly so it survives changes to that rule).
 *.sh text eol=lf
+
+# Vendored third-party trees: leave the bytes exactly as they were committed.
+#
+# These arrived with CRLF and are tracked, so the `* text=auto eol=lf` rule above makes
+# git report all 3381 of them as modified for ever -- the files on disk are byte-identical
+# to the index, but git converts the worktree copy to LF before comparing. `git add -A`
+# then sweeps hundreds of lines of pure line-ending churn into unrelated commits.
+#
+# `-text` stops the conversion in both directions. Nothing is rewritten and nothing is
+# ignored: these are still tracked, because units need them at runtime.
+#
+# Note `.gitignore` also lists `src/Standa/`, which has never had any effect -- gitignore
+# does not apply to files that are already tracked.
+src/Standa/** -text

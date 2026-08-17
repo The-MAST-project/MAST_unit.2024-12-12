@@ -73,15 +73,6 @@ while time.monotonic() < _pwi4_deadline:
 if not _pwi4_ok:
     logger.warning("PWI4 unavailable at startup - unit will start with mount unavailable")
 
-# PWShutter now ships inside the PWI4 install directory (it used to live under
-# a separate "PlaneWave Shutter Control" folder, which no longer exists).
-ensure_process_is_running(
-    name="PWShutter.exe",
-    cmd="C:\\Program Files (x86)\\PlaneWave Instruments\\PlaneWave Interface 4\\PWShutter.exe",
-    logger=logger,
-    shell=True,
-)
-
 
 _ps3cli_dir = locate_ps3cli_dir()
 _ps3cli_catalog = locate_ps3cli_catalog()

@@ -598,8 +598,7 @@ class Unit(Component):
             Query(
                 description=(
                     "#### Optional RA offsets applied between exposures.\n"
-                    "**Arcseconds, as plain decimals** -- not sexagesimal; only "
-                    "`ra_j2000_hours`/`dec_j2000_degs` take that form.\n"
+                    "**Arcseconds, as plain decimals.**\n"
                     "- omitted or empty - no RA offsetting\n"
                     "- one value - used after every repeat (e.g. `1.5`)\n"
                     "- exactly `repeats` values - one each (e.g. `1.5 -2 0`)\n"
@@ -614,8 +613,7 @@ class Unit(Component):
             Query(
                 description=(
                     "#### Optional DEC offsets applied between exposures.\n"
-                    "**Arcseconds, as plain decimals** -- not sexagesimal; only "
-                    "`ra_j2000_hours`/`dec_j2000_degs` take that form.\n"
+                    "**Arcseconds, as plain decimals.**\n"
                     "- omitted or empty - no DEC offsetting\n"
                     "- one value - used after every repeat (e.g. `1.5`)\n"
                     "- exactly `repeats` values - one each (e.g. `1.5 -2 0`)\n"
