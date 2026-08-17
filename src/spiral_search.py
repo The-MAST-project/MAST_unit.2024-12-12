@@ -68,6 +68,47 @@ RESULT_FILE = "result.json"
 #: centred, so a shift measured then would look like a result without being one.
 SESSION_TIMEOUT_SECONDS = 3600.0
 
+#: A frame with more trailing blank rows than this did not read out fully. Two, not zero:
+#: a single dark row at the sensor edge is unremarkable, a block of them is a truncated
+#: transfer.
+MAX_TRAILING_BLANK_ROWS = 2
+
+
+def _reject_truncated_frame(data, file_name: str) -> None:
+    """Refuse a frame whose bottom rows are entirely zero.
+
+    On 2026-08-17 four spiral sessions on mast00 produced frames that stopped dead at row
+    4881 of 5640 -- the same row every time, in every frame -- with the remaining 758 rows
+    all zero, and the sources in what did arrive were one pixel tall and ~78 wide. PHD2's
+    own display showed the same, so this happens at or below the camera; the FITS was
+    written at its declared size and only partly filled.
+
+    Nothing noticed. The sessions ran to completion and the last reported a shift of
+    (-0.0, 0.01) at confidence 0.93 -- an answer that was wrong and looked healthy, because
+    a correlation between two frames sharing the same dead region locks onto it.
+
+    The cause is still unknown, so this checks the symptom rather than any theory about it:
+    a truncated readout cannot produce a usable measurement whatever caused it, and failing
+    on the first frame turns a night of plausible wrong answers into one clear error --
+    with the frame still on the ram disk and the camera's state intact, which is the
+    evidence that was missing while diagnosing it.
+    """
+    if data is None or getattr(data, "ndim", 0) != 2 or data.shape[0] == 0:
+        return
+
+    blank_rows = 0
+    for row in reversed(data):
+        if row.any():
+            break
+        blank_rows += 1
+
+    if blank_rows > MAX_TRAILING_BLANK_ROWS:
+        raise SpiralSearchError(
+            f"'{file_name}' is truncated: the last {blank_rows} of {data.shape[0]} rows are "
+            f"entirely zero, so the frame did not read out fully. The session is being "
+            f"stopped rather than measuring a shift from a partial image."
+        )
+
 
 class SpiralSearch:
     """One spiral session at a time, owned by the Unit."""
@@ -136,6 +177,7 @@ class SpiralSearch:
 
             imager.wait_for_image_saved()
             data = fits.getdata(path)
+            _reject_truncated_frame(data, file_name)
 
         filer.move_ram_to_shared(path)
         return path, data

@@ -103,6 +103,7 @@ class FakeImager:
         self.shift = (0.0, 0.0)
         self.exposures: list[str] = []
         self.fail_next = False
+        self.truncate_rows = 0  # blank the last N rows, as a partial readout does
 
     def start_exposure_series(self, purpose=None):
         self.series_open += 1
@@ -126,7 +127,10 @@ class FakeImager:
         self.exposures.append(os.path.basename(path))
         # The final frame is the shifted one; everything before it is the unshifted field.
         dy, dx = self.shift if os.path.basename(path) == FINAL_IMAGE else (0.0, 0.0)
-        fits.writeto(path, star_field(dy, dx), overwrite=True)
+        data = star_field(dy, dx)
+        if self.truncate_rows:
+            data[-self.truncate_rows :] = 0
+        fits.writeto(path, data, overwrite=True)
 
 
 class FakeConf:
@@ -444,6 +448,37 @@ class TestExposureFailures:
         assert result["aborted"] is True, "the operator must be able to see why there is no shift"
         assert result["shift"] is None
         assert "final exposure failed" in result["abort_reason"]
+
+    def test_a_truncated_reference_frame_closes_the_session_down(self, session):
+        """A partial readout is not a measurable frame.
+
+        On 2026-08-17 four sessions ran to completion on frames that stopped at row 4881 of
+        5640, and the last reported (-0.0, 0.01) at confidence 0.93 -- a correlation between
+        two frames sharing the same dead region locks onto it. The exposure "succeeds": PHD2
+        returns Ok and the FITS is written at its declared size. Only the data is missing.
+        """
+        session.unit.imager.truncate_rows = 40
+
+        response = session.start(1.0, 1.0, exposure_seconds=1.0)
+
+        assert response.failed
+        assert "truncated" in response.errors[0]
+        assert not session.is_active
+        assert not session.unit.mount.tracking, "tracking must not be left on"
+        assert session.unit.imager.series_open == 0, "the exposure series must not be left open"
+
+    def test_a_truncated_final_frame_records_why_there_is_no_shift(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        session.unit.imager.truncate_rows = 40
+
+        response = session.end()
+
+        assert response.failed
+        assert not session.is_active
+        result = read_result(session.test_folder)
+        assert result["aborted"] is True
+        assert result["shift"] is None, "no shift may be reported from a partial frame"
+        assert "truncated" in result["abort_reason"]
 
     def test_a_failed_intermediate_exposure_does_not_end_the_session(self, session):
         """The measurement needs only the reference and the final, so a lost step frame
