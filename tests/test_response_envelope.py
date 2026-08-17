@@ -228,7 +228,7 @@ def client():
     from fastapi import APIRouter, FastAPI
     from fastapi.testclient import TestClient
 
-    from common.endpoints import add_api_route
+    from common.endpoints import add_api_route, register_component_endpoints
     from covers import Covers
 
     status = _cover_status()
@@ -247,7 +247,8 @@ def client():
     # very thing this test asserts. That is also what tests/contract's
     # test_no_route_bypasses_the_declaring_helper enforces for src/.
     router = APIRouter()
-    add_api_route(router, "/covers/status", endpoint=object.__new__(_StatusCovers).endpoint_status)
+    # /covers/status comes from the generator now (#40), which is how a component gets it.
+    register_component_endpoints(router, object.__new__(_StatusCovers), "/covers")
     add_api_route(router, "/covers/open", endpoint=object.__new__(_RefusingCovers).endpoint_open, methods=["PUT"])
     app = FastAPI()
     app.include_router(router)
@@ -257,8 +258,9 @@ def client():
 def test_component_status_is_enveloped_on_the_wire(client):
     """Registration wraps; ``status()`` keeps returning its bare typed model.
 
-    Before #34 stage 3 the wrapping was done by ``endpoint_status`` itself. It now happens in
-    the registration helper, so this asserts the same wire shape through the real path.
+    The wrapping happens in the registration helper, and for the interface verbs the route
+    itself comes from the generator (#40), so this asserts the wire shape through the real
+    path both are on.
     """
     body = client.get("/covers/status").json()
 

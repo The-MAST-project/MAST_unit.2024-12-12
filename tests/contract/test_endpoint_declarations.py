@@ -174,3 +174,24 @@ def test_no_route_carries_a_tag_of_its_own():
                 offenders.append(f"{module}:{call.lineno}")
 
     assert not offenders, "the tag is the tier; drop the `tags=` argument:\n    " + "\n    ".join(offenders)
+
+
+#: The components whose routers must call the generator. `unit.py` is absent on purpose: its
+#: lifecycle verbs are CONTRACT-tier and stay hand-registered (#40).
+GENERATED_INTERFACE_MODULES = ("mount.py", "covers.py", "focuser.py", "stage.py", "imagers/__init__.py")
+
+
+def test_every_component_generates_its_interface_verbs():
+    """Provenance is the contract: a route is in the interface tier iff the generator emitted it.
+
+    Dropping the call would remove four routes from a component and break nothing else, so
+    nothing else would notice.
+    """
+    trees = _unit_modules()
+    missing = [
+        module
+        for module in GENERATED_INTERFACE_MODULES
+        if not any(astscan.called_name(call) == "register_component_endpoints" for call in astscan.calls(trees[module]))
+    ]
+
+    assert not missing, f"these components no longer generate their interface verbs: {missing}"

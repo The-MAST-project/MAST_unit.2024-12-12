@@ -9,7 +9,7 @@ from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.endpoints import Stability, Tier, add_api_route, endpoint
+from common.endpoints import Stability, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import FocuserStatus
@@ -85,10 +85,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
     def position_sampler(self):
         return self.position
 
-    @endpoint(tier=Tier.INTERFACE)
-    def endpoint_startup(self):
-        return self.startup()
-
     def startup(self):
         self.start_activity(FocuserActivities.StartingUp)
         if not self.is_on():
@@ -102,10 +98,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         else:
             self.end_activity(FocuserActivities.StartingUp)
         return CanonicalResponse_Ok
-
-    @endpoint(tier=Tier.INTERFACE)
-    def endpoint_shutdown(self):
-        return self.shutdown()
 
     def shutdown(self):
         self.start_activity(FocuserActivities.ShuttingDown)
@@ -273,10 +265,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
         return self.goto_position(target)
 
-    @endpoint(tier=Tier.INTERFACE)
-    def endpoint_abort(self):
-        return self.abort()
-
     def abort(self):
         """
         Aborts any in-progress focuser activities
@@ -331,11 +319,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         # Not `is_stationary`, which is broken (#150).
         if self.is_active(FocuserActivities.Aborting) and not self.pw.status().focuser.is_moving:  # type: ignore
             self.end_activity(FocuserActivities.Aborting)
-
-    @endpoint(tier=Tier.INTERFACE)
-    def endpoint_status(self) -> FocuserStatus:
-        # Enveloped at registration; `status()` stays a bare typed model (MAST_common#70).
-        return self.status()
 
     def status(self) -> FocuserStatus | None:
         pw_stat = self.pw.status()
@@ -412,10 +395,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         base_path = Const.BASE_UNIT_PATH + "/focuser"
 
         router = APIRouter()
-        add_api_route(router, base_path + "/startup", endpoint=self.endpoint_startup, methods=["PUT"])
-        add_api_route(router, base_path + "/shutdown", endpoint=self.endpoint_shutdown, methods=["PUT"])
-        add_api_route(router, base_path + "/abort", endpoint=self.endpoint_abort, methods=["PUT"])
-        add_api_route(router, base_path + "/status", endpoint=self.endpoint_status)
+        register_component_endpoints(router, self, base_path)
         add_api_route(router, base_path + "/connect", endpoint=self.connect)
         add_api_route(router, base_path + "/disconnect", endpoint=self.disconnect)
         add_api_route(router, base_path + "/position", endpoint=self.get_position)

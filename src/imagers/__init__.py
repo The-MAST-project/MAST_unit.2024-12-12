@@ -6,7 +6,7 @@ from fastapi import APIRouter
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.endpoints import Stability, Tier, add_api_route, endpoint
+from common.endpoints import Stability, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerTypes
 from common.mast_logging import get_logger
 from common.models.statuses import ImagerSettings, ImagerStatus
@@ -125,10 +125,6 @@ class Imager(ImagerInterface, SwitchedOutlet):
     def can_send_image_saved_event(self) -> bool:
         return self._backend.can_send_image_saved_event
 
-    @endpoint(tier=Tier.INTERFACE)
-    def endpoint_startup(self) -> CanonicalResponse:
-        return self.startup()
-
     def startup(self) -> CanonicalResponse:
         return self._backend.startup()
 
@@ -145,10 +141,6 @@ class Imager(ImagerInterface, SwitchedOutlet):
         while self._backend.is_shutting_down:
             time.sleep(1)
         self.power_off()
-
-    @endpoint(tier=Tier.INTERFACE)
-    def endpoint_shutdown(self) -> CanonicalResponse:
-        return self.shutdown()
 
     @property
     def name(self) -> str:
@@ -215,21 +207,12 @@ class Imager(ImagerInterface, SwitchedOutlet):
         """
         return self._backend.why_not_operational
 
-    @endpoint(tier=Tier.INTERFACE)
-    def endpoint_abort(self) -> CanonicalResponse:
-        return self.abort()
-
     def abort(self) -> CanonicalResponse:
         """
         Immediately terminates any in-progress activities and returns the imager to its default state.
         :return: CanonicalResponse indicating the result of the operation
         """
         return self._backend.endpoint_abort()
-
-    @endpoint(tier=Tier.INTERFACE)
-    def endpoint_status(self) -> ImagerStatus:
-        # Enveloped at registration; `status()` stays a bare typed model (MAST_common#70).
-        return self.status()
 
     def status(self) -> ImagerStatus:
         """
@@ -399,10 +382,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         base_imager_path = Const.BASE_UNIT_PATH + "/imager"
 
         router = APIRouter()
-        add_api_route(router, base_imager_path + "/startup", endpoint=self.endpoint_startup, methods=["PUT"])
-        add_api_route(router, base_imager_path + "/shutdown", endpoint=self.endpoint_shutdown, methods=["PUT"])
-        add_api_route(router, base_imager_path + "/abort", endpoint=self.endpoint_abort, methods=["PUT"])
-        add_api_route(router, base_imager_path + "/status", endpoint=self.endpoint_status)
+        register_component_endpoints(router, self, base_imager_path)
         add_api_route(router, base_imager_path + "/connect", endpoint=self.connect)
         add_api_route(router, base_imager_path + "/disconnect", endpoint=self.disconnect)
         add_api_route(
