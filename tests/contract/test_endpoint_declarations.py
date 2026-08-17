@@ -24,17 +24,12 @@ from . import astscan
 
 # The modules that build routers. Kept explicit rather than discovered: a new one should be a
 # deliberate addition here, not something that quietly starts being scanned.
-ROUTER_MODULES = ("unit.py", "mount.py", "covers.py", "focuser.py", "stage.py", "imagers/__init__.py")
-
-# `self.<attr>.<method>` routes reach methods that live elsewhere; this is where.
-CROSS_MODULE_OWNERS = {"acquirer": "acquirer.py", "autofocuser": "autofocusing.py", "guider": "guiding.py"}
-
-DECLARED_MODULES = ROUTER_MODULES + tuple(CROSS_MODULE_OWNERS.values())
-
-#: The components whose routers call the generator, and the verbs it emits. `unit.py` is absent
-#: on purpose: its lifecycle verbs are CONTRACT-tier and stay hand-registered (#40).
-GENERATED_INTERFACE_MODULES = ("mount.py", "covers.py", "focuser.py", "stage.py", "imagers/__init__.py")
-GENERATED_INTERFACE_VERBS = ("startup", "shutdown", "abort", "status")
+from .astscan import (
+    CROSS_MODULE_OWNERS,
+    GENERATED_INTERFACE_MODULES,
+    GENERATED_INTERFACE_VERBS,
+    ROUTER_MODULES,
+)
 
 
 def _unit_modules() -> dict[str, ast.Module]:
@@ -77,7 +72,7 @@ def _routed_method_names(trees: dict[str, ast.Module]) -> set[str]:
 
 def _declared_method_names(trees: dict[str, ast.Module]) -> set[str]:
     declared = set()
-    for module in DECLARED_MODULES:
+    for module in ROUTER_MODULES + tuple(CROSS_MODULE_OWNERS.values()):
         for _, function in astscan.methods(trees[module]):
             if any(decorator.startswith("endpoint(") for decorator in astscan.decorators(function)):
                 declared.add(function.name)
