@@ -35,7 +35,7 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.config.rois import FcuVersion
 from common.config.unit import UnitConfig
-from common.const import Const
+from common.const import Const, UnitEndpoint
 from common.dlipowerswitch import PowerSwitchFactory, SwitchedOutlet
 from common.endpoints import Completion, Tier, add_api_route, endpoint
 from common.filer import Filer, MoveGuardian
@@ -1140,16 +1140,16 @@ class Unit(Component):
 
         base_path = Const.BASE_UNIT_PATH
 
-        add_api_route(router, base_path + "/startup", endpoint=self.endpoint_startup, methods=["PUT"])
-        add_api_route(router, base_path + "/shutdown", endpoint=self.endpoint_shutdown, methods=["PUT"])
+        add_api_route(router, f"{base_path}/{UnitEndpoint.STARTUP}", endpoint=self.endpoint_startup, methods=["PUT"])
+        add_api_route(router, f"{base_path}/{UnitEndpoint.SHUTDOWN}", endpoint=self.endpoint_shutdown, methods=["PUT"])
         # The one state-changing verb kept on GET as well as PUT, deliberately and
         # temporarily. MAST_common's shared plan client aborts every committed unit with
         # method="GET" (models/plans.py:830-831), so PUT-only would answer 405 on the
         # fleet's abort path -- the last verb that should fail quietly. Accepting both is
         # the migration step: the client moves to PUT, then GET comes off here. Tracked
         # on #48; every other state-changing route in this file is PUT-only.
-        add_api_route(router, base_path + "/abort", endpoint=self.endpoint_abort, methods=["GET", "PUT"])
-        add_api_route(router, base_path + "/status", endpoint=self.endpoint_status)
+        add_api_route(router, f"{base_path}/{UnitEndpoint.ABORT}", endpoint=self.endpoint_abort, methods=["GET", "PUT"])
+        add_api_route(router, f"{base_path}/{UnitEndpoint.STATUS}", endpoint=self.endpoint_status)
         if self.autofocuser:
             add_api_route(
                 router,
@@ -1192,7 +1192,7 @@ class Unit(Component):
         )
         add_api_route(
             router,
-            base_path + "/execute_assignment",
+            f"{base_path}/{UnitEndpoint.EXECUTE_ASSIGNMENT}",
             methods=["PUT"],
             endpoint=self.endpoint_execute_assignment,
         )

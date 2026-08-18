@@ -54,7 +54,7 @@ jobs:
         with:
           repository: The-MAST-project/MAST_common
           # TEMPORARY -- MUST REVERT TO `master` BEFORE #77 MERGES. Checklist on #39.
-          ref: 0e2dfb37936faac803cd01311790b60727188b85  # MAST_common#75, merged with master
+          ref: 5e21021f05d8fffe387c0100b871cffd9d108e3c  # MAST_common#67, the endpoint-name enums
           path: common
 
       - uses: actions/setup-python@v7
