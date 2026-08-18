@@ -190,6 +190,10 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             logger.info(f"at {self.position=} (close enough to {value=})")
         else:
             self.target = value
+            # Stationarity must be concluded from samples taken after the command: the
+            # pre-move readings are all equal, so keeping them would report the focuser as
+            # settled before it has been asked to move.
+            self.latest_positions.clear()
             self.start_activity(FocuserActivities.Moving, details=[f"from {self.position} to {self.target}"])
             self.pw.focuser_goto(value)
         return CanonicalResponse_Ok
@@ -286,7 +290,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
     @property
     def is_stationary(self) -> bool:
-        return self.latest_positions.count == self.latest_positions.maxlen and all(
+        return len(self.latest_positions) == self.latest_positions.maxlen and all(
             self.latest_positions[0] == pos for pos in self.latest_positions
         )
 
@@ -297,6 +301,8 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
         if not self.connected:
             return
+
+        self.latest_positions.append(self.position)
 
         if self.is_active(FocuserActivities.Moving):
             if self.is_stationary and not self.close_enough(self.target):
@@ -319,8 +325,9 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         if self.is_active(FocuserActivities.StartingUp) and self.close_enough(self.known_as_good_position):
             self.end_activity(FocuserActivities.StartingUp)
 
-        # Not `is_stationary`, which is broken (#150).
-        if self.is_active(FocuserActivities.Aborting) and not self.pw.status().focuser.is_moving:  # type: ignore
+        # Position stability, not PWI4's `focuser.is_moving`: that stays true indefinitely
+        # after `focuser_stop()`, so the flag could never come down (#163, measured on mast02).
+        if self.is_active(FocuserActivities.Aborting) and self.is_stationary:
             self.end_activity(FocuserActivities.Aborting)
 
     @endpoint(tier=Tier.INTERFACE, completion=Completion.IMMEDIATE)
