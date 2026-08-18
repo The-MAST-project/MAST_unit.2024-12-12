@@ -979,10 +979,10 @@ from pyximc import *
         return CanonicalResponse(value=self.position)
 
     @endpoint(tier=Tier.OPERATION, completion=StageActivities.Moving)
-    def endpoint_set_position(self, pos: int):
-        return self.set_position(pos)
+    def endpoint_set_position(self, position: int):
+        return self.set_position(position)
 
-    def set_position(self, pos: int) -> CanonicalResponse:
+    def set_position(self, position: int) -> CanonicalResponse:
         """`PUT /stage/position`: the only way to command an absolute position over the API.
 
         It used to assign the `position` property, which is a second implementation of the
@@ -992,7 +992,7 @@ from pyximc import *
         so a refusal surfaced as a 500 with a traceback, while this returned `Ok`
         unconditionally regardless of what happened.
         """
-        return self.move_absolute(pos)
+        return self.move_absolute(position)
 
     @property
     def api_router(self) -> APIRouter:
