@@ -1,5 +1,4 @@
 from collections import deque
-from enum import IntEnum, auto
 
 import win32com.client
 from fastapi.routing import APIRouter
@@ -17,11 +16,6 @@ from common.utils import RepeatTimer, boxed_log, function_name, time_stamp
 from PlaneWave import pwi4_client
 
 logger = get_logger(__name__)
-
-
-class FocusDirection(IntEnum):
-    In = auto()
-    Out = auto()
 
 
 class Focuser(Component, SwitchedOutlet, AscomDispatcher):
@@ -232,40 +226,25 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         return self.goto_position(self.known_as_good_position)
 
     @endpoint(tier=Tier.OPERATION, completion=FocuserActivities.Moving)
-    def endpoint_move_in(self, amount):
-        return self.move(amount, direction=FocusDirection.In)
-
-    @endpoint(tier=Tier.OPERATION, completion=FocuserActivities.Moving)
-    def endpoint_move_out(self, amount):
-        return self.move(amount, direction=FocusDirection.Out)
-
-    @endpoint(tier=Tier.OPERATION, completion=FocuserActivities.Moving)
-    def move(self, amount: int, direction: FocusDirection):
+    def move_relative(self, amount: int):
         """
-        Move the focuser in or out by the specified amount
+        Move the focuser by a signed amount: positive is outward, negative is inward.
 
         Parameters
         ----------
         amount
-            How much to move
-        direction
-            Either In or Out
-
-        :mastapi:
+            How far to move, and which way. The sign carries the direction that `move_in` and
+            `move_out` used to carry as separate routes (#41).
         """
-        current_position = self.position
-        if direction == FocusDirection.In:
-            target = current_position - amount
-            if target < self.lower_limit:
-                msg = f"target position ({target}) would be below lower limit ({self.lower_limit})"
-                logger.error(msg)
-                return CanonicalResponse(errors=[msg])
-        else:
-            target = current_position + amount
-            if self.upper_limit and target >= self.upper_limit:
-                msg = f"target position ({target}) would be below upper limit ({self.upper_limit})"
-                logger.error(msg)
-                return CanonicalResponse(errors=[msg])
+        target = self.position + amount
+        if target < self.lower_limit:
+            msg = f"target position ({target}) would be below lower limit ({self.lower_limit})"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
+        if self.upper_limit and target >= self.upper_limit:
+            msg = f"target position ({target}) would be above upper limit ({self.upper_limit})"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
 
         return self.goto_position(target)
 
@@ -418,9 +397,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             endpoint=self.endpoint_goto_known_as_good_position,
             methods=["PUT"],
         )
-        add_api_route(router, base_path + "/move", endpoint=self.move, methods=["PUT"])
-        add_api_route(router, base_path + "/move_in", endpoint=self.endpoint_move_in, methods=["PUT"])
-        add_api_route(router, base_path + "/move_out", endpoint=self.endpoint_move_out, methods=["PUT"])
+        add_api_route(router, base_path + "/move_relative", endpoint=self.move_relative, methods=["PUT"])
 
         return router
 
