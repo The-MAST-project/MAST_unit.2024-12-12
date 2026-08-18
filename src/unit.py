@@ -42,7 +42,7 @@ from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 
 # from guiding import Guider
-from common.interfaces.imager import ImagerExposureSeries, ImagerRoi, ImagerSettings, ImagerTypes
+from common.interfaces.imager import ImagerRoi, ImagerSettings, ImagerTypes
 from common.mast_logging import DailyFileHandler, get_logger
 from common.models.assignments import AssignmentNotification, UnitAssignment
 from common.models.statuses import FullUnitStatus, StatusType
@@ -63,6 +63,7 @@ from imagers import Imager
 from mount import Mount, SettleMode
 from PlaneWave import pwi4_client
 from solving import Solver
+from spiral_search import SpiralSearch, guiding_roi
 from stage import Stage
 
 logger = get_logger(__name__)
@@ -206,8 +207,7 @@ class Unit(Component):
 
         self.errors: list[str] = list(self._init_errors)
 
-        self.spirals_folder: str | None = None
-        self.spiral_exposure_series: ImagerExposureSeries | None = None
+        self.spiral = SpiralSearch(self)
         self.latest_acquisition: Acquisition | None = None
 
         self._initialized = True
@@ -612,7 +612,14 @@ class Unit(Component):
         fiber_y: int | None = None,
         width: int | None = None,
         height: int | None = None,
-        binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
+        # An IntEnum, not ASI_294MM_SUPPORTED_BINNINGS_LITERAL. This is a QUERY parameter,
+        # so its value arrives as a string, and pydantic will not coerce "1" into
+        # Literal[1, 2] -- every request that supplied a binning was rejected before this
+        # method ran, with `Input should be 1 or 2` against an input of '1'. The parameter
+        # was therefore unusable: omittable, never settable, so bin 2 was unreachable over
+        # HTTP. Members are ints, so everything downstream (ImagerSettings.binning is still
+        # the literal) takes it unchanged.
+        binning: asi.Asi294mmBinning = asi.Asi294mmBinning.one,
         gain: int = asi.ASI_294MM_DEFAULT_GAIN,
         ra_offsets: Annotated[
             str | list[str] | list[float] | None,
@@ -1054,81 +1061,84 @@ class Unit(Component):
 
     #     return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION)
-    def endpoint_spiral_new_path(self, x_step_arcsec: float, y_step_arcsec: float):
-        """
-        Defines a new spiral path<br>
-        **NOTE**: Remember to call `spiral_end_path()` when done with the spiral path
-        """
-        assert self.mount is not None
-        assert self.imager is not None
+    @endpoint(tier=Tier.OPERATION, factory=True)
+    def _spiral_new_path_endpoint(self):
+        """Build the `spiral_new_path` endpoint with the configured ROI as its defaults.
 
-        self.mount.pw.mount_spiral_offset_new(x_step_arcsec=x_step_arcsec, y_step_arcsec=y_step_arcsec)
-        self.spirals_folder = PathMaker().make_spirals_folder()
+        The defaults have to be bound HERE rather than written into a method signature:
+        a signature default is evaluated at import, long before `Config()` has loaded,
+        which is why `get_imager_type` further up is commented out. Routes are registered
+        after the Unit is constructed, so by this point the configuration is real, and
+        binding the values into a closure's signature is what puts actual numbers in the
+        OpenAPI schema -- the operator sees the unit's own fibre position pre-filled in
+        Swagger instead of a placeholder.
+        """
+        roi = guiding_roi()
+        configured_x = int(roi.fiber_x) if roi is not None and roi.fiber_x is not None else None
+        configured_y = int(roi.fiber_y) if roi is not None and roi.fiber_y is not None else None
 
-        image_path = os.path.join(
-            self.spirals_folder,
-            "step-" + PathMaker().make_seq(self.spirals_folder) + ".fits",
-        )
-        self.imager.latest_settings = ImagerSettings(seconds=5, save=True, image_path=image_path, binning=1)
-        self.spiral_exposure_series = self.imager.start_exposure_series(purpose="spiral_new_path")
-        self.imager.start_exposure(self.imager.latest_settings)
-        self.imager.wait_for_image_saved()
-        Filer().move_ram_to_shared(image_path)
-        return CanonicalResponse_Ok
+        def endpoint_spiral_new_path(
+            x_step_arcsec: float,
+            y_step_arcsec: float,
+            exposure_seconds: float = 5.0,
+            save_intermediate_exposures: bool = False,
+            center_x: int | None = configured_x,
+            center_y: int | None = configured_y,
+            usable_fraction: float | None = None,
+        ):
+            """
+            Opens a spiral search session and takes the **reference** frame.<br>
+            Tracking is started; `spiral_end_path()` stops it again.<br>
+            **NOTE**: an abandoned session closes itself after an hour, without a measurement.
+
+            - **exposure_seconds**: exposure for every frame in the session (binning is always 1)
+            - **save_intermediate_exposures**: when false (default) only the reference and final
+              frames are kept; every step is logged either way
+            - **center_x**, **center_y**: centre of the area cross-correlated at the end. Both
+              must be given to take effect. Falls back to the fibre position from
+              `guiding.rois[fcu_v2]`, then to the centre of the frame.
+            - **usable_fraction**: fraction of each sensor axis correlated, about that centre.
+              Falls back to the margins in `guiding.rois[fcu_v2]`, then to
+              (1000, 300) px horizontal/vertical. The optics have pronounced coma, so the
+              outer field smears the correlation peak.
+
+            Whichever source was used for each is reported back in the result.
+            """
+            return self.spiral.start(
+                x_step_arcsec=x_step_arcsec,
+                y_step_arcsec=y_step_arcsec,
+                exposure_seconds=exposure_seconds,
+                save_intermediate_exposures=save_intermediate_exposures,
+                center_x=center_x,
+                center_y=center_y,
+                usable_fraction=usable_fraction,
+            )
+
+        return endpoint_spiral_new_path
 
     @endpoint(tier=Tier.OPERATION)
     def endpoint_spiral_next_step(self):
         """
         Takes the next step in the currently defined spiral path
         """
-        assert self.mount is not None
-        assert self.imager is not None
-
-        logger.info("calling mount_spiral_offset_next() ...")
-        self.mount.pw.mount_spiral_offset_next()
-        self.mount.wait_until_settled(SettleMode.OFFSET_STEP)
-        logger.info("mount stopped moving")
-
-        if self.spirals_folder is not None:
-            image_path = str(Path(self.spirals_folder) / Path("step-" + PathMaker().make_seq(self.spirals_folder) + ".fits"))
-            self.imager.latest_settings = ImagerSettings(seconds=5, save=True, image_path=image_path, binning=1)
-            self.imager.start_exposure(self.imager.latest_settings)
-            self.imager.wait_for_image_saved()
-            Filer().move_ram_to_shared(image_path)
-
-        return CanonicalResponse_Ok
+        return self.spiral.step(forward=True)
 
     @endpoint(tier=Tier.OPERATION)
     def endpoint_spiral_previous_step(self):
         """
         Goes back one step in the currently defined spiral path
         """
-        assert self.mount is not None
-        assert self.imager is not None
-
-        logger.info("calling mount_spiral_offset_previous() ...")
-        self.mount.pw.mount_spiral_offset_previous()
-        self.mount.wait_until_settled(SettleMode.OFFSET_STEP)
-        logger.info("mount stopped moving")
-
-        if self.spirals_folder is not None:
-            image_path = str(Path(self.spirals_folder) / Path("step-" + PathMaker().make_seq(self.spirals_folder) + ".fits"))
-            self.imager.latest_settings = ImagerSettings(seconds=5, save=True, image_path=image_path, binning=1)
-            self.imager.start_exposure(self.imager.latest_settings)
-            self.imager.wait_for_image_saved()
-            Filer().move_ram_to_shared(image_path)
-
-        return CanonicalResponse_Ok
+        return self.spiral.step(forward=False)
 
     @endpoint(tier=Tier.OPERATION)
     def endpoint_spiral_end_path(self):
         """
-        Ends the currently defined spiral path
+        Ends the spiral session: takes the **final** frame, cross-correlates it against the
+        reference, stops tracking, and returns the measured shift in pixels.
+
+        The same result is written as `result.json` beside the two frames.
         """
-        assert self.spiral_exposure_series is not None and self.imager is not None, "No spiral exposure series defined"
-        self.imager.end_exposure_series(self.spiral_exposure_series)
-        return CanonicalResponse_Ok
+        return self.spiral.end()
 
     @property
     def api_router(self) -> APIRouter:
@@ -1213,7 +1223,7 @@ class Unit(Component):
         #     #     endpoint=self.set_sky_and_spec_pixel_values,
         # , methods=["PUT"])
 
-        add_api_route(router, base_path + "/spiral_new_path", endpoint=self.endpoint_spiral_new_path, methods=["PUT"])
+        add_api_route(router, base_path + "/spiral_new_path", endpoint=self._spiral_new_path_endpoint(), methods=["PUT"])
         add_api_route(router, base_path + "/spiral_next_step", endpoint=self.endpoint_spiral_next_step, methods=["PUT"])
         add_api_route(
             router,

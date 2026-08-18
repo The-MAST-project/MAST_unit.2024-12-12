@@ -444,8 +444,6 @@ from pyximc import *
     def connect(self):
         """
         Connects to the **MAST** stage controller
-
-        :mastapi:
         """
 
         if not self.is_on():
@@ -456,8 +454,6 @@ from pyximc import *
     def disconnect(self):
         """
         Disconnects from the **MAST** stage controller
-
-        :mastapi:
         """
 
         if self.is_on():
@@ -471,8 +467,6 @@ from pyximc import *
         * If not powered, powers it ON
         * If not connected, connects to the controller
         * If the stage is not at operational position, it is moved
-
-        :mastapi:
         """
 
         if not self.is_on():

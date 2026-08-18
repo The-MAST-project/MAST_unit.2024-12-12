@@ -130,6 +130,11 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     MIN_ALTITUDE_DEGREES = 15.0
     MAX_ALTITUDE_DEGREES = 90.0
 
+    #: How long to wait for PWI4 to report tracking engaged or disengaged. The wait used to
+    #: be unbounded, so a mount that would not engage hung its caller for ever -- including
+    #: `spiral_search.start()`, which holds the session lock while it waits.
+    TRACKING_TIMEOUT_SECONDS = 30
+
     _instance = None
     _initialized = False
 
@@ -190,7 +195,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def connect(self):
         """
         Connects to the MAST mount controller
-        :mastapi:
         """
         if not self.is_on():
             self.power_on()
@@ -200,7 +204,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def disconnect(self):
         """
         Disconnects from the MAST mount controller
-        :mastapi:
         """
         if self.is_on():
             self.connected = False
@@ -256,7 +259,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def startup(self):
         """
         Performs the MAST startup routine (power ON, fans on and find home)
-        :mastapi:
         """
         if not self.connected:
             self.connect()
@@ -272,7 +274,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def shutdown(self):
         """
         Performs the MAST shutdown routine (fans off, park, power OFF)
-        :mastapi:
         """
         if self.connected:
             self.disconnect()
@@ -298,7 +299,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def park(self):
         """
         Parks the MAST mount
-        :mastapi:
         """
         if self.connected:
             self.start_activity(MountActivities.Parking)
@@ -309,7 +309,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def find_home(self):
         """
         Tells the MAST mount to find it's HOME indexes
-        :mastapi:
         """
         if self.connected:
             self.target = "Home"
@@ -649,7 +648,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                 x=st.mount.spiral_offset.x,  # type: ignore
                 y=st.mount.spiral_offset.y,  # type: ignore
                 x_step_arcsec=st.mount.spiral_offset.x_step_arcsec,  # type: ignore
-                y_step_arcsec=st.mount.spiral_offset.x_step_arcsec,  # type: ignore
+                y_step_arcsec=st.mount.spiral_offset.y_step_arcsec,  # type: ignore
             )
             if st
             else None
@@ -661,9 +660,19 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             **component_status.model_dump(),
             errors=self.errors,
             target_verbal=target_verbal,
+            # tracking/slewing/dec were declared on MountStatus but never passed, so they
+            # always reported their defaults -- `tracking: false` while PWI4 said the mount
+            # was tracking, and `dec_j2000_degs: null` throughout. The values were already
+            # being read a few lines up (to integrate the activity bits) and then dropped,
+            # which is why the payload contradicted itself: activities said "Tracking" while
+            # the field said false. Nothing outside the unit could tell whether the mount was
+            # tracking.
+            tracking=st.mount.is_tracking if st else False,  # type: ignore
+            slewing=st.mount.is_slewing if st else False,  # type: ignore
             axis0_enabled=st.mount.axis0.is_enabled if st else False,  # type: ignore
             axis1_enabled=st.mount.axis1.is_enabled if st else False,  # type: ignore
             ra_j2000_hours=st.mount.ra_j2000_hours if st else None,  # type: ignore
+            dec_j2000_degs=st.mount.dec_j2000_degs if st else None,  # type: ignore
             ha_hours=(st.site.lmst_hours - st.mount.ra_j2000_hours) if st else None,  # type: ignore
             lmst_hours=st.site.lmst_hours if st else None,  # type: ignore
             fans=True,
@@ -671,41 +680,68 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             date=time_stamp(),
         )
 
+    def _await_tracking(self, desired: bool) -> bool:
+        """Wait for PWI4 to report tracking as `desired`. False if it never does.
+
+        Bounded. Both callers previously spun on `while ... is_tracking` with no deadline,
+        so a mount that would not engage hung the caller for ever -- and these are called
+        from `spiral_search.start()`, which holds the session lock.
+        """
+        deadline = time.time() + self.TRACKING_TIMEOUT_SECONDS
+        while time.time() < deadline:
+            time.sleep(1)
+            if self.pw.status().mount.is_tracking == desired:  # type: ignore
+                return True
+        return False
+
     @endpoint(tier=Tier.OPERATION, completion=Completion.BLOCKING)
-    def start_tracking(self):
+    def start_tracking(self) -> CanonicalResponse:
         """
         Tell the ``mount`` to start tracking
-        :mastapi:
         """
+        op = function_name()
+
+        # Deliberately NOT connecting here. Connecting is `startup()`'s job -- it enables
+        # both axes and goes on to find home, i.e. it moves the telescope. An operation
+        # asking to track must not acquire the device as a side effect; if the mount is not
+        # connected mid-session that is a fault worth surfacing, not papering over.
+        #
+        # This used to `return` bare. Nothing was commanded, nothing logged, and the caller
+        # got None: on 2026-08-17 a spiral ran three sessions to completion against a mount
+        # that was never told to track, producing trailed frames and a measured shift of
+        # (-0.0, 0.01) that passed its own confidence check.
         if not self.connected:
-            # Was a bare `return`, which answered HTTP `null` -- indistinguishable from the
-            # success path, which also returned nothing (invariant 4).
-            return CanonicalResponse(errors=["not connected"])
+            msg = f"{op}: mount not connected, cannot start tracking"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
 
         self.pw.mount_tracking_on()
-        time.sleep(1)
-        st = self.pw.status()
-        while not st.mount.is_tracking:  # type: ignore
-            time.sleep(1)
-            st = self.pw.status()
+        if not self._await_tracking(True):
+            msg = f"{op}: tracking did not engage within {self.TRACKING_TIMEOUT_SECONDS}s"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
+
         logger.info(f"started tracking (from {caller_name()})")
         return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION, completion=Completion.BLOCKING)
-    def stop_tracking(self):
+    def stop_tracking(self) -> CanonicalResponse:
         """
         Tell the ``mount`` to stop tracking
-        :mastapi:
         """
+        op = function_name()
+
         if not self.connected:
-            return CanonicalResponse(errors=["not connected"])
+            msg = f"{op}: mount not connected, cannot stop tracking"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
 
         self.pw.mount_tracking_off()
-        time.sleep(1)
-        st = self.pw.status()
-        while st.mount.is_tracking:  # type: ignore
-            time.sleep(1)
-            st = self.pw.status()
+        if not self._await_tracking(False):
+            msg = f"{op}: tracking did not disengage within {self.TRACKING_TIMEOUT_SECONDS}s"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
+
         logger.info(f"stopped tracking (from {caller_name()})")
         return CanonicalResponse_Ok
 
@@ -761,7 +797,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         to be tracked.<br>
         Returns as soon as PWI4 has accepted the slew; the **Slewing** activity, which
         carries the target, is what says when it finishes.
-        :mastapi:
         """
         return self._goto_equatorial(self.goto_ra_dec_j2000, ra_j2000_hours, dec_j2000_degs, function_name())
 
@@ -826,7 +861,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         coordinates.<br>
         Tracking is not touched. Returns as soon as PWI4 has accepted the slew; the
         **Slewing** activity, which names the frame, is what says when it finishes.
-        :mastapi:
         """
         return self._goto_equatorial(self.goto_ra_dec_apparent, ra_apparent_hours, dec_apparent_degs, function_name())
 
@@ -894,7 +928,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         drag the mount straight off it.<br>
         Returns as soon as PWI4 has accepted the slew, like the other goto verbs; the
         **Slewing** activity, which carries the target, is what says when it finishes.
-        :mastapi:
         """
         op = function_name()
 
@@ -936,7 +969,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         """
         Aborts any in-progress mount activities
 
-        :mastapi:
         Returns
         -------
 
