@@ -198,3 +198,43 @@ def test_every_component_generates_its_interface_verbs():
     ]
 
     assert not missing, f"these components no longer generate their interface verbs: {missing}"
+
+
+def test_every_contract_route_is_named_from_the_shared_enum():
+    """#35: a CONTRACT-tier path is built from `UnitEndpoint`, never from a bare literal.
+
+    These are the names with a programmatic client on the other side of the wire, so a rename
+    that reaches only one repo shows up as a 404 in production and as nothing at all at import.
+    The enum is the single source; this is what stops a new contract route being added beside
+    it as a string.
+
+    Operator and diagnostic routes are deliberately not covered -- they have no such client,
+    and #35 scopes the enum to the contract tier on purpose.
+    """
+    trees = _unit_modules()
+    tree = trees["unit.py"]
+
+    contract = {
+        function.name
+        for _, function in astscan.methods(tree)
+        if any("Tier.CONTRACT" in decorator for decorator in astscan.decorators(function))
+    }
+    assert contract, "expected the unit's CONTRACT-tier handlers; found none"
+
+    offenders = []
+    for call in astscan.calls(tree):
+        if astscan.called_name(call) != "add_api_route":
+            continue
+        handler = next((kw.value for kw in call.keywords if kw.arg == "endpoint"), None)
+        if handler is None or len(call.args) < 2:
+            continue
+        if ast.unparse(handler).rsplit(".", 1)[-1] not in contract:
+            continue
+        path = ast.unparse(call.args[1])
+        if "UnitEndpoint" not in path:
+            offenders.append(f"unit.py:{call.lineno} {path}")
+
+    assert not offenders, (
+        "these CONTRACT-tier routes name themselves with a literal; use UnitEndpoint so a "
+        "rename reaches every consumer (#35):\n    " + "\n    ".join(offenders)
+    )
