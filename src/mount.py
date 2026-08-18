@@ -14,7 +14,7 @@ from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.endpoints import Completion, Stability, Tier, add_api_route, endpoint, register_component_endpoints
+from common.endpoints import Completion, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import MountStatus, SpiralSettings
@@ -187,7 +187,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self._initialized = True
         logger.info("initialized")
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def connect(self):
         """
         Connects to the MAST mount controller
@@ -198,7 +197,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self.connected = True
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def disconnect(self):
         """
         Disconnects from the MAST mount controller
@@ -1048,8 +1046,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
 
         router = APIRouter()
         register_component_endpoints(router, self, base_path)
-        add_api_route(router, base_path + "/connect", endpoint=self.connect)
-        add_api_route(router, base_path + "/disconnect", endpoint=self.disconnect)
         add_api_route(router, base_path + "/start_tracking", endpoint=self.start_tracking, methods=["PUT"])
         add_api_route(router, base_path + "/stop_tracking", endpoint=self.stop_tracking, methods=["PUT"])
         add_api_route(router, base_path + "/park", endpoint=self.park, methods=["PUT"])

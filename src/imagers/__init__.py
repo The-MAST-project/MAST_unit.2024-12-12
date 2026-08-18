@@ -7,7 +7,7 @@ from common.activities import ImagerActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.endpoints import Completion, Stability, Tier, add_api_route, endpoint, register_component_endpoints
+from common.endpoints import Completion, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerTypes
 from common.mast_logging import get_logger
 from common.models.statuses import ImagerSettings, ImagerStatus
@@ -241,12 +241,10 @@ class Imager(ImagerInterface, SwitchedOutlet):
             backend=self._backend.status(),
         )
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def connect(self) -> CanonicalResponse:  # obsoleted by connected property
         self._backend.connected = True
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def disconnect(self) -> CanonicalResponse:  # obsoleted by connected property
         self.connected = False
         return CanonicalResponse_Ok
@@ -296,7 +294,6 @@ class Imager(ImagerInterface, SwitchedOutlet):
         """
         return self._backend.stop_exposure()
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED)
     def abort_exposure(self) -> CanonicalResponse:
         """
         Aborts the current exposure.
@@ -387,8 +384,6 @@ class Imager(ImagerInterface, SwitchedOutlet):
 
         router = APIRouter()
         register_component_endpoints(router, self, base_imager_path)
-        add_api_route(router, base_imager_path + "/connect", endpoint=self.connect)
-        add_api_route(router, base_imager_path + "/disconnect", endpoint=self.disconnect)
         add_api_route(
             router,
             base_imager_path + "/start_exposure",
@@ -396,12 +391,6 @@ class Imager(ImagerInterface, SwitchedOutlet):
             methods=["PUT"],
         )
         add_api_route(router, base_imager_path + "/stop_exposure", endpoint=self.stop_exposure, methods=["PUT"])
-        add_api_route(
-            router,
-            base_imager_path + "/abort_exposure",
-            endpoint=self.abort_exposure,
-            methods=["PUT"],
-        )
         add_api_route(router, base_imager_path + "/cooler_on", endpoint=self.turn_cooler_on, methods=["PUT"])
         add_api_route(router, base_imager_path + "/cooler_off", endpoint=self.turn_cooler_off, methods=["PUT"])
 

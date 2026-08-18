@@ -40,7 +40,6 @@ KNOWN_UNDECLARED = {
     "imagers/__init__.py:abort": "MAST_unit#154",
     "start_exposure": "MAST_unit#154",
     "stop_exposure": "MAST_unit#154",
-    "abort_exposure": "MAST_unit#154",
     # Completes when every component's Aborting clears; no unit-level flag says so.
     "endpoint_abort": "MAST_unit#80",
     # The guider, autofocus and spiral chains: #43's inventory could not classify these
