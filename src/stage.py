@@ -602,7 +602,7 @@ from pyximc import *
         Returns True if the stage was at the same position for the last
           self.latest_positions.maxlen readings (every 2 seconds by ontimer).
         """
-        return self.latest_positions.count == self.latest_positions.maxlen and all(
+        return len(self.latest_positions) == self.latest_positions.maxlen and all(
             pos == self.latest_positions[0] for pos in self.latest_positions
         )
 
@@ -856,6 +856,10 @@ from pyximc import *
             logger.exception(msg)
             return CanonicalResponse(errors=[msg])
 
+        # Same reason as the focuser: stationarity has to be concluded from samples taken
+        # after the command, or the pre-move readings report the stage as settled before it
+        # has started (#150).
+        self.latest_positions.clear()
         self.ticks_at_start = self.position
         self.target = position
         self.motion_start_time = datetime.datetime.now(datetime.UTC)
