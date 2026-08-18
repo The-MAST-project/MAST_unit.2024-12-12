@@ -1032,13 +1032,13 @@ class Unit(Component):
 
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION, completion=UnitActivities.Dancing)
+    @endpoint(tier=Tier.DEMO, completion=UnitActivities.Dancing)
     async def endpoint_start_dancing(self, style: str = "foxtrot"):
         logger.info(f"unit.dance: dancing the {style} ...")
         self.start_activity(UnitActivities.Dancing, details=[style])
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
+    @endpoint(tier=Tier.DEMO, completion=Completion.IMMEDIATE)
     async def endpoint_stop_dancing(self):
         logger.info("unit.dance: stopping dancing ...")
         self.end_activity(UnitActivities.Dancing)
