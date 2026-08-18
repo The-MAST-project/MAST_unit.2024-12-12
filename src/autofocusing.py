@@ -406,8 +406,6 @@ class Autofocuser:
     def start_pwi4_autofocus(self):
         """
         Starts the ``autofocus`` routine (implemented by _PlaneWave_)
-
-        :mastapi:
         """
         # if not self.connected:
         #     logger.error('Cannot start PlaneWave autofocus - not-connected')
@@ -439,8 +437,6 @@ class Autofocuser:
     def stop_autofocus(self):
         """
         Stops the ``autofocus`` routine
-
-        :mastapi:
         """
         # if not self.connected:
         #     logger.error('Cannot stop PlaneWave autofocus - not-connected')

@@ -357,7 +357,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         """
         Connects to the **MAST** camera
 
-        :mastapi:
         Returns
         -------
 
@@ -368,8 +367,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     def disconnect(self):
         """
         Disconnects from the **MAST* camera
-
-        :mastapi:
         """
         self.connected = False
         return CanonicalResponse_Ok
@@ -383,8 +380,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         Parameters
         ----------
         settings
-
-        :mastapi:
         """
         op = function_name()
         self.errors = []
@@ -623,7 +618,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
     def abort(self):
         """
-        :mastapi:
         Returns
         -------
 
@@ -810,8 +804,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     def temperature(self) -> float:
         """
         Returns the current camera temperature
-
-        :mastapi:
         """
         if not self.connected:
             return float("nan")

@@ -49,7 +49,9 @@ KNOWN_UNDECLARED = {
     "start_autofocus": "MAST_unit#43",
     "endpoint_stop_autofocus": "MAST_unit#43",
     "endpoint_start_acquisition_and_guiding": "MAST_unit#43",
-    "endpoint_spiral_new_path": "MAST_unit#43",
+    # The route is served by a factory-built handler since #117 (see the `factory=True`
+    # declaration); the name follows the factory.
+    "_spiral_new_path_endpoint": "MAST_unit#43",
     "endpoint_spiral_next_step": "MAST_unit#43",
     "endpoint_spiral_previous_step": "MAST_unit#43",
     "endpoint_spiral_end_path": "MAST_unit#43",
