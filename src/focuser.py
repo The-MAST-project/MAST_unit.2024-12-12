@@ -133,9 +133,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         return CanonicalResponse_Ok
 
     def disconnect(self):
-        """
-        :mastapi:
-        """
         self.connected = False
         return CanonicalResponse_Ok
 
@@ -160,9 +157,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
     @property
     def position(self) -> int:
-        """
-        :mastapi:
-        """
         stat = self.pw.status()
         return round(stat.focuser.position)  # type: ignore
 
@@ -200,7 +194,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
     def endpoint_goto_known_as_good_position(self):
         """
         Go to the 'known-as-good' position
-        :mastapi:
         """
         if self.known_as_good_position is None:
             return CanonicalResponse(errors=["known_as_good_position is None"])
@@ -224,8 +217,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             How much to move
         direction
             Either In or Out
-
-        :mastapi:
         """
         current_position = self.position
         if direction == FocusDirection.In:

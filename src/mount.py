@@ -194,7 +194,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def connect(self):
         """
         Connects to the MAST mount controller
-        :mastapi:
         """
         if not self.is_on():
             self.power_on()
@@ -204,7 +203,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def disconnect(self):
         """
         Disconnects from the MAST mount controller
-        :mastapi:
         """
         if self.is_on():
             self.connected = False
@@ -262,7 +260,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def startup(self):
         """
         Performs the MAST startup routine (power ON, fans on and find home)
-        :mastapi:
         """
         if not self.connected:
             self.connect()
@@ -280,7 +277,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def shutdown(self):
         """
         Performs the MAST shutdown routine (fans off, park, power OFF)
-        :mastapi:
         """
         if self.connected:
             self.disconnect()
@@ -305,7 +301,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def park(self):
         """
         Parks the MAST mount
-        :mastapi:
         """
         if self.connected:
             self.start_activity(MountActivities.Parking)
@@ -315,7 +310,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def find_home(self):
         """
         Tells the MAST mount to find it's HOME indexes
-        :mastapi:
         """
         if self.connected:
             self.target = "Home"
@@ -793,7 +787,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         to be tracked.<br>
         Returns as soon as PWI4 has accepted the slew; the **Slewing** activity, which
         carries the target, is what says when it finishes.
-        :mastapi:
         """
         return self._goto_equatorial(self.goto_ra_dec_j2000, ra_j2000_hours, dec_j2000_degs, function_name())
 
@@ -857,7 +850,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         coordinates.<br>
         Tracking is not touched. Returns as soon as PWI4 has accepted the slew; the
         **Slewing** activity, which names the frame, is what says when it finishes.
-        :mastapi:
         """
         return self._goto_equatorial(self.goto_ra_dec_apparent, ra_apparent_hours, dec_apparent_degs, function_name())
 
@@ -924,7 +916,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         drag the mount straight off it.<br>
         Returns as soon as PWI4 has accepted the slew, like the other goto verbs; the
         **Slewing** activity, which carries the target, is what says when it finishes.
-        :mastapi:
         """
         op = function_name()
 
@@ -968,7 +959,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         """
         Aborts any in-progress mount activities
 
-        :mastapi:
         Returns
         -------
 
