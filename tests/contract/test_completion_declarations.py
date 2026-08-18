@@ -165,5 +165,8 @@ def test_the_scan_found_the_surface():
     routed = _routed_names(trees)
     declared = {name for name, completion in _declarations(trees).items() if completion is not None}
 
-    assert len(routed) >= 60, f"expected the unit's routed operations, found {len(routed)}"
-    assert len(declared) >= 40, f"expected the declared completions, found {len(declared)}"
+    # Floors, not counts: the surface is meant to shrink. It has -- #124 removed 11 deprecated
+    # routes and #41 collapsed four relative-motion routes into two -- so these are set well
+    # below today's population to catch a scan that has collapsed, not to pin a number.
+    assert len(routed) >= 45, f"expected the unit's routed operations, found {len(routed)}"
+    assert len(declared) >= 35, f"expected the declared completions, found {len(declared)}"

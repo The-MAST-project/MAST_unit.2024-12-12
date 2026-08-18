@@ -5,7 +5,7 @@ import sys
 import threading
 import time
 from collections import deque
-from enum import Enum, IntEnum, auto
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -80,11 +80,6 @@ RESULT_MAP = {
 }
 
 
-class StageDirection(IntEnum):
-    Up = auto()
-    Down = auto()
-
-
 # The values below are the wire format, and the member names are Python identifiers with no
 # meaning outside this file. Keeping those two apart is the fix for #85: the names used to
 # leak into the HTTP contract, leaving three of the five presets unreachable -- request
@@ -113,11 +108,6 @@ STARTUP_PRESET = StagePresetPosition.Sky
 
 #: The preset names the API accepts, for anyone building a UI over it.
 stage_position_names: list[str] = [p.value for p in StagePresetPosition]
-
-stage_direction_str2int_dict: dict = {
-    "Up": StageDirection.Up,
-    "Down": StageDirection.Down,
-}
 
 
 class Stage(Component, SwitchedOutlet):
@@ -866,16 +856,15 @@ from pyximc import *
         return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION, completion=StageActivities.Moving)
-    def move_relative(self, direction: StageDirection | str, amount: int | str):
+    def move_relative(self, amount: int):
         """
-        Starts moving the stage in the specified direction by the specified number of native units
+        Starts moving the stage by a signed number of native units.
 
         Parameters
         ----------
-        direction
-            The direction to move (**Up**: away from the motor, **Down**: towards the motor)
         amount
-            How many units to move
+            How far to move, and which way: positive is away from the motor, negative is
+            towards it. The sign carries what the `direction` parameter used to (#41).
         """
         op = function_name()
 
@@ -883,12 +872,6 @@ from pyximc import *
         if current_position is None:
             return CanonicalResponse(errors=["cannot get current position"])
 
-        if isinstance(direction, str):
-            direction = StageDirection(stage_direction_str2int_dict[direction])
-        if isinstance(amount, str):
-            amount = abs(int(amount))
-
-        amount *= 1 if direction == StageDirection.Up else -1
         try:
             self.target = current_position + amount
             self.start_activity(StageActivities.Moving, details=[f"from {self.position} to {self.target}"])
@@ -1011,7 +994,7 @@ from pyximc import *
             methods=["PUT"],
             endpoint=self.endpoint_set_position,
         )
-        add_api_route(router, base_stage_path + "/move", endpoint=self.move_relative, methods=["PUT"])
+        add_api_route(router, base_stage_path + "/move_relative", endpoint=self.move_relative, methods=["PUT"])
         add_api_route(
             router,
             base_stage_path + "/move_to_preset",
