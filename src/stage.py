@@ -17,7 +17,7 @@ from common.config import Config
 from common.config.rois import FcuVersion
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.endpoints import Completion, Stability, Tier, add_api_route, endpoint, register_component_endpoints
+from common.endpoints import Completion, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import StageStatus
@@ -451,7 +451,6 @@ from pyximc import *
 
         logger.info(f"connected = {value} => {self.connected}")
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def connect(self):
         """
         Connects to the **MAST** stage controller
@@ -464,7 +463,6 @@ from pyximc import *
         self.connected = True
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def disconnect(self):
         """
         Disconnects from the **MAST** stage controller
@@ -1013,8 +1011,6 @@ from pyximc import *
             methods=["PUT"],
             endpoint=self.endpoint_set_position,
         )
-        add_api_route(router, base_stage_path + "/connect", endpoint=self.connect)
-        add_api_route(router, base_stage_path + "/disconnect", endpoint=self.disconnect)
         add_api_route(router, base_stage_path + "/move", endpoint=self.move_relative, methods=["PUT"])
         add_api_route(
             router,

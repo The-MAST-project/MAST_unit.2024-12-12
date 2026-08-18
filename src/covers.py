@@ -10,7 +10,6 @@ from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.endpoints import (
     Completion,
-    Stability,
     Tier,
     add_api_route,
     endpoint,
@@ -167,7 +166,6 @@ class Covers(Component, SwitchedOutlet):
 
     # ----------------------------------------------------------------- connection
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def connect(self):
         """
         Connects to the **MAST** mirror covers, through PWI4.
@@ -178,7 +176,6 @@ class Covers(Component, SwitchedOutlet):
         """
         return self._mirrorcover_command("connect")
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def disconnect(self):
         """
         Disconnects from the **MAST** mirror covers.
@@ -425,8 +422,6 @@ class Covers(Component, SwitchedOutlet):
 
         router = APIRouter()
         register_component_endpoints(router, self, base_path)
-        add_api_route(router, base_path + "/connect", endpoint=self.connect)
-        add_api_route(router, base_path + "/disconnect", endpoint=self.disconnect)
         add_api_route(router, base_path + "/open", endpoint=self.open, methods=["PUT"])
         add_api_route(router, base_path + "/close", endpoint=self.close, methods=["PUT"])
 

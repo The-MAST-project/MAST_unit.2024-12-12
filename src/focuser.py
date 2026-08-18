@@ -9,7 +9,7 @@ from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.endpoints import Completion, Stability, Tier, add_api_route, endpoint, register_component_endpoints
+from common.endpoints import Completion, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import FocuserStatus
@@ -120,7 +120,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             time.sleep(1)
         self.power_off()
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def connect(self):
         if not self.is_on():
             self.power_on()
@@ -134,7 +133,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
             self.connected = True
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION, stability=Stability.DEPRECATED, completion=Completion.IMMEDIATE)
     def disconnect(self):
         """
         :mastapi:
@@ -407,8 +405,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
         router = APIRouter()
         register_component_endpoints(router, self, base_path)
-        add_api_route(router, base_path + "/connect", endpoint=self.connect)
-        add_api_route(router, base_path + "/disconnect", endpoint=self.disconnect)
         add_api_route(router, base_path + "/position", endpoint=self.get_position)
         add_api_route(
             router,
