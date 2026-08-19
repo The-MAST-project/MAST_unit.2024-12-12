@@ -2,6 +2,49 @@
 
 ---
 
+## [2026-08-19] The API root redirects to `/docs`, and ReDoc is off for real
+
+**Why:** the unit served nothing at `/`. `create_app()` registered `/favicon.ico`, the unit
+router and the component routers, and no root route -- so `http://<unit>:8000/` answered
+`404 {"detail": "Not Found"}`. That is the address an operator types by hand, the one a
+bookmark holds, and the one the unit's `MAST Unit (FastAPI)` desktop shortcut pointed at
+(MAST_provisioning#54). Until #39 there was nothing better to offer: the seven tags in the
+live schema were subsystem names, redundant with the path prefix. With the tier tags applied
+across the surface, `/docs` became a page worth landing on -- the umbrella (#42) is trialing
+it as the API's canonical live contract location -- so the root now sends callers there.
+
+**What:** `read_root` in `src/app.py`, a `@app.get("/", include_in_schema=False)` returning
+`RedirectResponse(url="/docs")`. Registered next to `read_favicon`, in the factory rather
+than in the `__main__` block, so an imported `app` carries it (#114). It is out of the schema
+deliberately: every documented route carries exactly one tier tag, and `/` is navigation, not
+an operation a consumer calls.
+
+The same change corrects `redocs_url=None` to `redoc_url=None`. `FastAPI.__init__` absorbs an
+unknown keyword into `**extra` and raises nothing, so the misspelled parameter had been inert
+for as long as it stood and **ReDoc was serving at `/redoc`** -- confirmed by the new test,
+which returned 200 against the pre-fix app. The intent recorded in the line was evidently a
+single docs surface; that is now what runs.
+
+**Rejected:** *a landing page at the root* -- a small HTML index of the unit's tools. It
+duplicates what Swagger already renders, and it would be a second surface to keep in step
+with the tiers the moment one changed. *Repointing only the desktop shortcut* (which
+MAST_provisioning#54 does anyway) -- it fixes one caller and leaves the 404 for every other
+way the root is reached. *Leaving ReDoc up as a second view* -- ReDoc does not render the tag
+groups as the contract tiers the epic is establishing, so it would present a flatter,
+competing account of the same API.
+
+**Unsettled:** `create_app()` still passes `debug=True`, which was outside this change and is
+not a docs-surface question. `read_favicon` still redirects to `/static/favicon.ico`, which
+nothing mounts -- so the favicon 404s one hop later; it was left alone rather than folded in.
+Whether `/docs` should be reachable at all on a production unit (it is an interactive client
+against live hardware) has not been asked; the epic's premise is that it should.
+
+**Implications:** the provisioning shortcut, the vault's contract records, and anything else
+citing a unit's HTTP entry point can name `/docs` and have the bare root agree. #170 carries
+the two fixes.
+
+---
+
 ## [2026-08-11] Contract checks assert set equality against a known-violations list
 
 **Why:** The endpoint contract's static invariants had no enforcement, and three of them

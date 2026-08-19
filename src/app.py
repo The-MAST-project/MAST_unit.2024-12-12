@@ -192,7 +192,7 @@ def create_app(unit=None) -> FastAPI:
 
     app = FastAPI(
         docs_url="/docs",
-        redocs_url=None,
+        redoc_url=None,
         lifespan=lifespan,
         openapi_url="/openapi.json",
         openapi_tags=OPENAPI_TAGS,
@@ -210,6 +210,15 @@ def create_app(unit=None) -> FastAPI:
     async def pydantic_validation_exception_handler(request: Request, exc: ValidationError):
         logger.error("Pydantic validation error", exc_info=exc)
         return JSONResponse(status_code=400, content={"error": exc.errors()})
+
+    @app.get("/", include_in_schema=False)
+    def read_root():
+        """Send the bare root to the tier-grouped Swagger page (#170).
+
+        Out of the schema on purpose: every documented route carries exactly one tier tag
+        (#39), and this one is navigation rather than an operation to call.
+        """
+        return RedirectResponse(url="/docs")
 
     @app.get("/favicon.ico")
     def read_favicon():

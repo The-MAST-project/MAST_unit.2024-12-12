@@ -129,6 +129,30 @@ def test_lifespan_without_a_unit_starts_and_stops_cleanly():
         assert client.get("/favicon.ico", follow_redirects=False).status_code == 307
 
 
+def test_the_root_redirects_to_the_swagger_page():
+    """#170: the bare root used to 404 -- no route was registered for it at all.
+
+    Asserted through the client rather than through `_paths()`: the route is
+    `include_in_schema=False`, so it is invisible in the OpenAPI schema by design.
+    """
+    with TestClient(app_module.create_app()) as client:
+        response = client.get("/", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/docs"
+
+
+def test_redoc_is_not_served():
+    """#170: `redocs_url=None` was a misspelling of `redoc_url`, so ReDoc stayed up.
+
+    FastAPI absorbs an unknown keyword into `**extra` without complaint, which is why
+    nothing objected for as long as the line stood. This is the check that would have
+    caught it, and the one that keeps the corrected spelling from rotting back.
+    """
+    with TestClient(app_module.create_app()) as client:
+        assert client.get("/redoc").status_code == 404
+
+
 def test_the_schema_declares_the_tier_groups_in_display_order():
     """#39: Swagger groups by contract tier, most depended-upon first, each with its promise."""
     schema = app_module.create_app().openapi()
