@@ -12,7 +12,7 @@ from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import FocuserStatus
-from common.utils import RepeatTimer, boxed_log, time_stamp
+from common.utils import RepeatTimer, boxed_log, function_name, time_stamp
 from PlaneWave import pwi4_client
 
 logger = get_logger(__name__)
@@ -103,9 +103,9 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
     def shutdown(self):
         self.start_activity(FocuserActivities.ShuttingDown)
+        self.pw.focuser_disable()
         if self.connected:
             self.disconnect()
-        self.pw.focuser_disable()
         self.end_activity(FocuserActivities.ShuttingDown)
 
     @property
@@ -126,10 +126,14 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         ascom_run(self, "Connected = True")
         response = ascom_run(self, "Connected")
         if response.failed:
-            logger.error(f"could not ASCOM Connected = True (failure={response.failure})")
-            self.connected = False
-        else:
-            self.connected = True
+            # Report it; do not act on it. Assigning `connected = False` here ran the setter,
+            # which disconnected and de-energized the focuser over PWI4 -- a working connection
+            # torn down because a different subsystem's read failed, and answered `Ok` (#173).
+            msg = f"{function_name()}: could not read ASCOM Connected (failure={response.failure})"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
+
+        self.connected = True
         return CanonicalResponse_Ok
 
     def disconnect(self):
@@ -144,11 +148,9 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
     @connected.setter
     def connected(self, value):
         if value:
-            self.pw.focuser_enable()
             self.pw.focuser_connect()
         else:
             self.pw.focuser_disconnect()
-            self.pw.focuser_disable()
 
         # if self.ascom:
         #     response = ascom_run(self, f'Connected = {value}', True)
@@ -311,34 +313,48 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         return "focuser"
 
     @property
-    def operational(self) -> bool:
+    def reachable(self) -> bool | None:
         st = self.pw.status()
-        return all(
-            [
-                not self.was_shut_down,
-                self.is_on(),
-                st.focuser.exists,  # type: ignore
-                st.focuser.is_connected,  # type: ignore
-            ]
-        )
+        return self.is_on() and st.focuser.exists and st.focuser.is_connected  # type: ignore
 
     @property
-    def why_not_operational(self) -> list[str]:
-        ret = []
+    def deployed(self) -> bool | None:
+        """Energized, and nothing about where it is pointing.
+
+        Position is deliberately not a term. Hardware is treated as being in an unknown state
+        from whatever ran before, so no position may be assumed or required -- `startup()` moves
+        to `known_as_good_position` to put the focuser in range and keep the first autofocus from
+        travelling far, not to assert a state anything else can rely on.
+        """
+        st = self.pw.status()
+        return bool(st.focuser.is_enabled)  # type: ignore
+
+    @property
+    def why_not_reachable(self) -> list[str] | None:
         if not self.is_on():
-            ret.append(f"{self.name}: not powered")
-        else:
-            if self.was_shut_down:
-                ret.append(f"{self.name}: shut down")
-            if not self.detected:
-                ret.append(f"{self.name}: not detected")
-            else:
-                st = self.pw.status()
-                if not st.focuser.exists:  # type: ignore
-                    ret.append(f"{self.name}: (via PWI4) - does not exist")
-                elif not st.focuser.is_connected:  # type: ignore
-                    ret.append(f"{self.name}: (via PWI4) - not connected")
-        return ret
+            return [f"{self.name}: not powered"]
+        st = self.pw.status()
+        if not st.focuser.exists:  # type: ignore
+            return [f"{self.name}: (via PWI4) - does not exist"]
+        if not st.focuser.is_connected:  # type: ignore
+            return [f"{self.name}: (via PWI4) - not connected"]
+        return []
+
+    @property
+    def why_not_deployed(self) -> list[str] | None:
+        if self.deployed:
+            return []
+        return [f"{self.name}: (via PWI4) - not enabled"]
+
+    @property
+    def operational(self) -> bool:
+        return bool(self.reachable) and bool(self.deployed)
+
+    # Reachability reasons win when there are any: a focuser that cannot be reached has nothing
+    # useful to say about being energized, which is what this list reported before the split.
+    @property
+    def why_not_operational(self) -> list[str]:
+        return list(self.why_not_reachable or []) or list(self.why_not_deployed or [])
 
     @property
     def detected(self) -> bool:
