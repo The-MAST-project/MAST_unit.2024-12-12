@@ -133,6 +133,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     #: be unbounded, so a mount that would not engage hung its caller for ever -- including
     #: `spiral_search.start()`, which holds the session lock while it waits.
     TRACKING_TIMEOUT_SECONDS = 30
+    PARK_TIMEOUT_SECONDS = 120
 
     _instance = None
     _initialized = False
@@ -184,6 +185,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self.timer.start()
 
         self.errors = []
+        self._shutdown_deadline: float | None = None
         self.target: str | tuple | None = None
 
         self.is_moving: bool = False
@@ -210,18 +212,21 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
 
     @property
     def connected(self) -> bool:
+        """Comms only: ASCOM answers, and PWI4 reports the mount connected.
+
+        The axes are deliberately absent. `axis0/1.is_enabled` is the end state of a commanded
+        operation, and a mount answers `pw.status()` and ASCOM `Connected` perfectly well with its
+        servos de-energized -- so requiring them here made every reader of this property mean
+        *reachable and deployed*. Deployment is reported by `deployed` (#175).
+        """
         st = self.pw.status()
         response = ascom_run(self, "Connected", no_entry_log=True)
         return (
-            self.ascom
-            and (response.succeeded and response.value)
-            and st.mount.is_connected  # type: ignore
-            and st.mount.axis0.is_enabled  # type: ignore
-            and st.mount.axis1.is_enabled  # type: ignore
+            self.ascom and (response.succeeded and response.value) and st.mount.is_connected  # type: ignore
         )
 
     @connected.setter
-    def connected(self, value):  # noqa: C901
+    def connected(self, value):
         self.errors = []
         if not self.is_on():
             self.errors.append("not powered")
@@ -236,23 +241,33 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                     logger.error(f"failed to ASCOM connect (failure='{response.failure}')")
                 if not st.mount.is_connected:  # type: ignore
                     self.pw.mount_connect()
-                if not st.mount.axis0.is_enabled:  # type: ignore
-                    self.pw.mount_enable(0)
-                if not st.mount.axis1.is_enabled:  # type: ignore
-                    self.pw.mount_enable(1)
-                logger.info(f"connected = {value}, axes enabled")
+                logger.info(f"connected = {value}")
             else:
-                if st.mount.axis0.is_enabled:  # type: ignore
-                    self.pw.mount_disable(0)
-                if st.mount.axis1.is_enabled:  # type: ignore
-                    self.pw.mount_disable(1)
                 self.pw.mount_disconnect()
                 response = ascom_run(self, "Connected = False")
                 if response.failed:
                     self.errors.append(response.failure)
-                logger.info(f"connected = {value}, axes disabled, disconnected")
+                logger.info(f"connected = {value}, disconnected")
         except Exception:
             logger.exception("mount connect/disconnect failed")
+
+    def enable_axes(self) -> None:
+        """Energize both servo axes: the deployment half of bringing the mount up (#175)."""
+        st = self.pw.status()
+        if not st.mount.axis0.is_enabled:  # type: ignore
+            self.pw.mount_enable(0)
+        if not st.mount.axis1.is_enabled:  # type: ignore
+            self.pw.mount_enable(1)
+        logger.info("axes enabled")
+
+    def disable_axes(self) -> None:
+        """De-energize both servo axes. Only once the mount has stopped moving."""
+        st = self.pw.status()
+        if st.mount.axis0.is_enabled:  # type: ignore
+            self.pw.mount_disable(0)
+        if st.mount.axis1.is_enabled:  # type: ignore
+            self.pw.mount_disable(1)
+        logger.info("axes disabled")
 
     def endpoint_startup(self):
         return self.startup()
@@ -267,6 +282,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             return
         self.start_activity(MountActivities.StartingUp)
         self._was_shut_down = False
+        self.enable_axes()
         self.pw.request("/fans/on")
         self.find_home()
         return CanonicalResponse_Ok
@@ -278,17 +294,46 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         """
         Performs the MAST shutdown routine (fans off, park, power OFF)
         """
-        if self.connected:
-            self.disconnect()
         self.start_activity(MountActivities.ShuttingDown)
         self.pw.request("/fans/off")
         self.park()
-        self.power_off()
+        # The teardown runs in `ontimer` once parking completes, because de-energizing the axes or
+        # dropping the connection here would kill the park mid-slew. The deadline is what keeps a
+        # park that never finishes from leaving the mount energized indefinitely.
+        self._shutdown_deadline = time.monotonic() + self.PARK_TIMEOUT_SECONDS
         return CanonicalResponse_Ok
 
     @property
     def is_shutting_down(self) -> bool:
         return self.is_active(MountActivities.ShuttingDown)
+
+    @property
+    def _shutdown_deadline_passed(self) -> bool:
+        return self._shutdown_deadline is not None and time.monotonic() >= self._shutdown_deadline
+
+    def _advance_shutdown(self) -> None:
+        """Carry a shutdown forward: park first, teardown once it finishes or its deadline lapses."""
+        if not self.is_active(MountActivities.ShuttingDown):
+            return
+        if self.is_active(MountActivities.Parking):
+            if not self._shutdown_deadline_passed:
+                return
+            logger.error(f"park did not complete within {self.PARK_TIMEOUT_SECONDS}s; tearing down anyway")
+        self._complete_shutdown()
+
+    def _complete_shutdown(self) -> None:
+        """The presence teardown, once the deployment teardown has finished.
+
+        Ordered: the axes cannot be de-energized while the mount is still parking, and the
+        connection cannot be dropped before the axes are down -- disabling them needs it.
+        """
+        self.disable_axes()
+        if self.connected:
+            self.disconnect()
+        self._shutdown_deadline = None
+        self.end_activity(MountActivities.ShuttingDown)
+        self._was_shut_down = True
+        self.power_off()
 
     def powerdown(self):
         if not self._was_shut_down:
@@ -352,10 +397,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         if self.is_active(MountActivities.Parking) and not self.is_moving:
             self.end_activity(MountActivities.Parking)
             self.target = None
-            if self.is_active(MountActivities.ShuttingDown):
-                self.end_activity(MountActivities.ShuttingDown)
-                self._was_shut_down = True
-                self.power_off()
+        self._advance_shutdown()
 
         if self.is_active(MountActivities.Slewing) and not self.is_moving:
             self.end_activity(MountActivities.Slewing)
@@ -977,52 +1019,58 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         return CanonicalResponse_Ok
 
     @property
-    def operational(self) -> bool:
+    def reachable(self) -> bool | None:
+        return self.is_on() and self.detected and self.connected
+
+    @property
+    def deployed(self) -> bool | None:
         st = self.pw.status()
-        return all(
-            [
-                self.is_on(),
-                self.detected,
-                self.connected,
-                not self.was_shut_down,
-                self.ascom,
-                st.mount.is_connected,  # type: ignore
-                st.mount.axis0.is_enabled,  # type: ignore
-                st.mount.axis1.is_enabled,  # type: ignore
-            ]
-        )
+        return bool(st.mount.axis0.is_enabled and st.mount.axis1.is_enabled)  # type: ignore
+
+    @property
+    def why_not_reachable(self) -> list[str] | None:
+        label = f"{self.name}"
+        if not self.is_on():
+            return [f"{label}: not powered"]
+        if not self.detected:
+            return [f"{label}: (via PWI4) not detected"]
+
+        ret = []
+        if self.ascom:
+            response = ascom_run(self, "Connected")
+            if response.succeeded and not response.value:
+                ret.append(f"{label}: (via ASCOM) - not connected")
+        else:
+            ret.append(f"{label}: (via ASCOM) - no handle")
+        if not self.pw.status().mount.is_connected:  # type: ignore
+            ret.append(f"{label}: (via PWI4) - not connected")
+        return ret
+
+    @property
+    def why_not_deployed(self) -> list[str] | None:
+        label = f"{self.name}"
+        st = self.pw.status()
+        ret = []
+        if not st.mount.axis0.is_enabled:  # type: ignore
+            ret.append(f"{label}: (via PWI4) - axis0 not enabled")
+        if not st.mount.axis1.is_enabled:  # type: ignore
+            ret.append(f"{label}: (via PWI4) - axis1 not enabled")
+        return ret
+
+    @property
+    def operational(self) -> bool:
+        return bool(self.reachable) and bool(self.deployed)
 
     @property
     def is_slewing(self):
         return self.pw.status().mount.is_slewing  # type: ignore
 
+    # `operational` prefers the reachability reasons when there are any, rather than
+    # concatenating both halves: a mount that cannot be reached has nothing useful to say about
+    # servos it was never able to energize, and that is what this list reported before the split.
     @property
     def why_not_operational(self) -> list[str]:
-        st = self.pw.status()
-        label = f"{self.name}"
-        ret = []
-        if not self.is_on():
-            ret.append(f"{label}: not powered")
-        elif not self.detected:
-            ret.append(f"{label}: (via PWI4) not detected")
-        elif self.was_shut_down:
-            ret.append(f"{label}: shut down")
-        else:
-            if self.ascom:
-                response = ascom_run(self, "Connected")
-                if response.succeeded and not response.value:
-                    ret.append(f"{label}: (via ASCOM) - not connected")
-            else:
-                ret.append(f"{label}: (via ASCOM) - no handle")
-
-            if not st.mount.is_connected:  # type: ignore
-                ret.append(f"{label}: (via PWI4) - not connected")
-            else:
-                if not st.mount.axis0.is_enabled:  # type: ignore
-                    ret.append(f"{label}: (via PWI4) - axis0 not enabled")
-                if not st.mount.axis1.is_enabled:  # type: ignore
-                    ret.append(f"{label}: (via PWI4) - axis1 not enabled")
-        return ret
+        return list(self.why_not_reachable or []) or list(self.why_not_deployed or [])
 
     @property
     def name(self) -> str:
