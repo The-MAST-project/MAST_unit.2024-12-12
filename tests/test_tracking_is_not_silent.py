@@ -14,6 +14,9 @@ track. The frames trailed; the last session reported a shift of (-0.0, 0.01) at 
 Both also spun on `while ... is_tracking` with no deadline, so a mount that would not
 engage hung its caller indefinitely -- including `spiral_search.start()`, which holds the
 session lock while it waits.
+
+The condition they refuse on is now the servo axes rather than the connection: tracking
+needs energized axes, and `connected` no longer implies them (MAST_unit#175).
 """
 
 from __future__ import annotations
@@ -46,24 +49,24 @@ class FakePw:
         self.commanded.append("off")
 
 
-def _mount(connected: bool, reports: list[bool], timeout: int = 30):
+def _mount(deployed: bool, reports: list[bool], timeout: int = 30):
     pw = FakePw(reports)
-    stub = SimpleNamespace(connected=connected, pw=pw, TRACKING_TIMEOUT_SECONDS=timeout)
+    stub = SimpleNamespace(connected=True, deployed=deployed, pw=pw, TRACKING_TIMEOUT_SECONDS=timeout)
     stub._await_tracking = lambda desired: Mount._await_tracking(stub, desired)
     return stub, pw
 
 
 @pytest.mark.parametrize("method", ["start_tracking", "stop_tracking"])
-def test_refuses_audibly_when_not_connected(method):
+def test_refuses_audibly_when_the_axes_are_not_enabled(method):
     """The regression: a bare `return` here cost a night's frames."""
-    stub, pw = _mount(connected=False, reports=[])
+    stub, pw = _mount(deployed=False, reports=[])
 
     result = getattr(Mount, method)(stub)
 
     assert isinstance(result, CanonicalResponse), "must return an envelope, not None"
     assert result.failed
-    assert "not connected" in result.errors[0]
-    assert pw.commanded == [], "must not command a mount it believes is disconnected"
+    assert "axes are not enabled" in result.errors[0]
+    assert pw.commanded == [], "must not command a mount whose servos are de-energized"
 
 
 @pytest.mark.parametrize(
@@ -71,7 +74,7 @@ def test_refuses_audibly_when_not_connected(method):
     [("start_tracking", "on", True), ("stop_tracking", "off", False)],
 )
 def test_succeeds_when_the_mount_obeys(method, verb, engaged):
-    stub, pw = _mount(connected=True, reports=[engaged])
+    stub, pw = _mount(deployed=True, reports=[engaged])
 
     result = getattr(Mount, method)(stub)
 
@@ -89,7 +92,7 @@ def test_times_out_rather_than_hanging(method, never):
     A 1-second budget keeps the test quick -- the point is that a deadline exists at all,
     not its production value.
     """
-    stub, pw = _mount(connected=True, reports=[], timeout=1)
+    stub, pw = _mount(deployed=True, reports=[], timeout=1)
     pw.reports_default = never  # always the wrong state
 
     result = getattr(Mount, method)(stub)
@@ -102,10 +105,10 @@ def test_times_out_rather_than_hanging(method, never):
 def test_does_not_connect_as_a_side_effect():
     """Acquiring the device is `startup()`'s job, not an operation's.
 
-    `Mount.connect()` enables both axes, and `startup()` goes on to `find_home()`, which
-    moves the telescope. An operation asking to track must not do any of that implicitly.
+    `startup()` energizes both axes and goes on to `find_home()`, which moves the telescope.
+    An operation asking to track must not do any of that implicitly.
     """
-    stub, pw = _mount(connected=False, reports=[])
+    stub, pw = _mount(deployed=False, reports=[])
     stub.connect = lambda: pytest.fail("start_tracking must not connect")
     stub.startup = lambda: pytest.fail("start_tracking must not run startup")
 
