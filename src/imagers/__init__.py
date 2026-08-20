@@ -198,6 +198,23 @@ class Imager(ImagerInterface, SwitchedOutlet):
         return self._backend.cooler_power
 
     @property
+    def reachable(self) -> bool | None:
+        """Whether the backend can be commanded. Delegated: only the backend knows its device."""
+        return self._backend.reachable
+
+    @property
+    def deployed(self) -> bool | None:
+        return self._backend.deployed
+
+    @property
+    def why_not_reachable(self) -> list[str] | None:
+        return self._backend.why_not_reachable
+
+    @property
+    def why_not_deployed(self) -> list[str] | None:
+        return self._backend.why_not_deployed
+
+    @property
     def operational(self) -> bool:
         """
         Check if the imager is operational.

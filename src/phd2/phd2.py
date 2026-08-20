@@ -1594,15 +1594,29 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         return None
 
     @property
+    def reachable(self) -> bool | None:
+        return self.connected
+
+    @property
+    def deployed(self) -> bool | None:
+        # Nothing is tracked to wait for: this backend starts cooling and never follows it to
+        # setpoint (#149), so there is no deployment term it could answer honestly. `True` keeps
+        # it from holding the unit below `operational` for a motion it does not report.
+        return True
+
+    @property
+    def why_not_reachable(self) -> list[str] | None:
+        if self.connected:
+            return []
+        return [f"{self.name}: not connected"]
+
+    @property
     def operational(self) -> bool:
-        return self.connected  # Assuming PHD2 is always operational when connected
+        return bool(self.reachable) and bool(self.deployed)
 
     @property
     def why_not_operational(self) -> list[str]:
-        ret = []
-        if not self.connected:
-            ret.append(f"{self.name}: not connected")
-        return ret
+        return list(self.why_not_reachable or []) or list(self.why_not_deployed or [])
 
     @property
     def was_shut_down(self) -> bool:

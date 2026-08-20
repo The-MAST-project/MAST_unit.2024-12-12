@@ -361,30 +361,42 @@ class Covers(Component, SwitchedOutlet):
         return "covers"
 
     @property
-    def operational(self) -> bool:
-        return all(
-            [
-                self.is_on(),
-                self.pwi4_is_viable,
-                self.connected,
-                self.state == CoversState.Open,
-            ]
-        )
+    def reachable(self) -> bool | None:
+        return self.is_on() and self.pwi4_is_viable and self.connected
 
     @property
-    def why_not_operational(self) -> list[str]:
-        ret = []
+    def deployed(self) -> bool | None:
+        return self.state == CoversState.Open
+
+    @property
+    def why_not_reachable(self) -> list[str] | None:
         if not self.is_on():
-            ret.append(f"{self.name}: not powered")
-        elif not self.pwi4_is_viable:
-            ret.append(f"{self.name}: PWI4 not answering, or older than {'.'.join(map(str, MINIMUM_PWI4_VERSION))}")
-        elif not self.connected:
-            ret.append(f"{self.name}: (via PWI4) not connected")
-        else:
-            state = self.state
-            if state != CoversState.Open:
-                ret.append(f"{self.name}: not open (state='{state.name}')")
-        return ret
+            return [f"{self.name}: not powered"]
+        if not self.pwi4_is_viable:
+            return [f"{self.name}: PWI4 not answering, or older than {'.'.join(map(str, MINIMUM_PWI4_VERSION))}"]
+        if not self.connected:
+            return [f"{self.name}: (via PWI4) not connected"]
+        return []
+
+    @property
+    def why_not_deployed(self) -> list[str] | None:
+        state = self.state
+        if state != CoversState.Open:
+            return [f"{self.name}: not open (state='{state.name}')"]
+        return []
+
+    @property
+    def operational(self) -> bool:
+        return bool(self.reachable) and bool(self.deployed)
+
+    # `operational` prefers the reachability reasons when there are any, rather than
+    # concatenating both halves: a component that cannot be reached has nothing useful to say
+    # about a motion it was never able to start, and that is also what this list said before the
+    # split -- so no consumer of `why_not_operational` sees a change. The two halves are reported
+    # separately in their own fields (MAST_unit#144).
+    @property
+    def why_not_operational(self) -> list[str]:
+        return list(self.why_not_reachable or []) or list(self.why_not_deployed or [])
 
     @property
     def detected(self) -> bool:

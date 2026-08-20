@@ -910,40 +910,52 @@ from pyximc import *
         return "stage"
 
     @property
-    def operational(self) -> bool:
-        return all(
-            [
-                self.is_on(),
-                self.detected,
-                self.connected,
-                not self.was_shut_down,
-                (self.at_preset(StagePresetPosition.Spec) or self.at_preset(StagePresetPosition.Sky)),
-                self._currently_operational,
-            ]
-        )
+    def reachable(self) -> bool | None:
+        # `_currently_operational` is a driver-failure latch, so it belongs here: a stage whose
+        # controller has reported a failure cannot be commanded, whatever its position.
+        return self.is_on() and self.detected and self.connected and self._currently_operational
 
     @property
-    def why_not_operational(self) -> list[str]:
+    def deployed(self) -> bool | None:
+        return self.at_preset(StagePresetPosition.Spec) or self.at_preset(StagePresetPosition.Sky)
+
+    @property
+    def why_not_reachable(self) -> list[str] | None:
         label = f"{self.name}"
-        ret = []
         if not self.is_on():
-            ret.append(f"{label}: not powered")
-        else:
-            if not self.detected:
-                ret.append(f"{label}: not detected")
-            if self.was_shut_down:
-                ret.append(f"{label}: shut down")
-            if not self.connected:
-                ret.append(f"{label}: not connected")
-            elif not (self.at_preset(StagePresetPosition.Spec) or self.at_preset(StagePresetPosition.Sky)):
-                ret.append(
-                    f"{label}: at {self.position}, not at '{StagePresetPosition.Spec.value}' "
-                    + f"({self.presets[StagePresetPosition.Spec]}) or '{StagePresetPosition.Sky.value}' "
-                    + f"({self.presets[StagePresetPosition.Sky]}) preset positions"
-                )
-            if not self._currently_operational:
-                ret.extend(self._why_not_currently_operational)
+            return [f"{label}: not powered"]
+        ret = []
+        if not self.detected:
+            ret.append(f"{label}: not detected")
+        if not self.connected:
+            ret.append(f"{label}: not connected")
+        if not self._currently_operational:
+            ret.extend(self._why_not_currently_operational)
         return ret
+
+    @property
+    def why_not_deployed(self) -> list[str] | None:
+        label = f"{self.name}"
+        if self.at_preset(StagePresetPosition.Spec) or self.at_preset(StagePresetPosition.Sky):
+            return []
+        return [
+            f"{label}: at {self.position}, not at '{StagePresetPosition.Spec.value}' "
+            + f"({self.presets[StagePresetPosition.Spec]}) or '{StagePresetPosition.Sky.value}' "
+            + f"({self.presets[StagePresetPosition.Sky]}) preset positions"
+        ]
+
+    @property
+    def operational(self) -> bool:
+        return bool(self.reachable) and bool(self.deployed)
+
+    # `operational` prefers the reachability reasons when there are any, rather than
+    # concatenating both halves: a component that cannot be reached has nothing useful to say
+    # about a motion it was never able to start, and that is also what this list said before the
+    # split -- so no consumer of `why_not_operational` sees a change. The two halves are reported
+    # separately in their own fields (MAST_unit#144).
+    @property
+    def why_not_operational(self) -> list[str]:
+        return list(self.why_not_reachable or []) or list(self.why_not_deployed or [])
 
     @property
     def detected(self) -> bool:

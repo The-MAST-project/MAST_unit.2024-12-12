@@ -50,6 +50,12 @@ SPLAT_SOURCED = {
     "was_shut_down",
     "powered",
     "ascom",
+    # The two halves of `operational` and their reason lists, published from
+    # `Component.component_status()` for every component at once (MAST_unit#144).
+    "reachable",
+    "deployed",
+    "why_not_reachable",
+    "why_not_deployed",
 }
 
 
