@@ -347,21 +347,27 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         """
         Parks the MAST mount
         """
-        if self.connected:
-            self.start_activity(MountActivities.Parking)
-            self.pw.mount_park()
+        if not self.deployed:
+            msg = f"{function_name()}: axes are not enabled, cannot park"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
+        self.start_activity(MountActivities.Parking)
+        self.pw.mount_park()
         return CanonicalResponse_Ok
 
     def find_home(self):
         """
         Tells the MAST mount to find it's HOME indexes
         """
-        if self.connected:
-            self.target = "Home"
-            self.start_activity(MountActivities.FindingHome)
-            self.last_axis0_position_degrees = -99999
-            self.last_axis1_position_degrees = -99999
-            self.pw.mount_find_home()
+        if not self.deployed:
+            msg = f"{function_name()}: axes are not enabled, cannot find home"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
+        self.target = "Home"
+        self.start_activity(MountActivities.FindingHome)
+        self.last_axis0_position_degrees = -99999
+        self.last_axis1_position_degrees = -99999
+        self.pw.mount_find_home()
         return CanonicalResponse_Ok
 
     def ontimer(self):
@@ -441,8 +447,14 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         """
         op = "wait_until_settled"
         if not self.connected:
-            logger.warning(f"{op}: mount not connected; nothing to wait for")
-            return True
+            # A failure, not "nothing to wait for". Answering True told a caller that asked
+            # whether the mount had settled that it had, from a path that never looked at the
+            # mount -- the shape #89 invariant 2 exists to forbid. An unreachable mount means the
+            # question cannot be answered. Note that no caller reads this value today, so the
+            # loudness is carried by the log line until they do.
+            msg = f"{op}: mount not reachable; cannot determine whether it settled"
+            logger.error(msg)
+            return False
 
         logger.info(
             f"{op}: start mode={mode} channels={channels} "
@@ -744,8 +756,8 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         # got None: on 2026-08-17 a spiral ran three sessions to completion against a mount
         # that was never told to track, producing trailed frames and a measured shift of
         # (-0.0, 0.01) that passed its own confidence check.
-        if not self.connected:
-            msg = f"{op}: mount not connected, cannot start tracking"
+        if not self.deployed:
+            msg = f"{op}: axes are not enabled, cannot start tracking"
             logger.error(msg)
             return CanonicalResponse(errors=[msg])
 
@@ -764,8 +776,8 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         """
         op = function_name()
 
-        if not self.connected:
-            msg = f"{op}: mount not connected, cannot stop tracking"
+        if not self.deployed:
+            msg = f"{op}: axes are not enabled, cannot stop tracking"
             logger.error(msg)
             return CanonicalResponse(errors=[msg])
 
