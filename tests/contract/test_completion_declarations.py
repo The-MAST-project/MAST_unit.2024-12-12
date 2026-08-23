@@ -1,18 +1,18 @@
-"""Invariant 3: every long-running route publishes how it finishes (#43 stage 3).
+"""Invariant 3: a component answers one completion contract, not two (#43 stage 3).
 
-Two checks here, both static:
+**Async-vs-blocking is uniform per component** -- which is what the invariant actually
+requires. A component answering two contracts means two clients calling two of its verbs get
+incompatible behaviour from the same subsystem.
 
-1. **Every routed operation declares a completion**, so a new endpoint cannot be added
-   without someone deciding whether it finishes on return, on a flag, or by blocking.
-2. **Async-vs-blocking is uniform per component**, which is what the invariant actually
-   requires -- a component answering two contracts means two clients calling two of its verbs
-   get incompatible behaviour from the same subsystem.
+The companion check, that a *declared* signal is one the handler actually raises, is in
+`test_completion_flags.py`.
 
-A third check, that a declared flag is one the handler actually starts, is deliberately not
-here: it needs a call graph across module boundaries and lands separately.
-
-Both lists below are checked for set equality in both directions, so an entry that stops being
-true fails the test rather than quietly encoding whatever was so on the day it was written.
+**What used to be here and is not any more:** a gate asserting every routed operation declares
+a completion at all. Withdrawn as MAST_unit#178 R4. It carried a 16-entry exemption list keyed
+to the issues that own classifying each route (#154, #156, #80), which meant the same inventory
+was maintained in two places -- and the list could not shrink honestly until MAST_unit#180 gave
+the routes that report on the notification stream a form to declare. `completion=` and its
+`x-completion` publication are unchanged; nothing forces a new route to carry one.
 """
 
 from __future__ import annotations
@@ -27,35 +27,6 @@ from .astscan import (
     GENERATED_INTERFACE_VERBS,
     ROUTER_MODULES,
 )
-
-#: Routed operations carrying no `completion=`, each keyed to the issue that owns it. Nothing is
-#: here because it was forgotten -- an undeclared route publishes no `x-completion` at all,
-#: which is what lets this check tell "not yet classified" from "classified as immediate".
-KNOWN_UNDECLARED = {
-    # Three threads that answer Ok and report nothing. They have no signal to declare.
-    "expose": "MAST_unit#156",
-    "endpoint_execute_assignment": "MAST_unit#156",
-    "endpoint_test_stage_repeatability": "MAST_unit#156",
-    # The same route means "started" on ZWO and "finished" on ASCOM.
-    "imagers/__init__.py:abort": "MAST_unit#154",
-    "start_exposure": "MAST_unit#154",
-    "stop_exposure": "MAST_unit#154",
-    # Completes when every component's Aborting clears; no unit-level flag says so.
-    "endpoint_abort": "MAST_unit#80",
-    # The guider, autofocus and spiral chains: #43's inventory could not classify these
-    # without a run.
-    "endpoint_start_guiding": "MAST_unit#43",
-    "endpoint_stop_acquisition_and_guiding": "MAST_unit#43",
-    "start_autofocus": "MAST_unit#43",
-    "endpoint_stop_autofocus": "MAST_unit#43",
-    "endpoint_start_acquisition_and_guiding": "MAST_unit#43",
-    # The route is served by a factory-built handler since #117 (see the `factory=True`
-    # declaration); the name follows the factory.
-    "_spiral_new_path_endpoint": "MAST_unit#43",
-    "endpoint_spiral_next_step": "MAST_unit#43",
-    "endpoint_spiral_previous_step": "MAST_unit#43",
-    "endpoint_spiral_end_path": "MAST_unit#43",
-}
 
 #: Components answering more than one completion contract. The mount is all four at once.
 KNOWN_MIXED = {"mount.py": "MAST_unit#159"}
@@ -105,33 +76,18 @@ def _declarations(trees: dict[str, ast.Module]) -> dict[str, str | None]:
     return found
 
 
-def _split(key: str) -> tuple[str, int, str]:
-    module, _, name = key.rpartition(":")
-    return (module or "routed", 0, name)
-
-
 def _form(completion: str) -> str:
-    """The contract a declaration expresses: immediate, blocking, or watch-a-flag."""
+    """The contract a declaration expresses: immediate, blocking, or out-of-band.
+
+    An activity flag and a notification channel are **one form here**, deliberately. Both mean
+    "returns at once; completion arrives elsewhere", which is the choice this clause exists to
+    keep uniform -- a client is either made to wait for the response or it is not. *Where* the
+    out-of-band signal lands is per route, and the schema says so in `x-completion`, so folding
+    the two together loses nothing a consumer needs (MAST_unit#180).
+    """
     if completion.startswith("Completion."):
         return completion.removeprefix("Completion.").lower()
-    return "activity"
-
-
-def test_every_routed_operation_declares_how_it_finishes():
-    trees = _trees()
-    declarations = _declarations(trees)
-
-    # `.get(name)` rather than a sentinel: a routed method carrying no `@endpoint` at all --
-    # legitimate for a generated verb, which inherits its tier from the ABC -- still declares
-    # no completion, and skipping it would hide exactly the case this check exists for.
-    undeclared = {name for name in _routed_names(trees) if declarations.get(name) is None}
-
-    # Keyed by module for a generated verb: `abort` alone names five different routes.
-    astscan.report(
-        {astscan.Site(*_split(name)) for name in undeclared},
-        {(_split(name)[0], _split(name)[2]): issue for name, issue in KNOWN_UNDECLARED.items()},
-        "undeclared-completion",
-    )
+    return "out-of-band"
 
 
 def test_each_component_answers_one_completion_contract():
