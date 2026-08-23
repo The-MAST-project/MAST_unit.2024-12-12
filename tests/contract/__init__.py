@@ -1,7 +1,9 @@
 """Static contract checks for the endpoint contract (#42), hosted per #52.
 
 What each module refuses, and how to add an endpoint without tripping any of them:
-`docs/adding-an-endpoint.md`. `test_endpoint_guide.py` keeps that file honest.
+`docs/adding-an-endpoint.md`. That file is maintained by hand -- the test that asserted it named
+every check and every tier was withdrawn as MAST_unit#178 W1 -- so a new check here means
+editing it in the same change.
 
 A package rather than a bare directory so pytest derives module names from here
 (`contract.test_x`) instead of from the basename: `tests/` and `src/common/tests/`
