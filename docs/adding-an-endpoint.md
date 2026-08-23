@@ -35,15 +35,16 @@ nothing raises `UndeclaredEndpointError` **at import**, not at request time.
 
 | tier | use it for |
 |---|---|
-| `CONTRACT` | unit orchestration a programmatic client depends on. **The path must come from the shared `UnitEndpoint` enum**, not a literal, so server and client name one symbol. A check enforces this for this tier only |
+| `CONTRACT` | unit orchestration a programmatic client depends on. The name is part of the wire contract with `MAST_control` and the shared plan client, so **renaming one is a cross-repo change** — grep `common/models/plans.py` for the literal before you touch it. Nothing enforces this; the shared-enum mechanism that did was withdrawn (MAST_unit#178 W3, #35) |
 | `OPERATION` | bespoke operator / diagnostic verbs — the day-to-day manual surface. Paths stay literal by design: no programmatic client, so an enum entry would imply a promise the contract does not make |
 | `INTERFACE` | generated only. Do not declare this by hand |
 | `DEMO` | parked demonstrations. Implies `deprecated=True`, so the route renders struck through and cannot be mistaken for live |
 
 The tier is also the Swagger group and is published per operation as `x-stability`, so a
-client's own test can assert it never reaches for an operator verb. There is **no `tags`
-parameter** — passing one raises, because a route filed under one group while declaring
-another is exactly the drift the declaration prevents.
+client's own test can assert it never reaches for an operator verb. **Do not pass `tags`** —
+the declaration is the group. Passing one is ignored with a warning rather than refused, so
+that adopting the helper in another service is not a flag day; a static check keeps this tree
+free of them.
 
 ### completion
 
@@ -54,13 +55,17 @@ How a caller learns the operation finished. Published as `x-completion`.
 | `Completion.IMMEDIATE` | finished when the response arrives |
 | `Completion.BLOCKING` | the response is withheld until the hardware is done |
 | an activity flag, e.g. `MountActivities.Slewing` | returns at once; the caller watches that flag clear in `status` |
+| a notification channel, e.g. `NotificationChannel.ASSIGNMENT` | returns at once; completion is announced on that `Notifier` stream. `execute_assignment` is the live case |
 
 Exactly one flag member — "watch these two bits" is not a signal a caller can act on.
 
-**Treat this as mandatory.** Three checks cover it: every routed operation declares a
-completion; a component answers one convention rather than two; and the flag you name is one
-the handler actually starts. That last one matters most — declaring a flag you never raise is
-worse than declaring nothing, because a client waits on it forever and nothing looks wrong.
+**Declare one whenever the operation outlives its response.** Nothing forces you to (the gate
+that did was withdrawn — MAST_unit#178 R4), and an absent declaration publishes no
+`x-completion` at all, which is honest about being unclassified. Two checks still hold what you
+do declare to account: a component answers one convention rather than two, and **the signal you
+name is one the handler actually raises**. That second one matters most — publishing a signal
+you never send is worse than declaring nothing, because a client waits on it forever and
+nothing looks wrong.
 
 ### the rest
 
@@ -85,10 +90,10 @@ add_api_route(router, "/mount/park", endpoint=self.endpoint_park, methods=["PUT"
   import-time refusal cannot see.
 - **`PUT` if it changes state; `GET` only for reads.** See *What is not enforced* below —
   this one is on you and the reviewer.
-- If two components serve the same path leaf, **their parameters must match** — same names,
-  same order. A check compares them across components. This exists because `/position` took
-  `pos` on the stage and `position` on the focuser, so a client that could drive one got a
-  422 from the other.
+- If two components serve the same path leaf, **their parameter names must match**. A check
+  compares them across components. This exists because `/position` took `pos` on the stage and
+  `position` on the focuser, so a client that could drive one got a 422 from the other. Order
+  is not checked — query parameters are named, so it cannot break a client.
 
 ## 3. Preflight, then the expensive part
 
@@ -123,10 +128,12 @@ if not self.connected:
     return CanonicalResponse(errors=[f"{op}: not connected"])
 ```
 
-Name a reusable guard `require_*`; a check asserts every `require_*` has a caller, so a
-precondition cannot sit unreachable. **Do not use `assert` for a runtime guard** — it is
+Name a reusable guard `require_*`. **Do not use `assert` for a runtime guard** — it is
 stripped under `python -O`, it raises `AssertionError` that the envelope renders as a generic
-error indistinguishable from a bug, and it carries no message for the caller.
+error indistinguishable from a bug, and it carries no message for the caller. The check that
+asserted every `require_*` has a caller is withdrawn (MAST_unit#178 W2); declaring preconditions
+on `@endpoint` so registration runs them is MAST_unit#179, and that is where the convention gets
+machinery again.
 
 ## 4. Return the bare value
 
@@ -165,9 +172,9 @@ python -m pytest tests -q              # the full suite
 ```
 
 If a check fails on something deliberate, **do not silence it** — add an entry to that
-check's `KNOWN_*` dict, keyed to the issue that owns fixing it. The lists are compared as
-**set equality**, so a stale entry fails exactly as loudly as a new violation: landing the
-fix means removing the entry in the same change.
+check's `KNOWN_*` dict, keyed to the issue that owns fixing it. Only **new** findings fail; an
+entry that is no longer true is reported in pytest's warnings summary instead, so read that
+summary when you land a fix and remove the entry you just made stale (MAST_unit#178 R1).
 
 ## The checks, and what each one refuses
 
@@ -178,18 +185,17 @@ no Mongo, no app fixture — so they run on any platform in about two seconds.
 |---|---|
 | `test_endpoint_declarations.py` | a route served without a declaration, a declaration that is not routed, and any route registered directly on the router, bypassing the helper |
 | `test_envelope_ownership.py` | a handler building its own envelope, or one able to answer `None` |
-| `test_completion_declarations.py` | a routed operation that declares no completion, and a component answering two different completion conventions |
-| `test_completion_flags.py` | a declared completion flag the handler never actually starts |
+| `test_completion_declarations.py` | a component answering two different completion conventions |
+| `test_completion_flags.py` | a declared completion signal — activity flag or notification channel — the handler never actually raises |
 | `test_activity_flag_balance.py` | an activity flag that starts and never ends, and so hangs a waiter |
 | `test_dispatch_naming.py` | a thread target that is not named `do_<operation>` |
-| `test_dead_preconditions.py` | a `require_*` precondition with no caller — a guard that cannot fire |
-| `test_route_parameter_names.py` | two components serving one path leaf with different parameters |
+| `test_route_parameter_names.py` | two components serving one path leaf with differently *named* parameters |
 | `test_abstract_declarations.py` | an `@abstractmethod` with no declared return type — the drift that let `/imager/status` 500 |
-| `test_endpoint_guide.py` | this document falling behind the checks or the tiers |
 
 ## What is not enforced
 
-Two gaps, stated so nobody mistakes review for machinery.
+Three gaps, stated so nobody mistakes review for machinery. A fourth register — everything the
+softening pass withdrew or relaxed, with the audit that revisits the call — is MAST_unit#178.
 
 **The verb.** None of the static checks reads `methods=`. The `GET`→`PUT` sweep was a
 one-time scripted pass and its residue is enumerated on `#48`, not eliminated. The four
@@ -198,18 +204,22 @@ author and the reviewer. One deliberate exception exists — `/unit/abort` answe
 methods, because the shared plan client aborts the fleet with `GET`, and `PUT`-only would
 405 the fleet's abort path (`MAST_common#51`, removal tracked by `#113`).
 
-**The preflight ordering.** Section 3 is a discipline. The `require_*` check catches a guard
-that can *never fire*, not a guard in the wrong place, so nothing stops a handler slewing
-first and validating second. The check that would close this — a per-route dependency
-declaration plus proof that rejection paths are reachable without the expensive call having
-run — is the unbuilt half of `#52`.
+**The preflight ordering.** Section 3 is a discipline, and now entirely one: nothing stops a
+handler slewing first and validating second. The mechanism that would close it — preconditions
+declared on `@endpoint` and run by registration, so the handler *cannot* go first — is
+`#179`, with the static half remaining the unbuilt part of `#52`.
+
+**A CONTRACT-tier route name.** Renaming one reaches `MAST_control` and the shared plan client,
+and nothing fails at import if only one side moves — it is a 404 in the field. The shared enum
+that made this structural was withdrawn (`#178` W3, `#35`): grep the client for the literal.
 
 ## Keeping this current
 
-`tests/contract/test_endpoint_guide.py` asserts that this file names every contract-check
-module and every `Tier` member. Adding a check or a tier without documenting it here fails
-that test — the same set-equality discipline the checks themselves use, pointed at the
-documentation.
+By hand. `tests/contract/test_endpoint_guide.py` used to assert that this file names every
+contract-check module and every `Tier` member; it was withdrawn as `#178` W1 — a test over prose
+was the cheapest thing in the suite to give up, and it could never verify that a paragraph was
+*true*, only that it was complete.
 
-It cannot verify that the prose is *true*, only that it is complete. If you change what a
-check enforces, the paragraph is yours to fix.
+So: adding a check, a tier or a completion form means editing this file in the same change.
+`#178`'s revisit asks whether that discipline held, by comparing `ls tests/contract/test_*.py`
+against the table above.
