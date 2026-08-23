@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import os
 import pathlib
+import warnings
 from dataclasses import dataclass
 
 import common
@@ -142,14 +143,18 @@ def called_name(node: ast.Call) -> str:
 
 
 def report(found: set[Site], known: dict[tuple[str, str], str], subject: str) -> None:
-    """Assert `found` is exactly the known-violation population, and explain any drift.
+    """Fail on a **new** violation; warn about a `known` entry that is no longer present.
 
-    Set equality rather than one `xfail` per item, deliberately. An `xfail` catches a new
-    violation but not a *stale* marker: an item fixed elsewhere leaves an `xpass` that is
-    easy to configure into silence, and the list then quietly encodes whatever was true on
-    the day it was written -- which is the failure mode MAST_common#45 calls out about
-    hand-maintained lists. Checking both directions means the list cannot drift from the
-    tree without a red test, and an issue landing removes its entry in the same PR.
+    The two directions are not worth the same. A new violation is a regression and belongs in
+    the author's face. A stale entry is bookkeeping: the tree got *better*, and failing for it
+    reddens a build in a dict the author has no reason to have opened -- most often because a
+    rename moved a key, or because a fix landed in a neighbouring module. That cost is paid by
+    whoever happens to be next through, which is the wrong person.
+
+    So staleness is reported as a warning instead. It shows in pytest's warnings summary, which
+    is where the drift these lists can accumulate is meant to be read (MAST_unit#178 R1); the
+    guard against a list quietly encoding whatever was true on the day it was written is now
+    that summary plus the revisit protocol on that issue, rather than a red test.
     """
     found_keys = {site.key for site in found}
     by_key = {site.key: site for site in found}
@@ -157,15 +162,14 @@ def report(found: set[Site], known: dict[tuple[str, str], str], subject: str) ->
     new = sorted(found_keys - set(known))
     fixed = sorted(set(known) - found_keys)
 
-    messages = []
-    if new:
-        messages.append(
-            f"{len(new)} new {subject} violation(s) -- fix them, or add to the known list with the issue that owns them:\n"
-            + "\n".join(f"    {by_key[key]}" for key in new)
-        )
     if fixed:
-        messages.append(
+        warnings.warn(
             f"{len(fixed)} known {subject} violation(s) no longer present -- remove from the known list:\n"
-            + "\n".join(f"    {key[0]}: {key[1]}  (was {known[key]})" for key in fixed)
+            + "\n".join(f"    {key[0]}: {key[1]}  (was {known[key]})" for key in fixed),
+            stacklevel=2,
         )
-    assert not messages, "\n\n".join(messages)
+
+    assert not new, (
+        f"{len(new)} new {subject} violation(s) -- fix them, or add to the known list with the issue that owns them:\n"
+        + "\n".join(f"    {by_key[key]}" for key in new)
+    )
