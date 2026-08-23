@@ -13,8 +13,10 @@ from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import FcuVersion, SkyRoiConfig
 from common.endpoints import Tier, endpoint
-from common.filer import MoveGuardian
+from common.filer import Filer, MoveGuardian
 from common.mast_logging import get_logger
+from common.models.assignments import AssignmentNotification, UnitAssignment
+from common.notifications import Notifier
 from common.parsers import (
     DEC_PATTERN,
     RA_PATTERN,
@@ -348,6 +350,70 @@ class Acquirer:
 
         if self.unit.acquirer.latest_acquisition is not None:
             self.unit.acquirer.latest_acquisition.post_process()
+
+    def start_acquisition_and_guiding_for_assignment(self, assignment: UnitAssignment):
+        """Acquire and hand over to guiding for a controller-issued assignment.
+
+        **Unreferenced and unexercised.** Nothing in this repository calls it, no route
+        serves it, and no test covers it -- so it has never run, and restoring it does not
+        change any behaviour a caller can reach today. It is kept because it is the only
+        expression of the *unattended* assignment flow: `handover_automatically_to_guider`
+        is `True` here and `False` in every reachable path, and the `in-progress`
+        notification that tells the controller where the products are exists nowhere else.
+
+        Treat every line as unverified. Two things in particular are asserted rather than
+        observed: that `assignment.plan` carries `target.ra_hours` / `target.dec_degrees`
+        in the shape read below, and that `run_acquisition` on this thread reaches the
+        SPEC hand-over without the operator step the reachable path relies on. Before this
+        is wired to anything, it wants a hardware pass of its own -- see MAST_unit#156 for
+        the sibling problem that a thread answering `Ok` reports nothing.
+        """
+        approach_mode: ApproachMode = ApproachMode.GRADUAL_BY_RATE
+        make_corrections = True
+        ra_j2000_hours = assignment.plan.target.ra_hours
+        dec_j2000_degs = assignment.plan.target.dec_degrees
+
+        assert self.unit.unit_conf is not None
+        solver_name = self.unit.unit_conf.solving.method
+
+        logger.info(
+            f"starting acquisition for assignment {assignment.plan.ulid}, "
+            f"approach_mode={approach_mode}, solver_name={solver_name} (from unit config), "
+            f"make_corrections={make_corrections}, "
+            f"ra_j2000_hours={ra_j2000_hours}, dec_j2000_degs={dec_j2000_degs}"
+        )
+
+        acquisition = Acquisition(
+            unit=self.unit,
+            approach_mode=approach_mode,
+            solver_id=SolverId[solver_name],
+            make_corrections=make_corrections,
+            target_ra=float(ra_j2000_hours),
+            target_dec=float(dec_j2000_degs),
+            conf=self.unit.unit_conf.acquisition,
+            # Unattended assignments auto-hand-over to guiding; the Acquisition default is
+            # False (manual acquisition-tuning), which would stall the assignment at SPEC.
+            handover_automatically_to_guider=True,
+        )
+        Thread(name="acquisition", target=self.run_acquisition, args=[acquisition]).start()
+
+        """
+        This acquisition is part of an assignment, tell the controller where
+         the products are.
+        """
+        if assignment.plan.ulid is not None:
+            Notifier().assignment_notification(
+                AssignmentNotification(
+                    assignment_id=assignment.plan.ulid,
+                    state="in-progress",
+                    # Relative to the shared root, not the absolute ram path: the controller
+                    # symlinks this, and its shared root is spelled differently from ours --
+                    # `/Storage/mast-share/MAST/<host>` against our `Z:/MAST/<host>/`.
+                    # MAST_spec#39.
+                    shared_top=os.path.relpath(acquisition.folder, Filer().ram.root),
+                    shared_subpath="acquisition",
+                )
+            )
 
     @endpoint(tier=Tier.OPERATION)
     def endpoint_start_acquisition_and_guiding(
