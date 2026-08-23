@@ -130,7 +130,12 @@ COMPONENT_ATTRIBUTES = ("mount", "covers", "focuser", "stage", "imager")
 
 
 def mount_routers(app: FastAPI, unit) -> None:
-    """Mount the unit router and every component router the unit managed to build."""
+    """Mount the unit router and every component router the unit managed to build.
+
+    Every route reachable from here was registered through `common.endpoints.add_api_route`,
+    which refuses a handler that declares no tier. Adding one: see
+    `docs/adding-an-endpoint.md`.
+    """
     app.include_router(unit.api_router)
     for attribute in COMPONENT_ATTRIBUTES:
         component = getattr(unit, attribute)

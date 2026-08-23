@@ -11,6 +11,11 @@ The software controls a **MAST** unit which includes:
 
 Provides (via FastAPI) `autofocus` and `acquisition` interfaces
 
+**Adding or changing an HTTP endpoint: read [docs/adding-an-endpoint.md](docs/adding-an-endpoint.md) first.**
+The surface is declared rather than discovered, so registration refuses a handler that
+declares nothing -- the guide covers the declaration, the preflight ordering, what the
+envelope does for you, and which checks refuse what.
+
 ## Running the service
 
 ```
@@ -65,12 +70,10 @@ MAST_common carries its own platform-independent suite, run from its own clone
 need no hardware, no Mongo and no app fixture, and so run on any platform. Each asks a
 question about the shape of the source that running the code cannot answer —
 
-| module | invariant | asserts |
-|---|---|---|
-| `test_abstract_declarations.py` | 10 (interface half) | no `@abstractmethod` in `common` lacks a return annotation |
-| `test_dead_preconditions.py` | 4 | every `require_*` precondition has a caller |
-| `test_activity_flag_balance.py` | 3 | every activity flag that starts also ends |
-| `test_dispatch_naming.py` | 9 | every thread dispatch targets a `do_<operation>` |
+The per-module list of what each one refuses lives in
+[docs/adding-an-endpoint.md](docs/adding-an-endpoint.md#the-checks-and-what-each-one-refuses),
+kept there rather than duplicated here -- `test_endpoint_guide.py` asserts that table names
+every check in `tests/contract/`, so a new check cannot land undocumented.
 
 Each carries a `KNOWN_*` dict of the violations present today, keyed to the issue that owns
 fixing them. The assertion is **set equality**, not "no new findings": landing a fix
