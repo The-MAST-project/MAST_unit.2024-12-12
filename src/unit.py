@@ -37,7 +37,7 @@ from common.config.rois import FcuVersion
 from common.config.unit import UnitConfig
 from common.const import Const
 from common.dlipowerswitch import PowerSwitchFactory, SwitchedOutlet
-from common.endpoints import Completion, NotificationChannel, Tier, add_api_route, endpoint
+from common.endpoints import Completion, Tier, add_api_route, endpoint
 from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 
@@ -1020,7 +1020,7 @@ class Unit(Component):
                     )
                 )
 
-    @endpoint(tier=Tier.CONTRACT, completion=NotificationChannel.ASSIGNMENT)
+    @endpoint(tier=Tier.CONTRACT)
     async def endpoint_execute_assignment(self, assignment: UnitAssignment):
         if not self.operational:
             return CanonicalResponse(errors=self.why_not_operational)
