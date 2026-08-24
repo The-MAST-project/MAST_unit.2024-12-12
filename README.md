@@ -72,8 +72,13 @@ question about the shape of the source that running the code cannot answer —
 
 The per-module list of what each one refuses lives in
 [docs/adding-an-endpoint.md](docs/adding-an-endpoint.md#the-checks-and-what-each-one-refuses),
-kept there rather than duplicated here. That table is maintained by hand: adding a check means
-editing it in the same change.
+kept there rather than duplicated here — and that guide is the entry point for adding a route,
+not just an index of the checks.
+
+**It is maintained by hand, and nothing checks it.** The test that asserted the guide named
+every check module and every `Tier` was withdrawn (MAST_unit#178 W1), so adding, removing or
+re-scoping a check — or adding a tier or a completion form — means editing the guide in the same
+change. MAST_unit#178's revisit compares `ls tests/contract/test_*.py` against that table.
 
 Each carries a `KNOWN_*` dict of the violations present today, keyed to the issue that owns
 fixing them. Only a **new** finding fails; an entry that has stopped being true is reported in
