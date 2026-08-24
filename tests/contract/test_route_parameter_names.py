@@ -4,10 +4,9 @@
 name, the same concept, two spellings. A client written against one component gets a 422 from
 the other, which is how it was found: by hand, on mast02, mid-hardware-pass.
 
-Parameter **order** is held to the same rule, deliberately, even though it is not a wire
-concern: query parameters are named, so order cannot break a client. It is enforced to stop
-the reader having to reconcile two spellings of the same route while looking for a real
-difference.
+Parameter **order** is not held to the rule (MAST_unit#178 R5). Query parameters are named, so
+order cannot break a client -- it was enforced as a readability rule, and a check that can fail
+a build over something no consumer can observe is the wrong place to keep one.
 
 Route *names* were #41's subject. Parameter names belong with them for the same reason: both
 are the wire contract, and both are invisible to a suite that never calls two components with
@@ -68,15 +67,9 @@ def test_a_route_name_takes_the_same_parameters_on_every_component():
         for module, handler in sites:
             params = _parameters(trees[module], handler)
             if params is not None:
-                # A sequence, not a set. Order is not a wire concern -- query parameters are
-                # named -- so this is a consistency rule rather than a correctness one (Eli,
-                # 2026-08-18): two components serving one route name should read identically,
-                # so a reader comparing them has nothing to reconcile.
-                signatures[module] = tuple(params)
+                signatures[module] = frozenset(params)
         if len(set(signatures.values())) > 1:
-            # Declaration order, not sorted: order is the thing under test, so sorting here
-            # would print two identical-looking tuples and hide the difference.
-            detail = ", ".join(f"{module}({', '.join(params)})" for module, params in signatures.items())
+            detail = ", ".join(f"{module}({', '.join(sorted(params))})" for module, params in signatures.items())
             offenders.append(f"/{leaf} -- {detail}")
 
     assert not offenders, (

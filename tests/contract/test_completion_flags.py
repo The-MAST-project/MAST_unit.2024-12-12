@@ -18,16 +18,18 @@ whose flag could be started beyond the boundary is reported as **unverifiable** 
 by name, rather than silently counted as passing. What the check guarantees is therefore narrow
 and honest: of the declarations it can see all of, none is a lie.
 
-The two tests are a pair, and that is what closes the gap the limit leaves. A false
-declaration in a fully-resolvable handler fails the first; a false declaration in a handler
-whose chain leaves the module moves it into the unverifiable set, which fails the second. So a
-wrong flag surfaces either way -- as a lie, or as a blind spot that just grew.
+The lie case fails the test. The blind spot is **reported, not asserted** (MAST_unit#178 R2):
+a refactor that moves a flag-start behind a delegate grows the unverifiable set without
+anything being wrong, and #81's dispatch conversion does precisely that at eleven sites.
+Pinning the set by equality means that work fails a test in a file about something else, so the
+set is warned about instead and read from pytest's warnings summary.
 """
 
 from __future__ import annotations
 
 import ast
 import re
+import warnings
 
 from . import astscan
 from .astscan import (
@@ -157,15 +159,23 @@ def test_no_declared_flag_is_one_the_handler_never_starts():
     )
 
 
-def test_the_unverifiable_declarations_are_the_listed_ones():
-    """The blind spot is enumerated, so it cannot grow quietly."""
-    unverifiable, _ = _classify(_trees())
+def test_the_unverifiable_declarations_are_reported():
+    """The blind spot is reported rather than pinned -- see the module docstring (MAST_unit#178).
 
-    assert unverifiable == set(KNOWN_UNVERIFIABLE), (
-        "the set of declarations this check cannot confirm has changed:\n"
-        f"    now unverifiable: {sorted(unverifiable)}\n"
-        f"    listed:           {sorted(KNOWN_UNVERIFIABLE)}"
-    )
+    A declaration this walk cannot confirm is an unknown, not a violation. Warning keeps the
+    limit visible in the warnings summary without failing a refactor that legitimately moves a
+    flag-start behind a delegate.
+    """
+    unverifiable, _ = _classify(_trees())
+    drift = unverifiable.symmetric_difference(KNOWN_UNVERIFIABLE)
+
+    if drift:
+        warnings.warn(
+            "the set of declarations this check cannot confirm has changed:\n"
+            f"    now unverifiable: {sorted(unverifiable)}\n"
+            f"    listed:           {sorted(KNOWN_UNVERIFIABLE)}",
+            stacklevel=2,
+        )
 
 
 def test_the_scan_found_the_declarations():

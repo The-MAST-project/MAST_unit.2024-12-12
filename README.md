@@ -72,11 +72,19 @@ question about the shape of the source that running the code cannot answer —
 
 The per-module list of what each one refuses lives in
 [docs/adding-an-endpoint.md](docs/adding-an-endpoint.md#the-checks-and-what-each-one-refuses),
-kept there rather than duplicated here -- `test_endpoint_guide.py` asserts that table names
-every check in `tests/contract/`, so a new check cannot land undocumented.
+kept there rather than duplicated here — and that guide is the entry point for adding a route,
+not just an index of the checks.
+
+**It is maintained by hand, and nothing checks it.** The test that asserted the guide named
+every check module and every `Tier` was withdrawn (MAST_unit#178 W1), so adding, removing or
+re-scoping a check — or adding a tier or a completion form — means editing the guide in the same
+change. MAST_unit#178's revisit compares `ls tests/contract/test_*.py` against that table.
 
 Each carries a `KNOWN_*` dict of the violations present today, keyed to the issue that owns
-fixing them. The assertion is **set equality**, not "no new findings": landing a fix
-removes its entry in the same PR, and a stale entry fails the check just as a new violation
-does. Every detector also runs over a synthetic source with a known answer, so a broken
-detector cannot pass by finding nothing.
+fixing them. Only a **new** finding fails; an entry that has stopped being true is reported in
+pytest's warnings summary, so landing a fix means reading that summary and removing the entry it
+just made stale. Every detector also runs over a synthetic source with a known answer, so a
+broken detector cannot pass by finding nothing.
+
+What this suite deliberately does *not* enforce, and the audit that revisits the decision, is
+the register on MAST_unit#178.
