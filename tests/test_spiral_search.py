@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -52,10 +53,17 @@ def star_field(dy: float = 0.0, dx: float = 0.0) -> np.ndarray:
 
 
 class FakePw:
+    #: The commissioning field (2026-08-13), so cos(dec) is a factor of 0.7529 rather than 1
+    #: and a pixel estimate that skipped it would be visibly wrong.
+    DEC_DEGREES = 41.157
+
     def __init__(self):
         self.calls: list[str] = []
         self.x = 0
         self.y = 0
+        #: PWI4 older than 4.0.11 Beta 8 reports no spiral offset at all, and pwi4_client
+        #: sets the whole section to None. Set False to exercise that.
+        self.reports_offset = True
 
     def mount_spiral_offset_new(self, x_step_arcsec, y_step_arcsec):
         self.calls.append("new")
@@ -70,9 +78,8 @@ class FakePw:
         self.x -= 1
 
     def status(self):
-        pw, outer = self, type("S", (), {})()
-        outer.mount = type("M", (), {"spiral_offset": type("O", (), {"x": pw.x, "y": pw.y})()})()
-        return outer
+        offset = SimpleNamespace(x=self.x, y=self.y) if self.reports_offset else None
+        return SimpleNamespace(mount=SimpleNamespace(spiral_offset=offset, dec_j2000_degs=self.DEC_DEGREES))
 
 
 class FakeMount:
@@ -134,7 +141,11 @@ class FakeImager:
 
 
 class FakeConf:
-    acquisition = type("A", (), {"gain": 170})()
+    def __init__(self):
+        self.acquisition = SimpleNamespace(gain=170)
+        # 0.0 is what the config DB actually holds today (MAST_unit#138), so it is the
+        # default here too -- the omit-the-estimate path is the one running on sky.
+        self.imager = SimpleNamespace(pixel_scale_at_bin1=0.0)
 
 
 class FakeUnit:
@@ -253,6 +264,84 @@ class TestStepping:
         assert "no spiral session" in response.errors[0]
 
 
+class TestTheStepMessage:
+    """What comes back from a step has to say WHERE the mount is, not how many times a
+    button was pressed -- the operator has to be standing on the position they judged
+    brightest when they call `end`, and nothing downstream can check that for them."""
+
+    def test_it_reports_the_cell_ring_and_angular_offset(self, session):
+        session.start(10.0, 10.0, exposure_seconds=1.0)
+
+        message = session.step(forward=True).value
+
+        assert "step#1" in message
+        assert "cell (1, 0)" in message, "the cell is the position; the counter is not"
+        assert "ring 1" in message
+        assert '+10.0" RA' in message, "one cell at a 10-arcsec step is 10 arcsec"
+        assert '+0.0" Dec' in message
+        assert "new position" in message
+
+    def test_the_counter_keeps_rising_while_the_position_goes_back(self, session):
+        """The whole reason the message carries a cell: after next/next/previous the
+        counter reads 3 but the mount is back where it was at step 1."""
+        session.start(10.0, 10.0, exposure_seconds=1.0)
+        session.step(forward=True)
+        session.step(forward=True)
+
+        message = session.step(forward=False).value
+
+        assert "step#3" in message, "the counter counts presses and only ever increases"
+        assert "cell (1, 0)" in message
+        assert "back at step#1" in message
+
+    def test_returning_to_the_origin_is_named_as_the_reference(self, session):
+        session.start(10.0, 10.0, exposure_seconds=1.0)
+        session.step(forward=True)
+
+        message = session.step(forward=False).value
+
+        assert "back at the reference position" in message, "step#0 means nothing to an operator"
+
+    def test_an_unknown_cell_never_matches_another_unknown_cell(self, session):
+        """Two positions PWI4 could not report are not the same position. Claiming they
+        are would send the operator confidently to the wrong place."""
+        session.start(10.0, 10.0, exposure_seconds=1.0)
+        session.unit.mount.pw.reports_offset = False
+
+        first = session.step(forward=True).value
+        second = session.step(forward=True).value
+
+        for message in (first, second):
+            assert "position unavailable" in message
+            assert "back at" not in message, "an unknown cell is not a revisit"
+
+
+class TestThePixelEstimate:
+    SCALE = 0.2616  # arcsec/px, per COORDINATE_SURFACE.md
+
+    def test_it_is_omitted_when_the_plate_scale_is_unset(self, session):
+        """`pixel_scale_at_bin1` is 0.0 in the config DB today (MAST_unit#138). Saying
+        nothing beats reporting a confident '0 px'."""
+        session.start(10.0, 10.0, exposure_seconds=1.0)
+        assert session.unit.unit_conf.imager.pixel_scale_at_bin1 == 0.0
+
+        assert "px" not in session.step(forward=True).value
+
+    def test_it_carries_the_cos_dec_factor_on_the_ra_axis(self, session):
+        """`x_step_arcsec` is RA COORDINATE arcsec, so the sky moves x*step*cos(dec) along
+        it (MAST_unit#136). At dec +41.157 a commanded 10" moves 7.53", which is 29 px --
+        not the 38 px the uncorrected arithmetic would claim. The estimate is meant to be
+        compared against the shift `end` measures, so it has to be in the same units as
+        the sky, not as the command."""
+        session.unit.unit_conf.imager.pixel_scale_at_bin1 = self.SCALE
+        session.start(10.0, 10.0, exposure_seconds=1.0)
+
+        message = session.step(forward=True).value
+
+        assert "(~29 px)" in message
+        assert "38 px" not in message, "cos(dec) was not applied"
+
+
 class TestEndingASession:
     def test_end_measures_the_shift_and_closes_down(self, session):
         session.unit.imager.shift = (4.0, 9.0)  # the operator moved the field
@@ -302,6 +391,26 @@ class TestEndingASession:
         response = session.end()
         assert response.failed
         assert "no spiral session" in response.errors[0]
+
+    def test_ending_back_at_the_origin_is_not_a_fixed_pattern_alarm(self, session):
+        """An operator who judged the spiral origin brightest backtracks to it and ends
+        there. The mount then genuinely did not move, so a null shift is the CORRECT
+        answer -- but it is character-for-character the fixed-pattern signature
+        `at_origin` exists to flag, and warning about it says the opposite of the truth."""
+        session.start(10.0, 10.0, exposure_seconds=1.0)
+        session.step(forward=True)
+        session.step(forward=False)
+
+        result = session.end().value
+
+        assert result["ended_at_reference_position"] is True
+        assert result["shift"]["dx"] == pytest.approx(0.0, abs=0.2)
+
+    def test_a_session_that_moved_is_not_marked_as_ending_at_the_reference(self, session):
+        session.start(10.0, 10.0, exposure_seconds=1.0)
+        session.step(forward=True)
+
+        assert session.end().value["ended_at_reference_position"] is False
 
     def test_an_oversized_shift_is_flagged(self, session, monkeypatch):
         """Past the overlap limit the correlation stops meaning anything; say so."""

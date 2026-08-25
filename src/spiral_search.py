@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 import os
 import threading
 from typing import TYPE_CHECKING, Any
@@ -134,6 +135,7 @@ class SpiralSearch:
         self.save_intermediate_exposures: bool = False
         self.steps: list[dict] = []
         self.started_at: str | None = None
+        self._dec_degrees: float | None = None
         self._timer: threading.Timer | None = None
 
     @property
@@ -190,13 +192,100 @@ class SpiralSearch:
         filer.move_ram_to_shared(path)
 
     def _spiral_offset(self) -> dict:
-        """Where PWI4 says the spiral currently is."""
+        """Where PWI4 says the spiral currently is, as integer GRID CELLS.
+
+        ``spiral_offset.x``/``.y`` are counts of steps along each axis, not angles -- the
+        step size is carried separately as ``x_step_arcsec``/``y_step_arcsec``, so the
+        commanded offset is the product. Sessions 0001 and 0004 (2026-08-13) walked the
+        identical cell sequence (1,0), (1,-1), (0,-1) at 1" and 10" steps respectively,
+        which is what settles it: the values do not scale with the angular step.
+
+        The declination is picked up from the same status call, for the pixel estimate in
+        the step message. Read with getattr deliberately: a mount that does not report it
+        should cost the message its pixel clause, not null out the cell as well.
+        """
         try:
-            offset = self.unit.mount.pw.status().mount.spiral_offset  # type: ignore[union-attr]
+            status = self.unit.mount.pw.status()  # type: ignore[union-attr]
+            self._dec_degrees = getattr(status.mount, "dec_j2000_degs", None)
+            offset = status.mount.spiral_offset
             return {"x": offset.x, "y": offset.y}
         except Exception:
             logger.exception("could not read PWI4 spiral offset")
             return {"x": None, "y": None}
+
+    def _pixels_from_reference(self, x: int, y: int) -> float | None:
+        """Roughly how far the field has moved, in detector pixels, since the reference.
+
+        Meant to be comparable with the shift ``end`` reports, which is why the RA axis
+        carries a cos(dec) factor: ``x_step_arcsec`` is RA COORDINATE arcsec, so the sky
+        moves ``x * x_step_arcsec * cos(dec)`` along it (MAST_unit#136, measured at dec
+        +41 as 7.44" for 10" commanded). Without it the estimate reads 25% high there and
+        invites an operator to distrust a correct measurement.
+
+        None -- so the caller can omit the clause -- when the plate scale is unset or the
+        declination is unknown. ``pixel_scale_at_bin1`` is 0.0 in the config DB today
+        (MAST_unit#138), so that is the live path, and no estimate at all beats "0 px".
+        """
+        conf = self.unit.unit_conf
+        scale = conf.imager.pixel_scale_at_bin1 if conf is not None else 0.0
+        if not scale or scale <= 0.0 or self._dec_degrees is None:
+            return None
+        dx = x * self.x_step_arcsec * math.cos(math.radians(self._dec_degrees))
+        dy = y * self.y_step_arcsec
+        return math.hypot(dx, dy) / scale
+
+    def _revisit_clause(self, entry: dict) -> str:
+        """Whether this cell has been occupied before in this session, and when.
+
+        A cell IS a position, so a match means the same sky rather than merely similar
+        sky -- which is what lets an operator confirm they have returned to the position
+        they judged brightest before calling ``end``, the one precondition nothing here
+        can check for them.
+
+        Cells PWI4 could not report are skipped, never matched against each other: two
+        UNKNOWN positions are not the same position, and saying otherwise would send the
+        operator confidently to the wrong place.
+        """
+        for earlier in reversed(self.steps[:-1]):  # [:-1]: `entry` itself is already appended
+            if self._same_cell(earlier, entry):
+                return "back at the reference position" if earlier["n"] == 0 else f"back at step#{earlier['n']}"
+        return "new position"
+
+    @staticmethod
+    def _same_cell(a: dict, b: dict) -> bool:
+        """True when two step entries sit on the same spiral cell.
+
+        An unknown cell matches nothing, INCLUDING another unknown cell -- see
+        `_revisit_clause`. One rule, one place, because `end` leans on it too.
+        """
+        first, second = a["spiral_offset"], b["spiral_offset"]
+        if None in (first["x"], first["y"], second["x"], second["y"]):
+            return False
+        return (first["x"], first["y"]) == (second["x"], second["y"])
+
+    def _step_message(self, entry: dict) -> str:
+        """The one line an operator gets back from a step.
+
+        It has to answer "where am I", not "how many times have I pressed the button".
+        The counter is monotonic -- ``previous`` increments it too -- so after
+        next/next/previous it reads 3 while the mount is back at the cell it occupied at
+        step 1. The cell, the ring and the revisit clause are what carry position.
+        """
+        x, y = entry["spiral_offset"]["x"], entry["spiral_offset"]["y"]
+        if x is None or y is None:
+            # Said plainly rather than formatted around: with no cell the operator has no
+            # way to confirm they are back at the brightest position, and `end` will not
+            # catch it for them.
+            return f"step#{entry['n']} | position unavailable -- PWI4 reported no spiral offset"
+
+        offset = f'{x * self.x_step_arcsec:+.1f}" RA, {y * self.y_step_arcsec:+.1f}" Dec'
+        pixels = self._pixels_from_reference(x, y)
+        if pixels is not None:
+            offset += f" (~{pixels:.0f} px)"
+        return (
+            f"step#{entry['n']} | cell ({x}, {y}) ring {max(abs(x), abs(y))} | "
+            f"{offset} from reference | {self._revisit_clause(entry)}"
+        )
 
     # ----------------------------------------------------------------- verbs --
 
@@ -304,9 +393,18 @@ class SpiralSearch:
                     image = None
 
             entry = self._log_step(direction="next" if forward else "previous", image=image)
-            return CanonicalResponse(value=entry)
+            # A string, not the entry: the operator is reading this between presses, and
+            # the structured form of every step is in result.json either way.
+            return CanonicalResponse(value=self._step_message(entry))
 
     def end(self) -> CanonicalResponse:
+        """Measure the shift from the reference frame to HERE.
+
+        The operator must be sitting at the position they judged brightest when they call
+        this: the session is deliberately manual, and nothing here can check the claim.
+        The correlation reports how far the sky moved between the two frames, not whether
+        the right position was chosen.
+        """
         op = function_name()
         with self._lock:
             if not self.is_active:
@@ -323,7 +421,11 @@ class SpiralSearch:
                 self._abandon(f"final exposure failed: {ex}")
                 return CanonicalResponse(errors=[f"{op}: final exposure failed: {ex}"])
 
-            self._log_step(direction="final", image=FINAL_IMAGE)
+            final_entry = self._log_step(direction="final", image=FINAL_IMAGE)
+            # An operator who judged the spiral origin brightest backtracks to it and ends
+            # there, so the mount genuinely did not move and a null shift is the CORRECT
+            # answer -- not the fixed-pattern capture `at_origin` normally flags.
+            at_reference_position = self._same_cell(self.steps[0], final_entry)
 
             shift = measure_shift(
                 self.reference,
@@ -332,6 +434,7 @@ class SpiralSearch:
                 center_y=self.center_y,
                 margin_horizontal=self.margin_horizontal,
                 margin_vertical=self.margin_vertical,
+                expect_no_motion=at_reference_position,
             )
             limit = max_reliable_shift(self.reference.shape, self.margin_horizontal)
             magnitude = (shift.dx**2 + shift.dy**2) ** 0.5
@@ -344,7 +447,13 @@ class SpiralSearch:
                     "so dx/dy should not be trusted"
                 )
 
-            result = self._result(shift=shift.as_dict(), limit=limit, beyond_limit=beyond_limit, magnitude=magnitude)
+            result = self._result(
+                shift=shift.as_dict(),
+                limit=limit,
+                beyond_limit=beyond_limit,
+                magnitude=magnitude,
+                at_reference_position=at_reference_position,
+            )
             self._write_result(result)
             self._close()
             logger.info(f"{op}: spiral session closed, dx={shift.dx} dy={shift.dy} px (confidence {shift.confidence})")
@@ -396,6 +505,10 @@ class SpiralSearch:
             # sky (above), and frames that never correlated in the first place (below).
             "confidence_below_threshold": bool(shift["confidence"] < MIN_CONFIDENCE),
             "min_confidence": MIN_CONFIDENCE,
+            # The session ended on the cell it started from, so a shift near zero is the
+            # answer rather than a symptom. Without this, `at_origin` in the shift below
+            # reads as a fixed-pattern alarm on a perfectly good measurement.
+            "ended_at_reference_position": bool(extra.get("at_reference_position", False)),
         }
         return result
 

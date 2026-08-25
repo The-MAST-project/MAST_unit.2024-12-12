@@ -1054,11 +1054,13 @@ class Unit(Component):
         def endpoint_spiral_new_path(
             x_step_arcsec: float,
             y_step_arcsec: float,
-            exposure_seconds: float = 5.0,
+            exposure_seconds: float = 3.0,
             save_intermediate_exposures: bool = False,
-            center_x: int | None = configured_x,
-            center_y: int | None = configured_y,
-            usable_fraction: float | None = None,
+            center_x: Annotated[int | None, Query(description="Default from configuration DB")] = configured_x,
+            center_y: Annotated[int | None, Query(description="Default from configuration DB")] = configured_y,
+            usable_fraction: Annotated[
+                float, Query(description="Usable fraction of the frame, around (center_x, center_y) to avoid coma")
+            ] = 0.66,
         ):
             """
             Opens a spiral search session and takes the **reference** frame.<br>
@@ -1072,9 +1074,12 @@ class Unit(Component):
               must be given to take effect. Falls back to the fibre position from
               `guiding.rois[fcu_v2]`, then to the centre of the frame.
             - **usable_fraction**: fraction of each sensor axis correlated, about that centre.
-              Falls back to the margins in `guiding.rois[fcu_v2]`, then to
-              (1000, 300) px horizontal/vertical. The optics have pronounced coma, so the
-              outer field smears the correlation peak.
+              The optics have pronounced coma, so the outer field smears the correlation
+              peak, and the edges are the most vignetted. Always supplied (default 0.66), so
+              it always wins -- `resolve_margins`' fallbacks to the `guiding.rois[fcu_v2]`
+              margins and then to the built-in defaults are reachable only from internal
+              callers. That is deliberate: the configured margins are **0** on mast00, which
+              correlates the whole sensor and costs ~15 s per measurement (MAST_unit#137).
 
             Whichever source was used for each is reported back in the result.
             """
@@ -1092,13 +1097,26 @@ class Unit(Component):
 
     def endpoint_spiral_next_step(self):
         """
-        Takes the next step in the currently defined spiral path
+        Takes the next step in the currently defined spiral path.
+
+        Returns one line describing where the mount now is, e.g.<br>
+        `step#9 | cell (2, 1) ring 2 | +20.0" RA, +10.0" Dec (~115 px) from reference | new position`
+
+        - **step#** counts presses and only ever increases, so it says how far into the
+          session you are, not where you are
+        - **cell** is PWI4's spiral grid position, in steps rather than arcsec. It is what
+          identifies a POSITION: the same cell is the same patch of sky
+        - the final clause names the earlier step occupying this cell, if any -- which is
+          how you confirm you are back at the position you judged brightest
         """
         return self.spiral.step(forward=True)
 
     def endpoint_spiral_previous_step(self):
         """
-        Goes back one step in the currently defined spiral path
+        Goes back one step in the currently defined spiral path.
+
+        Returns the same one-line description as `spiral_next_step`. Note the step counter
+        keeps increasing when you go back -- it counts presses, not position.
         """
         return self.spiral.step(forward=False)
 
@@ -1106,6 +1124,11 @@ class Unit(Component):
         """
         Ends the spiral session: takes the **final** frame, cross-correlates it against the
         reference, stops tracking, and returns the measured shift in pixels.
+
+        **Be at the position you judged brightest when you call this.** The shift is
+        measured from the reference frame to wherever the mount is standing now, and
+        nothing here can check that you chose the right spot -- the correlation reports how
+        far the sky moved, not whether it was the position you wanted.
 
         The same result is written as `result.json` beside the two frames.
         """
