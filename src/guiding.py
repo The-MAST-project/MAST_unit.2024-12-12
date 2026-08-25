@@ -91,9 +91,10 @@ class Guider(GuiderInterface):
     def stop_guiding(self):
         if self._backend is not None:
             self._backend.stop_guiding()
+            logger.info("guider bakend guiding stopped")
         if self.unit:
             self.unit.end_activity(UnitActivities.Guiding)
-        logger.info("guiding ended")
+            logger.info("unit guiding stopped")
 
     def make_guiding_settings(self, base_folder: str | None = None, save: bool = True) -> ImagerSettings:
         """
@@ -130,7 +131,7 @@ class Guider(GuiderInterface):
         unit_conf = Config().get_unit()
         assert unit_conf is not None
 
-        if self.unit:
+        if self.unit and self.unit.imager:
             guiding_conf = unit_conf.guiding
             fcu_version = self.unit.fcu_version
             camera_x_size = self.unit.imager.camera_x_size
@@ -185,6 +186,9 @@ class Guider(GuiderInterface):
 
         # Keep the mount tracking across a later stop (mirrors the sequence-of-exposures path in unit.py):
         # stop_acquisition_and_guiding only stops tracking when it wasn't tracking before guiding.
+        if self.unit.mount is None:
+            return CanonicalResponse(errors=["self.unit.mount is None"])
+        
         self.unit.was_tracking_before_guiding = self.unit.mount.is_tracking
         if not self.unit.was_tracking_before_guiding:
             self.unit.mount.start_tracking()
@@ -216,12 +220,12 @@ class Guider(GuiderInterface):
             self.unit.end_activity(UnitActivities.Acquiring)
             self.unit.end_activity(UnitActivities.Guiding)
 
-            if self.unit.imager.is_active(ImagerActivities.Exposing):
+            if self.unit.imager is not None and self.unit.imager.is_active(ImagerActivities.Exposing):
                 logger.debug(f"{function_name()}: imager is exposing, stopping exposure ...")
                 self.unit.imager.stop_exposure()
                 logger.info("stopped exposure")
 
-            if not self.unit.was_tracking_before_guiding:
+            if self.unit.mount is not None and not self.unit.was_tracking_before_guiding:
                 logger.debug(f"{function_name()}: unit was tracking before guiding, stopping tracking ...")
                 self.unit.mount.stop_tracking()
                 logger.info("stopped tracking")
