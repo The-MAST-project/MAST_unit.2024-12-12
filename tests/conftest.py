@@ -132,6 +132,12 @@ def _shim_filer_for_tests() -> None:
         self.local = location
         self.shared = location
         self.ram = location
+        # Not reached by any test directly: `init_log` builds a `Filer()` and asks it
+        # for `machine_log_root()`, which reads both. Every attribute the real
+        # `__init__` binds has to be here, or importing anything that logs blows up
+        # during collection.
+        self.share_root = location
+        self.machine = location
         self.tops = {
             filer_module.FilerTop.Local: self.local,
             filer_module.FilerTop.Shared: self.shared,
