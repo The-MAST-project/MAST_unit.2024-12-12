@@ -185,7 +185,7 @@ class Guider(GuiderInterface):
         # stop_acquisition_and_guiding only stops tracking when it wasn't tracking before guiding.
         if self.unit.mount is None:
             return CanonicalResponse(errors=["self.unit.mount is None"])
-        
+
         self.unit.was_tracking_before_guiding = self.unit.mount.is_tracking
         if not self.unit.was_tracking_before_guiding:
             self.unit.mount.start_tracking()
