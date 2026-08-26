@@ -17,9 +17,8 @@ from common.activities import Activities
 from common.config.rois import FcuVersion, SpecRoiConfig
 from common.endpoints import Tier, endpoint
 from common.interfaces.guiding import GuiderInterface, GuiderTypes
-from common.interfaces.imager import ImagerRoi, ImagerSettings
 from common.mast_logging import get_logger
-from common.models.statuses import GuiderStatus
+from common.models.statuses import GuiderStatus, ImagerRoi, ImagerSettings
 from common.rois import SpecRoi
 
 logger = get_logger(__name__)
