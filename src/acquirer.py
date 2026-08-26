@@ -481,7 +481,22 @@ class Acquirer:
 
         if not pw_status.mount.is_connected:
             return None, None, "cannot get coordinates from mount (mount not connected)"
-        return pw_status.mount.ra_j2000_hours, pw_status.mount.dec_j2000_degs, None
+
+        # Connected is not the same as pointing somewhere. PWI4 reports the axes' position
+        # as null before the mount has a fix -- between power-on and find_home, say -- so
+        # this is a real state and not paranoia, and it needs saying differently from "not
+        # connected" or whoever reads it goes looking at cables.
+        ra, dec = pw_status.mount.ra_j2000_hours, pw_status.mount.dec_j2000_degs
+        if ra is None or dec is None:
+            return (
+                None,
+                None,
+                (
+                    f"{op}: the mount is connected but reports no position, so there is nothing "
+                    "to fall back to; supply coordinates or an object_name"
+                ),
+            )
+        return ra, dec, None
 
     def endpoint_start_acquisition_and_guiding(
         self,
@@ -600,8 +615,14 @@ class Acquirer:
         if all([gain_absolute, gain_percent]):
             return CanonicalResponse(errors=["supply only one of 'gain_absolute' or 'gain_percent', not both"])
 
+        # A backstop, not the diagnosis. Every way of failing to get coordinates now
+        # returns its own reason from `_target_coordinates` above, so reaching here means
+        # that function grew a path which returns neither coordinates nor a problem.
+        # Deliberately not phrased as "no coordinates supplied and mount not connected":
+        # that was accurate when this was the only check, and would now send the reader
+        # after a fault that has already been ruled out.
         if ra_j2000_hours is None or dec_j2000_degs is None:
-            return CanonicalResponse(errors=["cannot start acquisition - no coordinates supplied and mount not connected"])
+            return CanonicalResponse(errors=[f"{op}: no target coordinates were determined, and no reason was given"])
 
         assert self.unit.unit_conf is not None
         acquisition = Acquisition(

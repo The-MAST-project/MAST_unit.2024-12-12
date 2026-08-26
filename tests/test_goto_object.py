@@ -228,3 +228,13 @@ class TestAcquisitionPrecedence:
     def test_a_disconnected_mount_with_nothing_else_is_reported(self, resolver):
         _ra, _dec, problem = coordinates(pw=PwStatus(connected=False))
         assert problem is not None and "not connected" in problem
+
+    def test_a_connected_mount_with_no_fix_says_so_rather_than_blaming_the_link(self, resolver):
+        """PWI4 reports the axes as null before the mount has a fix -- between power-on
+        and find_home, say. Reporting that as "mount not connected" sends whoever reads it
+        after a fault that has already been ruled out."""
+        _ra, _dec, problem = coordinates(pw=PwStatus(connected=True, ra=None, dec=None))
+
+        assert problem is not None
+        assert "reports no position" in problem
+        assert "not connected" not in problem, "the link is fine; the position is what is missing"
