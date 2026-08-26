@@ -15,9 +15,9 @@ from common.config import Config
 from common.config.rois import FcuVersion, SkyRoiConfig, SpecRoiConfig
 from common.const import Const
 from common.filer import Filer, MoveGuardian
-from common.interfaces.imager import ImagerRoi
 from common.interfaces.solving import SolverInterface, SolvingResult
 from common.mast_logging import get_logger
+from common.models.statuses import ImagerRoi
 from common.rois import SkyRoi, SpecRoi
 from common.utils import Coord, boxed_log, function_name
 from imagers import ImagerSettings
@@ -496,7 +496,7 @@ if __name__ == "__main__":
         print(json.dumps(result.to_dict() if result else None, indent=2))
 
     def test_solver_with_roi():
-        from common.interfaces.imager import ImagerRoi, ImagerSettings
+        from common.models.statuses import ImagerRoi, ImagerSettings
 
         test_image_path = "D:\\MAST\\tmp\\mastrometry\\full-frame.fits"
         solver = MastrometryDotNet()

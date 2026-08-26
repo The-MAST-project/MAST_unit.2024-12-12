@@ -45,8 +45,8 @@ import numpy as np
 from common.activities import StageActivities, UnitActivities
 from common.config import Config
 from common.config.calibration import CalibrationConfig, StageCalibrationConfig
-from common.interfaces.imager import ImagerSettings
 from common.mast_logging import get_logger
+from common.models.statuses import ImagerSettings
 from common.utils import time_stamp
 from imaging.mirror_shadow import ShadowModel, detect_mirror_shadow
 
