@@ -29,7 +29,6 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 from astropy.io import fits
-from astropy.units import mag
 
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse
