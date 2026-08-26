@@ -169,7 +169,7 @@ class Acquirer:
                 else None
             )
 
-            from common.interfaces.imager import ImagerRoi, ImagerSettings
+            from common.models.statuses import ImagerRoi, ImagerSettings
 
             sky_settings = ImagerSettings(
                 seconds=acquisition_conf.exposure,
@@ -258,8 +258,7 @@ class Acquirer:
         # override for fcu_v2 to use full frame
         if self.unit.fcu_version == FcuVersion.v2:
             from common.asi import ASI_294MM_HEIGHT, ASI_294MM_WIDTH
-            from common.interfaces.imager import ImagerRoi
-            from common.models.statuses import ImagerPixel
+            from common.models.statuses import ImagerPixel, ImagerRoi
 
             # ROI to be used for the exposures
             spec_imager_settings.roi = ImagerRoi(
@@ -393,6 +392,14 @@ class Acquirer:
                     # symlinks this, and its shared root is spelled differently from ours --
                     # `/Storage/mast-share/MAST/<host>` against our `Z:/MAST/<host>/`.
                     # MAST_spec#39.
+                    #
+                    # Measured from `ram.root`, which is where the folder still IS -- not from
+                    # `shared.root`, which is the tempting reading of the line above. The two
+                    # hierarchies mirror each other below their roots (move_ram_to_shared only
+                    # swaps the root), so the ram-relative path is already the shared-relative
+                    # one. Measuring from shared.root instead raises ValueError on Windows,
+                    # where the roots are on different drives: "path is on mount 'D:', start
+                    # on mount 'Z:'".
                     shared_top=os.path.relpath(acquisition.folder, Filer().ram.root),
                     shared_subpath="acquisition",
                 )

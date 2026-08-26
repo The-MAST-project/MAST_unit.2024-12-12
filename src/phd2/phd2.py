@@ -21,9 +21,9 @@ from common.config import Config
 from common.config.phd2 import LimitFrameMode
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
-from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
+from common.interfaces.imager import ImagerExposureSeries, ImagerInterface
 from common.mast_logging import get_logger
-from common.models.statuses import PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
+from common.models.statuses import ImagerRoi, ImagerSettings, PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_debug, function_name
 from phd2.phd2_locate import locate_phd2_exe

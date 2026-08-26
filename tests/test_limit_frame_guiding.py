@@ -31,7 +31,7 @@ except (ImportError, NameError) as ex:  # NameError: stage.py off-Windows
     pytest.skip(f"unit import chain unavailable here ({ex!r})", allow_module_level=True)
 
 from common.config.phd2 import LimitFrameConfig, LimitFrameMode, PHD2Config
-from common.interfaces.imager import ImagerRoi, ImagerSettings
+from common.models.statuses import ImagerRoi, ImagerSettings
 from phd2.phd2 import SettleModel
 
 # The derived ROI is conditioned by ImagerRoi.model_post_init (mod-8 width /

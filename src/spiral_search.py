@@ -35,8 +35,8 @@ from common.canonical import CanonicalResponse
 from common.config import Config
 from common.config.rois import FcuVersion, SpecRoiConfig
 from common.filer import Filer, MoveGuardian
-from common.interfaces.imager import ImagerSettings
 from common.mast_logging import get_logger
+from common.models.statuses import ImagerSettings
 from common.paths import PathMaker
 from common.utils import function_name, isoformat_zulu
 from imaging.frame_shift import (

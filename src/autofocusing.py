@@ -12,8 +12,8 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.config.rois import SkyRoiConfig
 from common.filer import Filer, MoveGuardian
-from common.interfaces.imager import ImagerRoi, ImagerSettings
 from common.mast_logging import get_logger
+from common.models.statuses import ImagerRoi, ImagerSettings
 from common.parsers import (
     DEC_PATTERN,
     RA_PATTERN,
