@@ -16,9 +16,15 @@ from common.filer import Filer, MoveGuardian
 from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification, UnitAssignment
 from common.notifications import Notifier
+from common.object_resolver import TOTAL_TIMEOUT_SECONDS, ObjectNameError, resolve_object_name
+
+# RA_PATTERN/DEC_PATTERN are deliberately no longer applied to this endpoint's coordinate
+# parameters. A `pattern=` is enforced by FastAPI BEFORE the handler runs, so a malformed
+# coordinate would 422 out and never reach the fallback -- which makes "if either is
+# missing or unusable, resolve `object_name`" unimplementable for half the ways a
+# coordinate can be unusable. Validation moved into `_coordinate_pair`, where both classes
+# of bad input (malformed and out-of-range) are visible and can fall through together.
 from common.parsers import (
-    DEC_PATTERN,
-    RA_PATTERN,
     sexagesimal_degrees_to_decimal,
     sexagesimal_hours_to_decimal,
 )
@@ -405,35 +411,131 @@ class Acquirer:
                 )
             )
 
+    @staticmethod
+    def _coordinate_pair(ra_in, dec_in) -> tuple[float, float] | None:
+        """(ra_hours, dec_degrees) when BOTH were supplied and both convert. Else None.
+
+        `is not None`, never truthiness. `ra_j2000_hours=0` is a real target -- 0h is in
+        Pisces and dec 0 is the celestial equator -- and both are falsy, so the old test
+        sent them to the "not supplied" branch and silently acquired wherever the mount
+        happened to be pointing. Reachable from Python, not only over HTTP:
+        `unit.py`'s assignment path calls this endpoint directly with plan floats.
+
+        Both or neither: half a coordinate pair cannot be completed from the other half,
+        and mixing one supplied axis with one from the telescope points at neither.
+        """
+        if ra_in is None or dec_in is None:
+            return None
+        try:
+            # One call, whatever the form. The old code dispatched on `":" in value` and
+            # sent everything else to float() -- so a space-separated coordinate, which
+            # RA_REGEX explicitly allowed, raised an uncaught ValueError and returned 500.
+            # The parsers take sexagesimal, decimal and surrounding whitespace alike.
+            return sexagesimal_hours_to_decimal(ra_in), sexagesimal_degrees_to_decimal(dec_in)
+        except ValueError:
+            return None
+
+    def _target_coordinates(self, op, ra_in, dec_in, object_name, resolve_timeout, pw_status):
+        """Where to acquire: (ra_hours, dec_degrees, None), or (None, None, why-not).
+
+        Precedence, and the order is the point:
+
+        1. **Both coordinates, both valid** -- used as given, and the name is not resolved
+           at all. Explicit coordinates are the most certain thing a caller can supply.
+        2. **Otherwise, `object_name` if there is one.** "Otherwise" covers missing AND
+           unusable: a coordinate that will not convert is not a coordinate.
+        3. **Otherwise the telescope's current position**, as before.
+
+        A name that fails to resolve is an ERROR and never falls through to rule 3.
+        Quietly acquiring wherever the mount happens to point, having been asked for a
+        named object, is the misresolution failure in its purest form -- everything below
+        works perfectly and the spectrum is of the wrong sky.
+        """
+        pair = self._coordinate_pair(ra_in, dec_in)
+        if pair is not None:
+            return pair[0], pair[1], None
+
+        if object_name:
+            try:
+                resolved = resolve_object_name(object_name, total_timeout=resolve_timeout)
+            except ObjectNameError as e:
+                return None, None, f"{op}: could not resolve '{object_name}' -- {e}"
+            logger.info(
+                f"{op}: '{object_name}' resolved to ra={resolved.ra_j2000_hours:.6f}h "
+                f"dec={resolved.dec_j2000_degs:+.6f}d via {resolved.database or resolved.resolver}"
+            )
+            return resolved.ra_j2000_hours, resolved.dec_j2000_degs, None
+
+        # Neither usable coordinates nor a name. Say which it was: "no coordinates" reads
+        # as an omission, and a caller who supplied a malformed RA needs to know that is
+        # what happened rather than hunting for a missing parameter.
+        if ra_in is not None or dec_in is not None:
+            return (
+                None,
+                None,
+                (
+                    f"{op}: coordinates were supplied but unusable (ra={ra_in!r}, dec={dec_in!r}); "
+                    "supply both as valid J2000, or an object_name instead"
+                ),
+            )
+
+        if not pw_status.mount.is_connected:
+            return None, None, "cannot get coordinates from mount (mount not connected)"
+        return pw_status.mount.ra_j2000_hours, pw_status.mount.dec_j2000_degs, None
+
     def endpoint_start_acquisition_and_guiding(
         self,
         seconds: float | None = 5.0,
         ra_j2000_hours: Annotated[
             str | float | None,
             Query(
-                pattern=RA_PATTERN,
                 description=(
                     "### Right Ascension (J2000) in either:\n"
                     "- decimal hours (e.g., `12.5`) or\n"
                     "- sexagesimal format (e.g., `12:30:45.123`). \n"
                     "- Decimal range: `0 <= RA < 24`.\n"
-                    "If not supplied, taken from telescope"
+                    "**Wins over `object_name`** when this and `dec_j2000_degs` are both "
+                    "supplied and both valid. If either is missing or unusable, "
+                    "`object_name` is resolved instead; with no `object_name`, taken from "
+                    "the telescope."
                 ),
             ),
         ] = None,
         dec_j2000_degs: Annotated[
             str | float | None,
             Query(
-                pattern=DEC_PATTERN,
                 description=(
                     "### Declination (J2000) in either:\n"
                     "- decimal degrees (e.g., `-45.5`) or\n"
                     "- sexagesimal format (e.g., `-45:30:00.123`). \n"
                     "- Decimal range: `-90 <= DEC <= 90`.\n"
-                    "If not supplied, taken from telescope"
+                    "**Wins over `object_name`** when this and `ra_j2000_hours` are both "
+                    "supplied and both valid. If either is missing or unusable, "
+                    "`object_name` is resolved instead; with no `object_name`, taken from "
+                    "the telescope."
                 ),
             ),
         ] = None,
+        object_name: Annotated[
+            str | None,
+            Query(
+                description=(
+                    "### Object name, resolved to J2000 coordinates.\n"
+                    "**Used only when `ra_j2000_hours` and `dec_j2000_degs` are not both "
+                    "supplied and valid** -- explicit coordinates always take precedence.\n"
+                    "- resolved against **TNS** (`AT`/`SN` designations) and **Sesame** "
+                    "(SIMBAD / NED / VizieR)\n"
+                    "- **moving targets are refused**: comets, minor planets and "
+                    "solar-system bodies have no fixed J2000\n"
+                    "- a name that does not resolve is an **error**; the acquisition does "
+                    "not fall back to the telescope's current position"
+                ),
+            ),
+        ] = None,
+        resolve_timeout: Annotated[
+            float,
+            Query(gt=0, description="Seconds to spend resolving `object_name` before giving up"),
+        ] = TOTAL_TIMEOUT_SECONDS,
         gain_absolute: Annotated[
             int | None, Query(ge=asi.ControlDict[asi.Control.Gain].min_value, le=asi.ControlDict[asi.Control.Gain].max_value)
         ] = asi.ASI_294MM_DEFAULT_GAIN,
@@ -447,12 +549,26 @@ class Acquirer:
         """
         Starts an acquisition
 
+        **Where to point**, in strict order of precedence:
+
+        1. `ra_j2000_hours` **and** `dec_j2000_degs`, when both are supplied and both are
+           valid -- `object_name` is then not resolved at all.
+        2. otherwise `object_name`, if one was given. "Otherwise" covers a coordinate that
+           is missing *and* one that will not convert.
+        3. otherwise the telescope's current position.
+
+        A name that fails to resolve is an **error**; it never falls through to rule 3.
+        Being asked for a named object and quietly acquiring wherever the mount happens to
+        point is the failure this ordering exists to prevent.
+
         :param seconds:
         :param approach_mode:
         :param solver_name:
         :param make_corrections:
-        :param ra_j2000_hours: The target's RA
-        :param dec_j2000_degs: The target's Dec
+        :param ra_j2000_hours: The target's RA; beats `object_name` when paired with a valid Dec
+        :param dec_j2000_degs: The target's Dec; beats `object_name` when paired with a valid RA
+        :param object_name: Resolved to J2000 only if the coordinates above are not both usable
+        :param resolve_timeout: Seconds to spend resolving `object_name`
         :param skip_sky: Skip the 'sky' phase
         :param handover_automatically_to_guider: After acquisition, start PHD2 guiding automatically
         :return: The folder path on the MAST-SHARE with the acquisition's products
@@ -465,29 +581,11 @@ class Acquirer:
 
         pw_status = self.unit.mount.pw.status()
 
-        # One call, whatever the form. The old code dispatched on `":" in value` and
-        # sent everything else to float() -- so a space-separated coordinate, which
-        # RA_REGEX explicitly allowed, raised an uncaught ValueError and returned 500.
-        # The parsers take sexagesimal, decimal and surrounding whitespace alike.
-        if ra_j2000_hours:
-            try:
-                ra_j2000_hours = sexagesimal_hours_to_decimal(ra_j2000_hours)
-            except ValueError as e:
-                return CanonicalResponse(errors=[f"{op}: bad ra_j2000_hours -- {e}"])
-        else:
-            if not pw_status.mount.is_connected:  # type: ignore
-                return CanonicalResponse(errors=["cannot get coordinates from mount (mount not connected)"])
-            ra_j2000_hours = pw_status.mount.ra_j2000_hours  # type: ignore
-
-        if dec_j2000_degs:
-            try:
-                dec_j2000_degs = sexagesimal_degrees_to_decimal(dec_j2000_degs)
-            except ValueError as e:
-                return CanonicalResponse(errors=[f"{op}: bad dec_j2000_degs -- {e}"])
-        else:
-            if not pw_status.mount.is_connected:  # type: ignore
-                return CanonicalResponse(errors=["cannot get coordinates from mount (mount not connected)"])
-            dec_j2000_degs = pw_status.mount.dec_j2000_degs  # type: ignore
+        ra_j2000_hours, dec_j2000_degs, problem = self._target_coordinates(
+            op, ra_j2000_hours, dec_j2000_degs, object_name, resolve_timeout, pw_status
+        )
+        if problem is not None:
+            return CanonicalResponse(errors=[problem])
 
         assert self.unit.unit_conf is not None
         if seconds is not None:
