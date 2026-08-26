@@ -274,15 +274,25 @@ class TestTheStepMessage:
 
         message = session.step(forward=True).value
 
-        assert "step#1" in message
-        assert "cell (1, 0)" in message, "the cell is the position; the counter is not"
-        assert "ring 1" in message
-        assert '+10.0" RA' in message, "one cell at a 10-arcsec step is 10 arcsec"
-        assert '+0.0" Dec' in message
-        assert "new position" in message
+        assert message["step#"] == 1
+        assert message["cell"] == (1, 0), "the cell is the position; the counter is not"
+        assert message["ring"] == 1
+        assert message["offset"] == "+10.0arcsec RA, +0.0arcsec Dec", "one cell at a 10-arcsec step is 10 arcsec"
+        assert message["revisit"] == "new position"
+
+    def test_the_cell_is_a_pair_of_numbers_not_a_pair_of_sets(self, session):
+        """`{x}` is a one-element SET. The braces meant interpolation while this was an
+        f-string and had to stop meaning that when it became a dict, or the operator gets
+        `[[1], [0]]` back as their position."""
+        session.start(10.0, 10.0, exposure_seconds=1.0)
+
+        cell = session.step(forward=True).value["cell"]
+
+        assert cell == (1, 0)
+        assert all(isinstance(c, int) for c in cell), f"cell holds {[type(c).__name__ for c in cell]}"
 
     def test_the_counter_keeps_rising_while_the_position_goes_back(self, session):
-        """The whole reason the message carries a cell: after next/next/previous the
+        """The whole reason the response carries a cell: after next/next/previous the
         counter reads 3 but the mount is back where it was at step 1."""
         session.start(10.0, 10.0, exposure_seconds=1.0)
         session.step(forward=True)
@@ -290,9 +300,9 @@ class TestTheStepMessage:
 
         message = session.step(forward=False).value
 
-        assert "step#3" in message, "the counter counts presses and only ever increases"
-        assert "cell (1, 0)" in message
-        assert "back at step#1" in message
+        assert message["step#"] == 3, "the counter counts presses and only ever increases"
+        assert message["cell"] == (1, 0)
+        assert message["revisit"] == "back at step#1"
 
     def test_returning_to_the_origin_is_named_as_the_reference(self, session):
         session.start(10.0, 10.0, exposure_seconds=1.0)
@@ -300,7 +310,7 @@ class TestTheStepMessage:
 
         message = session.step(forward=False).value
 
-        assert "back at the reference position" in message, "step#0 means nothing to an operator"
+        assert message["revisit"] == "back at the reference position", "step#0 means nothing to an operator"
 
     def test_an_unknown_cell_never_matches_another_unknown_cell(self, session):
         """Two positions PWI4 could not report are not the same position. Claiming they
@@ -312,8 +322,8 @@ class TestTheStepMessage:
         second = session.step(forward=True).value
 
         for message in (first, second):
-            assert "position unavailable" in message
-            assert "back at" not in message, "an unknown cell is not a revisit"
+            assert "no spiral offset" in message["error"]
+            assert "revisit" not in message, "an unknown cell is not a revisit"
 
 
 class TestThePixelEstimate:
@@ -325,7 +335,7 @@ class TestThePixelEstimate:
         session.start(10.0, 10.0, exposure_seconds=1.0)
         assert session.unit.unit_conf.imager.pixel_scale_at_bin1 == 0.0
 
-        assert "px" not in session.step(forward=True).value
+        assert "px" not in session.step(forward=True).value["offset"]
 
     def test_it_carries_the_cos_dec_factor_on_the_ra_axis(self, session):
         """`x_step_arcsec` is RA COORDINATE arcsec, so the sky moves x*step*cos(dec) along
@@ -336,10 +346,10 @@ class TestThePixelEstimate:
         session.unit.unit_conf.imager.pixel_scale_at_bin1 = self.SCALE
         session.start(10.0, 10.0, exposure_seconds=1.0)
 
-        message = session.step(forward=True).value
+        offset = session.step(forward=True).value["offset"]
 
-        assert "(~29 px)" in message
-        assert "38 px" not in message, "cos(dec) was not applied"
+        assert "(~29 px)" in offset
+        assert "38 px" not in offset, "cos(dec) was not applied"
 
 
 class TestEndingASession:

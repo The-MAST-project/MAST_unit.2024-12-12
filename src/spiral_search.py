@@ -29,6 +29,7 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 from astropy.io import fits
+from astropy.units import mag
 
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse
@@ -201,13 +202,23 @@ class SpiralSearch:
         which is what settles it: the values do not scale with the angular step.
 
         The declination is picked up from the same status call, for the pixel estimate in
-        the step message. Read with getattr deliberately: a mount that does not report it
-        should cost the message its pixel clause, not null out the cell as well.
+        the step message. Both reads go through getattr: PWI4Status hangs its sections off
+        `Section`, which declares no attributes at all, so nothing here is checkable
+        statically -- and a mount that reports one field but not the other should cost the
+        message only the part that is missing.
+
+        An absent offset is a BRANCH, not an exception. PWI4 older than 4.0.11 Beta 8 does
+        not report it and pwi4_client sets the whole section to None, which is a version
+        fact rather than a fault; letting `offset.x` raise into the handler below logged a
+        traceback on every single step and called an unsupported feature an error.
         """
         try:
             status = self.unit.mount.pw.status()  # type: ignore[union-attr]
             self._dec_degrees = getattr(status.mount, "dec_j2000_degs", None)
-            offset = status.mount.spiral_offset
+            offset = getattr(status.mount, "spiral_offset", None)
+            if offset is None:
+                logger.warning("this PWI4 does not report the spiral offset (needs 4.0.11 Beta 8 or later)")
+                return {"x": None, "y": None}
             return {"x": offset.x, "y": offset.y}
         except Exception:
             logger.exception("could not read PWI4 spiral offset")
@@ -263,29 +274,34 @@ class SpiralSearch:
             return False
         return (first["x"], first["y"]) == (second["x"], second["y"])
 
-    def _step_message(self, entry: dict) -> str:
-        """The one line an operator gets back from a step.
+    def _step_message(self, entry: dict) -> dict:
+        """What an operator gets back from a step.
 
         It has to answer "where am I", not "how many times have I pressed the button".
         The counter is monotonic -- ``previous`` increments it too -- so after
-        next/next/previous it reads 3 while the mount is back at the cell it occupied at
-        step 1. The cell, the ring and the revisit clause are what carry position.
+        next/next/previous ``step#`` reads 3 while the mount is back at the cell it
+        occupied at step 1. ``cell``, ``ring`` and ``revisit`` are what carry position.
         """
         x, y = entry["spiral_offset"]["x"], entry["spiral_offset"]["y"]
         if x is None or y is None:
             # Said plainly rather than formatted around: with no cell the operator has no
             # way to confirm they are back at the brightest position, and `end` will not
             # catch it for them.
-            return f"step#{entry['n']} | position unavailable -- PWI4 reported no spiral offset"
+            return {"step#": entry["n"], "error": "PWI4 reported no spiral offset"}
 
-        offset = f'{x * self.x_step_arcsec:+.1f}" RA, {y * self.y_step_arcsec:+.1f}" Dec'
+        ret = {
+            "step#": entry["n"],
+            # (x, y), NOT ({x}, {y}) -- the latter is a pair of one-element SETS, which is
+            # what the braces meant back when this line was an f-string.
+            "cell": (x, y),
+            "ring": max(abs(x), abs(y)),
+            "offset": f"{x * self.x_step_arcsec:+.1f}arcsec RA, {y * self.y_step_arcsec:+.1f}arcsec Dec",
+            "revisit": self._revisit_clause(entry),
+        }
         pixels = self._pixels_from_reference(x, y)
         if pixels is not None:
-            offset += f" (~{pixels:.0f} px)"
-        return (
-            f"step#{entry['n']} | cell ({x}, {y}) ring {max(abs(x), abs(y))} | "
-            f"{offset} from reference | {self._revisit_clause(entry)}"
-        )
+            ret["offset"] += f" (~{pixels:.0f} px)"
+        return ret
 
     # ----------------------------------------------------------------- verbs --
 
@@ -382,7 +398,7 @@ class SpiralSearch:
             self.unit.mount.wait_until_settled(SettleMode.OFFSET_STEP)
 
             image = None
-            if self.save_intermediate_exposures:
+            if self.save_intermediate_exposures and self.folder:
                 image = "step-" + PathMaker().make_seq(self.folder) + ".fits"
                 try:
                     self._expose(image)
@@ -393,8 +409,8 @@ class SpiralSearch:
                     image = None
 
             entry = self._log_step(direction="next" if forward else "previous", image=image)
-            # A string, not the entry: the operator is reading this between presses, and
-            # the structured form of every step is in result.json either way.
+            # Not the raw entry: the operator is reading this between presses, and needs
+            # where they ARE. The full log of every step is in result.json either way.
             return CanonicalResponse(value=self._step_message(entry))
 
     def end(self) -> CanonicalResponse:
@@ -498,7 +514,7 @@ class SpiralSearch:
         result |= {
             "final_image": FINAL_IMAGE,
             "shift": shift,
-            "shift_magnitude_pixels": round(float(magnitude), 2),
+            "shift_magnitude_pixels": round(float(magnitude), 2) if magnitude else None,
             "max_reliable_shift_pixels": round(float(extra["limit"]), 1),
             "shift_exceeds_reliable_range": bool(extra["beyond_limit"]),
             # The two independent ways this measurement can be wrong: too little common
@@ -562,8 +578,11 @@ def guiding_roi() -> SpecRoiConfig | None:
     a confident, wrong measurement; a fallback that says so in the log and in the result
     will not.
     """
+    unit_conf = Config().get_unit()
+    if unit_conf is None:
+        return None
     try:
-        roi = Config().get_unit().guiding.rois.get(FcuVersion.v2)
+        roi = unit_conf.guiding.rois.get(FcuVersion.v2)
     except Exception:
         logger.exception("could not read guiding.rois[fcu_v2] from the configuration")
         return None

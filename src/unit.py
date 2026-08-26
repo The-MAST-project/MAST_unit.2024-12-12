@@ -1099,15 +1099,25 @@ class Unit(Component):
         """
         Takes the next step in the currently defined spiral path.
 
-        Returns one line describing where the mount now is, e.g.<br>
-        `step#9 | cell (2, 1) ring 2 | +20.0" RA, +10.0" Dec (~115 px) from reference | new position`
+        Returns where the mount now is, e.g.
+        ```
+        {
+            "step#": 9,
+            "cell": [2, 1],
+            "ring": 2,
+            "offset": "+20.0arcsec RA, +10.0arcsec Dec (~115 px)",
+            "revisit": "back at step#4",
+        }
+        ```
 
         - **step#** counts presses and only ever increases, so it says how far into the
           session you are, not where you are
         - **cell** is PWI4's spiral grid position, in steps rather than arcsec. It is what
           identifies a POSITION: the same cell is the same patch of sky
-        - the final clause names the earlier step occupying this cell, if any -- which is
-          how you confirm you are back at the position you judged brightest
+        - **revisit** names the earlier step occupying this cell, if any -- which is how
+          you confirm you are back at the position you judged brightest
+
+        When PWI4 does not report a spiral offset, only `step#` and an `error` come back.
         """
         return self.spiral.step(forward=True)
 
@@ -1115,8 +1125,8 @@ class Unit(Component):
         """
         Goes back one step in the currently defined spiral path.
 
-        Returns the same one-line description as `spiral_next_step`. Note the step counter
-        keeps increasing when you go back -- it counts presses, not position.
+        Returns the same description as `spiral_next_step`. Note the step counter keeps
+        increasing when you go back -- it counts presses, not position.
         """
         return self.spiral.step(forward=False)
 
