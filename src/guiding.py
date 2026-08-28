@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from threading import Thread
 from typing import TYPE_CHECKING
 
@@ -77,6 +79,89 @@ class Guider(GuiderInterface):
             activities_verbal=self.activities_verbal,
             backend=self._backend.status(capacity="guider") if self._backend else None,  # type: ignore
         )
+
+    def calibration_state(self) -> dict | None:
+        """PHD2's current calibration, or None when the backend has no notion of one.
+
+        Exposed because the stability campaign has to record it: guiding calibration is
+        tied to the camera's rotation, and a recalibration part-way through a campaign
+        puts a step in the guided residuals that reads exactly like a change in wind or
+        in exposure. Two units are compared against each other there, so "did either of
+        them recalibrate, and when" has to be answerable from the products afterwards.
+
+        Never raises. A campaign must not fall over because PHD2 was disconnected when
+        it asked.
+        """
+        backend = self._backend
+        if backend is None or not hasattr(backend, "call"):
+            return None
+
+        state: dict = {}
+        for method, params in (("get_calibrated", None), ("get_calibration_data", ["Mount"])):
+            try:
+                state[method] = backend.call(method, params).get("result")
+            except Exception as ex:  # noqa: BLE001 -- recording "we could not ask" is the point
+                state[method] = f"error: {ex}"
+        return state
+
+    def wait_for_settle(self, timeout: float, stop: threading.Event | None = None, poll: float = 0.5) -> dict:
+        """Block until PHD2 reports it has settled onto a guide star, or until `timeout`.
+
+        Returns what happened rather than a bare bool, because **time-to-settle is itself
+        a measurement**: it says how hard the star was to acquire and hold at this
+        pointing, which is a covariate the stability campaign wants per cell, alongside
+        SNR and HFD. A cell that settles in 4 s and one that takes 40 s are not the same
+        observation even when both end up guiding.
+
+        PHD2 runs its own settle timeout (`settling_settings.timeout`) and reports a
+        failure to settle as a non-zero `SettleDone` status; `timeout` here is the outer
+        bound for the case where no `SettleDone` ever arrives at all.
+
+        `guide()` primes the settle state before it issues the RPC, so this can be called
+        straight after `start_guiding()` without racing the first `Settling` event.
+        """
+        backend = self._backend
+        if backend is None or not hasattr(backend, "check_settling"):
+            return {"settled": False, "reason": "backend has no settle protocol"}
+
+        started = time.monotonic()
+        deadline = started + timeout
+        last_distance: float | None = None
+
+        while time.monotonic() < deadline:
+            if stop is not None and stop.is_set():
+                return {"settled": False, "reason": "stopped", "seconds": time.monotonic() - started}
+            try:
+                progress = backend.check_settling()
+            except Exception as ex:  # noqa: BLE001 -- "not settling" is a state, not a crash
+                return {
+                    "settled": False,
+                    "reason": f"{ex}",
+                    "seconds": time.monotonic() - started,
+                    "last_distance": last_distance,
+                }
+
+            if progress.done:
+                # Status 0 is PHD2's "settled"; anything else is its own report of why
+                # it could not, which is more informative than our timing out on it.
+                settled = progress.status == 0
+                return {
+                    "settled": settled,
+                    "status": progress.status,
+                    "error": progress.error,
+                    "seconds": time.monotonic() - started,
+                    "last_distance": last_distance,
+                }
+
+            last_distance = progress.distance
+            time.sleep(poll)
+
+        return {
+            "settled": False,
+            "reason": f"no SettleDone within {timeout:g}s",
+            "seconds": time.monotonic() - started,
+            "last_distance": last_distance,
+        }
 
     def start_guiding(self):
         if self._backend:
