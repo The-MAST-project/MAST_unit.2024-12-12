@@ -28,6 +28,10 @@ logger = get_logger(__name__)
 filer = Filer(logger)
 
 
+class SolverError(Exception):
+    """The solver could not be set up, or could not do something it needs to do."""
+
+
 class Solver(SolverInterface):
     if TYPE_CHECKING:
         from unit import Unit
@@ -61,7 +65,7 @@ class Solver(SolverInterface):
         assert solving_config is not None, f"{function_name()}: solving_config is None"
 
         if solving_config.method not in solving_config.valid_methods:
-            raise ValueError(
+            raise SolverError(
                 f"invalid solving method '{solving_config.method}', must be one of {solving_config.valid_methods}"
             )
 
@@ -76,7 +80,7 @@ class Solver(SolverInterface):
                 self._backend = PlaneWaveShm()
 
         if not self._backend:
-            raise Exception(f"could not figure out solving backend '{solving_config.method=}'")
+            raise SolverError(f"could not figure out solving backend '{solving_config.method=}'")
 
         self._initialized = True
 
@@ -214,7 +218,7 @@ class Solver(SolverInterface):
                 tolerance=tolerance,
             )
             if self.unit.acquirer is None:
-                raise Exception(f"{op}: unit.acquirer is None, cannot create latest_acquisition")
+                raise SolverError(f"{op}: unit.acquirer is None, cannot create latest_acquisition")
 
             if target is None:
                 mount_status = self.unit.mount.status
@@ -276,7 +280,7 @@ class Solver(SolverInterface):
                 continue
 
             if imager_settings.image_path is None:
-                raise Exception(f"{op}: imager_settings.image_path is None, cannot save the image")
+                raise SolverError(f"{op}: imager_settings.image_path is None, cannot save the image")
 
             # save the solver result for debugging
             result_file_name = imager_settings.image_path.replace(".fits", "-solver_result.json")
@@ -327,8 +331,9 @@ class Solver(SolverInterface):
                 # configured one, so the ram disk filled over the night.
                 filer.move_ram_to_shared(imager_settings.image_path)
 
-                # dec_avg_rad = math.radians((target.dec.arcsecond + Angle(result.solution.dec_rads * u.radian).arcsecond) / 2)  # type: ignore
-                dec_avg_rad = float(target.dec.radian + result.solution.dec_rads) / 2  # type: ignore
+                # dec_avg_rad = math.radians((target.dec.arcsecond +
+                #           Angle(result.solution.dec_rads * u.radian).arcsecond) / 2)  # type: ignore
+                # dec_avg_rad = float(target.dec.radian + result.solution.dec_rads) / 2  # type: ignore
                 assert result.solution is not None, f"{op}: result.solution is None"
                 # delta_ra_arcsec = (
                 #     target.ra.arcsecond - result.solution.ra_hours * 15 * 3600
@@ -390,7 +395,7 @@ class Solver(SolverInterface):
                     )
 
                     if not imager_settings.folder:
-                        raise Exception(f"{function_name()}: empty imager_settings.folder")
+                        raise SolverError(f"{function_name()}: empty imager_settings.folder")
                     file_name = str(Path(imager_settings.folder) / "corrections.json")
                     with MoveGuardian().protect(file_name):
                         with open(file_name, "w") as f:
