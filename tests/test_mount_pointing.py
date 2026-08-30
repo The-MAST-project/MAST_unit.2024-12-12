@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import pytest
 
+# No platform guard: `conftest` stubs the absent hardware modules, so this runs on a dev
+# machine as well as on a unit (#52). Windows keeps the real modules -- only absent ones
+# are stubbed -- so nothing here can mask genuine Windows behaviour.
 from common.activities import MountActivities
 from mount import Mount, target_as_text
 

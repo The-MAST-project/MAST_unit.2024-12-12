@@ -12,6 +12,7 @@ from common import asi
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import FcuVersion, SkyRoiConfig
+from common.endpoints import Tier, endpoint
 from common.filer import Filer, MoveGuardian
 from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification, UnitAssignment
@@ -350,6 +351,22 @@ class Acquirer:
             self.unit.acquirer.latest_acquisition.post_process()
 
     def start_acquisition_and_guiding_for_assignment(self, assignment: UnitAssignment):
+        """Acquire and hand over to guiding for a controller-issued assignment.
+
+        **Unreferenced and unexercised.** Nothing in this repository calls it, no route
+        serves it, and no test covers it -- so it has never run, and restoring it does not
+        change any behaviour a caller can reach today. It is kept because it is the only
+        expression of the *unattended* assignment flow: `handover_automatically_to_guider`
+        is `True` here and `False` in every reachable path, and the `in-progress`
+        notification that tells the controller where the products are exists nowhere else.
+
+        Treat every line as unverified. Two things in particular are asserted rather than
+        observed: that `assignment.plan` carries `target.ra_hours` / `target.dec_degrees`
+        in the shape read below, and that `run_acquisition` on this thread reaches the
+        SPEC hand-over without the operator step the reachable path relies on. Before this
+        is wired to anything, it wants a hardware pass of its own -- see MAST_unit#156 for
+        the sibling problem that a thread answering `Ok` reports nothing.
+        """
         approach_mode: ApproachMode = ApproachMode.GRADUAL_BY_RATE
         make_corrections = True
         ra_j2000_hours = assignment.plan.target.ra_hours
@@ -405,6 +422,7 @@ class Acquirer:
                 )
             )
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_start_acquisition_and_guiding(
         self,
         seconds: float | None = 5.0,

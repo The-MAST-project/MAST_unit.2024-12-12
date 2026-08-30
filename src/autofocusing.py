@@ -11,6 +11,7 @@ from common.activities import FocuserActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.config.rois import SkyRoiConfig
+from common.endpoints import Tier, endpoint
 from common.filer import Filer, MoveGuardian
 from common.mast_logging import get_logger
 from common.models.statuses import ImagerRoi, ImagerSettings
@@ -68,6 +69,7 @@ class Autofocuser:
             self.unit.is_active(UnitActivities.AutofocusingPWI4) and self.unit.pw.status().autofocus.is_running  # type: ignore[union-attr]
         )
 
+    @endpoint(tier=Tier.OPERATION)
     def start_autofocus(
         self,
         ra_j2000_hours: Annotated[
@@ -428,6 +430,7 @@ class Autofocuser:
         logger.debug("PlaneWave autofocus has started")
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_stop_autofocus(self):
         return self.stop_autofocus()
 

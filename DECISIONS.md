@@ -2,6 +2,145 @@
 
 ---
 
+## [2026-08-19] The API root redirects to `/docs`, and ReDoc is off for real
+
+**Why:** the unit served nothing at `/`. `create_app()` registered `/favicon.ico`, the unit
+router and the component routers, and no root route -- so `http://<unit>:8000/` answered
+`404 {"detail": "Not Found"}`. That is the address an operator types by hand, the one a
+bookmark holds, and the one the unit's `MAST Unit (FastAPI)` desktop shortcut pointed at
+(MAST_provisioning#54). Until #39 there was nothing better to offer: the seven tags in the
+live schema were subsystem names, redundant with the path prefix. With the tier tags applied
+across the surface, `/docs` became a page worth landing on -- the umbrella (#42) is trialing
+it as the API's canonical live contract location -- so the root now sends callers there.
+
+**What:** `read_root` in `src/app.py`, a `@app.get("/", include_in_schema=False)` returning
+`RedirectResponse(url="/docs")`. Registered next to `read_favicon`, in the factory rather
+than in the `__main__` block, so an imported `app` carries it (#114). It is out of the schema
+deliberately: every documented route carries exactly one tier tag, and `/` is navigation, not
+an operation a consumer calls.
+
+The same change corrects `redocs_url=None` to `redoc_url=None`. `FastAPI.__init__` absorbs an
+unknown keyword into `**extra` and raises nothing, so the misspelled parameter had been inert
+for as long as it stood and **ReDoc was serving at `/redoc`** -- confirmed by the new test,
+which returned 200 against the pre-fix app. The intent recorded in the line was evidently a
+single docs surface; that is now what runs.
+
+**Rejected:** *a landing page at the root* -- a small HTML index of the unit's tools. It
+duplicates what Swagger already renders, and it would be a second surface to keep in step
+with the tiers the moment one changed. *Repointing only the desktop shortcut* (which
+MAST_provisioning#54 does anyway) -- it fixes one caller and leaves the 404 for every other
+way the root is reached. *Leaving ReDoc up as a second view* -- ReDoc does not render the tag
+groups as the contract tiers the epic is establishing, so it would present a flatter,
+competing account of the same API.
+
+**Unsettled:** `create_app()` still passes `debug=True`, which was outside this change and is
+not a docs-surface question. `read_favicon` still redirects to `/static/favicon.ico`, which
+nothing mounts -- so the favicon 404s one hop later; it was left alone rather than folded in.
+Whether `/docs` should be reachable at all on a production unit (it is an interactive client
+against live hardware) has not been asked; the epic's premise is that it should.
+
+**Implications:** the provisioning shortcut, the vault's contract records, and anything else
+citing a unit's HTTP entry point can name `/docs` and have the bare root agree. #170 carries
+the two fixes.
+
+---
+
+## [2026-08-11] Contract checks assert set equality against a known-violations list
+
+**Why:** The endpoint contract's static invariants had no enforcement, and three of them
+regressed or were found inert *because nothing checked them*: invariant 9 broke within hours
+of being written down (#102's `run_acquisition`), MAST_common#45's twelve undeclared abstract
+signatures went uncounted until somebody thought to ask, and MAST_common#46's exposure-series
+guard had never executed once since it was written. All three are questions about the shape
+of the source, answerable statically, needing no hardware and no app fixture — so they could
+have been checked at any point in the last two years.
+
+**What:** `tests/contract/` — four AST checks (invariants 3, 4, 9, and the interface half of
+10), each with a `KNOWN_*` dict of today's violations keyed to the issue that owns fixing
+them. Three decisions inside that are worth recording:
+
+- **Set equality, not `xfail` per item.** #52's design says xfail-keyed, and for the
+  app-dependent rows that is right. For these it is not: an `xfail` catches a new violation
+  but not a *stale* marker — an item fixed elsewhere leaves an `xpass` that is easy to
+  configure into silence, and the list then encodes whatever was true the day it was written.
+  That is precisely the failure mode MAST_common#45 warns about for hand-kept lists. Checking
+  both directions means an issue landing must remove its entry, and a list that drifts from
+  the tree is red.
+- **Every detector is exercised over a synthetic source with a known answer.** Each real
+  assertion is "no unexpected findings", which a *broken* detector satisfies as perfectly as
+  a clean tree does. Without the synthetic case these checks would be unfalsifiable, which is
+  the same defect as having no check. This was not hypothetical: the first run of the common
+  scans passed over zero files, because the exclusion of `common` (correct for the unit tree,
+  where an untracked sibling clone sits inside `src/`) was matched against absolute path parts
+  and so also excluded everything under `COMMON_ROOT`.
+- **Known lists key on (module, subject), never on a line number.** #81's inventory recorded
+  `zwo.py:148` and `imagers/ascom.py:806`; both had drifted to 151 and 812 by the time the
+  check was written, with nothing about the dispatch sites having changed.
+
+**Implications:** the checks find more than the tickets recorded. The flag-balance check finds
+**seven** unbalanced activity flags where #44 listed four — `StageActivities.Aborting`,
+`ImagerActivities.StartingUp` and `UnitActivities.PreGuiding` were in no inventory. Two
+scoping rules were needed to get there and both are load-bearing: only unit-owned activity
+enums are judged (`common/activities.py` declares the whole fleet's, so scanning the unit tree
+against MAST_spec's and MAST_control's reports 60-odd findings that are all false), and
+zero-valued `Idle = 0` sentinels are not flags.
+
+The checks live in this repo rather than in MAST_common even though two of them scan `common`:
+#52 hosts the contract checks, the unit's CI already checks out `common` as a sibling, and the
+dead-precondition check *must* see both trees — `require_open_exposure_series` is defined in
+`common` and its callers would be the unit's backends, so a MAST_common-only check would start
+reporting a false positive the moment the unit wired it up.
+
+---
+
+## [2026-08-10] `app.py` is a factory, not a module with side effects
+
+**Why:** The HTTP surface was unreachable from anything but `python app.py`, which made
+the endpoint contract (#42) unenforceable — you cannot assert a route table you cannot
+construct. Three separate couplings did it:
+
+- All six `app.include_router(...)` calls sat inside `if __name__ == "__main__"`, so an
+  imported `app` had one route (`/favicon.ico`) while the tree registered 74 operations.
+- Module scope started PWI4, PWShutter and ps3cli and blocked up to 30 s connecting to
+  PWI4. On a unit machine that drives the real telescope, so `tests/conftest.py` blocks
+  process launches wholesale — a tripwire whose own docstring names this file as the
+  reason and asks for this fix.
+- `lifespan` called `Unit()` while `Unit` was imported only inside the `__main__` block.
+  Under `python app.py` the global happened to be bound in time; under any other entry
+  point the call raised `NameError` into a bare `except Exception`, and the unit's
+  lifespan hooks were skipped silently. (`Unit` is a singleton with an `_initialized`
+  guard, so the second construction was a no-op rather than a duplicate instance — what
+  was broken was the dependency on a global another code path happened to bind.)
+
+**What:** `create_app(unit=None)` builds the app and mounts the routers;
+`start_supporting_processes()` holds the spawns; `main()` sequences configuration
+validation, `Unit()`, both of those, and uvicorn. `lifespan` closes over the unit the
+factory was given. `python app.py` performs the same steps in the same order as before —
+the spawns still run ahead of the configuration check, because that is the order module
+import used to impose.
+
+`create_app`'s `unit` parameter is deliberately unannotated: annotating it `Unit` would
+require a module-scope `from unit import Unit`, which drags in the Windows / driver /
+Mongo chain the factory exists to keep out of app construction.
+
+Router mounting also became a loop over `COMPONENT_ATTRIBUTES` rather than six
+`if unit.<component>:` branches. Same semantics, same order, and it gives #52's manifest
+a single place to read the component list from.
+
+**Implications:** `TestClient(create_app(unit))` reaches the real routes, which unblocks
+#52's Phases 1-4. There is no module-level `app` object any more, so `uvicorn app:app`
+is no longer a usable entry point — nothing used it, and it was one of the paths where
+the silent `lifespan` failure above would have bitten.
+
+One discovery worth carrying into #52: on FastAPI 0.139 `include_router()` does **not**
+flatten into `app.routes`. It appends a single `_IncludedRouter` wrapper whose entire
+interface is private, so mounted paths are not enumerable there. The public reading is
+`app.openapi()["paths"]`, which is what `tests/test_app_factory.py` uses and what the
+anchor test will have to use — with the caveat that a route registered
+`include_in_schema=False` is invisible in it (nothing in the unit sets it today).
+
+---
+
 ## [2026-08-06] Retire the `src/common` submodule; MAST_common is a sibling clone
 
 **Why:** Two mechanisms were resolving the same package, and only one of them was
@@ -32,6 +171,261 @@ writes into the venv. `git submodule update --remote` is no longer how this repo
 its `common`; a `git pull` in the sibling clone is. The fleet-wide `MAST_common/CLAUDE.md`
 still documents the submodule layout for the other consumers and now disagrees with
 this repo — it should be reconciled when they follow.
+
+---
+
+## [2026-08-02] The endpoint-contract change does not reach `main` without hardware verification
+
+
+**Why:** The contract remediation (#42) is verified by ruff, by pytest suites, and by a smoke
+harness on labcomp2 -- and all three share one blind spot. Every component under test is built
+with `object.__new__` and handed a recording stand-in for the PWI4 client or the camera, because
+the real ones need a telescope. That setup answers *did the handler refuse*, *did it delegate*,
+and *what shape went on the wire*. It cannot answer whether the mount still slews, whether the
+focuser still reaches its target, or whether `/unit/status` still parses downstream. The two
+defects most likely to escape are precisely the ones a stand-in cannot see: a move that silently
+no-ops, and a status field consumers read positionally.
+
+The units make the gap easy to underestimate. `mast-unit` has been **stopped on all four since
+2026-07-08**, and they track `main` by `git pull`, so a merge looks inert -- right up until the
+next pull takes the entire set at once, on the first service start in weeks.
+
+**What:** Merging `eli/endpoint-contract` into `main` requires a hardware pass on one unit
+first, item by item, with evidence recorded on the integration PR (#77). Held as a **draft** so
+the requirement is mechanical rather than a note someone has to remember; leaving draft is the
+signal that the checklist is complete. The gate sits at that boundary only -- the tranche PRs
+merge *into* the integration branch on code review alone, which is what the branch is for.
+
+The checklist lives on #77 rather than here, since it is per-tranche and changes as tranches
+land. Two limits are worth recording as durable facts rather than checklist items:
+
+- **The imager verbs cannot be hardware-tested while `imager_type` is `phd2`.**
+  `units.common.imager.imager_type` is `phd2` fleet-wide with no unit overriding it, so the
+  ASCOM and ZWO code paths are never imported. Pointing a unit at `ascom:...` first requires the
+  stale-import fix (#71/#72) -- on `main` that backend does not import at all.
+- **The ZWO paths are out of reach entirely** until some unit is configured for that backend.
+  They stay stand-in-verified, and that should be stated rather than glossed.
+
+**Implications:** "Tests pass" is not a merge argument for this change, and neither is "it is
+only an API shape". Anything that cannot be exercised on hardware ships explicitly labelled as
+unverified, or does not ship. The same reasoning applies to the sibling epics when the contract
+extends to `MAST_control` and `MAST_spec`.
+
+---
+
+## [2026-08-02] /mount/goto delegates to the maintained slew; alt/az deferred to its own endpoint
+
+**Why:** `mount.goto()` was a second implementation of the slew. It called
+`pw.mount_goto_ra_dec_j2000` directly and skipped `start_activity(MountActivities.Slewing)` and
+`self.target`, which the maintained `goto_ra_dec_j2000` sets. So a slew commanded through the
+API was invisible to `wait_until_settled(SettleMode.SLEW)` and to mount status -- the mount
+looked idle while it moved. This is invariant 2 of the endpoint contract (#42), and this fork is
+the example that motivated the whole review.
+
+**What:** `endpoint_goto` is a thin handler over the maintained method: check `connected`,
+delegate to `goto_ra_dec_j2000`. `mount.goto()` is gone, and so is `goto_ra_dec_apparent` --
+unrouted, zero callers, and it carried the same missing-envelope defect.
+
+**Alt/az is deliberately *not* part of this endpoint** (decision revised 2026-08-02, reversing
+the 2026-07-20 contract note's "`goto` gains alt/az"). Horizontal pointing is not the same
+operation with different numbers:
+
+- **Tracking has to be stopped for it to mean anything.** With tracking on, the mount
+  immediately starts drifting off the commanded alt/az -- the pointing the caller asked for
+  does not hold. So the operation is "stop tracking, then slew", which is a different contract
+  and a different abort/settle story, not an extra pair of query parameters.
+- **The input validation differs.** Alt/az is decimal degrees; RA/Dec is conventionally
+  sexagesimal (and `unit.expose` accepts both forms for RA/Dec). Folding them into one handler
+  means one endpoint with two validation regimes selected by which parameters arrived.
+- Its `target` bookkeeping also differs, since `status()` renders a tuple as RA/Dec and would
+  mislabel a horizontal target.
+
+Removing it also removes the argument plumbing it forced: with one coordinate system,
+`ra_j2000_hours` / `dec_j2000_degs` are simply **required**, and FastAPI rejects a missing or
+half pair with a 422 before the handler runs. The hand-rolled "exactly one complete pair"
+validation (mixed pairs, half a pair, no coordinates) is gone with it.
+
+Two decisions that stand:
+
+- **Decimal only, for now.** `/mount/goto` previously typed its coordinates `float | str`,
+  which was a lie: PWI4's client does `float(value)`, so a sexagesimal string raised inside the
+  client and surfaced as a 500. Typing them `float` makes that a clean 422 instead. Sexagesimal
+  RA/Dec is a reasonable future addition here (`common.parsers` already has the two parsers);
+  it was the *azimuth* that had no usable parser, and that concern leaves with alt/az.
+- **`GET` -> `PUT` applied here, not deferred to #48.** Invariant 5, and safe to take now: the
+  only live cross-repo calls into the unit are `status`, `execute_assignment` and `abort`, and
+  `/mount/goto` has no automated caller. #48's risk lives in `abort` (called as `GET` from
+  `common`), not here. A slew is also the least defensible route to leave on `GET`, where a
+  caching proxy or a Swagger "try it out" can fire it.
+
+**Implications:** `/mount/goto` is behavior-preserving from a caller's perspective except the
+verb and the parameter names, both safe because nothing automated calls it; what changes is
+that a slew commanded through it is now tracked like any other. The alt/az endpoint is future
+work (its own issue), and the contract note's goto row needs the same correction.
+
+Two adjacent fixes came out of this and are in the same change, since both are in the status
+field an operator reads immediately after issuing a goto:
+
+- **`target_verbal` was rendering declination as arcseconds.** `Angle(self.target[1],
+  unit='arcsec')` on a value that is degrees: a target at Dec +30.5 displayed as `0:00:30.500`
+  instead of `30:30:00.000` -- off by 3600. Display-only, but the display an operator uses to
+  confirm where the telescope is going.
+- **The rendering moved out of `status()` into `Mount.target_verbal()`**, which is what makes it
+  testable without a live mount (`status()` needs `pw.status()`, the ASCOM dispatcher and the
+  power switch), and thins the status handler in the direction invariant 6 wants.
+
+---
+
+## [2026-08-02] Response-envelope remediation, part 3: the envelope belongs to the endpoint, not to status()
+
+
+**Why:** `/unit/status` returned a `CanonicalResponse` while every component `/status` returned a
+bare typed model (`MountStatus`, `FocuserStatus`, `CoverStatus`, `StageStatus`, `ImagerStatus`),
+so a consumer could not write one status parser. The real cost is in `MAST_common`'s client:
+`BaseApi._common_get_put` unwraps a `1.0` envelope and hoists remote `errors` into the caller's
+error list, but a bare model takes the "NON canonical response" branch -- a warning on every
+poll, and **no error channel at all**, since a typed model has nowhere to put `errors`. Control's
+own idiom (`if not canonical_response.succeeded: ... abort()`, `common/models/plans.py`) is
+therefore dead code when pointed at a component `/status`: a powered-off or faulted component
+answers with a status model and the client scores it a success. That is a poor foundation for
+invariant 3 (#43), which makes `/status` the completion-detection surface.
+
+**What:** The wrapper moved to the endpoint boundary. All six routed `endpoint_status` handlers
+return `CanonicalResponse(value=self.status())`; every `status()` keeps returning its bare typed
+model. `Unit.status()` -- which wrapped *internally* -- now returns `FullUnitStatus`, and
+`Unit.endpoint_status()` does the wrapping (keeping the `serialize_ip_addresses` call at the
+boundary, where it always ran).
+
+**Why not the other two options:** #47 framed this as "components wrap up to match the unit, or
+the unit unwraps down to match the components." Both are wrong.
+
+- *Unwrapping down* standardizes on the broken half: it makes the warning branch the official
+  path for status, permanently forecloses an error channel on the completion surface, and needs
+  an explicit carve-out in invariant 4.
+- *Wrapping `status()` itself* cannot work. `FullUnitStatus`'s fields are **typed as** the
+  component status models and `Unit.status()` populates them by calling each component's
+  `status()` directly, so a `CanonicalResponse` cannot go in a field typed `MountStatus`. Forcing
+  it through would nest envelopes inside the payload, turning `mount.tracking` into
+  `mount.value.tracking` -- a field-path change in disguise, and every consumer of it fails
+  *silently*: `MAST_control`'s `status_from_dict` catches the validation failure and falls back to
+  `BaseStatus(detected=False, operational=False)` (so a healthy fleet reads as dead in the
+  dashboard, with only a log line), `MAST_gui` does `FullUnitStatus(**value)`, and the GUI's SSE
+  handler walks cache paths by field-name string and warns-and-continues on a miss. There are
+  also live internal typed consumers -- `acquisition.py` and `acquirer.py` read
+  `mount.status().ra_j2000_hours` as attributes.
+
+`status()` has two callers with different needs -- the route wants an envelope, internal
+composition and logic want the typed model. Serving both is not a compromise; it is invariant 6,
+and every component already had the `endpoint_status` / `status` split to hang it on.
+
+**Implications:** `FullUnitStatus` is untouched -- no field renamed, nothing nested -- so the
+GUI, control's cache and the SSE walk are unaffected. `/unit/status`, the only live cross-repo
+status consumer, keeps its wire shape byte-for-byte; only *where* the wrapping happens moved. The
+five component `/status` routes do change on the wire (they gain the envelope, which is the
+point) and have no automated consumers -- they are operator and Swagger surface. Consequently
+this tranche needs **no `MAST_common` or `MAST_gui` change and no coordinated deployment**: the
+bump-common-then-deploy-everything lockstep that #47 was expected to require does not apply. It
+still applies to #48 and to any future change to the envelope itself.
+
+---
+
+## [2026-08-02] Response-envelope remediation, part 2: imager backends agree, annotations enforce it
+
+**Why:** The imager verbs were the least consistent surface on the unit. `ASCOMImager` returned
+proper envelopes with `errors=["not connected"]` / `["not exposing"]`; `ZWOImager` returned
+`None` from the same verbs and did not import `CanonicalResponse` at all. Because
+`Imager` is a pure delegating wrapper, the backend a unit happens to run decided what a caller
+saw -- the same `PUT /unit/imager/stop_exposure` was an envelope on an ASCOM unit and `null` on
+a ZWO one. `Imager` also advertised the defect in its own signatures as
+`-> CanonicalResponse | None`; the `| None` *was* invariant 4's breach, written down.
+
+**What:** ZWO's `abort` / `stop_exposure` / `abort_exposure` / `start_exposure` return envelopes,
+using ASCOM's existing error strings verbatim so the two backends are indistinguishable to a
+caller. `Imager`'s annotations for `abort`, `endpoint_abort`, `start_exposure`, `stop_exposure`
+and `abort_exposure` drop `| None`, which makes a type checker reject a future backend that
+returns nothing.
+
+Two offenders outside the #47 audit list came out of the alignment and are fixed here, since
+"the two backends agree" is false without them:
+
+- **`ASCOMImager.abort_exposure` had its own `None` path** -- it appended `"not connected"` to
+  `self.errors` and then bare-`return`ed, so the reference implementation was not actually clean.
+- **`ZWOImager.start_exposure` returned `None`** while swallowing every exception into
+  `self.errors`, so a failed exposure start reported success. It now ends the way ASCOM's does.
+- **`PHD2Connector.abort` was `pass`** and `endpoint_abort` returned `stop_capture()`'s `None`.
+  Both return `Ok`. Behavior is unchanged deliberately -- whether a PHD2 `abort` should do more
+  than nothing is a question for #43, not an envelope fix.
+
+**Implications:** Three decisions worth recording as *not* taken.
+
+1. **The annotations were tightened only where the claim is now true.** `startup` / `shutdown`
+   keep `| None`: `PHD2Connector.startup` is `pass`, `ASCOMImager.shutdown` falls off the end,
+   and `ZWOImager` delegates to `super().startup()`. Dropping `| None` there would assert
+   something false. That chain is the remaining #47 work on the imager, tracked in the issue
+   rather than folded in silently. `connect` / `disconnect` keep `| None` for the part-1 reason:
+   #42 deletes them.
+2. **The backend contract already exists, in `MAST_common`.** The #47 plan assumed no backend
+   ABC and proposed adding a Protocol under `src/imagers/`; that was wrong.
+   `common/interfaces/imager.py` defines `ImagerInterface(Component, ABC)` with
+   `@abstractmethod stop_exposure` / `abort_exposure`, and all four implementers
+   (`ZWOImager`, `ASCOMImager`, `Imager`, `PHD2Connector`) derive from it. No new abstraction
+   was introduced.
+3. **The ABC's own return annotations are deliberately left for a separate change.** Declaring
+   `-> CanonicalResponse` on `ImagerInterface` is the single-source-of-truth fix and is what
+   would bind *future* backends, but it edits `MAST_common`, which means a submodule PR, a
+   gitlink bump here, and re-syncing the other three `common/` checkouts. `ImagerInterface` is
+   implemented only in MAST_unit (verified across control, spec and gui), so that change is
+   safe whenever it happens and nothing waits on it. It is a cross-repo step, not an oversight.
+
+---
+
+## [2026-08-02] Response-envelope remediation, part 1: refusals are returned, not dropped
+
+**Why:** Invariant 4 of the endpoint contract (#42) says every routed handler returns a
+`CanonicalResponse`, with failures as `errors=[...]` -- never an implicit `None`, never an
+exception across the HTTP boundary. #47 audited the violations. The consumer-visible harm is
+not the missing envelope itself but what it hides: a handler that falls off the end sends a
+`null` body, and `covers.open` / `close` used a bare `return` on the not-connected path, which
+over HTTP is a success-shaped empty response. A caller cannot distinguish "I refused" from
+"it worked."
+
+**What:** The offenders in this tranche now return an envelope --
+`mount.goto_ra_dec_j2000`, `unit.abort`, `focuser.shutdown`, `covers.open` / `close` /
+`shutdown`, `focuser.endpoint_move_in` / `_out` (were discarding `move()`'s response), and the
+`/focuser/position` getter (was a raw `int`).
+
+Two of these needed more than a `return` statement:
+
+- **`focuser.endpoint_set_position` returned `Ok` even when nothing moved.** The refusal
+  decision (not-powered / not-connected) lives in the `position` property setter, and a Python
+  setter cannot return anything -- assignment discards it. Extracted `Focuser.goto_position()`,
+  which owns the decision and returns a `CanonicalResponse`; the setter delegates to it and
+  drops the result, so the existing `self.position = x` call sites (autofocusing, `move`,
+  `goto_known_as_good_position`) keep working unchanged. The endpoint calls `goto_position`
+  directly. Re-checking the preconditions inside the handler was the alternative and was
+  rejected: it duplicates the decision and puts logic in a handler, violating invariant 6.
+- **`covers.shutdown` on the not-connected path returns `Ok`, not an error.** Powering off
+  *is* the shutdown for a disconnected cover -- it succeeded. Only `open` / `close` genuinely
+  could not act, so only those two report `errors=["not connected"]`.
+
+`Imager.connect` / `disconnect` also return `None` and were deliberately left alone: #42 slates
+them for deletion (not ABC-enforced, unused, Arie OK'd), so fixing them is work that gets
+deleted.
+
+**Implications:** Six component endpoints change what they put on the wire, all in the
+refusal direction -- a caller that previously got `null` or an empty body now gets
+`{"api_version": "1.0", "errors": [...]}`. Nothing live consumes them: the only cross-repo
+calls into the unit are `GET /unit/status`, `PUT /unit/execute_assignment` and
+`GET /unit/abort`, and of those only `unit.abort` is touched here (it gained an envelope where
+it sent `null`). No `MAST_common` or `MAST_gui` change, so no submodule-bump lockstep.
+
+Behavioral verification cannot happen on a development Mac: `focuser.py`, `mount.py` and
+`covers.py` all import `win32com` at module scope, so the three files changed here are
+un-importable off Windows and the pytest suite skips (as README already documents). This
+tranche was verified by ruff (no new findings against `origin/main`) and byte-compilation; the
+refusal paths need an HTTP smoke pass on a unit, and permanent coverage belongs to the #52
+contract suite rather than to hand-written per-site tests that could only ever run on the
+units.
 
 ---
 

@@ -4,7 +4,6 @@
 /venv.1/
 /src/PlateSolveSimulator/images/
 __pycache__/
-/src/common.sav
 /src/powered_device-sav.py
 *.fits
 src/Standa/

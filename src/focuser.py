@@ -1,5 +1,4 @@
 from collections import deque
-from enum import IntEnum, auto
 
 import win32com.client
 from fastapi.routing import APIRouter
@@ -9,18 +8,14 @@ from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.endpoints import Completion, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import FocuserStatus
-from common.utils import RepeatTimer, boxed_log, time_stamp
+from common.utils import RepeatTimer, boxed_log, function_name, time_stamp
 from PlaneWave import pwi4_client
 
 logger = get_logger(__name__)
-
-
-class FocusDirection(IntEnum):
-    In = auto()
-    Out = auto()
 
 
 class Focuser(Component, SwitchedOutlet, AscomDispatcher):
@@ -84,10 +79,9 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
     def position_sampler(self):
         return self.position
 
-    def endpoint_startup(self):
-        return self.startup()
-
+    @endpoint(tier=Tier.INTERFACE, completion=FocuserActivities.StartingUp)
     def startup(self):
+        self.start_activity(FocuserActivities.StartingUp)
         if not self.is_on():
             self.power_on()
         if not self.connected:
@@ -95,18 +89,19 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         self.pw.focuser_enable()
         self._was_shut_down = False
         if self.known_as_good_position is not None and self.position != self.known_as_good_position:
-            self.position = self.known_as_good_position
+            self.position = self.known_as_good_position  # `ontimer` ends StartingUp on arrival
+        else:
+            self.end_activity(FocuserActivities.StartingUp)
         return CanonicalResponse_Ok
 
-    def endpoint_shutdown(self):
-        return self.shutdown()
-
+    @endpoint(tier=Tier.INTERFACE, completion=FocuserActivities.ShuttingDown)
     def shutdown(self):
         self.start_activity(FocuserActivities.ShuttingDown)
         if self.connected:
             self.disconnect()
         self.pw.focuser_disable()
         self.end_activity(FocuserActivities.ShuttingDown)
+        return CanonicalResponse_Ok
 
     @property
     def is_shutting_down(self) -> bool:
@@ -162,20 +157,37 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
     @position.setter
     def position(self, value: int):
+        self.goto_position(value)
+
+    def goto_position(self, value: int) -> CanonicalResponse:
+        """
+        Sends the focuser to an absolute position, reporting refusals to the caller.
+
+        The ``position`` setter cannot return anything (assignment discards it), so the
+        decision lives here and the setter delegates -- otherwise a not-powered or
+        not-connected focuser silently reports success over HTTP.
+        """
         if not self.is_on() or not self.connected:
-            logger.error(f"Cannot goto {value} - not-powered or not-connected")
-            return
+            msg = f"Cannot goto {value} - not-powered or not-connected"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
 
         if self.close_enough(value):
             logger.info(f"at {self.position=} (close enough to {value=})")
         else:
             self.target = value
+            # Stationarity must be concluded from samples taken after the command: the
+            # pre-move readings are all equal, so keeping them would report the focuser as
+            # settled before it has been asked to move.
+            self.latest_positions.clear()
             self.start_activity(FocuserActivities.Moving, details=[f"from {self.position} to {self.target}"])
             self.pw.focuser_goto(value)
+        return CanonicalResponse_Ok
 
     def close_enough(self, position):
         return abs(self.position - position) <= self.CLOSE_ENOUGH
 
+    @endpoint(tier=Tier.OPERATION, completion=FocuserActivities.Moving)
     def endpoint_set_position(self, position: int | str):
         """
         Sends the focuser to the specified position
@@ -187,10 +199,16 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         """
 
         if isinstance(position, str):
-            position = int(position)
-        self.position = position
-        return CanonicalResponse_Ok
+            try:
+                position = int(position)
+            except ValueError:
+                # Matches stage.move_absolute, the sibling absolute-move handler. Without it
+                # the refusal reads as a bare ValueError from int(), which names the exception
+                # rather than what was rejected.
+                return CanonicalResponse(errors=[f"{function_name()}: '{position}' is not a position"])
+        return self.goto_position(position)
 
+    @endpoint(tier=Tier.OPERATION, completion=FocuserActivities.Moving)
     def endpoint_goto_known_as_good_position(self):
         """
         Go to the 'known-as-good' position
@@ -198,61 +216,51 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         if self.known_as_good_position is None:
             return CanonicalResponse(errors=["known_as_good_position is None"])
 
-        self.position = self.known_as_good_position
-        return CanonicalResponse_Ok
+        return self.goto_position(self.known_as_good_position)
 
-    def endpoint_move_in(self, amount):
-        self.move(amount, direction=FocusDirection.In)
-
-    def endpoint_move_out(self, amount):
-        self.move(amount, direction=FocusDirection.Out)
-
-    def move(self, amount: int, direction: FocusDirection):
+    @endpoint(tier=Tier.OPERATION, completion=FocuserActivities.Moving)
+    def move_relative(self, amount: int):
         """
-        Move the focuser in or out by the specified amount
+        Move the focuser by a signed amount: positive is outward, negative is inward.
 
         Parameters
         ----------
         amount
-            How much to move
-        direction
-            Either In or Out
+            How far to move, and which way. The sign carries the direction that `move_in` and
+            `move_out` used to carry as separate routes (#41).
         """
-        current_position = self.position
-        if direction == FocusDirection.In:
-            target = current_position - amount
-            if target < self.lower_limit:
-                msg = f"target position ({target}) would be below lower limit ({self.lower_limit})"
-                logger.error(msg)
-                return CanonicalResponse(errors=[msg])
-        else:
-            target = current_position + amount
-            if self.upper_limit and target >= self.upper_limit:
-                msg = f"target position ({target}) would be below upper limit ({self.upper_limit})"
-                logger.error(msg)
-                return CanonicalResponse(errors=[msg])
+        target = self.position + amount
+        if target < self.lower_limit:
+            msg = f"target position ({target}) would be below lower limit ({self.lower_limit})"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
+        if self.upper_limit and target >= self.upper_limit:
+            msg = f"target position ({target}) would be above upper limit ({self.upper_limit})"
+            logger.error(msg)
+            return CanonicalResponse(errors=[msg])
 
-        self.position = target
-        return CanonicalResponse_Ok
+        return self.goto_position(target)
 
-    def endpoint_abort(self):
-        return self.abort()
-
+    @endpoint(tier=Tier.INTERFACE, completion=FocuserActivities.Aborting)
     def abort(self):
         """
         Aborts any in-progress focuser activities
         """
-        if self.is_active(FocuserActivities.Moving):
-            self.pw.focuser_stop()
+        was_moving = self.is_active(FocuserActivities.Moving)
+        if was_moving:
             self.end_activity(FocuserActivities.Moving)
 
         if self.is_active(FocuserActivities.StartingUp):
             self.end_activity(FocuserActivities.StartingUp)
+
+        if was_moving:
+            self.start_activity(FocuserActivities.Aborting)
+            self.pw.focuser_stop()
         return CanonicalResponse_Ok
 
     @property
     def is_stationary(self) -> bool:
-        return self.latest_positions.count == self.latest_positions.maxlen and all(
+        return len(self.latest_positions) == self.latest_positions.maxlen and all(
             self.latest_positions[0] == pos for pos in self.latest_positions
         )
 
@@ -263,6 +271,8 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
         if not self.connected:
             return
+
+        self.latest_positions.append(self.position)
 
         if self.is_active(FocuserActivities.Moving):
             if self.is_stationary and not self.close_enough(self.target):
@@ -282,9 +292,15 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
                 self.end_activity(FocuserActivities.Moving)
                 self.target = None
 
-    def endpoint_status(self) -> FocuserStatus | None:
-        return self.status()
+        if self.is_active(FocuserActivities.StartingUp) and self.close_enough(self.known_as_good_position):
+            self.end_activity(FocuserActivities.StartingUp)
 
+        # Position stability, not PWI4's `focuser.is_moving`: that stays true indefinitely
+        # after `focuser_stop()`, so the flag could never come down (#163, measured on mast02).
+        if self.is_active(FocuserActivities.Aborting) and self.is_stationary:
+            self.end_activity(FocuserActivities.Aborting)
+
+    @endpoint(tier=Tier.INTERFACE, completion=Completion.IMMEDIATE)
     def status(self) -> FocuserStatus | None:
         pw_stat = self.pw.status()
         ascom_response = ascom_run(self, "IsMoving")
@@ -349,37 +365,32 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
     def was_shut_down(self) -> bool:
         return self._was_shut_down
 
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
+    def get_position(self) -> int | None:
+        # Enveloped at registration (#34 stage 3).
+        return self.position
+
     @property
     def api_router(self) -> APIRouter:
 
         base_path = Const.BASE_UNIT_PATH + "/focuser"
-        tag = "Focuser"
-
-        def endpoint_get_position():
-            return self.position
 
         router = APIRouter()
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
-        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown)
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
-        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
-        router.add_api_route(base_path + "/connect", tags=[tag], endpoint=self.connect)
-        router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
-        router.add_api_route(base_path + "/position", tags=[tag], endpoint=endpoint_get_position)
-        router.add_api_route(
+        register_component_endpoints(router, self, base_path)
+        add_api_route(router, base_path + "/position", endpoint=self.get_position)
+        add_api_route(
+            router,
             base_path + "/position",
             methods=["PUT"],
-            tags=[tag],
             endpoint=self.endpoint_set_position,
         )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/goto_known_as_good_position",
-            tags=[tag],
             endpoint=self.endpoint_goto_known_as_good_position,
+            methods=["PUT"],
         )
-        router.add_api_route(base_path + "/move", tags=[tag], endpoint=self.move)
-        router.add_api_route(base_path + "/move_in", tags=[tag], endpoint=self.endpoint_move_in)
-        router.add_api_route(base_path + "/move_out", tags=[tag], endpoint=self.endpoint_move_out)
+        add_api_route(router, base_path + "/move_relative", endpoint=self.move_relative, methods=["PUT"])
 
         return router
 

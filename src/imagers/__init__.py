@@ -2,11 +2,12 @@ import time
 
 import numpy as np
 from fastapi import APIRouter
-from pydantic import BaseModel
 
-from common.canonical import CanonicalResponse
+from common.activities import ImagerActivities
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.endpoints import Completion, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerTypes
 from common.mast_logging import get_logger
 from common.models.statuses import ImagerSettings, ImagerStatus
@@ -125,13 +126,12 @@ class Imager(ImagerInterface, SwitchedOutlet):
     def can_send_image_saved_event(self) -> bool:
         return self._backend.can_send_image_saved_event
 
-    def endpoint_startup(self) -> CanonicalResponse | None:
-        return self.startup()
-
-    def startup(self) -> CanonicalResponse | None:
+    @endpoint(tier=Tier.INTERFACE, completion=Completion.IMMEDIATE)
+    def startup(self) -> CanonicalResponse:
         return self._backend.startup()
 
-    def shutdown(self) -> CanonicalResponse | None:
+    @endpoint(tier=Tier.INTERFACE, completion=ImagerActivities.ShuttingDown)
+    def shutdown(self) -> CanonicalResponse:
         return self._backend.shutdown()
 
     @property
@@ -144,9 +144,6 @@ class Imager(ImagerInterface, SwitchedOutlet):
         while self._backend.is_shutting_down:
             time.sleep(1)
         self.power_off()
-
-    def endpoint_shutdown(self) -> CanonicalResponse | None:
-        return self.shutdown()
 
     @property
     def name(self) -> str:
@@ -213,27 +210,20 @@ class Imager(ImagerInterface, SwitchedOutlet):
         """
         return self._backend.why_not_operational
 
-    def endpoint_abort(self) -> CanonicalResponse | None:
-        return self.abort()
-
-    def abort(self) -> CanonicalResponse | None:
+    def abort(self) -> CanonicalResponse:
         """
         Immediately terminates any in-progress activities and returns the imager to its default state.
         :return: CanonicalResponse indicating the result of the operation
         """
         return self._backend.endpoint_abort()
 
-    def endpoint_status(self):
-        return self.status()
-
+    @endpoint(tier=Tier.INTERFACE, completion=Completion.IMMEDIATE)
     def status(self) -> ImagerStatus:
         """
         Returns the imager's current status.
         :return: ImagerStatus object containing the status information
         """
-        backend_status = self._backend.status(capacity="imager")  # type: ignore
-
-        ret = ImagerStatus(
+        return ImagerStatus(
             # detected=self.detected,
             connected=self.connected,
             # operational=self.operational,
@@ -248,15 +238,16 @@ class Imager(ImagerInterface, SwitchedOutlet):
             latest_settings=self.latest_settings,
             activities=self.activities,
             activities_verbal=self.activities_verbal,
-            backend=backend_status if isinstance(backend_status, BaseModel) else backend_status.__dict__,
+            backend=self._backend.status(),
         )
-        return ret
 
-    def connect(self) -> CanonicalResponse | None:  # obsoleted by connected property
+    def connect(self) -> CanonicalResponse:  # obsoleted by connected property
         self._backend.connected = True
+        return CanonicalResponse_Ok
 
-    def disconnect(self) -> CanonicalResponse | None:  # obsoleted by connected property
+    def disconnect(self) -> CanonicalResponse:  # obsoleted by connected property
         self.connected = False
+        return CanonicalResponse_Ok
 
     def start_exposure_series(self, purpose: str | None = None) -> ImagerExposureSeries:
         """
@@ -285,7 +276,8 @@ class Imager(ImagerInterface, SwitchedOutlet):
         logger.info(f"Ending exposure series id='{series.series_id}', purpose='{series.purpose}'")
         self._backend.end_exposure_series(series)
 
-    def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse | None:
+    @endpoint(tier=Tier.OPERATION)
+    def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:
         """
         Starts an exposure with the given settings.
         :param settings: ImagerSettings object containing the exposure settings
@@ -294,14 +286,15 @@ class Imager(ImagerInterface, SwitchedOutlet):
         self.latest_settings = settings
         return self._backend.start_exposure(settings)
 
-    def stop_exposure(self) -> CanonicalResponse | None:
+    @endpoint(tier=Tier.OPERATION)
+    def stop_exposure(self) -> CanonicalResponse:
         """
         Stops the current exposure.
         :return: CanonicalResponse indicating the result of the operation
         """
         return self._backend.stop_exposure()
 
-    def abort_exposure(self) -> CanonicalResponse | None:
+    def abort_exposure(self) -> CanonicalResponse:
         """
         Aborts the current exposure.
         :return: CanonicalResponse indicating the result of the operation
@@ -371,6 +364,16 @@ class Imager(ImagerInterface, SwitchedOutlet):
     def default_settings(self):
         return self._backend.default_settings
 
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
+    def turn_cooler_on(self) -> CanonicalResponse:
+        self.cooler_on = True
+        return CanonicalResponse_Ok
+
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
+    def turn_cooler_off(self) -> CanonicalResponse:
+        self.cooler_on = False
+        return CanonicalResponse_Ok
+
     @property
     def api_router(self) -> APIRouter:
         """
@@ -378,33 +381,17 @@ class Imager(ImagerInterface, SwitchedOutlet):
         This is used to register the imager's API endpoints.
         """
         base_imager_path = Const.BASE_UNIT_PATH + "/imager"
-        tag = "Imager"
-
-        def cooler_on():
-            self.cooler_on = True
-
-        def cooler_off():
-            self.cooler_on = False
 
         router = APIRouter()
-        router.add_api_route(base_imager_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
-        router.add_api_route(base_imager_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown)
-        router.add_api_route(base_imager_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
-        router.add_api_route(base_imager_path + "/status", tags=[tag], endpoint=self.endpoint_status)
-        router.add_api_route(base_imager_path + "/connect", tags=[tag], endpoint=self.connect)
-        router.add_api_route(base_imager_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
-        router.add_api_route(
+        register_component_endpoints(router, self, base_imager_path)
+        add_api_route(
+            router,
             base_imager_path + "/start_exposure",
-            tags=[tag],
             endpoint=self.start_exposure,
+            methods=["PUT"],
         )
-        router.add_api_route(base_imager_path + "/stop_exposure", tags=[tag], endpoint=self.stop_exposure)
-        router.add_api_route(
-            base_imager_path + "/abort_exposure",
-            tags=[tag],
-            endpoint=self.abort_exposure,
-        )
-        router.add_api_route(base_imager_path + "/cooler_on", tags=[tag], endpoint=cooler_on)
-        router.add_api_route(base_imager_path + "/cooler_off", tags=[tag], endpoint=cooler_off)
+        add_api_route(router, base_imager_path + "/stop_exposure", endpoint=self.stop_exposure, methods=["PUT"])
+        add_api_route(router, base_imager_path + "/cooler_on", endpoint=self.turn_cooler_on, methods=["PUT"])
+        add_api_route(router, base_imager_path + "/cooler_off", endpoint=self.turn_cooler_off, methods=["PUT"])
 
         return router

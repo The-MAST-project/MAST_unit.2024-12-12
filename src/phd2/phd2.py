@@ -1177,39 +1177,47 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def __repr__(self):
         return f"PHD2Connector(profile='{self.conf.profile}')"
 
-    def endpoint_status(self):
-        return self.status()
+    def status(self) -> PHD2ImagerStatus:
+        """PHD2 in its **imager** role, for embedding under `ImagerStatus.backend`.
 
-    def status(self, capacity: Literal["imager", "guider"] = "imager") -> PHD2ImagerStatus | PHD2GuiderStatus:
+        Satisfies `ImagerInterface.status()`. The guider role answers separately,
+        through `guider_status()`.
+        """
+        return PHD2ImagerStatus(
+            identifier=self.identifier,
+            activities=int(self.activities),
+            activities_verbal=self.activities_verbal,
+            connected=self.connected,
+            operational=self.operational,
+            why_not_operational=self.why_not_operational,
+        )
 
-        if capacity == "imager":
-            ret = PHD2ImagerStatus(
-                identifier=self.identifier,
-                activities=int(self.activities),
-                activities_verbal=self.activities_verbal,
-                connected=self.connected,
-                operational=self.operational,
-                why_not_operational=self.why_not_operational,
-            )
-        elif capacity == "guider":
-            st = self.sky_quality.state
-            sky_quality: SkyQualityStatus | None = (
-                None
-                if self.sky_quality.latest_update is None
-                else SkyQualityStatus(
-                    score=st.score_0_to_100, state=st.quality_state, latest_update=self.sky_quality.latest_update
-                )
-            )
+    def guider_status(self) -> PHD2GuiderStatus:
+        """PHD2 in its **guider** role, for embedding under `GuiderStatus.backend`.
 
-            ret = PHD2GuiderStatus(
-                identifier=self.identifier,
-                is_guiding=self.is_guiding,
-                is_settling=self.is_settling(),
-                app_state=self.app_state,
-                avg_dist=self.avg_dist,
-                sky_quality=sky_quality,
+        One connector serves two roles, so it answers for both -- but as two
+        methods rather than one method behind a `capacity` discriminator. The
+        discriminator made `status()` return a union, which is how the `Imager`
+        wrapper came to pass `capacity="imager"` to ASCOM and ZWO, neither of
+        which takes an argument: `/imager/status` was a 500 on both (#100).
+        """
+        st = self.sky_quality.state
+        sky_quality: SkyQualityStatus | None = (
+            None
+            if self.sky_quality.latest_update is None
+            else SkyQualityStatus(
+                score=st.score_0_to_100, state=st.quality_state, latest_update=self.sky_quality.latest_update
             )
-        return ret
+        )
+
+        return PHD2GuiderStatus(
+            identifier=self.identifier,
+            is_guiding=self.is_guiding,
+            is_settling=self.is_settling(),
+            app_state=self.app_state,
+            avg_dist=self.avg_dist,
+            sky_quality=sky_quality,
+        )
 
     @property
     def identifier(self):
@@ -1240,16 +1248,16 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         res = self.call("save_image")
         return res["result"]["filename"]
 
-    def endpoint_shutdown(self):
-        return self.shutdown()
-
-    def shutdown(self):
+    def shutdown(self) -> CanonicalResponse:
         self.start_activity(PHD2Activities.ShuttingDown)
         self.stop_guiding()
         self.disconnect()
         if self.watched_process:
             self.watched_process.terminate()
         self.end_activity(PHD2Activities.ShuttingDown)
+        # Unlike startup(), this has real content -- it just never reported it,
+        # falling off the end and returning None (#73).
+        return CanonicalResponse_Ok
 
     @property
     def is_shutting_down(self) -> bool:
@@ -1350,17 +1358,33 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         # logger.error(f"{function_name()}: got None from 'get_camera_frame_size'")
         # return 0
 
-    def startup(self):
-        pass
+    def startup(self) -> CanonicalResponse:
+        """Nothing to do, and `Ok` is the truthful answer.
 
-    def endpoint_startup(self):
-        pass
+        Unlike the ASCOM backend -- which powers on, connects and enables the cooler
+        *in* `startup()` -- this connector does all of that in `__init__`: it locates
+        and launches `phd2.exe` through `WatchedProcess`, waits for it, then calls
+        `connect()` and `connect_equipment()`. So by the time anything can call this,
+        the component is started.
 
-    def abort(self):
-        pass
+        It returns an envelope rather than `None` so the wrapper can declare
+        `-> CanonicalResponse` (#73), and `Ok` rather than an error because startup
+        genuinely is complete. What it must **not** do is repeat the constructor's
+        work: that launches a second `phd2.exe`, which is #84.
 
-    def endpoint_abort(self):
+        That the work lives in the constructor at all is a lifecycle defect rather
+        than a contract one -- `Component.startup` is documented as running at the
+        start of every observing session, which a constructor cannot do. Tracked
+        under `epic:unit-lifecycle`.
+        """
+        return CanonicalResponse_Ok
+
+    def abort(self) -> CanonicalResponse:
+        return CanonicalResponse_Ok
+
+    def endpoint_abort(self) -> CanonicalResponse:
         self.stop_capture()
+        return CanonicalResponse_Ok
 
     @property
     def connected(self) -> bool:

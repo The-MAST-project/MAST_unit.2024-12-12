@@ -8,12 +8,13 @@ import pyzwoasi as zwoasi
 
 from common import asi
 from common.activities import ImagerActivities
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface
 from common.mast_logging import get_logger
-from common.models.statuses import ImagerExposure, ImagerRoi, ImagerSettings, ImagerStatus
-from common.utils import RepeatTimer, function_name, time_stamp
+from common.models.statuses import ImagerBackendStatus, ImagerExposure, ImagerRoi, ImagerSettings
+from common.utils import RepeatTimer, function_name
 from imagers import Imager
 
 logger = get_logger(__name__)
@@ -208,25 +209,22 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             )
         return val / 10.0
 
-    def endpoint_startup(self):
-        return self.startup()
-
-    def startup(self):
+    def startup(self) -> CanonicalResponse:
         # self.set_control(asi.Control.ASI_HIGH_SPEED_MODE, 1)
         self.set_control(asi.Control.TargetTemp, -5)
         self.set_control(asi.Control.CoolerOn, True)
-        return super().startup()
+        # Was `return super().startup()`, which resolved to `Component.startup` -- an
+        # abstract method with an empty body -- so it did nothing and returned None.
+        return CanonicalResponse_Ok
 
-    def endpoint_shutdown(self):
-        return self.shutdown()
-
-    def shutdown(self):
+    def shutdown(self) -> CanonicalResponse:
         self.start_activity(ImagerActivities.ShuttingDown)
         self.set_control(asi.Control.TargetTemp, 10)
         self.set_control(asi.Control.CoolerOn, False)
         # del self._image_array
         self.end_activity(ImagerActivities.ShuttingDown)
-        return super().shutdown()
+        # Was `return super().shutdown()` -- see the note on startup().
+        return CanonicalResponse_Ok
 
     @property
     def is_shutting_down(self) -> bool:
@@ -308,40 +306,47 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         """
         return self.abort()
 
-    def abort(self):
-        if self.connected and (self.parent_imager and self.parent_imager.is_active(ImagerActivities.Exposing)):
-            zwoasi.stopExposure(self.cam_id)
+    def abort(self) -> CanonicalResponse:
+        if not self.connected:
+            return CanonicalResponse(errors=["not connected"])
 
-    def endpoint_status(self) -> ImagerStatus:
-        """
-        Gets the **MAST** imager status
-        """
-        return self.status()
+        if not (self.parent_imager and self.parent_imager.is_active(ImagerActivities.Exposing)):
+            return CanonicalResponse(errors=["not exposing"])
 
-    def status(self) -> ImagerStatus:
-        """
-        Gets the **MAST** imager status
-        """
+        zwoasi.stopExposure(self.cam_id)
+        return CanonicalResponse_Ok
 
-        self._setpoint = None
-        if self.connected:
-            self._setpoint, _ = zwoasi.getControlValue(self.cam_id, asi.Control.TargetTemp)
+    def status(self) -> ImagerBackendStatus:
+        """What the **ZWO** backend reports about itself.
 
-        return ImagerStatus(
-            **self.power_status().model_dump(),
+        Narrow by contract: the composite `ImagerStatus` -- temperature, cooler,
+        camera size, power, set point -- belongs to the `Imager` wrapper, which reads
+        each of those from its own properties. See MAST_common's 2026-08-09
+        DECISIONS entry.
+        """
+        return ImagerBackendStatus(
+            identifier=str(self.cam_id),
+            name=self.name,
             **self.component_status().model_dump(),
-            camera_x_size=self.width,
-            camera_y_size=self.height,
-            set_point=self._setpoint,
-            temperature=self.temperature if self.connected else None,
-            cooler_on=self.cooler_on if self.connected else None,
-            cooler_power=self.cooler_power if self.connected else None,
-            latest_settings=self.latest_settings,
-            date=time_stamp(),
         )
 
     @property
-    def set_point(self):
+    def set_point(self) -> float | None:
+        """The cooler set point the camera is actually holding.
+
+        Queries the camera rather than returning a cached value. It used to return
+        `self._setpoint`, which was populated **only** as a side effect of
+        `status()` -- so it read correctly purely because `Imager.status()` happens
+        to call the backend's `status()` before reading this property. Narrowing
+        `status()` removed that side effect, which would have left this permanently
+        `None`; the query belongs here anyway, since a reported set point is a
+        measurement rather than an echo (#98).
+        """
+        if not self.connected:
+            self._setpoint = None
+            return None
+
+        self._setpoint, _ = zwoasi.getControlValue(self.cam_id, asi.Control.TargetTemp)
         return self._setpoint
 
     @property
@@ -397,7 +402,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         except Exception as ex:  # noqa: BLE001 -- ZWO SDK boundary: the ctypes wrapper raises undocumented types; recorded in self.errors for the caller
             self.log_and_append(f"failed to set format to {x=},{y=},{width=},{height=},{binning=},{format.name=}: {ex=}")
 
-    def start_exposure(self, settings: ImagerSettings):
+    def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:
         self.errors = []
         self.image_was_read = False
         self.image_was_saved = False
@@ -443,6 +448,8 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         except Exception as ex:  # noqa: BLE001 -- ZWO SDK boundary: the ctypes wrapper raises undocumented types; recorded in self.errors for the caller
             self.log_and_append(f"failed to start exposure, {ex=}")
 
+        return CanonicalResponse(errors=self.errors) if self.errors else CanonicalResponse_Ok
+
     def set_control(self, control: asi.Control, value: int):
         try:
             zwoasi.setControlValue(self.cam_id, controlType=control, value=value, auto=0)
@@ -455,11 +462,19 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         self.errors.append(err)
         logger.error(err)
 
-    def stop_exposure(self):
-        zwoasi.stopExposure(self.cam_id)
+    def stop_exposure(self) -> CanonicalResponse:
+        if not self.connected:
+            return CanonicalResponse(errors=["not connected"])
 
-    def abort_exposure(self):
         zwoasi.stopExposure(self.cam_id)
+        return CanonicalResponse_Ok
+
+    def abort_exposure(self) -> CanonicalResponse:
+        if not self.connected:
+            return CanonicalResponse(errors=["not connected"])
+
+        zwoasi.stopExposure(self.cam_id)
+        return CanonicalResponse_Ok
 
     def wait_for_image_ready(self):
         if not self.image_was_read:
