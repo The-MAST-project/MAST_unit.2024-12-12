@@ -562,10 +562,12 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 # |StarMass   |number|the Star Mass value of the guide star|
                 # |SNR        |number|the computed Signal-to-noise ratio of the guide star|
                 # |HFD        |number|the guide star half-flux diameter (HFD) in pixels|
-                # |AvgDist    |number|a smoothed average of the guide distance in pixels (equivalent to value returned by socket server MSG\_REQDIST)|
-                # |RALimited  |boolean|true if step was limited by the Max RA setting (attribute omitted if step was not limited)|
-                # |DecLimited |boolean|true if step was limited by the Max Dec setting (attribute omitted if step was not limited)|
-                # |ErrorCode  |number|the star finder error code, 1=saturated, 2=low SNR, 3=low mass, 4=low HFD, 5=High HFD, 6=edge of frame, 7=mass change, 8=unexpected|
+                # |AvgDist    |number|a smoothed average of the guide distance in pixels (same as MSG\_REQDIST)|
+                # |RALimited  |boolean|true if step was limited by the Max RA setting (omitted if not limited)|
+                # |DecLimited |boolean|true if step was limited by the Max Dec setting (omitted if not limited)|
+                # |ErrorCode  |number|the star finder error code|
+                #   1=saturated, 2=low SNR, 3=low mass, 4=low HFD, 5=High HFD,
+                #   6=edge of frame, 7=mass change, 8=unexpected
                 stats = None
                 boxed_debug(
                     lines=[
@@ -737,7 +739,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 # | Time      | number | time since guiding started, seconds |
                 # | StarMass  | number | star mass value |
                 # | SNR       | number | star SNR value |
-                # | AvgDist   | number |a smoothed average of the guide distance in pixels (equivalent to value returned by socket server MSG\_REQDIST)|
+                # | AvgDist   | number | a smoothed average of the guide distance in pixels (same as MSG\_REQDIST) |
                 # | ErrorCode | number | error code  |
                 # | Status    | string | error message |
                 lines = ["event: Star Lost!"]
