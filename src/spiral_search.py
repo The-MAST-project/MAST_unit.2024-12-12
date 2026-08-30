@@ -570,17 +570,18 @@ class SpiralSearch:
 
 
 def guiding_roi() -> SpecRoiConfig | None:
-    """``guiding.rois[fcu_v2]``, or None if it is missing or not the expected shape.
+    """``guiding.rois[fcu_v2]``, or None if it is unreadable, missing, or not the expected shape.
 
     fcu_v1 is deprecated and is never consulted. Returns None -- rather than raising or
     guessing -- so the resolvers below can fall back. A silently wrong window would give
     a confident, wrong measurement; a fallback that says so in the log and in the result
-    will not.
+    will not. Loading the configuration is inside the guard because a session must survive
+    an unreachable MongoDB or an absent local config, not only a malformed ROI.
     """
-    unit_conf = Config().get_unit()
-    if unit_conf is None:
-        return None
     try:
+        unit_conf = Config().get_unit()
+        if unit_conf is None:
+            return None
         roi = unit_conf.guiding.rois.get(FcuVersion.v2)
     except Exception:
         logger.exception("could not read guiding.rois[fcu_v2] from the configuration")
