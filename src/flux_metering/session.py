@@ -28,6 +28,7 @@ import datetime
 import json
 import math
 import os
+import shutil
 import statistics
 import threading
 import time
@@ -70,6 +71,20 @@ ACQUISITION_TIMEOUT_SECONDS = 900.0
 #: A pixel count, not a boolean. The ThorCam's field is black, so one hot pixel or a cosmic
 #: ray would otherwise mark every frame of a 30-minute run as saturated.
 SATURATED_PIXELS_ALLOWED = 5
+
+#: Below this much free space on the ram disk, a step waits for the mover to catch up before
+#: exposing again.
+#:
+#: Every frame is handed to `move_ram_to_shared` the moment it is written, and that is
+#: asynchronous, so in normal running the disk holds only the in-flight backlog -- roughly
+#: 10 MB/s of demand against a share that can take far more. This matters when the share
+#: STALLS: the backlog then grows instead of draining, and with ~94 MB per imager frame a run
+#: would fill the disk mid-exposure and fail somewhere confusing, part-written.
+RAM_DISK_MIN_FREE_BYTES = 3 * 1024**3
+
+#: How long to let the mover drain before giving up on a run. Long enough to ride out a brief
+#: share hiccup, short enough not to sit through an outage with the mount parked on a cell.
+RAM_DISK_DRAIN_TIMEOUT_SECONDS = 120.0
 
 
 class FluxMeteringError(Exception):
@@ -164,6 +179,16 @@ class FluxMeteringSession:
             return f"the unit is busy ({self.unit.activities_verbal})"
         if self.unit.acquirer is None:
             return "no acquirer, so the star cannot be put on the fibre"
+
+        # Checked here rather than discovered mid-run: a run that starts with the ram disk
+        # already near full has nowhere to put its first frames, and the mover cannot help
+        # if what filled it was somebody else's stranded products.
+        free = self._ram_disk_free_bytes()
+        if free is not None and free < RAM_DISK_MIN_FREE_BYTES:
+            return (
+                f"only {free / 1024**3:.1f} GB free where the frames are written; "
+                f"at least {RAM_DISK_MIN_FREE_BYTES / 1024**3:.0f} GB is wanted before starting"
+            )
         return None
 
     def start(self, params: FluxMeteringParams):
@@ -279,6 +304,43 @@ class FluxMeteringSession:
 
         return True
 
+    def _ram_disk_free_bytes(self) -> int | None:
+        """Free space where the frames are being written, or None if it cannot be read."""
+        folder = self.state.folder or (filer.ram.root if filer.ram else None)
+        if folder is None:
+            return None
+        try:
+            return shutil.disk_usage(folder).free
+        except OSError as ex:
+            logger.error(f"could not read free space on '{folder}': {ex}")
+            return None
+
+    def _await_disk_space(self) -> bool:
+        """True when there is room for the next step; False when the run should stop.
+
+        Unreadable free space returns True: a run must not be stopped by the inability to
+        ask a question, only by a real answer.
+        """
+        free = self._ram_disk_free_bytes()
+        if free is None or free >= RAM_DISK_MIN_FREE_BYTES:
+            return True
+
+        logger.warning(
+            f"ram disk down to {free / 1024**3:.1f} GB; waiting up to "
+            f"{RAM_DISK_DRAIN_TIMEOUT_SECONDS:g}s for the mover to drain"
+        )
+        filer.flush(timeout=RAM_DISK_DRAIN_TIMEOUT_SECONDS)
+
+        free = self._ram_disk_free_bytes()
+        if free is not None and free < RAM_DISK_MIN_FREE_BYTES:
+            self.state.last_error = (
+                f"ram disk has {free / 1024**3:.1f} GB free and the mover is not draining it; "
+                f"the shared area is probably unreachable. Stopping before a part-written frame."
+            )
+            logger.error(self.state.last_error)
+            return False
+        return True
+
     def _expose_reference(self) -> np.ndarray:
         """The frame the shift is measured FROM, chosen the same way a step's is.
 
@@ -320,6 +382,8 @@ class FluxMeteringSession:
         while True:
             if self._stop.is_set():
                 return "aborted"
+            if not self._await_disk_space():
+                return "disk_full"
 
             cell, ring, offset = self._read_spiral_offset()
             step = self._measure_step(index, cell, ring, offset)
@@ -596,7 +660,7 @@ class FluxMeteringSession:
             self._meter = None
             raise
 
-    def _expose_imager(self, file_name: str) -> np.ndarray:
+    def _expose_imager(self, file_name: str, read_back: bool = False) -> np.ndarray | None:
         """Expose full-frame at bin 1, save, read back, hand to the mover.
 
         Full frame and bin 1 because the correlation wants full detector sampling, and
@@ -625,7 +689,11 @@ class FluxMeteringSession:
             if response is not None and response.failed:
                 raise FluxMeteringError(f"exposure of '{file_name}' failed: {response.errors}")
             imager.wait_for_image_saved()
-            data = np.asarray(fits.getdata(path), dtype=float)
+            # Only when the caller actually wants the pixels. A step does not: it keeps the
+            # file name and reads the one frame that turns out to matter at the end. Reading
+            # every frame back would cost a 94 MB disk read and a 374 MB float64 allocation
+            # per exposure -- three per step -- for a result nothing looks at.
+            data = np.asarray(fits.getdata(path), dtype=float) if read_back else None
         filer.move_ram_to_shared(path)
         return data
 

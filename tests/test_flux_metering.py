@@ -342,3 +342,59 @@ def test_every_step_takes_the_requested_number_of_frames(session):
 
     assert all(len(step.exposures) == 3 for step in s.steps)
     assert s.state.frames == 3 * len(s.steps)
+
+
+def test_a_stalled_mover_stops_the_run_instead_of_filling_the_disk(session, monkeypatch):
+    """Frames are moved to the share as they are written, so the ram disk holds only the
+    backlog -- until the share stalls. Then the run must stop while frames are still whole,
+    rather than fill the disk and fail part-way through writing one."""
+    import flux_metering.session as session_module
+
+    s, _unit, _mount, _meter = session(peak_cell=(1, 0))
+    monkeypatch.setattr(session_module.filer, "flush", lambda **kw: False)
+    monkeypatch.setattr(s, "_ram_disk_free_bytes", lambda: 100 * 1024**2)  # 100 MB left
+
+    assert s._walk_spiral() == "disk_full"
+    assert "not draining" in (s.state.last_error or "")
+
+
+def test_a_transient_backlog_only_pauses_the_run(session, monkeypatch):
+    """A share hiccup that the mover recovers from must not end a 40-minute run."""
+    import flux_metering.session as session_module
+
+    s, _unit, _mount, _meter = session(peak_cell=(1, 0))
+    readings = iter([100 * 1024**2])  # low once, then plenty
+
+    def free_space():
+        return next(readings, 50 * 1024**3)
+
+    monkeypatch.setattr(session_module.filer, "flush", lambda **kw: True)
+    monkeypatch.setattr(s, "_ram_disk_free_bytes", free_space)
+
+    assert s._walk_spiral() == "converged"
+
+
+def test_unreadable_free_space_does_not_stop_a_run(session, monkeypatch):
+    """A run must be stopped by a real answer, never by the inability to ask."""
+    s, _unit, _mount, _meter = session(peak_cell=(1, 0))
+    monkeypatch.setattr(s, "_ram_disk_free_bytes", lambda: None)
+
+    assert s._walk_spiral() == "converged"
+
+
+def test_step_frames_are_not_read_back(session, monkeypatch):
+    """A step keeps the file name and reads only the one frame that turns out to matter, so
+    nothing pays for a 94 MB read and a 374 MB float64 array per exposure."""
+    s, _unit, _mount, _meter = session(peak_cell=(1, 0))
+    reads: list[str] = []
+    original = s._expose_imager
+
+    def counting(file_name, read_back=False):
+        reads.append(f"{file_name}:{read_back}")
+        return original(file_name, read_back)
+
+    monkeypatch.setattr(s, "_expose_imager", counting)
+    s._walk_spiral()
+
+    assert reads, "the walk must have exposed something"
+    assert all(entry.endswith(":False") for entry in reads), reads
