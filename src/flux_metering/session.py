@@ -28,6 +28,7 @@ import datetime
 import json
 import math
 import os
+import statistics
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -39,7 +40,13 @@ from astropy.io import fits
 from common.activities import UnitActivities
 from common.filer import Filer, FilerTop, MoveGuardian
 from common.mast_logging import get_logger
-from common.models.statuses import ImagerSettings
+from common.models.statuses import (
+    FluxMeteringExposure,
+    FluxMeteringResult,
+    FluxMeteringStatus,
+    FluxMeteringStep,
+    ImagerSettings,
+)
 from common.paths import PathMaker
 from common.utils import function_name
 from flux_metering.flux_meter import FluxMeter, FluxMeterError, frame_flux, saturated_pixels
@@ -76,7 +83,7 @@ class FluxMeteringParams:
     seconds: float = 5.0
     ra_j2000_hours: float | None = None
     dec_j2000_degs: float | None = None
-    gain_absolute: int | None = None
+    gain: int | None = None
     x_step_arcsec: float = 0.5
     y_step_arcsec: float = 0.5
     max_rings: int = 6
@@ -84,6 +91,7 @@ class FluxMeteringParams:
     max_radius_arcsec: float = 10.0
     flux_gain: float = 0.0
     flux_black_level: int = 3
+    number_of_frames: int = 3
     usable_fraction: float = 0.66
 
     @property
@@ -98,46 +106,6 @@ class FluxMeteringParams:
         return round(self.seconds * 1_000_000)
 
 
-@dataclass
-class Step:
-    """One spiral step: where it was, what the fibre saw, what was written."""
-
-    index: int
-    cell: tuple[int, int] | None
-    ring: int | None
-    offset_arcsec: tuple[float, float] | None
-    flux: float
-    saturated_pixels: int
-    saturated: bool
-    imager_frame: str
-    flux_frame: str
-    imager_started_utc: str
-    imager_ended_utc: str
-    flux_started_utc: str
-    flux_ended_utc: str
-
-
-@dataclass
-class FluxMeteringState:
-    """What `find_max_flux_status` reports. A run is 20-40 minutes and unattended between
-    glances, so start/stop without this leaves the operator blind."""
-
-    active: bool = False
-    phase: str = "idle"
-    folder: str | None = None
-    started_at: str | None = None
-    index: int = 0
-    cell: tuple[int, int] | None = None
-    ring: int | None = None
-    best_flux: float | None = None
-    best_index: int | None = None
-    best_cell: tuple[int, int] | None = None
-    frames: int = 0
-    saturated_frames: int = 0
-    terminal_state: str | None = None
-    last_error: str | None = None
-
-
 class FluxMeteringSession:
     """One run at a time, owned by the Unit."""
 
@@ -150,15 +118,26 @@ class FluxMeteringSession:
         #: open a real ThorCam when the run starts.
         self._injected_meter = flux_meter
         self._meter: FluxMeter | None = None
-        self.state = FluxMeteringState()
+        self.state = FluxMeteringStatus()
         self.params = FluxMeteringParams()
-        self.steps: list[Step] = []
+        self.steps: list[FluxMeteringStep] = []
 
     # ------------------------------------------------------------------- control --
 
     @property
     def is_active(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def has_run(self) -> bool:
+        """Whether there is anything to report.
+
+        `FullUnitStatus.flux_metering` is None until this is true, so the field costs a unit
+        that never meters flux nothing at all -- and once a run has happened it stays
+        populated, because the last run's dx/dy is worth having in the unit's own status
+        rather than only in the products on the share.
+        """
+        return self._thread is not None
 
     def require_can_start(self) -> str | None:
         """Why a run cannot start, or None.
@@ -198,7 +177,7 @@ class FluxMeteringSession:
             self.steps = []
             self._stop.clear()
             folder = PathMaker().make_flux_metering_folder()
-            self.state = FluxMeteringState(
+            self.state = FluxMeteringStatus(
                 active=True,
                 phase="acquiring",
                 folder=folder,
@@ -214,7 +193,7 @@ class FluxMeteringSession:
             )
             self._thread.start()
             logger.info(f"flux metering started, products under '{folder}'")
-            return asdict(self.state)
+            return self.status()
 
     def abort(self) -> None:
         """Ask the run to stop. It finishes the exposure it is inside, then unwinds."""
@@ -222,10 +201,16 @@ class FluxMeteringSession:
             logger.info("flux metering: abort requested")
             self._stop.set()
 
-    def status(self) -> dict:
-        state = asdict(self.state)
-        state["active"] = self.is_active
-        return state
+    def status(self) -> FluxMeteringStatus:
+        """The typed model, not a dict.
+
+        `FullUnitStatus.flux_metering` is typed as this, and the endpoint contract's one
+        load-bearing exception is that a status returns its bare model -- an envelope nested
+        inside the payload would break every consumer silently.
+        """
+        self.state.active = self.is_active
+        self.state.steps = list(self.steps)
+        return self.state
 
     # -------------------------------------------------------------------- the run --
 
@@ -234,27 +219,25 @@ class FluxMeteringSession:
         unwind, and an escaping exception would leave the activity flag set and hang every
         caller watching it."""
         op = function_name()
-        result: dict[str, Any] = {}
         try:
             self._open_meter()
             if not self._acquire():
-                self._finish("acquisition_failed", result)
+                self._finish("acquisition_failed")
                 return
 
             self.state.phase = "reference"
-            reference = self._expose_imager(REFERENCE_IMAGE)
+            reference = self._expose_reference()
 
             self.state.phase = "spiral"
             terminal = self._walk_spiral()
 
             self.state.phase = "correlating"
-            result = self._measure(reference, terminal)
-            self._finish(terminal, result)
+            self.state.result = self._measure(reference)
+            self._finish(terminal)
         except Exception as ex:  # the thread owns the mount; it must land it safely
             logger.exception(f"{op}: flux metering failed")
             self.state.last_error = str(ex)
-            result["error"] = str(ex)
-            self._finish("failed", result)
+            self._finish("failed")
 
     def _acquire(self) -> bool:
         """Put the star on the ASSUMED fibre position, and wait for it to get there.
@@ -273,7 +256,7 @@ class FluxMeteringSession:
             seconds=self.params.seconds,
             ra_j2000_hours=self.params.ra_j2000_hours,
             dec_j2000_degs=self.params.dec_j2000_degs,
-            gain_absolute=self.params.gain_absolute,
+            gain_absolute=self.params.gain,
             skip_sky=True,
             use_set_limit_frame=True,
             handover_automatically_to_guider=False,
@@ -295,6 +278,25 @@ class FluxMeteringSession:
             return False
 
         return True
+
+    def _expose_reference(self) -> np.ndarray:
+        """The frame the shift is measured FROM, chosen the same way a step's is.
+
+        The reference is one of the two correlation inputs, so it gets the same treatment as
+        the other: a burst at one pointing, reduced by the median, and the imager frame
+        paired with the nearest ThorCam sample. Treating the two sides differently would put
+        a systematic between them that no later analysis could separate from the answer.
+        """
+        exposures = [
+            self._expose_pair(f"reference-{n:02d}.fits", f"reference-flux-{n:02d}.fits")
+            for n in range(self.params.number_of_frames)
+        ]
+        _flux, representative = self.representative_of([e.flux for e in exposures])
+        chosen = exposures[representative].imager_frame or ""
+        self.state.reference_frame = chosen
+        self.state.frames += len(exposures)
+        logger.info(f"reference: '{chosen}' (nearest the median of {len(exposures)})")
+        return self._read_fits(chosen)
 
     def _walk_spiral(self) -> str:
         """Walk until a ring adds nothing, a cap is hit, or the operator aborts.
@@ -384,16 +386,14 @@ class FluxMeteringSession:
 
     # ---------------------------------------------------------------- measurement --
 
-    def _measure_step(self, index: int, cell, ring, offset) -> Step:
-        """One step: an imager frame and a ThorCam frame, exposed in parallel.
+    def _expose_pair(self, imager_name: str, flux_name: str) -> FluxMeteringExposure:
+        """One imager frame and one ThorCam frame, exposed in parallel.
 
         In parallel because they must cover the same window -- see
-        `FluxMeteringParams.flux_exposure_us` -- and each records its own start and end so
+        `FluxMeteringParams.flux_exposure_us` -- and each records its own start and end, so
         the overlap is verifiable afterwards rather than assumed. The imager path goes
         through PHD2 and does not necessarily begin the instant it is asked.
         """
-        imager_name = f"step-{index:05d}.fits"
-        flux_name = f"flux-{index:05d}.fits"
         captured: dict[str, Any] = {}
 
         def take_flux():
@@ -408,6 +408,8 @@ class FluxMeteringSession:
         try:
             self._expose_imager(imager_name)
         finally:
+            # Joined in `finally` so a failed imager exposure cannot leave the ThorCam
+            # thread writing into `captured` while the next step is already using it.
             flux_thread.join()
         imager_ended = isoformat_utc()
 
@@ -417,27 +419,11 @@ class FluxMeteringSession:
         frame = captured["flux_frame"]
         self._write_fits(flux_name, frame)
 
-        level = self._meter.saturation_level  # type: ignore[union-attr]
-        n_saturated = saturated_pixels(frame, level)
-        flux = frame_flux(frame, self.params.flux_black_level)
-        saturated = n_saturated > SATURATED_PIXELS_ALLOWED
-
-        self.state.index = index
-        self.state.cell = cell
-        self.state.ring = ring
-        self.state.frames += 1
-        if saturated:
-            self.state.saturated_frames += 1
-
-        logger.info(f"step {index}: cell={cell} ring={ring} flux={flux:.0f} saturated_px={n_saturated}")
-        return Step(
-            index=index,
-            cell=cell,
-            ring=ring,
-            offset_arcsec=offset,
-            flux=flux,
+        n_saturated = saturated_pixels(frame, self._meter.saturation_level)  # type: ignore[union-attr]
+        return FluxMeteringExposure(
+            flux=frame_flux(frame, self.params.flux_black_level),
             saturated_pixels=n_saturated,
-            saturated=saturated,
+            saturated=n_saturated > SATURATED_PIXELS_ALLOWED,
             imager_frame=imager_name,
             flux_frame=flux_name,
             imager_started_utc=imager_started,
@@ -446,21 +432,87 @@ class FluxMeteringSession:
             flux_ended_utc=captured["flux_ended"],
         )
 
-    def _measure(self, reference: np.ndarray, terminal: str) -> dict[str, Any]:
+    @staticmethod
+    def representative_of(fluxes: list[float]) -> tuple[float, int]:
+        """The median flux, and which exposure is nearest it.
+
+        Median rather than mean because the arg-max is decided where the coupling curve is
+        flattest, and that is exactly where a single outlier -- a cosmic ray, a gust, a
+        tracking glitch -- has most leverage over which cell wins.
+
+        The nearest exposure is the one whose imager frame the correlation would use, so the
+        shift is measured from the same instant as the flux that chose the step. With an ODD
+        count the median is itself a sample and this returns that exposure exactly; with an
+        even count the median is interpolated and this picks the nearer of the two middle
+        ones, which is why an odd count is the better choice.
+        """
+        median = float(statistics.median(fluxes))
+        nearest = min(range(len(fluxes)), key=lambda i: abs(fluxes[i] - median))
+        return median, nearest
+
+    def _measure_step(self, index: int, cell, ring, offset) -> FluxMeteringStep:
+        """One step: `number_of_frames` exposure pairs at one pointing, reduced to a median.
+
+        The mount does not move between them, so the several imager frames differ only by
+        seeing, noise and whatever the tracking drifted -- which is why choosing among them
+        by flux is defensible: it picks a typical moment rather than an excursion.
+        """
+        exposures = [
+            self._expose_pair(f"step-{index:05d}-{n:02d}.fits", f"flux-{index:05d}-{n:02d}.fits")
+            for n in range(self.params.number_of_frames)
+        ]
+        flux, representative = self.representative_of([e.flux for e in exposures])
+        chosen = exposures[representative]
+
+        self.state.index = index
+        self.state.cell = cell
+        self.state.ring = ring
+        self.state.frames += len(exposures)
+        saturated_count = sum(1 for e in exposures if e.saturated)
+        if chosen.saturated:
+            self.state.saturated_frames += 1
+
+        logger.info(
+            f"step {index}: cell={cell} ring={ring} flux={flux:.0f} (median of {len(exposures)}) "
+            f"representative={representative} saturated={saturated_count}/{len(exposures)}"
+        )
+        return FluxMeteringStep(
+            index=index,
+            cell=cell,
+            ring=ring,
+            offset_arcsec=offset,
+            flux=flux,
+            exposures=exposures,
+            representative=representative,
+            saturated_exposures=saturated_count,
+            saturated_pixels=chosen.saturated_pixels,
+            saturated=chosen.saturated,
+            imager_frame=chosen.imager_frame,
+            flux_frame=chosen.flux_frame,
+            imager_started_utc=chosen.imager_started_utc,
+            imager_ended_utc=chosen.imager_ended_utc,
+            flux_started_utc=chosen.flux_started_utc,
+            flux_ended_utc=chosen.flux_ended_utc,
+        )
+
+    def _measure(self, reference: np.ndarray) -> FluxMeteringResult | None:
         """Correlate the reference against the arg-max frame, and say what it means."""
         if not self.steps:
-            return {"terminal_state": terminal, "error": "no steps were taken"}
+            return None
 
         best = max(self.steps, key=lambda s: s.flux)
         shape = reference.shape
         center_x, center_y, center_source = resolve_center(None, None, shape)
         margin_h, margin_v = margins_from_fraction(shape, self.params.usable_fraction)
 
-        final = self._read_fits(best.imager_frame)
-        # The mount genuinely did not move when the arg-max is the origin, so a null shift
-        # is the CORRECT answer there rather than the fixed-pattern capture `at_origin`
-        # normally flags.
-        at_origin = best.cell == (0, 0)
+        # The reference frame and an arg-max at the origin are at the SAME pointing. They
+        # are still two separate exposures, so the correlation there is a real null
+        # measurement -- and a useful one, being a direct read of the noise floor -- but
+        # `at_origin` has to be told that a zero shift is the correct answer rather than the
+        # fixed-pattern capture it normally flags.
+        expect_no_motion = best.cell == (0, 0)
+
+        final = self._read_fits(best.imager_frame or "")
         shift = measure_shift(
             reference,
             final,
@@ -468,36 +520,59 @@ class FluxMeteringSession:
             center_y=center_y,
             margin_horizontal=margin_h,
             margin_vertical=margin_v,
-            expect_no_motion=at_origin,
+            expect_no_motion=expect_no_motion,
         )
 
         limit = max_reliable_shift(shape, margin_h)
         magnitude = math.hypot(shift.dx, shift.dy)
-        return {
-            "terminal_state": terminal,
-            "dx": shift.dx,
-            "dy": shift.dy,
-            "confidence": shift.confidence,
-            "at_origin": shift.at_origin,
-            "low_confidence": shift.confidence < MIN_CONFIDENCE,
-            "magnitude_px": magnitude,
-            "max_reliable_shift_px": limit,
-            "beyond_limit": magnitude > limit,
-            "fiber_x": center_x,
-            "fiber_y": center_y,
-            "fiber_source": center_source,
+        return FluxMeteringResult(
+            dx=shift.dx,
+            dy=shift.dy,
+            confidence=shift.confidence,
+            at_origin=shift.at_origin,
+            low_confidence=shift.confidence < MIN_CONFIDENCE,
+            magnitude_px=magnitude,
+            max_reliable_shift_px=limit,
+            beyond_limit=magnitude > limit,
+            fiber_x=center_x,
+            fiber_y=center_y,
+            fiber_source=center_source,
             # Stated rather than left as arithmetic for the reader: a sign error is then
             # visible by eye on the first run instead of after five.
-            "proposed_fiber_x": center_x + shift.dx,
-            "proposed_fiber_y": center_y + shift.dy,
-            "argmax_index": best.index,
-            "argmax_cell": best.cell,
-            "argmax_ring": best.ring,
-            "argmax_frame": best.imager_frame,
-            "argmax_offset_arcsec": best.offset_arcsec,
-            "argmax_saturated": best.saturated,
-            "saturated_frame_count": self.state.saturated_frames,
-        }
+            proposed_fiber_x=center_x + shift.dx,
+            proposed_fiber_y=center_y + shift.dy,
+            argmax_index=best.index,
+            argmax_cell=best.cell,
+            argmax_ring=best.ring,
+            argmax_frame=best.imager_frame,
+            argmax_offset_arcsec=best.offset_arcsec,
+            argmax_saturated=best.saturated,
+            saturated_frame_count=self.state.saturated_frames,
+            commanded_offset_px=self._commanded_offset_px(best.offset_arcsec),
+        )
+
+    def _commanded_offset_px(self, offset_arcsec) -> tuple[float, float] | None:
+        """The arg-max cell's commanded offset, in detector pixels.
+
+        This is the run's own check on its answer: it should equal (dx, dy) in magnitude and
+        sign. Disagreeing signs mean the convention is inverted; disagreeing magnitudes mean
+        the plate scale is wrong, and this measures it.
+
+        None -- rather than a wrong number -- when the plate scale is unset. It is 0.0 in the
+        configuration database today (MAST_unit#138), so that is the live path, and no check
+        at all beats a check that always reads zero.
+        """
+        if offset_arcsec is None:
+            return None
+        conf = self.unit.unit_conf
+        scale = conf.imager.pixel_scale_at_bin1 if conf is not None else 0.0
+        if not scale or scale <= 0.0:
+            return None
+        dec = self._dec_degrees()
+        # cos(dec) on the RA axis for the same reason the radius cap carries it: the step is
+        # RA COORDINATE arcsec, and the sky moves by that times cos(dec).
+        ra_scale = math.cos(math.radians(dec)) if dec is not None else 1.0
+        return (offset_arcsec[0] * ra_scale / scale, offset_arcsec[1] / scale)
 
     # ------------------------------------------------------------------- plumbing --
 
@@ -544,7 +619,7 @@ class FluxMeteringSession:
                 image_path=path,
                 binning=1,
                 roi=imager.full_frame,
-                gain=self.params.gain_absolute or conf.acquisition.gain,
+                gain=self.params.gain or conf.acquisition.gain,
             )
             response = imager.start_exposure(imager.latest_settings)
             if response is not None and response.failed:
@@ -574,7 +649,7 @@ class FluxMeteringSession:
             raise FluxMeteringError(f"'{file_name}' is neither on the ram disk nor under a known root")
         return np.asarray(fits.getdata(os.path.join(shared_folder, file_name)), dtype=float)
 
-    def _finish(self, terminal: str, result: dict[str, Any]) -> None:
+    def _finish(self, terminal: str) -> None:
         """Write the result, put the mount back, and release the unit.
 
         The spiral offset is reset on EVERY ending, converged included: without a backtrack
@@ -583,18 +658,22 @@ class FluxMeteringSession:
         one predictable choice.
         """
         self.state.terminal_state = terminal
-        result.setdefault("terminal_state", terminal)
-        result["params"] = asdict(self.params)
-        result["flux_exposure_us"] = self.params.flux_exposure_us
-        result["flux_meter"] = self._meter.description if self._meter else None
-        result["saturation_level"] = self._meter.saturation_level if self._meter else None
-        result["steps"] = [asdict(s) for s in self.steps]
-        result["started_at_utc"] = self.state.started_at
-        result["ended_at_utc"] = isoformat_utc()
-        result["hostname"] = self.unit.hostname
+        self.state.ended_at = isoformat_utc()
+
+        # The JSON is the status model plus what only the run itself knows: what was asked
+        # for, and which camera answered. One document, so a reader is never left joining
+        # the products against a status they no longer have.
+        document = {
+            **self.status().model_dump(),
+            "params": asdict(self.params),
+            "flux_exposure_us": self.params.flux_exposure_us,
+            "flux_meter": self._meter.description if self._meter else None,
+            "saturation_level": self._meter.saturation_level if self._meter else None,
+            "hostname": self.unit.hostname,
+        }
 
         try:
-            self._write_result(result)
+            self._write_result(document)
         except Exception:  # a lost result must not also strand the mount
             logger.exception("could not write result.json")
 

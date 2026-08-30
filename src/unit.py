@@ -385,6 +385,11 @@ class Unit(Component):
             focuser=self.focuser.status() if self.focuser else None,
             stage=self.stage.status() if self.stage else None,
             guider=self.guider.status() if self.guider else None,  # type: ignore
+            # None until a run has happened, so the field costs nothing on a unit that never
+            # meters flux -- and stays populated afterwards, so the last run's dx/dy and its
+            # flux curve are readable from the unit's own status rather than only from the
+            # products on the share.
+            flux_metering=self.flux_metering.status() if self.flux_metering.has_run else None,
             # solver= self.solver.status(),
             errors=self.errors,
             autofocus=autofocus,
@@ -1199,10 +1204,23 @@ class Unit(Component):
                 ),
             ),
         ] = None,
-        gain_absolute: Annotated[
+        gain: Annotated[
             int | None,
             Query(ge=asi.ControlDict[asi.Control.Gain].min_value, le=asi.ControlDict[asi.Control.Gain].max_value),
         ] = asi.ASI_294MM_DEFAULT_GAIN,
+        number_of_frames: Annotated[
+            int,
+            Query(
+                ge=1,
+                description=(
+                    "Imager+ThorCam pairs per spiral step. The step's flux is their **median**, "
+                    "and the frame the correlation would use is the one paired with the sample "
+                    "nearest it. Prefer an ODD number: the median is then a sample, so that pair "
+                    "is chosen exactly rather than by proximity to an interpolated value. "
+                    "Run time and stored frames both scale with this."
+                ),
+            ),
+        ] = 3,
         x_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along RA")] = 0.5,
         y_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along Dec")] = 0.5,
         max_rings: Annotated[int, Query(ge=1, description="Ceiling on the search; what normally ends it")] = 6,
@@ -1244,7 +1262,8 @@ class Unit(Component):
             seconds=seconds,
             ra_j2000_hours=float(ra_j2000_hours) if ra_j2000_hours is not None else None,
             dec_j2000_degs=float(dec_j2000_degs) if dec_j2000_degs is not None else None,
-            gain_absolute=gain_absolute,
+            gain=gain,
+            number_of_frames=number_of_frames,
             x_step_arcsec=x_step_arcsec,
             y_step_arcsec=y_step_arcsec,
             max_rings=max_rings,

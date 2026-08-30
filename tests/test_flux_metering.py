@@ -230,8 +230,11 @@ def test_both_frames_are_written_for_every_step(session, tmp_path):
     s._walk_spiral()
 
     for step in s.steps:
-        assert (tmp_path / step.imager_frame).exists(), step.imager_frame
-        assert (tmp_path / step.flux_frame).exists(), step.flux_frame
+        for exposure in step.exposures:
+            assert (tmp_path / exposure.imager_frame).exists(), exposure.imager_frame
+            assert (tmp_path / exposure.flux_frame).exists(), exposure.flux_frame
+        # The step points at the pair the correlation would use.
+        assert step.imager_frame == step.exposures[step.representative].imager_frame
 
 
 def test_exposures_overlap_so_the_windows_can_be_checked(session):
@@ -242,8 +245,9 @@ def test_exposures_overlap_so_the_windows_can_be_checked(session):
     s._walk_spiral()
 
     for step in s.steps:
-        assert step.imager_started_utc <= step.imager_ended_utc
-        assert step.flux_started_utc <= step.flux_ended_utc
+        for exposure in step.exposures:
+            assert exposure.imager_started_utc <= exposure.imager_ended_utc
+            assert exposure.flux_started_utc <= exposure.flux_ended_utc
 
 
 def test_the_flux_exposure_follows_the_imager_exposure():
@@ -259,3 +263,82 @@ def test_the_radius_cap_carries_cos_dec(session):
     # The fake mount reports dec +41, where cos(dec) is about 0.755.
     assert s._radius_arcsec((10.0, 0.0)) == pytest.approx(10.0 * np.cos(np.radians(41.0)), rel=1e-6)
     assert s._radius_arcsec((0.0, 10.0)) == pytest.approx(10.0)
+
+
+def test_the_status_is_the_typed_model_and_carries_the_steps(session):
+    """`FullUnitStatus.flux_metering` is typed as this model, so the session must hand back
+    the model itself -- a dict would be accepted by nothing downstream."""
+    from common.models.statuses import FluxMeteringStatus
+
+    s, _unit, _mount, _meter = session(peak_cell=(1, 0))
+    s._walk_spiral()
+
+    status = s.status()
+
+    assert isinstance(status, FluxMeteringStatus)
+    assert len(status.steps) == len(s.steps)
+    assert status.best_cell == (1, 0)
+    # The flux curve is plottable from the status alone, without fetching the products.
+    assert all(step.flux > 0 for step in status.steps)
+
+
+def test_it_nests_in_the_unit_status_without_an_envelope(session):
+    """The endpoint contract's one load-bearing exception: a status returns its bare model,
+    because `FullUnitStatus` types its fields as the status models and an envelope nested in
+    the payload would break every consumer silently."""
+    from common.models.statuses import FluxMeteringStatus, FullUnitStatus
+
+    s, _unit, _mount, _meter = session(peak_cell=(1, 0))
+    s._walk_spiral()
+
+    full = FullUnitStatus(id=1, flux_metering=s.status())
+    round_tripped = FullUnitStatus.model_validate(full.model_dump())
+
+    assert isinstance(round_tripped.flux_metering, FluxMeteringStatus)
+    assert round_tripped.flux_metering.best_cell == (1, 0)
+    assert len(round_tripped.flux_metering.steps) == len(s.steps)
+
+
+def test_flux_metering_is_absent_from_the_status_until_a_run_happens(session):
+    """A unit that never meters flux pays nothing for the field."""
+    s, _unit, _mount, _meter = session()
+
+    assert s.has_run is False
+
+
+def test_the_step_flux_is_the_median_and_names_the_nearest_frame():
+    """Median, not mean: the arg-max is decided where the coupling curve is flattest, which
+    is exactly where one outlier has most leverage over which cell wins."""
+    flux, nearest = FluxMeteringSession.representative_of([100.0, 101.0, 5000.0])
+
+    assert flux == 101.0, "a single wild sample must not move the step's flux"
+    assert nearest == 1, "and the frame chosen must be the one that produced the median"
+
+
+def test_an_odd_burst_picks_an_actual_sample():
+    """With an odd count the median IS a sample, so the chosen pair is exact rather than
+    nearest to an interpolated value -- the reason odd counts are preferred."""
+    fluxes = [30.0, 10.0, 20.0]
+
+    flux, nearest = FluxMeteringSession.representative_of(fluxes)
+
+    assert flux == 20.0
+    assert fluxes[nearest] == flux
+
+
+def test_an_even_burst_still_resolves_to_one_frame():
+    """Even counts are allowed and must not be ambiguous, even though the median is then
+    interpolated and belongs to no frame."""
+    flux, nearest = FluxMeteringSession.representative_of([10.0, 20.0, 30.0, 100.0])
+
+    assert flux == 25.0
+    assert nearest in (1, 2)
+
+
+def test_every_step_takes_the_requested_number_of_frames(session):
+    s, _unit, _mount, _meter = session(peak_cell=(1, 0), number_of_frames=3)
+
+    s._walk_spiral()
+
+    assert all(len(step.exposures) == 3 for step in s.steps)
+    assert s.state.frames == 3 * len(s.steps)
