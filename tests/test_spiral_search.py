@@ -529,10 +529,8 @@ class TestResolvingTheUsableRegion:
         def explode():
             raise RuntimeError("mongo is down")
 
-        monkeypatch.setattr(spiral_search.Config, "__call__", lambda self: explode())
-        monkeypatch.setattr(spiral_search, "guiding_roi", spiral_search.guiding_roi)
-        _cx, _cy, source = spiral_search.resolve_center(None, None, self.SHAPE)
-        assert source in ("frame centre", "guiding.rois[fcu_v2]")
+        monkeypatch.setattr(spiral_search, "Config", explode)
+        assert spiral_search.resolve_center(None, None, self.SHAPE) == (1000, 500, "frame centre")
 
 
 class TestExposureFailures:
