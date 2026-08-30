@@ -261,7 +261,8 @@ class Autofocuser:
                 )
 
                 logger.info(
-                    f"{op}: starting exposure #{image_no} of {number_of_images} at {focuser_position=} {autofocus_settings.roi=}..."
+                    f"{op}: starting exposure #{image_no} of {number_of_images} "
+                    f"at {focuser_position=} {autofocus_settings.roi=}..."
                 )
                 self.unit.imager.start_exposure(autofocus_settings)
                 logger.info(f"{op}: waiting for exposure #{image_no} of {number_of_images} ...")

@@ -327,7 +327,9 @@ class Solver(SolverInterface):
                 # configured one, so the ram disk filled over the night.
                 filer.move_ram_to_shared(imager_settings.image_path)
 
-                # dec_avg_rad = math.radians((target.dec.arcsecond + Angle(result.solution.dec_rads * u.radian).arcsecond) / 2)  # type: ignore
+                # dec_avg_rad = math.radians(
+                #     (target.dec.arcsecond + Angle(result.solution.dec_rads * u.radian).arcsecond) / 2
+                # )
                 dec_avg_rad = float(target.dec.radian + result.solution.dec_rads) / 2  # type: ignore
                 assert result.solution is not None, f"{op}: result.solution is None"
                 # delta_ra_arcsec = (
