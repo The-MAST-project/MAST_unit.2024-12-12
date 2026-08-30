@@ -58,6 +58,7 @@ from common.rois import UnitRoi
 from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers
 from expose_params import MAX_OFFSET_ARCSEC, MAX_OFFSET_DEGREES, resolve_exposure_roi, resolve_offsets
+from flux_metering.session import FluxMeteringParams, FluxMeteringSession
 from focuser import Focuser
 from imagers import Imager
 from mount import Mount, SettleMode
@@ -208,6 +209,7 @@ class Unit(Component):
         self.errors: list[str] = list(self._init_errors)
 
         self.spiral = SpiralSearch(self)
+        self.flux_metering = FluxMeteringSession(self)
         self.latest_acquisition: Acquisition | None = None
 
         self._initialized = True
@@ -422,6 +424,13 @@ class Unit(Component):
                         f"{AUTOFOCUS_STOP_TIMEOUT_SECONDS} seconds ({flag!r} still set)"
                     )
                     return CanonicalResponse(errors=[msg])
+
+        # Asked to stop, not waited for: the run finishes the exposure it is inside and then
+        # unwinds -- resetting the spiral offset so the mount is left where acquisition put
+        # it rather than on an arbitrary cell. Blocking here would hold `abort` for a whole
+        # exposure, and `abort` is the one verb that has to answer promptly.
+        if self.flux_metering.is_active:
+            self.flux_metering.abort()
 
         if self.guider:
             self.guider.abort()
@@ -1158,6 +1167,110 @@ class Unit(Component):
         """
         return self.spiral.step(forward=False)
 
+    @endpoint(tier=Tier.OPERATION, completion=UnitActivities.FluxMetering)
+    def endpoint_acquire_and_find_max_flux(
+        self,
+        seconds: Annotated[
+            float, Query(gt=0, description="Imager exposure, for the acquisition and for each spiral step")
+        ] = 5.0,
+        ra_j2000_hours: Annotated[
+            str | float | None,
+            Query(
+                pattern=RA_PATTERN,
+                description=(
+                    "### Right Ascension (J2000) in either:\n"
+                    "- decimal hours (e.g., `12.5`) or\n"
+                    "- sexagesimal format (e.g., `12:30:45.123`). \n"
+                    "- Decimal range: `0 <= RA < 24`.\n"
+                    "If not supplied, taken from telescope"
+                ),
+            ),
+        ] = None,
+        dec_j2000_degs: Annotated[
+            str | float | None,
+            Query(
+                pattern=DEC_PATTERN,
+                description=(
+                    "### Declination (J2000) in either:\n"
+                    "- decimal degrees (e.g., `-45.5`) or\n"
+                    "- sexagesimal format (e.g., `-45:30:00.123`). \n"
+                    "- Decimal range: `-90 <= DEC <= 90`.\n"
+                    "If not supplied, taken from telescope"
+                ),
+            ),
+        ] = None,
+        gain_absolute: Annotated[
+            int | None,
+            Query(ge=asi.ControlDict[asi.Control.Gain].min_value, le=asi.ControlDict[asi.Control.Gain].max_value),
+        ] = asi.ASI_294MM_DEFAULT_GAIN,
+        x_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along RA")] = 0.5,
+        y_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along Dec")] = 0.5,
+        max_rings: Annotated[int, Query(ge=1, description="Ceiling on the search; what normally ends it")] = 6,
+        patience_rings: Annotated[int, Query(ge=1, description="Complete rings without improvement before stopping")] = 1,
+        max_radius_arcsec: Annotated[
+            float, Query(gt=0, description="Runaway guard, cos(dec)-corrected on the RA axis")
+        ] = 10.0,
+        flux_gain: Annotated[float, Query(ge=0, description="ThorCam gain")] = 0.0,
+        flux_black_level: Annotated[int, Query(ge=0, description="ThorCam black level")] = 3,
+        usable_fraction: Annotated[
+            float,
+            Query(gt=0, le=1, description="Usable fraction of the frame around the fibre, avoiding coma"),
+        ] = 0.66,
+    ):
+        """
+        Acquires the target, then spirals to find the pointing at which most light reaches
+        the **spectrograph fibre**, and measures how far that is from where acquisition put
+        the star.<br>
+        <br>
+        The answer is `dx, dy` in detector pixels: the error in the configured fibre
+        position, since acquisition aims the star at `fiber_x`, `fiber_y` by using it as the
+        plate-solve reference pixel. `fiber_true = fiber_assumed + (dx, dy)`.<br>
+        <br>
+        At each spiral step the mount settles, an imager frame and a ThorCam frame are taken
+        **in parallel**, and the fibre flux is recorded. The search stops when a complete
+        ring adds no improvement — a ring, not a step, because a spiral circles the origin
+        and flux rises and falls on every one of them.<br>
+        <br>
+        The ThorCam exposure follows `seconds`, so a long `seconds` averages over
+        scintillation but is also the only lever against saturation, gain already being at
+        its floor. **Saturation never stops a run**; the result's `argmax_saturated` says
+        whether the answer is usable.<br>
+        <br>
+        Takes 20–40 minutes and writes several GB. Answers at once; watch
+        `find_max_flux_status`, and `unit/abort` stops it. Nothing is written to the
+        configuration database — `dx, dy` land in `result.json` only.
+        """
+        params = FluxMeteringParams(
+            seconds=seconds,
+            ra_j2000_hours=float(ra_j2000_hours) if ra_j2000_hours is not None else None,
+            dec_j2000_degs=float(dec_j2000_degs) if dec_j2000_degs is not None else None,
+            gain_absolute=gain_absolute,
+            x_step_arcsec=x_step_arcsec,
+            y_step_arcsec=y_step_arcsec,
+            max_rings=max_rings,
+            patience_rings=patience_rings,
+            max_radius_arcsec=max_radius_arcsec,
+            flux_gain=flux_gain,
+            flux_black_level=flux_black_level,
+            usable_fraction=usable_fraction,
+        )
+        outcome = self.flux_metering.start(params)
+        if isinstance(outcome, str):
+            return CanonicalResponse(errors=[f"{function_name()}: {outcome}"])
+        return outcome
+
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
+    def endpoint_find_max_flux_status(self):
+        """
+        Progress of the current (or last) `acquire_and_find_max_flux` run: phase, spiral
+        index and cell, the best flux so far and where it was, frames taken, saturated
+        frames, and how the run ended.<br>
+        <br>
+        Deliberately separate from `unit/status`: adding progress fields to the shared
+        status model would put them in front of every `FullUnitStatus` consumer.
+        """
+        return self.flux_metering.status()
+
     @endpoint(tier=Tier.OPERATION)
     def endpoint_spiral_end_path(self):
         """
@@ -1265,6 +1378,19 @@ class Unit(Component):
             methods=["PUT"],
         )
         add_api_route(router, base_path + "/spiral_end_path", endpoint=self.endpoint_spiral_end_path, methods=["PUT"])
+
+        add_api_route(
+            router,
+            base_path + "/acquire_and_find_max_flux",
+            endpoint=self.endpoint_acquire_and_find_max_flux,
+            methods=["PUT"],
+        )
+        add_api_route(
+            router,
+            base_path + "/find_max_flux_status",
+            endpoint=self.endpoint_find_max_flux_status,
+            methods=["GET"],
+        )
 
         return router
 
