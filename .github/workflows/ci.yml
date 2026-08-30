@@ -19,9 +19,14 @@
 # pinned commit. A breaking change there turns this red without anything in this repo
 # having moved -- which is the point, since that is exactly how the units are deployed.
 #
-# Lint is BLOCKING and, as of 2026-08-09, failing: 269 ruff findings and 44 files
-# needing the formatter, all pre-existing. That is deliberate -- the debt is meant to
-# show as red until it is cleared, rather than sit in an advisory step nobody reads.
+# Lint is BLOCKING, and green as of 2026-08-30 (#172). It was red from the day CI
+# landed -- 269 findings and 44 unformatted files on 2026-08-09, still 75 findings on
+# 2026-08-18 -- deliberately, so the debt showed as red rather than sitting in an
+# advisory step nobody reads. Now that it passes, a red lint means a regression.
+#
+# What it enforces is pinned in ruff.toml: ten rule families under `select` (not
+# `extend-select`, which was letting ruff's own widening defaults set the rule set),
+# and a C901 ratchet at the tree's worst function.
 #
 # It is a separate job from the tests so the two signals stay independent: a red lint
 # does not hide whether the suite passed, and vice versa. Lint runs on Linux because
