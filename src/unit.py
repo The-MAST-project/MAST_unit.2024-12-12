@@ -145,14 +145,10 @@ class Unit(Component):
             logger.error(msg)
             self._init_errors.append(msg)
 
-        if self.unit_conf is not None:
-            self.min_ra_correction_arcsec = self.unit_conf.guiding.min_ra_correction_arcsec
-            self.min_dec_correction_arcsec = self.unit_conf.guiding.min_dec_correction_arcsec
-            self.autofocus_max_tolerance = self.unit_conf.autofocus.max_tolerance
-        else:
-            self.min_ra_correction_arcsec = 0.0
-            self.min_dec_correction_arcsec = 0.0
-            self.autofocus_max_tolerance = 0.0
+        # `min_ra_correction_arcsec` / `min_dec_correction_arcsec` were copied out here
+        # too and read by nothing -- the configured values still exist in `GuidingConfig`,
+        # only these unread copies are gone.
+        self.autofocus_max_tolerance = self.unit_conf.autofocus.max_tolerance if self.unit_conf is not None else 0.0
         self.autofocus_try: int = 0
 
         self.hostname = socket.gethostname()
@@ -473,31 +469,37 @@ class Unit(Component):
                     best_position = autofocus_status.best_position  # type: ignore
                     assert self.unit_conf is not None
                     self.unit_conf.focuser.known_as_good_position = best_position
+                    # Only the write is guarded. This `try` used to wrap the retry
+                    # decision below as well, which was harmless while `set_unit` logged
+                    # and returned on failure -- but it now raises (a lost focus position
+                    # is worth reporting), and refuses outright while the configuration is
+                    # degraded. Leaving the retry inside would mean a unit that cannot
+                    # reach its controller also silently stops retrying autofocus.
                     try:
                         Config().set_unit(site_name=None, unit_name=None, unit_conf=self.unit_conf)
                         logger.info(f"autofocus: saved {best_position=} in the configuration for unit {self.hostname}.")
-                        if autofocus_status.tolerance > self.autofocus_max_tolerance:  # type: ignore
-                            if self.autofocus_try < Unit.MAX_AUTOFOCUS_TRIES:
-                                self.autofocus_try += 1
-                                logger.info(
-                                    f"autofocus: latest {autofocus_status.tolerance=} greater than"  # type: ignore
-                                    + f"{self.autofocus_max_tolerance=}, starting autofocus "
-                                    + f"try #{self.autofocus_try}"
-                                )
-                                self.autofocuser.start_pwi4_autofocus()
-                            else:
-                                logger.info(
-                                    f"autofocus: failed to reach {self.autofocus_max_tolerance=} "
-                                    + f"in {Unit.MAX_AUTOFOCUS_TRIES=}"
-                                )
-                        else:
-                            self.autofocus_try = 0
-
                     except Exception as e:
                         logger.exception(
                             "failed to save unit_conf for ['focuser']['know_as_good_position']",
                             exc_info=e,
                         )
+
+                    if autofocus_status.tolerance > self.autofocus_max_tolerance:  # type: ignore
+                        if self.autofocus_try < Unit.MAX_AUTOFOCUS_TRIES:
+                            self.autofocus_try += 1
+                            logger.info(
+                                f"autofocus: latest {autofocus_status.tolerance=} greater than"  # type: ignore
+                                + f"{self.autofocus_max_tolerance=}, starting autofocus "
+                                + f"try #{self.autofocus_try}"
+                            )
+                            self.autofocuser.start_pwi4_autofocus()
+                        else:
+                            logger.info(
+                                f"autofocus: failed to reach {self.autofocus_max_tolerance=} "
+                                + f"in {Unit.MAX_AUTOFOCUS_TRIES=}"
+                            )
+                    else:
+                        self.autofocus_try = 0
                 else:
                     logger.error("PlaneWave autofocus failed")
                     self.autofocus_result.best_position = None
