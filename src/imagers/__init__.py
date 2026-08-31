@@ -47,6 +47,18 @@ class Imager(ImagerInterface, SwitchedOutlet):
 
         return unit_conf.imager.imager_type
 
+    @property
+    def conf(self):
+        """This component's configuration, live.
+
+        Was snapshotted in ``__init__``, which is why a value edited in the database
+        reached a running unit only at the next service restart. Within one configuration
+        generation this returns the same object every time, so it is a memo lookup, not a
+        rebuild -- which is what makes a property affordable here.
+        """
+        assert self.unit is not None and self.unit.unit_conf is not None
+        return self.unit.unit_conf.imager
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -77,15 +89,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         ImagerInterface.__init__(self)
 
         self.unit = unit
-        if unit and unit.unit_conf is None:
-            self.conf = unit.unit_conf.imager
-        else:
-            from common.config import Config
-
-            unit_conf = Config().get_unit()
-            assert unit_conf is not None
-
-            self.conf = unit_conf.imager
+        assert unit is not None and unit.unit_conf is not None, "Imager: no unit configuration"
 
         imager_type = imager_type or self.conf.imager_type.lower()
         if not (imager_type.startswith("ascom") or (imager_type in Imager.valid_imager_types())):

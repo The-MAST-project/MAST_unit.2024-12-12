@@ -17,7 +17,6 @@ from pydantic import BaseModel
 from common import asi
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config import Config
 from common.config.phd2 import LimitFrameMode
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
@@ -235,6 +234,18 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     _instance = None
     _initialized = False
 
+    @property
+    def conf(self):
+        """This component's configuration, live.
+
+        Was snapshotted in ``__init__``, which is why a value edited in the database
+        reached a running unit only at the next service restart. Within one configuration
+        generation this returns the same object every time, so it is a memo lookup, not a
+        rebuild -- which is what makes a property affordable here.
+        """
+        assert self.unit is not None and self.unit.unit_conf is not None
+        return self.unit.unit_conf.phd2
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -282,9 +293,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.profile_binning: int | None = None
         self.profile_bpp: int | None = None  # bits per pixel
 
-        unit_conf = Config().get_unit()
-        assert unit_conf is not None
-        self.conf = unit_conf.phd2
+        assert self.unit is not None and self.unit.unit_conf is not None
 
         #
         # We embed the binning and bpp in the profile name, so extract them

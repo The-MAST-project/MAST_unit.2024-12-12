@@ -358,9 +358,14 @@ class Autofocuser:
                     time.sleep(0.5)
                 logger.info(f"{op}: focuser stopped moving")
 
-                self.unit.unit_conf.focuser.known_as_good_position = position
+                # `position` bound as a default: this sits inside the retry loop, and
+                # although update_unit calls the mutator synchronously, a closure over a
+                # loop variable is the kind of thing that stops being true later.
+                def _save_known_as_good_position(conf, position: int = position) -> None:
+                    conf.focuser.known_as_good_position = position
+
                 try:
-                    Config().set_unit(unit_name=self.unit.hostname, unit_conf=self.unit.unit_conf)
+                    Config().update_unit(_save_known_as_good_position, unit_name=self.unit.hostname)
                     logger.info(
                         f"saved unit '{self.unit.hostname}' configuration for "
                         + f"focuser known-as-good-position {position}"

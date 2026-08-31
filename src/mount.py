@@ -138,6 +138,18 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     _instance = None
     _initialized = False
 
+    @property
+    def conf(self):
+        """This component's configuration, live.
+
+        Was snapshotted in ``__init__``, which is why a value edited in the database
+        reached a running unit only at the next service restart. Within one configuration
+        generation this returns the same object every time, so it is a memo lookup, not a
+        rebuild -- which is what makes a property affordable here.
+        """
+        assert self.unit is not None and self.unit.unit_conf is not None
+        return self.unit.unit_conf.mount
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -157,7 +169,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
 
         self.unit = unit
         assert self.unit and self.unit.unit_conf is not None
-        self.conf = self.unit.unit_conf.mount
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Mount")
         Component.__init__(self, MountActivities)
 
