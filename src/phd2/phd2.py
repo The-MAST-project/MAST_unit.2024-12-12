@@ -242,9 +242,13 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         reached a running unit only at the next service restart. Within one configuration
         generation this returns the same object every time, so it is a memo lookup, not a
         rebuild -- which is what makes a property affordable here.
+
+        Unlike the other components this one holds no ``unit`` of its own: it is
+        constructed by the imager and reaches the unit through ``self.parent``.
         """
-        assert self.unit is not None and self.unit.unit_conf is not None
-        return self.unit.unit_conf.phd2
+        assert self.parent is not None and self.parent.unit is not None
+        assert self.parent.unit.unit_conf is not None
+        return self.parent.unit.unit_conf.phd2
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -293,7 +297,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.profile_binning: int | None = None
         self.profile_bpp: int | None = None  # bits per pixel
 
-        assert self.unit is not None and self.unit.unit_conf is not None
+        assert self.parent is not None and self.parent.unit is not None, (
+            "PHD2Connector: no parent imager, so no way to reach the unit configuration"
+        )
 
         #
         # We embed the binning and bpp in the profile name, so extract them
