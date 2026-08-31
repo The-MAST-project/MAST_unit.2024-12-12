@@ -527,12 +527,15 @@ class Unit(Component):
 
     @property
     def why_not_operational(self) -> list[str]:
-        if self._init_errors:
-            return list(self._init_errors)
+        # Not `operational`'s early return above: there an init error is decisive, since
+        # `all()` over a component set missing its failed members would answer True for a
+        # unit that failed to build half of itself. Here it is one reason among the rest,
+        # and returning it alone hides them -- each fix then reveals the next on a restart.
+        reasons = list(self._init_errors)
         components = set(self.components)
         if self.unit_conf and self.unit_conf.name.lower() == "mastw":
             components.discard(self.covers)
-        return list(chain.from_iterable(c.why_not_operational for c in components))
+        return reasons + list(chain.from_iterable(c.why_not_operational for c in components))
 
     @property
     def name(self) -> str:
