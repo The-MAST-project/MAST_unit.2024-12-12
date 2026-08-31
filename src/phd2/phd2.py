@@ -234,6 +234,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     DEFAULT_STOP_CAPTURE_TIMEOUT = 10
     _instance = None
     _initialized = False
+    #: The exception that aborted construction, if it did. `__new__` caches the instance
+    #: before `__init__` runs, so without this the second construction site receives a
+    #: half-built object -- either re-running the whole body (launching a second phd2.exe)
+    #: or, once `_initialized` is set unconditionally, silently accepting a broken one.
+    _init_error: BaseException | None = None
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -248,6 +253,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         _from_imager: bool = False,
     ):
         if self._initialized:
+            # Two sites construct this (imagers/__init__.py, guiding.py). Both must hear
+            # about a construction that failed, not just the first.
+            if self._init_error is not None:
+                raise self._init_error
             return  # singleton, do not re-initialize
 
         GuiderInterface.__init__(self)
@@ -357,14 +366,22 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         try:
             self.connect()
             self.connect_equipment()
-        except PHD2ConnectorError as ex:
-            self.connected = False
-            logger.error(f"{function_name()}: Failed to connect {ex=}")
+            # Inside the guard: its setter is a bare `call()`, so on a torn-down
+            # connection it raises the cleanup's own error over the real one.
+            self.cooler_on = True
+        except Exception as ex:
+            # Not `self.connected = False`: that property's setter disconnects, which nulls
+            # self.conn and makes the next call raise "no connection to PHD2 server" -- the
+            # message that used to reach the API in place of the actual failure.
+            self._connected = False
+            self._init_error = ex
+            logger.error(f"{function_name()}: failed to initialize: {ex}")
+            raise
+        finally:
+            # Always, so a failed construction cannot be re-run by the second site.
+            self._initialized = True
 
-        self.cooler_on = True
         # threading.Thread(name="phd2-reconnector", target=self.reconnect).start()
-
-        self._initialized = True
 
     def can_expose_at(self, binning: int, bpp: int) -> bool | None:
         if self.profile_binning is None:
@@ -401,8 +418,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.disconnect()
 
     def __del__(self):
-        if self.watched_process:
-            self.watched_process.terminate()
+        # getattr, not attribute access: __init__ can abort before watched_process is bound,
+        # and __del__ on that instance then raises an AttributeError with nowhere to go.
+        watched = getattr(self, "watched_process", None)
+        if watched:
+            watched.terminate()
             self.watched_process = None
 
     def equipment_is_connected(self) -> bool:
@@ -1599,7 +1619,12 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
     @cooler_on.setter
     def cooler_on(self, onoff: bool):
-        self.call("set_cooler_state", onoff)
+        # Guarded like the getter above: an assignment cannot report, so a bare raise here
+        # surfaces at whatever ran next rather than at the caller (MAST_unit#198).
+        try:
+            self.call("set_cooler_state", onoff)
+        except Exception as ex:
+            self.log_and_append_error(f"cooler_on.setter: {ex}")
 
     @property
     def cooler_power(self) -> float | None:
