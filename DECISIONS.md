@@ -2,6 +2,62 @@
 
 ---
 
+## [2026-08-31] A failed component has no HTTP surface, and that is the reported behaviour
+
+**Why:** `#83` had argued since 2026-08-04 that a component whose `__init__` fails should keep
+its routes: a PHD2 connect failure removes the imager and guider entirely, so
+`GET /unit/imager/start_exposure` answers 404 with no client-side override able to reach it,
+and the live schema carried 50 paths with no `imager`, `guider` or `covers` route on it. That
+was `epic:unit-lifecycle`'s leading invariant -- *every component route is registered
+regardless of hardware state*.
+
+The premise had never been checked, and it does not hold. `MAST_control` and the GUI tree
+contain no `/unit/{mount,covers,focuser,stage,imager}/...` call anywhere; the shared plan
+client's entire unit vocabulary is `status` (GET), `abort` (GET) and `execute_assignment`
+(PUT), all three on the unit router, which `mount_routers` mounts unconditionally. So the
+component routes are operator and debug surface, and the diagnosis they would carry is
+already on the unit path: `Unit.why_not_operational` returns the init errors and `status()`
+reports `mount=None` / `covers=None` per component.
+
+What settled it is the one route that already survives a component failure.
+`/unit/start_acquisition_and_guiding` registers whether or not the guider exists, because
+`Acquirer.__init__` only assigns attributes -- so with the guider unbuilt it accepted the
+call, returned `Ok`, and died on `assert self.unit.guider is not None` in a worker thread,
+after `unit.errors` had been cleared one line above. **Route survival moved the failure rather
+than reporting it.** Four ways of preserving the component surface were priced against that,
+including a refusing placeholder satisfying the `Component` ABC; each bought a fixed schema at
+the cost of a mechanism, and none bought a report anyone reads.
+
+**What:** the invariant is dropped. A component that failed to build has no routes, and
+`#83` was repurposed to the work its own evidence justifies -- making the failure legible
+where it is actually read.
+
+`Unit.why_not_operational` no longer returns `self._init_errors` and stops. An init error is
+one reason among the others, and truncating there meant a unit with a failed component, a
+disconnected mount and a stage off its preset reported the component failure alone -- one
+restart per reason. `operational`'s early return stays, because `all()` over a component set
+missing its failed members answers `True` for a unit that failed to build half of itself;
+that asymmetry now carries a comment, being the kind a later reader would otherwise "fix".
+
+`Acquirer` checks `REQUIRED_COMPONENTS` at the endpoint, before it touches PWI4, and returns
+an envelope naming every missing component in one answer rather than the first. No thread is
+spawned, so nothing can answer `Ok` for work that will not run -- and `Unit.execute_assignment`
+gets the refusal too, which is the plan client's path. `do_acquire` keeps a guard for callers
+that did not check and records on `unit.errors`, which is what `/unit/status` publishes.
+
+**Implications:** two units on the same commit still expose different endpoint sets depending
+on what enumerated at boot, and that is now accepted rather than tracked. Any future client
+that wants to address a component directly must read `/unit/status` first; the OpenAPI schema
+is not a contract about which components exist. The remaining reporting defects are upstream of
+this and unchanged -- `#84` and `#91` manufacture the wrong message inside a component's own
+constructor, so what this makes sure gets *reported* may still be *wrong*.
+
+`assert` is not a precondition. Six of them guarded the acquisition path against a state that
+occurs whenever PHD2 fails to connect; they stated the state could not happen, reached only the
+log when it did, and vanish entirely under `-O`. A source-inspection test keeps them out.
+
+---
+
 ## [2026-08-30] The lint gate enforces a named rule set, not ruff's moving defaults
 
 **Why:** the `lint` job had been red on every run since CI landed on 2026-08-09 -- 20

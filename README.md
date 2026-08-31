@@ -29,7 +29,9 @@ python app.py [--log-level DEBUG]
 - `create_app(unit)` builds the FastAPI app — exception handlers, CORS, the favicon
   route — and mounts the unit router plus every component router the unit managed to
   build. Called with no argument it returns the bare app, which is what a schema-only
-  or test caller wants.
+  or test caller wants. A component that failed to build has **no routes**, deliberately:
+  the schema is not a contract about which components exist, and `/unit/status` is where
+  a caller learns which one failed and why (`DECISIONS.md` 2026-08-31).
 - `main()` validates the configuration, builds the `Unit`, calls the other two, and
   hands the app to uvicorn.
 

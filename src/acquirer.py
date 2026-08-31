@@ -33,6 +33,13 @@ from stage import StagePresetPosition
 logger = get_logger(__name__)
 
 
+#: The `Unit` attributes an acquisition dereferences. Each is `None` when its component
+#: failed to build, which is a routine state -- a PHD2 connect failure leaves `imager` and
+#: `guider` both unbuilt (MAST_unit#84), and a missing ASCOM cover driver leaves `covers`
+#: unbuilt on three of four units (MAST_unit#95).
+REQUIRED_COMPONENTS = ("mount", "guider", "imager", "solver", "stage")
+
+
 class Acquirer:
     from typing import TYPE_CHECKING
 
@@ -48,6 +55,10 @@ class Acquirer:
         self.unit = unit
         self.folder: str | None = None
         self.latest_acquisition: Acquisition | None = None
+
+    def missing_components(self) -> list[str]:
+        """The `REQUIRED_COMPONENTS` this unit did not build, in declaration order."""
+        return [name for name in REQUIRED_COMPONENTS if getattr(self.unit, name) is None]
 
     def run_acquisition(self, acquisition: Acquisition):
         """Thread entry point for an acquisition: run it, then always release its folder.
@@ -85,12 +96,17 @@ class Acquirer:
         self.unit.errors = []
         self.unit.reference_image = None
 
-        assert self.unit.mount is not None, f"{op}: unit.mount is None"
-        assert self.unit.guider is not None, f"{op}: unit.guider is None"
-        assert self.unit.imager is not None, f"{op}: unit.imager is None"
-        assert self.unit.solver is not None, f"{op}: unit.solver is None"
-        assert self.unit.stage is not None, f"{op}: unit.stage is None"
-        assert self.unit.acquirer is not None, f"{op}: unit.acquirer is None"
+        # The endpoint refuses before spawning this thread, so reaching here with a missing
+        # component means a caller that did not check -- `start_acquisition`, or a future
+        # one. Recorded on `unit.errors` because that is what `/unit/status` publishes; an
+        # AssertionError here would reach only the log, and only after the caller had been
+        # told the acquisition started.
+        missing = self.missing_components()
+        if missing:
+            msg = f"{op}: cannot acquire, these components did not initialize: {', '.join(missing)}"
+            logger.error(msg)
+            self.unit.errors.append(msg)
+            return
 
         self.latest_acquisition = acquisition
         acquisition_conf = acquisition.conf
@@ -478,7 +494,12 @@ class Acquirer:
 
         op = function_name()
 
-        assert self.unit.mount is not None, f"{op}: unit.mount is None"
+        missing = self.missing_components()
+        if missing:
+            return CanonicalResponse(
+                errors=[f"cannot start acquisition, these components did not initialize: {', '.join(missing)}"]
+            )
+
         assert self.unit.mount.pw is not None, f"{op}: unit.mount.pw is None"
 
         pw_status = self.unit.mount.pw.status()
