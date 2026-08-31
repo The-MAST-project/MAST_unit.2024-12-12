@@ -10,6 +10,12 @@ single `/unit/status` read.
 error genuinely is decisive there, because `all()` over a component set that is missing its
 failed members answers True for a unit that failed to build half of itself.
 
+Order is part of the contract, and was not: the components came out of a `set`, so the reason
+list reordered between processes -- caught by this file's first CI run, which passed on macOS
+and failed on Windows on exactly that. An operator reads the list top to bottom and anything
+diffing two `/unit/status` payloads compares it element-wise, so `_operational_components`
+answers a list and the order is asserted below.
+
 Needs no hardware: `why_not_operational` reads four attributes, and the components it walks
 only have to answer `why_not_operational` themselves.
 """
@@ -65,6 +71,15 @@ def test_init_errors_come_first():
     u = _unit(init_errors=["a", "b"], components=[_Component(["c"])])
 
     assert u.why_not_operational[:2] == ["a", "b"]
+
+
+def test_the_component_order_is_the_declaration_order():
+    """Not a `set`: the same unit must produce the same list in every process."""
+    first, second, third = _Component(["1"]), _Component(["2"]), _Component(["3"])
+    u = _unit(components=[first, second, third])
+
+    assert u.why_not_operational == ["1", "2", "3"]
+    assert u._operational_components == [first, second, third]
 
 
 def test_no_init_errors_reports_only_the_components():

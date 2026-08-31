@@ -517,25 +517,30 @@ class Unit(Component):
         self.startup()
 
     @property
+    def _operational_components(self) -> list[Component]:
+        """The components this unit's own readiness depends on.
+
+        A list, not a set: `why_not_operational` publishes these in order, and a set's
+        order changes from one process to the next.
+        """
+        components = list(self.components)
+        if self.unit_conf and self.unit_conf.name.lower() == "mastw":
+            components = [c for c in components if c is not self.covers]
+        return components
+
+    @property
     def operational(self) -> bool:
         if self._init_errors:
             return False
-        components = set(self.components)
-        if self.unit_conf and self.unit_conf.name.lower() == "mastw":
-            components.discard(self.covers)
-        return all(c.operational for c in components)
+        return all(c.operational for c in self._operational_components)
 
     @property
     def why_not_operational(self) -> list[str]:
-        # Not `operational`'s early return above: there an init error is decisive, since
-        # `all()` over a component set missing its failed members would answer True for a
-        # unit that failed to build half of itself. Here it is one reason among the rest,
-        # and returning it alone hides them -- each fix then reveals the next on a restart.
+        # `operational` returns early on an init error; this deliberately does not. A unit
+        # that failed to build a component is not operational whatever the rest report, but
+        # that error is only one reason among them -- returning it alone hides the others.
         reasons = list(self._init_errors)
-        components = set(self.components)
-        if self.unit_conf and self.unit_conf.name.lower() == "mastw":
-            components.discard(self.covers)
-        return reasons + list(chain.from_iterable(c.why_not_operational for c in components))
+        return reasons + list(chain.from_iterable(c.why_not_operational for c in self._operational_components))
 
     @property
     def name(self) -> str:
