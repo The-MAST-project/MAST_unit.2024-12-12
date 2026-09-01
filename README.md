@@ -29,7 +29,9 @@ python app.py [--log-level DEBUG]
 - `create_app(unit)` builds the FastAPI app — exception handlers, CORS, the favicon
   route — and mounts the unit router plus every component router the unit managed to
   build. Called with no argument it returns the bare app, which is what a schema-only
-  or test caller wants.
+  or test caller wants. A component that failed to build has **no routes**, deliberately:
+  the schema is not a contract about which components exist, and `/unit/status` is where
+  a caller learns which one failed and why (`DECISIONS.md` 2026-08-31).
 - `main()` validates the configuration, builds the `Unit`, calls the other two, and
   hands the app to uvicorn.
 
@@ -66,9 +68,22 @@ MAST_common carries its own platform-independent suite, run from its own clone
 
 ### Static contract checks
 
-`tests/contract/` holds the endpoint contract's static half (#52): pure AST passes that
-need no hardware, no Mongo and no app fixture, and so run on any platform. Each asks a
-question about the shape of the source that running the code cannot answer —
+The endpoint contract's static half (#52) is a set of pure AST passes that need no hardware,
+no Mongo and no app fixture, and so run on any platform. Each asks a question about the shape
+of the source that running the code cannot answer.
+
+**They are not in this tree.** They live on the branch `eli/contract-enforcement` (#184),
+deliberately unlanded: the contract is audited by running them against a checkout, not by
+gating CI or the runtime. Nothing here imports them and no workflow runs them.
+
+```bash
+git checkout eli/contract-enforcement
+python -m pytest tests/contract -q     # ~2 s, any platform, no hardware
+```
+
+The runtime half *is* here and is not optional: `common.endpoints.add_api_route` raises
+`UndeclaredEndpointError` on a handler that declares nothing, so an undeclared route fails at
+import whether or not anyone has run the checks.
 
 The per-module list of what each one refuses lives in
 [docs/adding-an-endpoint.md](docs/adding-an-endpoint.md#the-checks-and-what-each-one-refuses),
@@ -78,7 +93,7 @@ not just an index of the checks.
 **It is maintained by hand, and nothing checks it.** The test that asserted the guide named
 every check module and every `Tier` was withdrawn (MAST_unit#178 W1), so adding, removing or
 re-scoping a check — or adding a tier or a completion form — means editing the guide in the same
-change. MAST_unit#178's revisit compares `ls tests/contract/test_*.py` against that table.
+change. MAST_unit#178's revisit compares the check modules on that branch against that table.
 
 Each carries a `KNOWN_*` dict of the violations present today, keyed to the issue that owns
 fixing them. Only a **new** finding fails; an entry that has stopped being true is reported in

@@ -134,26 +134,19 @@ class Unit(Component):
 
         self._init_errors: list[str] = []
 
-        self.unit_conf: UnitConfig | None = None
+        # Probe the configuration at startup so a missing or unparseable one is recorded
+        # in _init_errors here, where the unit reports why it came up degraded, rather
+        # than surfacing later from whichever component happened to read it first. The
+        # value is deliberately discarded: `unit_conf` is a property now (see below).
         try:
-            self.unit_conf = Config().get_unit()
+            if Config().get_unit() is None:
+                msg = "unit configuration could not be loaded (no config in database or TOML)"
+                logger.error(msg)
+                self._init_errors.append(msg)
         except Exception as ex:
             msg = f"unit configuration failed to load: {ex}"
             logger.exception(msg)
             self._init_errors.append(msg)
-        if self.unit_conf is None and not self._init_errors:
-            msg = "unit configuration could not be loaded (no config in database or TOML)"
-            logger.error(msg)
-            self._init_errors.append(msg)
-
-        if self.unit_conf is not None:
-            self.min_ra_correction_arcsec = self.unit_conf.guiding.min_ra_correction_arcsec
-            self.min_dec_correction_arcsec = self.unit_conf.guiding.min_dec_correction_arcsec
-            self.autofocus_max_tolerance = self.unit_conf.autofocus.max_tolerance
-        else:
-            self.min_ra_correction_arcsec = 0.0
-            self.min_dec_correction_arcsec = 0.0
-            self.autofocus_max_tolerance = 0.0
         self.autofocus_try: int = 0
 
         self.hostname = socket.gethostname()
@@ -214,6 +207,31 @@ class Unit(Component):
 
         self._initialized = True
         logger.info("unit: initialized")
+
+    @property
+    def unit_conf(self) -> UnitConfig | None:
+        """This unit's configuration, as it is now.
+
+        Was an attribute snapshotted in `__init__`, which is why a value edited in the
+        database used to reach a running unit only at the next service restart.
+
+        Within one configuration generation this returns the *same object* every time, so
+        reading it is a memo lookup and an operation that binds it once at entry holds a
+        stable, self-consistent view for its whole duration. That is the contract long
+        operations rely on -- bind at entry, do not re-read per step -- and it is why this
+        can be a property at all rather than a periodic rebuild.
+
+        Do not mutate what this returns: it is shared with every other reader in the
+        process, and a later generation would silently discard the edit. Use
+        `Config().update_unit()`, which hands a private copy to its mutator.
+        """
+        return Config().get_unit()
+
+    @property
+    def autofocus_max_tolerance(self) -> float:
+        """The configured autofocus tolerance, live. 0.0 when there is no configuration."""
+        conf = self.unit_conf
+        return conf.autofocus.max_tolerance if conf is not None else 0.0
 
     @property
     def fcu_version(self) -> FcuVersion:
@@ -486,32 +504,45 @@ class Unit(Component):
 
                     best_position = autofocus_status.best_position  # type: ignore
                     assert self.unit_conf is not None
-                    self.unit_conf.focuser.known_as_good_position = best_position
-                    try:
-                        Config().set_unit(site_name=None, unit_name=None, unit_conf=self.unit_conf)
-                        logger.info(f"autofocus: saved {best_position=} in the configuration for unit {self.hostname}.")
-                        if autofocus_status.tolerance > self.autofocus_max_tolerance:  # type: ignore
-                            if self.autofocus_try < Unit.MAX_AUTOFOCUS_TRIES:
-                                self.autofocus_try += 1
-                                logger.info(
-                                    f"autofocus: latest {autofocus_status.tolerance=} greater than"  # type: ignore
-                                    + f"{self.autofocus_max_tolerance=}, starting autofocus "
-                                    + f"try #{self.autofocus_try}"
-                                )
-                                self.autofocuser.start_pwi4_autofocus()
-                            else:
-                                logger.info(
-                                    f"autofocus: failed to reach {self.autofocus_max_tolerance=} "
-                                    + f"in {Unit.MAX_AUTOFOCUS_TRIES=}"
-                                )
-                        else:
-                            self.autofocus_try = 0
 
+                    def _save_known_as_good_position(conf: UnitConfig) -> None:
+                        conf.focuser.known_as_good_position = best_position
+
+                    # Only the write is guarded. This `try` used to wrap the retry
+                    # decision below as well, which was harmless while `set_unit` logged
+                    # and returned on failure -- but it now raises (a lost focus position
+                    # is worth reporting), and refuses outright while the configuration is
+                    # degraded. Leaving the retry inside would mean a unit that cannot
+                    # reach its controller also silently stops retrying autofocus.
+                    try:
+                        # update_unit, not set_unit: it mutates a private copy. Editing
+                        # what unit_conf returns would change the model every other
+                        # component in this process is reading, and a later configuration
+                        # generation would silently revert it.
+                        Config().update_unit(_save_known_as_good_position)
+                        logger.info(f"autofocus: saved {best_position=} in the configuration for unit {self.hostname}.")
                     except Exception as e:
                         logger.exception(
                             "failed to save unit_conf for ['focuser']['know_as_good_position']",
                             exc_info=e,
                         )
+
+                    if autofocus_status.tolerance > self.autofocus_max_tolerance:  # type: ignore
+                        if self.autofocus_try < Unit.MAX_AUTOFOCUS_TRIES:
+                            self.autofocus_try += 1
+                            logger.info(
+                                f"autofocus: latest {autofocus_status.tolerance=} greater than"  # type: ignore
+                                + f"{self.autofocus_max_tolerance=}, starting autofocus "
+                                + f"try #{self.autofocus_try}"
+                            )
+                            self.autofocuser.start_pwi4_autofocus()
+                        else:
+                            logger.info(
+                                f"autofocus: failed to reach {self.autofocus_max_tolerance=} "
+                                + f"in {Unit.MAX_AUTOFOCUS_TRIES=}"
+                            )
+                    else:
+                        self.autofocus_try = 0
                 else:
                     logger.error("PlaneWave autofocus failed")
                     self.autofocus_result.best_position = None
@@ -531,22 +562,30 @@ class Unit(Component):
         self.startup()
 
     @property
+    def _operational_components(self) -> list[Component]:
+        """The components this unit's own readiness depends on.
+
+        A list, not a set: `why_not_operational` publishes these in order, and a set's
+        order changes from one process to the next.
+        """
+        components = list(self.components)
+        if self.unit_conf and self.unit_conf.name.lower() == "mastw":
+            components = [c for c in components if c is not self.covers]
+        return components
+
+    @property
     def operational(self) -> bool:
         if self._init_errors:
             return False
-        components = set(self.components)
-        if self.unit_conf and self.unit_conf.name.lower() == "mastw":
-            components.discard(self.covers)
-        return all(c.operational for c in components)
+        return all(c.operational for c in self._operational_components)
 
     @property
     def why_not_operational(self) -> list[str]:
-        if self._init_errors:
-            return list(self._init_errors)
-        components = set(self.components)
-        if self.unit_conf and self.unit_conf.name.lower() == "mastw":
-            components.discard(self.covers)
-        return list(chain.from_iterable(c.why_not_operational for c in components))
+        # `operational` returns early on an init error; this deliberately does not. A unit
+        # that failed to build a component is not operational whatever the rest report, but
+        # that error is only one reason among them -- returning it alone hides the others.
+        reasons = list(self._init_errors)
+        return reasons + list(chain.from_iterable(c.why_not_operational for c in self._operational_components))
 
     @property
     def name(self) -> str:

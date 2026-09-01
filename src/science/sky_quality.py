@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 import math
 import statistics
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -24,7 +24,7 @@ def median_absolute_deviation(values: list[float]) -> float:
 # ---------- pydantic models ----------
 
 
-class QualityState(str, Enum):
+class QualityState(StrEnum):
     Unknown = "Unknown"
     WarmingUp = "WarmingUp"
     Excellent = "Excellent"

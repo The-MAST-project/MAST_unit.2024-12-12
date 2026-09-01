@@ -33,6 +33,13 @@ from stage import StagePresetPosition
 logger = get_logger(__name__)
 
 
+#: The `Unit` attributes an acquisition dereferences. Each is `None` when its component
+#: failed to build, which is a routine state -- a PHD2 connect failure leaves `imager` and
+#: `guider` both unbuilt (MAST_unit#84), and a missing ASCOM cover driver leaves `covers`
+#: unbuilt on three of four units (MAST_unit#95).
+REQUIRED_COMPONENTS = ("mount", "guider", "imager", "solver", "stage")
+
+
 class Acquirer:
     from typing import TYPE_CHECKING
 
@@ -48,6 +55,10 @@ class Acquirer:
         self.unit = unit
         self.folder: str | None = None
         self.latest_acquisition: Acquisition | None = None
+
+    def missing_components(self) -> list[str]:
+        """The `REQUIRED_COMPONENTS` this unit did not build, in declaration order."""
+        return [name for name in REQUIRED_COMPONENTS if getattr(self.unit, name) is None]
 
     def run_acquisition(self, acquisition: Acquisition):
         """Thread entry point for an acquisition: run it, then always release its folder.
@@ -85,15 +96,28 @@ class Acquirer:
         self.unit.errors = []
         self.unit.reference_image = None
 
-        assert self.unit.mount is not None, f"{op}: unit.mount is None"
-        assert self.unit.guider is not None, f"{op}: unit.guider is None"
-        assert self.unit.imager is not None, f"{op}: unit.imager is None"
-        assert self.unit.solver is not None, f"{op}: unit.solver is None"
-        assert self.unit.stage is not None, f"{op}: unit.stage is None"
-        assert self.unit.acquirer is not None, f"{op}: unit.acquirer is None"
+        # The endpoint refuses before spawning this thread, so reaching here with a missing
+        # component means a caller that did not check -- `start_acquisition`, or a future
+        # one. Recorded on `unit.errors` because that is what `/unit/status` publishes; an
+        # AssertionError here would reach only the log, and only after the caller had been
+        # told the acquisition started.
+        missing = self.missing_components()
+        if missing:
+            msg = f"{op}: cannot acquire, these components did not initialize: {', '.join(missing)}"
+            logger.error(msg)
+            self.unit.errors.append(msg)
+            return
 
         self.latest_acquisition = acquisition
-        acquisition_conf = acquisition.conf
+
+        # Bound ONCE, here, and used for the whole acquisition. The configuration is live
+        # now, so re-reading it per step could shift values under a run in progress; an
+        # operation uses what it started with. Within one configuration generation this is
+        # the same object every time, so binding it costs nothing.
+        assert self.unit.unit_conf is not None
+        acquisition_conf = self.unit.unit_conf.acquisition
+        # A per-call override, not a configuration change (MAST_unit#195).
+        exposure = acquisition.exposure if acquisition.exposure is not None else acquisition_conf.exposure
         sky_roi_conf = acquisition_conf.rois[self.unit.fcu_version]
 
         #
@@ -173,7 +197,7 @@ class Acquirer:
             from common.models.statuses import ImagerRoi, ImagerSettings
 
             sky_settings = ImagerSettings(
-                seconds=acquisition_conf.exposure,
+                seconds=exposure,
                 base_folder=os.path.join(self.latest_acquisition.folder, phase),
                 gain=gain,
                 binning=imager_binning,
@@ -190,8 +214,7 @@ class Acquirer:
             default_tolerance: Angle = Angle(1 * u.arcsecond)  # type: ignore
             ra_tolerance: Angle = default_tolerance
             dec_tolerance: Angle = default_tolerance
-            assert self.unit.unit_conf is not None
-            phase_conf = self.unit.unit_conf.acquisition
+            phase_conf = acquisition_conf
             ra_tolerance = Angle(phase_conf.tolerance.ra_arcsec * u.arcsecond)  # type: ignore
             dec_tolerance = Angle(phase_conf.tolerance.dec_arcsec * u.arcsecond)  # type: ignore
 
@@ -248,7 +271,7 @@ class Acquirer:
             base_folder=os.path.join(self.latest_acquisition.folder, phase)
         )
         # override with acquisition settings
-        spec_imager_settings.seconds = acquisition.conf.exposure
+        spec_imager_settings.seconds = exposure
         if acquisition_conf.binning is not None:
             spec_imager_settings.binning = acquisition_conf.binning
         if acquisition_conf.gain is not None:
@@ -389,7 +412,10 @@ class Acquirer:
             make_corrections=make_corrections,
             target_ra=float(ra_j2000_hours),
             target_dec=float(dec_j2000_degs),
-            conf=self.unit.unit_conf.acquisition,
+            # No caller-supplied exposure on this path: the configured one applies.
+            # It previously inherited whatever the HTTP endpoint had last written into
+            # unit_conf.acquisition.exposure (MAST_unit#195).
+            exposure=None,
             # Unattended assignments auto-hand-over to guiding; the Acquisition default is
             # False (manual acquisition-tuning), which would stall the assignment at SPEC.
             handover_automatically_to_guider=True,
@@ -478,7 +504,12 @@ class Acquirer:
 
         op = function_name()
 
-        assert self.unit.mount is not None, f"{op}: unit.mount is None"
+        missing = self.missing_components()
+        if missing:
+            return CanonicalResponse(
+                errors=[f"cannot start acquisition, these components did not initialize: {', '.join(missing)}"]
+            )
+
         assert self.unit.mount.pw is not None, f"{op}: unit.mount.pw is None"
 
         pw_status = self.unit.mount.pw.status()
@@ -508,9 +539,6 @@ class Acquirer:
             dec_j2000_degs = pw_status.mount.dec_j2000_degs  # type: ignore
 
         assert self.unit.unit_conf is not None
-        if seconds is not None:
-            self.unit.unit_conf.acquisition.exposure = seconds
-
         assert self.unit.unit_conf.solving.method in self.unit.unit_conf.solving.valid_methods, (
             "unit unit_conf.solving.method is not in allowed_methods"
         )
@@ -531,7 +559,7 @@ class Acquirer:
             make_corrections=make_corrections,
             target_ra=float(ra_j2000_hours),
             target_dec=float(dec_j2000_degs),
-            conf=self.unit.unit_conf.acquisition,
+            exposure=seconds,
             gain_absolute=gain_absolute or asi.ASI_294MM_DEFAULT_GAIN,
             gain_percent=gain_percent,
             skip_sky=skip_sky,

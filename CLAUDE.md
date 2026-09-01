@@ -17,7 +17,9 @@ python app.py   # role + identity come from the bootstrap config file
 
 Read `docs/adding-an-endpoint.md` first. The HTTP surface is declared at the definition site, and `common.endpoints.add_api_route` refuses a handler that declares nothing — so that file is the difference between a route that registers and an `UndeclaredEndpointError` at import.
 
-**Update it in the same change; nothing checks it.** `tests/contract/test_endpoint_guide.py`, which asserted the guide named every check module and every `Tier`, was withdrawn as #178 W1. So adding or removing a static check under `tests/contract/`, adding a `Tier` or a completion form, or changing what any of them enforces means editing the guide's corresponding table in the same commit. #178's revisit compares `ls tests/contract/test_*.py` against that table, so drift surfaces there instead of in CI.
+**Update it in the same change; nothing checks it.** `test_endpoint_guide.py`, which asserted the guide named every check module and every `Tier`, was withdrawn as #178 W1. So adding a `Tier` or a completion form, or changing what any static check enforces, means editing the guide's corresponding table in the same commit.
+
+The static checks themselves are **not in this tree** — they live on `eli/contract-enforcement` (#184), run by hand against a checkout rather than wired into CI or the runtime. #178's revisit compares the check modules on that branch against the guide's table, so drift surfaces there instead of in a build.
 
 ## Gotchas
 
