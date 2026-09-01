@@ -450,6 +450,24 @@ class FluxMeteringSession:
 
     # ---------------------------------------------------------------- measurement --
 
+    def do_flux_exposure(self, captured: dict[str, Any]) -> None:
+        """Take one ThorCam frame on this thread, recording the outcome in `captured`.
+
+        A named target rather than a closure so the dispatch site says what is running
+        without the reader opening it -- invariant 9, and the reason `run_acquisition`
+        was worth a check.
+
+        The failure is recorded, never raised: a bare thread that raises prints to stderr
+        and vanishes, and the parent would then find no frame and record a flux of zero --
+        which reads as "no light reached the fibre", a measurement rather than a failure.
+        """
+        try:
+            captured["flux_started"] = isoformat_utc()
+            captured["flux_frame"] = self._meter.expose()  # type: ignore[union-attr]
+            captured["flux_ended"] = isoformat_utc()
+        except Exception as ex:  # noqa: BLE001 -- reported through `captured`, not swallowed
+            captured["flux_error"] = ex
+
     def _expose_pair(self, imager_name: str, flux_name: str) -> FluxMeteringExposure:
         """One imager frame and one ThorCam frame, exposed in parallel.
 
@@ -459,13 +477,7 @@ class FluxMeteringSession:
         through PHD2 and does not necessarily begin the instant it is asked.
         """
         captured: dict[str, Any] = {}
-
-        def take_flux():
-            captured["flux_started"] = isoformat_utc()
-            captured["flux_frame"] = self._meter.expose()  # type: ignore[union-attr]
-            captured["flux_ended"] = isoformat_utc()
-
-        flux_thread = threading.Thread(name="flux-exposure", target=_guard(captured, "flux_error", take_flux))
+        flux_thread = threading.Thread(name="flux-exposure", target=self.do_flux_exposure, args=(captured,))
         flux_thread.start()
 
         imager_started = isoformat_utc()
@@ -777,19 +789,3 @@ class FluxMeteringSession:
 
 def isoformat_utc() -> str:
     return datetime.datetime.now(datetime.UTC).isoformat()
-
-
-def _guard(sink: dict, key: str, work):
-    """Run `work` on another thread, recording a failure instead of losing it.
-
-    A bare thread that raises prints to stderr and vanishes; the parent then reads a missing
-    result as a zero flux, which is a measurement rather than a failure.
-    """
-
-    def run():
-        try:
-            work()
-        except Exception as ex:  # noqa: BLE001 -- reported through `sink`, not swallowed
-            sink[key] = ex
-
-    return run
