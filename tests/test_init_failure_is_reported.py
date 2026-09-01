@@ -40,12 +40,27 @@ class _Component:
         return not self._reasons
 
 
+class _Unit(Unit):
+    """A `Unit` whose configuration this file supplies.
+
+    `Unit.unit_conf` is a live property reading `Config().get_unit()`, and has no setter.
+    Overriding it here keeps this file free of both hardware and a database, which is the
+    whole point of building the unit with `object.__new__`.
+    """
+
+    _conf = None
+
+    @property
+    def unit_conf(self):
+        return self._conf
+
+
 def _unit(init_errors=(), components=(), unit_name=None):
-    u = object.__new__(Unit)
+    u = object.__new__(_Unit)
     u._init_errors = list(init_errors)
     u.components = list(components)
     u.covers = None
-    u.unit_conf = None if unit_name is None else _Conf(unit_name)
+    u._conf = None if unit_name is None else _Conf(unit_name)
     return u
 
 
