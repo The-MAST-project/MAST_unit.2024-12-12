@@ -73,6 +73,18 @@ class Covers(Component, SwitchedOutlet):
     _instance = None
     _initialized = False
 
+    @property
+    def conf(self):
+        """This component's configuration, live.
+
+        Was snapshotted in ``__init__``, which is why a value edited in the database
+        reached a running unit only at the next service restart. Within one configuration
+        generation this returns the same object every time, so it is a memo lookup, not a
+        rebuild -- which is what makes a property affordable here.
+        """
+        assert self.unit is not None and self.unit.unit_conf is not None
+        return self.unit.unit_conf.covers
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -84,7 +96,6 @@ class Covers(Component, SwitchedOutlet):
 
         self.unit = unit
         assert self.unit is not None and self.unit.unit_conf is not None
-        self.conf = self.unit.unit_conf.covers
 
         # A private client, as Mount and Focuser hold. Not a style choice: Unit builds Covers
         # before it assigns `self.pw`, so `unit.pw` does not exist yet at this point. It costs

@@ -13,7 +13,6 @@ from fastapi.routing import APIRouter
 
 from common.activities import StageActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config import Config
 from common.config.rois import FcuVersion
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
@@ -138,6 +137,18 @@ class Stage(Component, SwitchedOutlet):
         StateFlags.STATE_EXTIO_ALARM: "STATE_EXTIO_ALARM",
     }
 
+    @property
+    def conf(self):
+        """This component's configuration, live.
+
+        Was snapshotted in ``__init__``, which is why a value edited in the database
+        reached a running unit only at the next service restart. Within one configuration
+        generation this returns the same object every time, so it is a memo lookup, not a
+        rebuild -- which is what makes a property affordable here.
+        """
+        assert self.unit is not None and self.unit.unit_conf is not None
+        return self.unit.unit_conf.stage
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -149,14 +160,8 @@ class Stage(Component, SwitchedOutlet):
 
         op = "Stage.__init__"
         self.unit = unit
-        if unit and unit.unit_conf and unit.unit_conf.stage:
-            self.conf = unit.unit_conf.stage
-        else:
-            unit_conf = Config().get_unit()
-            if unit_conf and unit_conf.stage:
-                self.conf = unit_conf.stage
-            else:
-                raise Exception(f"{op}: cannot get stage configuration")
+        if not (unit and unit.unit_conf and unit.unit_conf.stage):
+            raise Exception(f"{op}: cannot get stage configuration")
 
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Stage")
         Component.__init__(self, StageActivities)
