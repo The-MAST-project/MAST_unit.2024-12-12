@@ -58,7 +58,7 @@ from common.rois import UnitRoi
 from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers
 from expose_params import MAX_OFFSET_ARCSEC, MAX_OFFSET_DEGREES, resolve_exposure_roi, resolve_offsets
-from flux_metering.session import FluxMeteringParams, FluxMeteringSession
+from flux_metering.session import FluxMeteringParams, FluxMeteringSession, parse_target
 from focuser import Focuser
 from imagers import Imager
 from mount import Mount, SettleMode
@@ -1297,10 +1297,17 @@ class Unit(Component):
         `find_max_flux_status`, and `unit/abort` stops it. Nothing is written to the
         configuration database — `dx, dy` land in `result.json` only.
         """
+        # Parsed here, before anything is spent: a bad coordinate must refuse the request
+        # rather than fail inside a run that has already claimed the mount.
+        try:
+            ra_decimal, dec_decimal = parse_target(ra_j2000_hours, dec_j2000_degs)
+        except ValueError as ex:
+            return CanonicalResponse(errors=[f"{function_name()}: {ex}"])
+
         params = FluxMeteringParams(
             seconds=seconds,
-            ra_j2000_hours=float(ra_j2000_hours) if ra_j2000_hours is not None else None,
-            dec_j2000_degs=float(dec_j2000_degs) if dec_j2000_degs is not None else None,
+            ra_j2000_hours=ra_decimal,
+            dec_j2000_degs=dec_decimal,
             gain=gain,
             number_of_frames=number_of_frames,
             x_step_arcsec=x_step_arcsec,

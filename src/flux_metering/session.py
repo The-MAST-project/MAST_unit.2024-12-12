@@ -48,6 +48,7 @@ from common.models.statuses import (
     FluxMeteringStep,
     ImagerSettings,
 )
+from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
 from common.utils import function_name
 from flux_metering.flux_meter import FluxMeter, FluxMeterError, frame_flux, saturated_pixels
@@ -785,6 +786,26 @@ class FluxMeteringSession:
         with MoveGuardian().protect(path), open(path, "w") as fp:
             json.dump(result, fp, indent=2, default=str)
         filer.move_ram_to_shared(path)
+
+
+def parse_target(
+    ra_j2000_hours: str | float | None, dec_j2000_degs: str | float | None
+) -> tuple[float | None, float | None]:
+    """Target coordinates as decimal hours and degrees, in whatever form they arrive.
+
+    One call, whatever the form. `float()` is NOT enough and never was: `RA_PATTERN`
+    deliberately accepts space-separated sexagesimal, so `"03 08 10.142"` passes the
+    query validation and then fails conversion -- the same defect `acquirer.py` records
+    having already fixed once, in the comment above its own parsing block. The parsers
+    take sexagesimal, decimal and surrounding whitespace alike.
+
+    None is passed through rather than defaulted: it means "take it from the mount", and
+    only the acquirer can do that. Note the emptiness test is explicit rather than
+    truthiness, so an RA of exactly 0 hours is a coordinate and not a missing value.
+    """
+    ra = None if ra_j2000_hours is None or ra_j2000_hours == "" else sexagesimal_hours_to_decimal(ra_j2000_hours)
+    dec = None if dec_j2000_degs is None or dec_j2000_degs == "" else sexagesimal_degrees_to_decimal(dec_j2000_degs)
+    return ra, dec
 
 
 def isoformat_utc() -> str:

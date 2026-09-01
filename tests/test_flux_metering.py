@@ -398,3 +398,54 @@ def test_step_frames_are_not_read_back(session, monkeypatch):
 
     assert reads, "the walk must have exposed something"
     assert all(entry.endswith(":False") for entry in reads), reads
+
+
+def test_the_coordinates_the_operator_actually_types_are_accepted():
+    """`RA_PATTERN` accepts space-separated sexagesimal, so `float()` is not enough --
+    which is how a real request with `03 08 10.142` blew up. `acquirer.py` carries a
+    comment about having fixed this exact defect once already."""
+    from flux_metering.session import parse_target
+
+    ra, dec = parse_target("03 08 10.142", " +40 57 20.275")
+
+    assert ra == pytest.approx(3 + 8 / 60 + 10.142 / 3600)
+    assert dec == pytest.approx(40 + 57 / 60 + 20.275 / 3600)
+
+
+@pytest.mark.parametrize(
+    ("ra", "dec"),
+    [
+        ("12:30:45.123", "-45:30:00.123"),  # colon-separated
+        ("12 30 45.123", "-45 30 00.123"),  # space-separated
+        (12.5125, -45.5),  # already decimal
+        ("12.5125", "-45.5"),  # decimal as text
+    ],
+)
+def test_every_accepted_coordinate_form_parses(ra, dec):
+    from flux_metering.session import parse_target
+
+    parsed_ra, parsed_dec = parse_target(ra, dec)
+
+    assert parsed_ra == pytest.approx(12.5125, abs=1e-4)
+    assert parsed_dec == pytest.approx(-45.5, abs=1e-4)
+
+
+def test_absent_coordinates_stay_absent():
+    """None means 'take it from the mount', which only the acquirer can do."""
+    from flux_metering.session import parse_target
+
+    assert parse_target(None, None) == (None, None)
+
+
+def test_an_ra_of_zero_is_a_coordinate_not_a_missing_value():
+    """Truthiness would send RA 0h to the mount instead of using it."""
+    from flux_metering.session import parse_target
+
+    assert parse_target(0.0, 0.0) == (0.0, 0.0)
+
+
+def test_a_bad_coordinate_raises_rather_than_being_guessed_at():
+    from flux_metering.session import parse_target
+
+    with pytest.raises(ValueError):
+        parse_target("not a coordinate", None)
