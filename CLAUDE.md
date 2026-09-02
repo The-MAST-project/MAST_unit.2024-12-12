@@ -13,6 +13,14 @@ python app.py   # role + identity come from the bootstrap config file
                 # set MAST_CONFIG to point elsewhere for dev/tests
 ```
 
+## Adding or changing an endpoint
+
+Read `docs/adding-an-endpoint.md` first. The HTTP surface is declared at the definition site, and `common.endpoints.add_api_route` refuses a handler that declares nothing — so that file is the difference between a route that registers and an `UndeclaredEndpointError` at import.
+
+**Update it in the same change; nothing checks it.** `test_endpoint_guide.py`, which asserted the guide named every check module and every `Tier`, was withdrawn as #178 W1. So adding a `Tier` or a completion form, or changing what any static check enforces, means editing the guide's corresponding table in the same commit.
+
+The static checks themselves live in `tests/contract/` and run in CI with the rest of the suite, so a violation reddens the pull request that introduces it. #178's revisit compares those modules against the guide's table.
+
 ## Gotchas
 
 ### `solve-field` needs lapack on PATH

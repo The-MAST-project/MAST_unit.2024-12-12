@@ -17,7 +17,6 @@ from pydantic import BaseModel
 from common import asi
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config import Config
 from common.config.phd2 import LimitFrameMode
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
@@ -234,6 +233,27 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     DEFAULT_STOP_CAPTURE_TIMEOUT = 10
     _instance = None
     _initialized = False
+    #: The exception that aborted construction, if it did. `__new__` caches the instance
+    #: before `__init__` runs, so without this the second construction site receives a
+    #: half-built object -- either re-running the whole body (launching a second phd2.exe)
+    #: or, once `_initialized` is set unconditionally, silently accepting a broken one.
+    _init_error: BaseException | None = None
+
+    @property
+    def conf(self):
+        """This component's configuration, live.
+
+        Was snapshotted in ``__init__``, which is why a value edited in the database
+        reached a running unit only at the next service restart. Within one configuration
+        generation this returns the same object every time, so it is a memo lookup, not a
+        rebuild -- which is what makes a property affordable here.
+
+        Unlike the other components this one holds no ``unit`` of its own: it is
+        constructed by the imager and reaches the unit through ``self.parent``.
+        """
+        assert self.parent is not None and self.parent.unit is not None
+        assert self.parent.unit.unit_conf is not None
+        return self.parent.unit.unit_conf.phd2
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -248,6 +268,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         _from_imager: bool = False,
     ):
         if self._initialized:
+            # Two sites construct this (imagers/__init__.py, guiding.py). Both must hear
+            # about a construction that failed, not just the first.
+            if self._init_error is not None:
+                raise self._init_error
             return  # singleton, do not re-initialize
 
         GuiderInterface.__init__(self)
@@ -282,9 +306,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.profile_binning: int | None = None
         self.profile_bpp: int | None = None  # bits per pixel
 
-        unit_conf = Config().get_unit()
-        assert unit_conf is not None
-        self.conf = unit_conf.phd2
+        assert self.parent is not None and self.parent.unit is not None, (
+            "PHD2Connector: no parent imager, so no way to reach the unit configuration"
+        )
 
         #
         # We embed the binning and bpp in the profile name, so extract them
@@ -357,14 +381,22 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         try:
             self.connect()
             self.connect_equipment()
-        except PHD2ConnectorError as ex:
-            self.connected = False
-            logger.error(f"{function_name()}: Failed to connect {ex=}")
+            # Inside the guard: its setter is a bare `call()`, so on a torn-down
+            # connection it raises the cleanup's own error over the real one.
+            self.cooler_on = True
+        except Exception as ex:
+            # Not `self.connected = False`: that property's setter disconnects, which nulls
+            # self.conn and makes the next call raise "no connection to PHD2 server" -- the
+            # message that used to reach the API in place of the actual failure.
+            self._connected = False
+            self._init_error = ex
+            logger.error(f"{function_name()}: failed to initialize: {ex}")
+            raise
+        finally:
+            # Always, so a failed construction cannot be re-run by the second site.
+            self._initialized = True
 
-        self.cooler_on = True
         # threading.Thread(name="phd2-reconnector", target=self.reconnect).start()
-
-        self._initialized = True
 
     def can_expose_at(self, binning: int, bpp: int) -> bool | None:
         if self.profile_binning is None:
@@ -401,8 +433,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.disconnect()
 
     def __del__(self):
-        if self.watched_process:
-            self.watched_process.terminate()
+        # getattr, not attribute access: __init__ can abort before watched_process is bound,
+        # and __del__ on that instance then raises an AttributeError with nowhere to go.
+        watched = getattr(self, "watched_process", None)
+        if watched:
+            watched.terminate()
             self.watched_process = None
 
     def equipment_is_connected(self) -> bool:
@@ -562,10 +597,12 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 # |StarMass   |number|the Star Mass value of the guide star|
                 # |SNR        |number|the computed Signal-to-noise ratio of the guide star|
                 # |HFD        |number|the guide star half-flux diameter (HFD) in pixels|
-                # |AvgDist    |number|a smoothed average of the guide distance in pixels (equivalent to value returned by socket server MSG\_REQDIST)|
-                # |RALimited  |boolean|true if step was limited by the Max RA setting (attribute omitted if step was not limited)|
-                # |DecLimited |boolean|true if step was limited by the Max Dec setting (attribute omitted if step was not limited)|
-                # |ErrorCode  |number|the star finder error code, 1=saturated, 2=low SNR, 3=low mass, 4=low HFD, 5=High HFD, 6=edge of frame, 7=mass change, 8=unexpected|
+                # |AvgDist    |number|a smoothed average of the guide distance in pixels (same as MSG\_REQDIST)|
+                # |RALimited  |boolean|true if step was limited by the Max RA setting (omitted if not limited)|
+                # |DecLimited |boolean|true if step was limited by the Max Dec setting (omitted if not limited)|
+                # |ErrorCode  |number|the star finder error code|
+                #   1=saturated, 2=low SNR, 3=low mass, 4=low HFD, 5=High HFD,
+                #   6=edge of frame, 7=mass change, 8=unexpected
                 stats = None
                 boxed_debug(
                     lines=[
@@ -737,7 +774,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 # | Time      | number | time since guiding started, seconds |
                 # | StarMass  | number | star mass value |
                 # | SNR       | number | star SNR value |
-                # | AvgDist   | number |a smoothed average of the guide distance in pixels (equivalent to value returned by socket server MSG\_REQDIST)|
+                # | AvgDist   | number | a smoothed average of the guide distance in pixels (same as MSG\_REQDIST) |
                 # | ErrorCode | number | error code  |
                 # | Status    | string | error message |
                 lines = ["event: Star Lost!"]
@@ -1177,39 +1214,47 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def __repr__(self):
         return f"PHD2Connector(profile='{self.conf.profile}')"
 
-    def endpoint_status(self):
-        return self.status()
+    def status(self) -> PHD2ImagerStatus:
+        """PHD2 in its **imager** role, for embedding under `ImagerStatus.backend`.
 
-    def status(self, capacity: Literal["imager", "guider"] = "imager") -> PHD2ImagerStatus | PHD2GuiderStatus:
+        Satisfies `ImagerInterface.status()`. The guider role answers separately,
+        through `guider_status()`.
+        """
+        return PHD2ImagerStatus(
+            identifier=self.identifier,
+            activities=int(self.activities),
+            activities_verbal=self.activities_verbal,
+            connected=self.connected,
+            operational=self.operational,
+            why_not_operational=self.why_not_operational,
+        )
 
-        if capacity == "imager":
-            ret = PHD2ImagerStatus(
-                identifier=self.identifier,
-                activities=int(self.activities),
-                activities_verbal=self.activities_verbal,
-                connected=self.connected,
-                operational=self.operational,
-                why_not_operational=self.why_not_operational,
-            )
-        elif capacity == "guider":
-            st = self.sky_quality.state
-            sky_quality: SkyQualityStatus | None = (
-                None
-                if self.sky_quality.latest_update is None
-                else SkyQualityStatus(
-                    score=st.score_0_to_100, state=st.quality_state, latest_update=self.sky_quality.latest_update
-                )
-            )
+    def guider_status(self) -> PHD2GuiderStatus:
+        """PHD2 in its **guider** role, for embedding under `GuiderStatus.backend`.
 
-            ret = PHD2GuiderStatus(
-                identifier=self.identifier,
-                is_guiding=self.is_guiding,
-                is_settling=self.is_settling(),
-                app_state=self.app_state,
-                avg_dist=self.avg_dist,
-                sky_quality=sky_quality,
+        One connector serves two roles, so it answers for both -- but as two
+        methods rather than one method behind a `capacity` discriminator. The
+        discriminator made `status()` return a union, which is how the `Imager`
+        wrapper came to pass `capacity="imager"` to ASCOM and ZWO, neither of
+        which takes an argument: `/imager/status` was a 500 on both (#100).
+        """
+        st = self.sky_quality.state
+        sky_quality: SkyQualityStatus | None = (
+            None
+            if self.sky_quality.latest_update is None
+            else SkyQualityStatus(
+                score=st.score_0_to_100, state=st.quality_state, latest_update=self.sky_quality.latest_update
             )
-        return ret
+        )
+
+        return PHD2GuiderStatus(
+            identifier=self.identifier,
+            is_guiding=self.is_guiding,
+            is_settling=self.is_settling(),
+            app_state=self.app_state,
+            avg_dist=self.avg_dist,
+            sky_quality=sky_quality,
+        )
 
     @property
     def identifier(self):
@@ -1240,16 +1285,16 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         res = self.call("save_image")
         return res["result"]["filename"]
 
-    def endpoint_shutdown(self):
-        return self.shutdown()
-
-    def shutdown(self):
+    def shutdown(self) -> CanonicalResponse:
         self.start_activity(PHD2Activities.ShuttingDown)
         self.stop_guiding()
         self.disconnect()
         if self.watched_process:
             self.watched_process.terminate()
         self.end_activity(PHD2Activities.ShuttingDown)
+        # Unlike startup(), this has real content -- it just never reported it,
+        # falling off the end and returning None (#73).
+        return CanonicalResponse_Ok
 
     @property
     def is_shutting_down(self) -> bool:
@@ -1350,17 +1395,33 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         # logger.error(f"{function_name()}: got None from 'get_camera_frame_size'")
         # return 0
 
-    def startup(self):
-        pass
+    def startup(self) -> CanonicalResponse:
+        """Nothing to do, and `Ok` is the truthful answer.
 
-    def endpoint_startup(self):
-        pass
+        Unlike the ASCOM backend -- which powers on, connects and enables the cooler
+        *in* `startup()` -- this connector does all of that in `__init__`: it locates
+        and launches `phd2.exe` through `WatchedProcess`, waits for it, then calls
+        `connect()` and `connect_equipment()`. So by the time anything can call this,
+        the component is started.
 
-    def abort(self):
-        pass
+        It returns an envelope rather than `None` so the wrapper can declare
+        `-> CanonicalResponse` (#73), and `Ok` rather than an error because startup
+        genuinely is complete. What it must **not** do is repeat the constructor's
+        work: that launches a second `phd2.exe`, which is #84.
 
-    def endpoint_abort(self):
+        That the work lives in the constructor at all is a lifecycle defect rather
+        than a contract one -- `Component.startup` is documented as running at the
+        start of every observing session, which a constructor cannot do. Tracked
+        under `epic:unit-lifecycle`.
+        """
+        return CanonicalResponse_Ok
+
+    def abort(self) -> CanonicalResponse:
+        return CanonicalResponse_Ok
+
+    def endpoint_abort(self) -> CanonicalResponse:
         self.stop_capture()
+        return CanonicalResponse_Ok
 
     @property
     def connected(self) -> bool:
@@ -1573,7 +1634,12 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
     @cooler_on.setter
     def cooler_on(self, onoff: bool):
-        self.call("set_cooler_state", onoff)
+        # Guarded like the getter above: an assignment cannot report, so a bare raise here
+        # surfaces at whatever ran next rather than at the caller (MAST_unit#198).
+        try:
+            self.call("set_cooler_state", onoff)
+        except Exception as ex:
+            self.log_and_append_error(f"cooler_on.setter: {ex}")
 
     @property
     def cooler_power(self) -> float | None:

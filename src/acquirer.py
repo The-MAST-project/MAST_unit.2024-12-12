@@ -12,6 +12,7 @@ from common import asi
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import FcuVersion, SkyRoiConfig
+from common.endpoints import Tier, endpoint
 from common.filer import Filer, MoveGuardian
 from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification, UnitAssignment
@@ -38,6 +39,13 @@ from stage import StagePresetPosition
 logger = get_logger(__name__)
 
 
+#: The `Unit` attributes an acquisition dereferences. Each is `None` when its component
+#: failed to build, which is a routine state -- a PHD2 connect failure leaves `imager` and
+#: `guider` both unbuilt (MAST_unit#84), and a missing ASCOM cover driver leaves `covers`
+#: unbuilt on three of four units (MAST_unit#95).
+REQUIRED_COMPONENTS = ("mount", "guider", "imager", "solver", "stage")
+
+
 class Acquirer:
     from typing import TYPE_CHECKING
 
@@ -53,6 +61,10 @@ class Acquirer:
         self.unit = unit
         self.folder: str | None = None
         self.latest_acquisition: Acquisition | None = None
+
+    def missing_components(self) -> list[str]:
+        """The `REQUIRED_COMPONENTS` this unit did not build, in declaration order."""
+        return [name for name in REQUIRED_COMPONENTS if getattr(self.unit, name) is None]
 
     def run_acquisition(self, acquisition: Acquisition):
         """Thread entry point for an acquisition: run it, then always release its folder.
@@ -78,6 +90,57 @@ class Acquirer:
             # deleted with it.
             MoveGuardian().release_folder(acquisition.folder, logger=logger)
 
+    def _cancelled(self) -> bool:
+        """True once `Acquiring` has been cleared -- the protocol's cancel signal.
+
+        Clearing the flag is how everything here is stopped, and `solve_and_correct`
+        already polls it through `parent_activity`, so a cancellation landing during a
+        SOLVE was always honoured. What it was not honoured during is everything between
+        the solves: the stage moves, the `is_moving` spins and the flat five-second
+        settles. That is most of an acquisition's wall-clock time, and the likeliest
+        moment for an operator to give up on one.
+        """
+        return not self.unit.is_active(UnitActivities.Acquiring)
+
+    def _cancellable_sleep(self, seconds: float, poll: float = 0.2) -> bool:
+        """Sleep, returning False the moment the acquisition is cancelled."""
+        deadline = time.monotonic() + seconds
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return not self._cancelled()
+            if self._cancelled():
+                return False
+            time.sleep(min(poll, remaining))
+
+    def _await_stage(self) -> bool:
+        """Wait out a stage move, returning False if cancelled while it runs."""
+        while self.unit.stage.is_moving:  # type: ignore[union-attr]
+            if self._cancelled():
+                return False
+            time.sleep(0.2)
+        return True
+
+    def _abandon(self, op: str, acquisition_exposure_series=None) -> None:
+        """Unwind exactly as a failed phase does.
+
+        A cancelled acquisition must leave the unit in the same state as one that could
+        not reach tolerance -- tracking stopped, the exposure series closed, and no
+        activity flag left set. `Positioning` in particular: `do_acquire` raises it around
+        the stage moves, which is precisely where a cancellation now lands.
+        """
+        logger.info(f"{op}: acquisition cancelled; unwinding")
+        self.unit.end_activity(UnitActivities.Acquiring)
+        if self.unit.is_active(UnitActivities.Positioning):
+            self.unit.end_activity(UnitActivities.Positioning)
+        try:
+            if self.unit.mount is not None:
+                self.unit.mount.stop_tracking()
+            if acquisition_exposure_series is not None and self.unit.imager is not None:
+                self.unit.imager.end_exposure_series(acquisition_exposure_series)
+        except Exception:  # the unwind must finish even if part of it fails
+            logger.exception(f"{op}: error while unwinding a cancelled acquisition")
+
     def do_acquire(self, acquisition: Acquisition):  # noqa: C901
         """
         Called from start_acquisition()
@@ -90,15 +153,28 @@ class Acquirer:
         self.unit.errors = []
         self.unit.reference_image = None
 
-        assert self.unit.mount is not None, f"{op}: unit.mount is None"
-        assert self.unit.guider is not None, f"{op}: unit.guider is None"
-        assert self.unit.imager is not None, f"{op}: unit.imager is None"
-        assert self.unit.solver is not None, f"{op}: unit.solver is None"
-        assert self.unit.stage is not None, f"{op}: unit.stage is None"
-        assert self.unit.acquirer is not None, f"{op}: unit.acquirer is None"
+        # The endpoint refuses before spawning this thread, so reaching here with a missing
+        # component means a caller that did not check -- `start_acquisition`, or a future
+        # one. Recorded on `unit.errors` because that is what `/unit/status` publishes; an
+        # AssertionError here would reach only the log, and only after the caller had been
+        # told the acquisition started.
+        missing = self.missing_components()
+        if missing:
+            msg = f"{op}: cannot acquire, these components did not initialize: {', '.join(missing)}"
+            logger.error(msg)
+            self.unit.errors.append(msg)
+            return
 
         self.latest_acquisition = acquisition
-        acquisition_conf = acquisition.conf
+
+        # Bound ONCE, here, and used for the whole acquisition. The configuration is live
+        # now, so re-reading it per step could shift values under a run in progress; an
+        # operation uses what it started with. Within one configuration generation this is
+        # the same object every time, so binding it costs nothing.
+        assert self.unit.unit_conf is not None
+        acquisition_conf = self.unit.unit_conf.acquisition
+        # A per-call override, not a configuration change (MAST_unit#195).
+        exposure = acquisition.exposure if acquisition.exposure is not None else acquisition_conf.exposure
         sky_roi_conf = acquisition_conf.rois[self.unit.fcu_version]
 
         #
@@ -154,8 +230,9 @@ class Acquirer:
             #
             self.unit.stage.move_to_preset(StagePresetPosition.Sky)
 
-            while self.unit.stage.is_moving:
-                time.sleep(0.2)
+            if not self._await_stage():
+                self._abandon(op)
+                return
             self.unit.mount.wait_until_settled(SettleMode.SLEW)
 
             self.unit.end_activity(UnitActivities.Positioning)
@@ -178,7 +255,7 @@ class Acquirer:
             from common.models.statuses import ImagerRoi, ImagerSettings
 
             sky_settings = ImagerSettings(
-                seconds=acquisition_conf.exposure,
+                seconds=exposure,
                 base_folder=os.path.join(self.latest_acquisition.folder, phase),
                 gain=gain,
                 binning=imager_binning,
@@ -195,8 +272,7 @@ class Acquirer:
             default_tolerance: Angle = Angle(1 * u.arcsecond)  # type: ignore
             ra_tolerance: Angle = default_tolerance
             dec_tolerance: Angle = default_tolerance
-            assert self.unit.unit_conf is not None
-            phase_conf = self.unit.unit_conf.acquisition
+            phase_conf = acquisition_conf
             ra_tolerance = Angle(phase_conf.tolerance.ra_arcsec * u.arcsecond)  # type: ignore
             dec_tolerance = Angle(phase_conf.tolerance.dec_arcsec * u.arcsecond)  # type: ignore
 
@@ -234,10 +310,13 @@ class Acquirer:
             case FcuVersion.v2:
                 self.unit.stage.move_to_preset(StagePresetPosition.Sky)
 
-        while self.unit.stage.is_moving:
-            time.sleep(0.2)
+        if not self._await_stage():
+            self._abandon(op, acquisition_exposure_series)
+            return
         logger.info("sleeping additional 5 seconds to let the stage stop moving ...")
-        time.sleep(5)
+        if not self._cancellable_sleep(5):
+            self._abandon(op, acquisition_exposure_series)
+            return
         logger.info(f"stage now at {self.unit.stage.position}")
 
         if self.unit.is_active(UnitActivities.Positioning):
@@ -253,7 +332,7 @@ class Acquirer:
             base_folder=os.path.join(self.latest_acquisition.folder, phase)
         )
         # override with acquisition settings
-        spec_imager_settings.seconds = acquisition.conf.exposure
+        spec_imager_settings.seconds = exposure
         if acquisition_conf.binning is not None:
             spec_imager_settings.binning = acquisition_conf.binning
         if acquisition_conf.gain is not None:
@@ -329,10 +408,13 @@ class Acquirer:
         if self.unit.fcu_version == FcuVersion.v2:
             self.unit.stage.move_to_preset(StagePresetPosition.Spec)
             lines.append("moving stage to SPEC")
-        while self.unit.stage.is_moving:
-            time.sleep(0.2)
+        if not self._await_stage():
+            self._abandon(op)
+            return
         logger.info("sleeping additional 5 seconds to let the stage stop moving ...")
-        time.sleep(5)
+        if not self._cancellable_sleep(5):
+            self._abandon(op)
+            return
 
         if self.latest_acquisition.handover_automatically_to_guider:
             lines.append("starting PHD2 guiding")
@@ -356,6 +438,22 @@ class Acquirer:
             self.unit.acquirer.latest_acquisition.post_process()
 
     def start_acquisition_and_guiding_for_assignment(self, assignment: UnitAssignment):
+        """Acquire and hand over to guiding for a controller-issued assignment.
+
+        **Unreferenced and unexercised.** Nothing in this repository calls it, no route
+        serves it, and no test covers it -- so it has never run, and restoring it does not
+        change any behaviour a caller can reach today. It is kept because it is the only
+        expression of the *unattended* assignment flow: `handover_automatically_to_guider`
+        is `True` here and `False` in every reachable path, and the `in-progress`
+        notification that tells the controller where the products are exists nowhere else.
+
+        Treat every line as unverified. Two things in particular are asserted rather than
+        observed: that `assignment.plan` carries `target.ra_hours` / `target.dec_degrees`
+        in the shape read below, and that `run_acquisition` on this thread reaches the
+        SPEC hand-over without the operator step the reachable path relies on. Before this
+        is wired to anything, it wants a hardware pass of its own -- see MAST_unit#156 for
+        the sibling problem that a thread answering `Ok` reports nothing.
+        """
         approach_mode: ApproachMode = ApproachMode.GRADUAL_BY_RATE
         make_corrections = True
         ra_j2000_hours = assignment.plan.target.ra_hours
@@ -378,7 +476,10 @@ class Acquirer:
             make_corrections=make_corrections,
             target_ra=float(ra_j2000_hours),
             target_dec=float(dec_j2000_degs),
-            conf=self.unit.unit_conf.acquisition,
+            # No caller-supplied exposure on this path: the configured one applies.
+            # It previously inherited whatever the HTTP endpoint had last written into
+            # unit_conf.acquisition.exposure (MAST_unit#195).
+            exposure=None,
             # Unattended assignments auto-hand-over to guiding; the Acquisition default is
             # False (manual acquisition-tuning), which would stall the assignment at SPEC.
             handover_automatically_to_guider=True,
@@ -498,6 +599,7 @@ class Acquirer:
             )
         return ra, dec, None
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_start_acquisition_and_guiding(
         self,
         seconds: float | None = 5.0,
@@ -591,7 +693,12 @@ class Acquirer:
 
         op = function_name()
 
-        assert self.unit.mount is not None, f"{op}: unit.mount is None"
+        missing = self.missing_components()
+        if missing:
+            return CanonicalResponse(
+                errors=[f"cannot start acquisition, these components did not initialize: {', '.join(missing)}"]
+            )
+
         assert self.unit.mount.pw is not None, f"{op}: unit.mount.pw is None"
 
         pw_status = self.unit.mount.pw.status()
@@ -603,9 +710,6 @@ class Acquirer:
             return CanonicalResponse(errors=[problem])
 
         assert self.unit.unit_conf is not None
-        if seconds is not None:
-            self.unit.unit_conf.acquisition.exposure = seconds
-
         assert self.unit.unit_conf.solving.method in self.unit.unit_conf.solving.valid_methods, (
             "unit unit_conf.solving.method is not in allowed_methods"
         )
@@ -632,7 +736,7 @@ class Acquirer:
             make_corrections=make_corrections,
             target_ra=float(ra_j2000_hours),
             target_dec=float(dec_j2000_degs),
-            conf=self.unit.unit_conf.acquisition,
+            exposure=seconds,
             gain_absolute=gain_absolute or asi.ASI_294MM_DEFAULT_GAIN,
             gain_percent=gain_percent,
             skip_sky=skip_sky,

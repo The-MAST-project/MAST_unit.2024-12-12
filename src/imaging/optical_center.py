@@ -7,8 +7,8 @@ axis points (anti-)radially through it.  We recover the center as the point
 through which those major-axis lines best pass, weighted so that nearly-round
 (low-coma, noisy-orientation) sources near the axis contribute little.
 
-This is the working successor to the earlier ``src/science/coma.py`` sketch,
-whose least-squares solve and return were left commented out.
+This is the working successor to the earlier ``src/science/coma.py`` sketch
+(since removed), whose least-squares solve and return were left commented out.
 
 Design reference: unit self-calibration, section "Optical center
 (coma elongation null)".

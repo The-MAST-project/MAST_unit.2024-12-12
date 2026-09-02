@@ -14,6 +14,7 @@ from common.ascom import AscomDispatcher, ascom_run
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.endpoints import Completion, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import MountStatus, SpiralSettings
@@ -138,6 +139,18 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     _instance = None
     _initialized = False
 
+    @property
+    def conf(self):
+        """This component's configuration, live.
+
+        Was snapshotted in ``__init__``, which is why a value edited in the database
+        reached a running unit only at the next service restart. Within one configuration
+        generation this returns the same object every time, so it is a memo lookup, not a
+        rebuild -- which is what makes a property affordable here.
+        """
+        assert self.unit is not None and self.unit.unit_conf is not None
+        return self.unit.unit_conf.mount
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -157,7 +170,6 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
 
         self.unit = unit
         assert self.unit and self.unit.unit_conf is not None
-        self.conf = self.unit.unit_conf.mount
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Mount")
         Component.__init__(self, MountActivities)
 
@@ -255,9 +267,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         except Exception:
             logger.exception("mount connect/disconnect failed")
 
-    def endpoint_startup(self):
-        return self.startup()
-
+    @endpoint(tier=Tier.INTERFACE, completion=MountActivities.StartingUp)
     def startup(self):
         """
         Performs the MAST startup routine (power ON, fans on and find home)
@@ -265,16 +275,14 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         if not self.connected:
             self.connect()
         if not self.detected:
-            return
+            return CanonicalResponse(errors=[f"{function_name()}: mount not detected"])
         self.start_activity(MountActivities.StartingUp)
         self._was_shut_down = False
         self.pw.request("/fans/on")
         self.find_home()
         return CanonicalResponse_Ok
 
-    def endpoint_shutdown(self):
-        return self.shutdown()
-
+    @endpoint(tier=Tier.INTERFACE, completion=MountActivities.ShuttingDown)
     def shutdown(self):
         """
         Performs the MAST shutdown routine (fans off, park, power OFF)
@@ -299,6 +307,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
 
         self.power_off()
 
+    @endpoint(tier=Tier.OPERATION, completion=MountActivities.Parking)
     def park(self):
         """
         Parks the MAST mount
@@ -308,6 +317,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.pw.mount_park()
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION, completion=MountActivities.FindingHome)
     def find_home(self):
         """
         Tells the MAST mount to find it's HOME indexes
@@ -361,6 +371,16 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         if self.is_active(MountActivities.Slewing) and not self.is_moving:
             self.end_activity(MountActivities.Slewing)
             self.target = None
+
+        self._end_abort_when_at_rest(status)
+
+    def _end_abort_when_at_rest(self, status) -> None:
+        """End `Aborting` once the mount is stopped: no commanded slew, no residual motion."""
+        if not self.is_active(MountActivities.Aborting):
+            return
+
+        if not self.is_moving and not status.mount.is_slewing:  # type: ignore
+            self.end_activity(MountActivities.Aborting)
 
     @property
     def is_tracking(self) -> bool:
@@ -611,9 +631,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"{op}: dist_to_target settled (< {tol_arcsec:.3f} arcsec for {stable_samples} samples)")
         return True
 
-    def endpoint_status(self) -> MountStatus:
-        return self.status()
-
+    @endpoint(tier=Tier.INTERFACE, completion=Completion.IMMEDIATE)
     def status(self) -> MountStatus:
         target_verbal = target_as_text(self.target)
 
@@ -688,6 +706,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                 return True
         return False
 
+    @endpoint(tier=Tier.OPERATION, completion=Completion.BLOCKING)
     def start_tracking(self) -> CanonicalResponse:
         """
         Tell the ``mount`` to start tracking
@@ -717,6 +736,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"started tracking (from {caller_name()})")
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION, completion=Completion.BLOCKING)
     def stop_tracking(self) -> CanonicalResponse:
         """
         Tell the ``mount`` to stop tracking
@@ -763,6 +783,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.target = None
             raise
 
+    @endpoint(tier=Tier.OPERATION, completion=MountActivities.Slewing)
     def endpoint_goto_ra_dec_j2000(
         self,
         ra_j2000_hours: Annotated[
@@ -798,6 +819,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         """
         return self._goto_equatorial(self.goto_ra_dec_j2000, ra_j2000_hours, dec_j2000_degs, function_name())
 
+    @endpoint(tier=Tier.OPERATION, completion=MountActivities.Slewing)
     def endpoint_goto_object(
         self,
         object_name: Annotated[
@@ -872,6 +894,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.target = None
             raise
 
+    @endpoint(tier=Tier.OPERATION, completion=MountActivities.Slewing)
     def endpoint_goto_ra_dec_apparent(
         self,
         ra_apparent_hours: Annotated[
@@ -943,6 +966,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"{op}: slewing to ra={ra}, dec={dec}")
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION, completion=MountActivities.Slewing)
     def goto_alt_az(
         self,
         alt_degs: Annotated[
@@ -1012,9 +1036,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"{op}: slewing to alt={alt_degs:g}, az={az_degs:g}")
         return CanonicalResponse_Ok
 
-    def endpoint_abort(self):
-        return self.abort()
-
+    @endpoint(tier=Tier.INTERFACE, completion=MountActivities.Aborting)
     def abort(self):
         """
         Aborts any in-progress mount activities
@@ -1032,6 +1054,8 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         ):
             if self.is_active(activity):
                 self.end_activity(activity)
+
+        self.start_activity(MountActivities.Aborting)
         self.pw.mount_stop()
         self.pw.mount_tracking_off()
         return CanonicalResponse_Ok
@@ -1097,6 +1121,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def was_shut_down(self) -> bool:
         return self._was_shut_down
 
+    @endpoint(tier=Tier.DEMO, completion=Completion.BLOCKING)
     def dance(self):
         coordinates = cone_coordinates_generator()
         logger.info("dance: starting to dance")
@@ -1115,53 +1140,48 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info("dance: done dancing")
         self.find_home()
         self.end_activity(MountActivities.Dancing)
+        return CanonicalResponse_Ok
 
     @property
     def api_router(self) -> APIRouter:
         """
         Returns a FastAPI router with all the mount API endpoints."""
         base_path = Const.BASE_UNIT_PATH + "/mount"
-        tag = "Mount"
 
         router = APIRouter()
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
-        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown)
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
-        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
-        router.add_api_route(base_path + "/connect", tags=[tag], endpoint=self.connect)
-        router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
-        router.add_api_route(base_path + "/start_tracking", tags=[tag], endpoint=self.start_tracking)
-        router.add_api_route(base_path + "/stop_tracking", tags=[tag], endpoint=self.stop_tracking)
-        router.add_api_route(base_path + "/park", tags=[tag], endpoint=self.park)
-        router.add_api_route(base_path + "/find_home", tags=[tag], endpoint=self.find_home)
+        register_component_endpoints(router, self, base_path)
+        add_api_route(router, base_path + "/start_tracking", endpoint=self.start_tracking, methods=["PUT"])
+        add_api_route(router, base_path + "/stop_tracking", endpoint=self.stop_tracking, methods=["PUT"])
+        add_api_route(router, base_path + "/park", endpoint=self.park, methods=["PUT"])
+        add_api_route(router, base_path + "/find_home", endpoint=self.find_home, methods=["PUT"])
         # PUT per invariant 5 (#48). `/goto` and the divergent `goto()` it pointed at
         # were retired in #37: the equatorial and horizontal slews are separate verbs.
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/goto_ra_dec_j2000",
             methods=["PUT"],
-            tags=[tag],
             endpoint=self.endpoint_goto_ra_dec_j2000,
         )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/goto_ra_dec_apparent",
             methods=["PUT"],
-            tags=[tag],
             endpoint=self.endpoint_goto_ra_dec_apparent,
         )
         # PUT for the same reason as its siblings: it slews. That the name resolution in
         # front of it is a read changes nothing -- what the route DOES is move the mount.
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/goto_object",
             methods=["PUT"],
-            tags=[tag],
             endpoint=self.endpoint_goto_object,
         )
         # PUT, not GET: invariant 5 of the endpoint contract (#48, decided 2026-07-20) --
         # state-changing routes are PUT so a caching proxy, a link prefetch or a Swagger
         # "try it out" cannot fire a slew. The sibling verbs are still GET pending that
         # sweep; a new route has no reason to be added to the pile.
-        router.add_api_route(base_path + "/goto_alt_az", methods=["PUT"], tags=[tag], endpoint=self.goto_alt_az)
-        router.add_api_route(base_path + "/dance", tags=[tag], endpoint=self.dance)
+        add_api_route(router, base_path + "/goto_alt_az", methods=["PUT"], endpoint=self.goto_alt_az)
+        add_api_route(router, base_path + "/dance", endpoint=self.dance, methods=["PUT"])
 
         return router
 

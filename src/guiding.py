@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 from common.activities import Activities
 from common.config.rois import FcuVersion, SpecRoiConfig
+from common.endpoints import Tier, endpoint
 from common.interfaces.guiding import GuiderInterface, GuiderTypes
 from common.mast_logging import get_logger
 from common.models.statuses import GuiderStatus, ImagerRoi, ImagerSettings
@@ -71,11 +72,11 @@ class Guider(GuiderInterface):
     def __repr__(self):
         return f"Guider(_backend={self._backend.__repr__()})"
 
-    def status(self):
+    def status(self) -> GuiderStatus:
         return GuiderStatus(
             activities=self.activities,
             activities_verbal=self.activities_verbal,
-            backend=self._backend.status(capacity="guider") if self._backend else None,  # type: ignore
+            backend=self._backend.guider_status() if self._backend else None,
         )
 
     def start_guiding(self):
@@ -164,6 +165,7 @@ class Guider(GuiderInterface):
             save=save,
         )
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_start_guiding(self):
         """
         Manually start guiding after an acquisition-tuning run (handover_automatically_to_guider
@@ -194,6 +196,7 @@ class Guider(GuiderInterface):
         Thread(name="guiding", target=self.start_guiding).start()
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_stop_acquisition_and_guiding(self):
         return self.stop_acquisition_and_guiding()
 
@@ -215,6 +218,11 @@ class Guider(GuiderInterface):
 
             self.unit.end_activity(UnitActivities.Acquiring)
             self.unit.end_activity(UnitActivities.Guiding)
+            # Positioning too. `do_acquire` raises it around the stage moves between
+            # phases, so a stop that lands in that window used to leave it set for good --
+            # a stale flag that makes the unit look busy to everything that reads status,
+            # and exactly the imbalance `test_activity_flag_balance` refuses.
+            self.unit.end_activity(UnitActivities.Positioning)
 
             if self.unit.imager is not None and self.unit.imager.is_active(ImagerActivities.Exposing):
                 logger.debug(f"{function_name()}: imager is exposing, stopping exposure ...")

@@ -6,17 +6,26 @@ service imports. ``common`` is NOT under this repo: it is a sibling clone
 into the venv, so nothing here needs to place it -- but the tests will fail to
 import it in a venv without that ``.pth``.
 
-On Darwin only, ``common.filer.Filer.__init__`` is shimmed to a temp-dir
-layout: ``Filer`` supports Windows/Linux only and raises at import time on
-macOS (``common.utils`` builds a module-level ``Filer``), and its Linux paths
-(``/Storage/...``) are unwritable there anyway. The shim is a no-op on the
-platforms the code deploys to; retire it if Darwin support ever lands.
+``common.filer.Filer.__init__`` is shimmed to a temp-dir layout on **every**
+platform, because ``common.utils`` builds a module-level ``Filer`` at import,
+so every component module drags one in:
+
+- On **macOS** the shim is what makes the import possible at all: ``Filer``
+  supports Windows/Linux only and raises at import time, and its Linux paths
+  (``/Storage/...``) are unwritable there anyway.
+- On **Windows** the import succeeds, but an unshimmed ``Filer`` reaches for
+  the unit's real storage roots, which a test suite has no business touching.
+
+Retire the macOS rationale if Darwin support ever lands; keep the temp-dir
+redirection regardless.
+
+Also blocks external process launches, so a test cannot drive real hardware --
+see ``_block_external_processes`` below.
 """
 
 from __future__ import annotations
 
 import os
-import platform
 import subprocess
 import sys
 import tempfile
@@ -113,18 +122,22 @@ def _block_external_processes() -> None:
             setattr(module, name, deny(f"{module.__name__}.{name}", original))
 
 
-def _shim_filer_for_darwin() -> None:
-    if platform.system() != "Darwin":
-        return
+def _shim_filer_for_tests() -> None:
     import common.filer as filer_module
 
     tmp_root = tempfile.mkdtemp(prefix="mast-unit-tests-")
     location = filer_module.Location(None, tmp_root)
 
-    def _darwin_init(self, logger=None):
+    def _tmp_init(self, logger=None):
         self.local = location
         self.shared = location
         self.ram = location
+        # Not reached by any test directly: `init_log` builds a `Filer()` and asks it
+        # for `machine_log_root()`, which reads both. Every attribute the real
+        # `__init__` binds has to be here, or importing anything that logs blows up
+        # during collection.
+        self.share_root = location
+        self.machine = location
         self.tops = {
             filer_module.FilerTop.Local: self.local,
             filer_module.FilerTop.Shared: self.shared,
@@ -132,10 +145,18 @@ def _shim_filer_for_darwin() -> None:
         }
         self.logger = logger
 
-    filer_module.Filer.__init__ = _darwin_init
+    filer_module.Filer.__init__ = _tmp_init
 
 
-_shim_filer_for_darwin()
+_shim_filer_for_tests()
+
+# Same reason as the Filer shim, and before collection for the same reason: the component
+# modules bind win32com / pyximc / pyzwoasi at module scope, so without these they cannot be
+# imported at all off a unit -- which is why the behavioural half of this suite has only ever
+# run on Windows. Only absent modules are stubbed, so Windows keeps the real ones (#52).
+from fakes import install_hardware_stubs  # noqa: E402
+
+install_hardware_stubs()
 
 
 _block_external_processes()

@@ -72,7 +72,6 @@ def make_connector(limit_frame: LimitFrameConfig | None = None) -> PHD2Connector
     doc = dict(LEGACY_PHD2_DOC)
     if limit_frame is not None:
         doc["limit_frame"] = limit_frame.model_dump()
-    p.conf = PHD2Config(**doc)
 
     guiding_settings = ImagerSettings(
         seconds=3.0,
@@ -86,6 +85,9 @@ def make_connector(limit_frame: LimitFrameConfig | None = None) -> PHD2Connector
     guider.make_guiding_settings.return_value = guiding_settings
     unit = MagicMock(name="unit")
     unit.guider = guider
+    # `conf` is a live property reading unit_conf.phd2 through the parent imager, so the
+    # configuration goes where the connector actually looks for it -- it has no setter.
+    unit.unit_conf.phd2 = PHD2Config(**doc)
     parent = MagicMock(name="parent")
     parent.unit = unit
     p.parent = parent

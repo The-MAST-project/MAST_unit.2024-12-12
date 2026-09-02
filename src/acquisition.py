@@ -4,7 +4,6 @@ from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
 from common import asi
-from common.config.unit import AcquisitionConfig
 from common.corrections import Corrections
 from common.filer import Filer, MoveGuardian
 from common.mast_logging import get_logger
@@ -41,15 +40,25 @@ class Acquisition:
         make_corrections: bool = True,
         target_ra: float | None = None,
         target_dec: float | None = None,
-        conf: AcquisitionConfig | None = None,
+        exposure: float | None = None,
         skip_sky: bool = False,
         use_set_limit_frame: bool = True,
         handover_automatically_to_guider: bool = False,
         gain_absolute: int | None = None,
         gain_percent: int | None = None,
     ):
-        if not conf:
-            raise Exception("Acquisition: conf == None")
+        #: A caller-supplied exposure for THIS acquisition only, or None to use the
+        #: configured one. It used to arrive as a whole `AcquisitionConfig`, which the
+        #: endpoint produced by assigning into `unit.unit_conf.acquisition.exposure` --
+        #: a write into the process-wide configuration every other component reads, never
+        #: persisted and never reset. A plan-driven acquisition then inherited whatever
+        #: exposure an operator had last typed into the HTTP endpoint (MAST_unit#195).
+        #:
+        #: Passing the config object at all was redundant: both call sites passed
+        #: `self.unit.unit_conf.acquisition`, which `do_acquire` re-reads directly anyway.
+        #: Its only distinguishing content was this override, so the override is now the
+        #: only thing passed.
+        self.exposure = exposure
 
         self.approach_mode = approach_mode
         self.solver_id = solver_id
@@ -74,9 +83,9 @@ class Acquisition:
             else:
                 raise ValueError("Acquisition: target_dec is None and mount status does not provide DEC")
 
-        self.conf = conf
-        self.ra_tolerance = conf.tolerance.ra_arcsec
-        self.dec_tolerance = conf.tolerance.dec_arcsec
+        # `ra_tolerance` / `dec_tolerance` used to be copied out of the config here and
+        # were read by nothing: every tolerance actually applied is derived where it is
+        # used (`acquirer.py`, `solving_guider.py`) from the live configuration.
         self.corrections: dict[str, Corrections] = {}
         self.folder = PathMaker().make_acquisition_folder(
             tags={

@@ -22,8 +22,9 @@ masking the bright-star leak-through artifacts before the image is passed
 down the pipeline.
 
 Earlier sketches superseded here: ``src/science/find_vertical_obstruction.py``
-(column sums -> vertical only) and the ``mask_linear_shadow`` half of
-``src/tools/vigneting/vignetting.py`` (argmin of an X-profile -> vertical only).
+(column sums -> vertical only; since removed) and the ``mask_linear_shadow``
+half of ``src/tools/vigneting/vignetting.py`` (argmin of an X-profile ->
+vertical only).
 """
 
 from __future__ import annotations

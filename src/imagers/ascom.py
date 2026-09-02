@@ -22,9 +22,8 @@ from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface
 from common.mast_logging import get_logger
-from common.models.statuses import ImagerRoi, ImagerSettings, ImagerStatus
-from common.paths import PathMaker
-from common.utils import RepeatTimer, function_name, time_stamp
+from common.models.statuses import ImagerBackendStatus, ImagerRoi, ImagerSettings, ImagerStatus
+from common.utils import RepeatTimer, function_name
 from imagers import Imager
 from imagers.saving import save_to_fits_file
 
@@ -372,43 +371,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         self.connected = False
         return CanonicalResponse_Ok
 
-    def endpoint_start_exposure(
-        self,
-        seconds: float | None = 5,
-        gain: int | None = asi.ASI_294MM_DEFAULT_GAIN,
-        binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
-        center_x: int | None = None,
-        center_y: int | None = None,
-        width: int | None = None,
-        height: int | None = None,
-    ):
-
-        if self.cameraXSize is None or self.cameraYSize is None:
-            return CanonicalResponse(errors=["cameraXSize or cameraYSize is not set, cannot start exposure"])
-        center_x = center_x if center_x is not None else int(self.cameraXSize / 2)
-        center_y = center_y if center_y is not None else int(self.cameraYSize / 2)
-        width = width if width is not None else self.cameraXSize
-        height = height if height is not None else self.cameraYSize
-
-        roi = ImagerRoi(
-            x=center_x - int(width / 2),
-            y=center_y - int(height / 2),
-            width=width,
-            height=height,
-        )
-
-        settings = ImagerSettings(
-            seconds=seconds if isinstance(seconds, int | float) else 5,
-            base_folder=PathMaker().make_exposures_folder(),
-            gain=gain,
-            binning=binning,
-            roi=roi,
-            tags=None,
-            save=True,
-        )
-
-        self.start_exposure(settings)
-
     def start_exposure(  # noqa: C901
         self, settings: ImagerSettings
     ) -> CanonicalResponse:
@@ -496,7 +458,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         self.errors = []
         if not self.connected:
             self.errors.append("not connected")
-            return
+            return CanonicalResponse(errors=["not connected"])
 
         parent_imager = cast(Imager, self.parent_imager) or None
         if parent_imager and not parent_imager.is_active(ImagerActivities.Exposing):
@@ -533,27 +495,20 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         return CanonicalResponse(errors=self.errors) if self.errors else CanonicalResponse_Ok
 
-    def endpoint_status(self) -> ImagerStatus:
-        return self.status()
+    def status(self) -> ImagerBackendStatus:
+        """What the **ASCOM** backend reports about itself.
 
-    def status(self) -> ImagerStatus:
+        Narrow by contract: the composite `ImagerStatus` -- temperature, cooler,
+        camera size, power, set point -- belongs to the `Imager` wrapper, which reads
+        each of those from its own properties. This used to return a whole
+        `ImagerStatus` that the wrapper then embedded under its own `backend` field,
+        answering the same fields twice with only the outer copy authoritative. See
+        MAST_common's 2026-08-09 DECISIONS entry.
         """
-        Gets the **ASCOM** imager status
-        """
-
-        return ImagerStatus(
+        return ImagerBackendStatus(
             identifier=self.prog_id,
-            **self.power_status().model_dump(),
-            **self.ascom_status().model_dump(),
+            name=self.name,
             **self.component_status().model_dump(),
-            set_point=self.operational_set_point,
-            temperature=self.temperature,
-            cooler_on=self._ascom.CoolerOn,
-            cooler_power=self._ascom.CoolerPower,
-            latest_settings=self.latest_settings,
-            date=time_stamp(),
-            camera_x_size=self.camera_x_size,
-            camera_y_size=self.camera_y_size,
         )
 
     @property
@@ -586,12 +541,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             self.errors.append(f"cooler_on.setter: {response.errors}")
             logger.error(f"cooler_on.setter: {response.errors}")
 
-    def endpoint_startup(self):
-        """
-        Starts the **MAST** camera up (cooling down , if needed)
-        """
-        return self.startup()
-
     def startup(self):
         """
         Starts the **MAST** camera up (cooling down , if needed)
@@ -622,21 +571,22 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             self.cooler_on = True
         return CanonicalResponse_Ok
 
-    def endpoint_shutdown(self):
-        """
-        Shuts the **MAST** camera down (warms up, if needed)
-        """
-        return self.shutdown()
-
     def shutdown(self):
         """
         Shuts the **MAST** camera down (warms up, if needed)
         """
-        if self.connected:
-            self.start_activity(ImagerActivities.ShuttingDown)
-            if abs(self.temperature - self.warm_set_point) > 0.5:
-                self.warmup()
+        if not self.connected:
+            # A refusal, reported as one. Previously this fell off the end of the
+            # method and returned None, so "shut down while disconnected" and
+            # "shut down successfully" were indistinguishable at the API boundary.
+            self._was_shut_down = True
+            return CanonicalResponse(errors=[f"{function_name()}: not connected"])
+
+        self.start_activity(ImagerActivities.ShuttingDown)
+        if abs(self.temperature - self.warm_set_point) > 0.5:
+            self.warmup()
         self._was_shut_down = True
+        return CanonicalResponse_Ok
 
     def warmup(self):
         """

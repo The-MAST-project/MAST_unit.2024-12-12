@@ -75,10 +75,10 @@ if __name__ == "__main__":
     )
     """
     example usage in another python script- filepath input mandatory, fiber_px and plate_scale_arcsec_px optional.
-    
+
     import vignetting as vig
     vig.main(path.join('.','images','image.fits'), fiber_px = 4041, plate_scale_arcsec_px = 0.25)
 
-    the vignetted image will be saved in the same directory as the input image with 
+    the vignetted image will be saved in the same directory as the input image with
       the filename appended with '_vig.fits'
     """
