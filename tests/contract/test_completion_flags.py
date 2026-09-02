@@ -44,6 +44,7 @@ from .astscan import (
 #: implied. Each names where the chain leaves.
 KNOWN_UNVERIFIABLE = {
     "imagers/__init__.py:shutdown": "delegates to self._backend.shutdown()",
+    "endpoint_acquire_and_find_max_flux": "delegates to self.flux_metering.start(), which raises the flag",
 }
 
 #: Declarations the walk resolved fully and found false. Empty is the point.

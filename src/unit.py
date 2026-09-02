@@ -58,6 +58,8 @@ from common.rois import UnitRoi
 from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers
 from expose_params import MAX_OFFSET_ARCSEC, MAX_OFFSET_DEGREES, resolve_exposure_roi, resolve_offsets
+from flux_metering import correlate
+from flux_metering.session import FluxMeteringParams, FluxMeteringSession, parse_target
 from focuser import Focuser
 from imagers import Imager
 from mount import Mount, SettleMode
@@ -201,6 +203,7 @@ class Unit(Component):
         self.errors: list[str] = list(self._init_errors)
 
         self.spiral = SpiralSearch(self)
+        self.flux_metering = FluxMeteringSession(self)
         self.latest_acquisition: Acquisition | None = None
 
         self._initialized = True
@@ -401,6 +404,11 @@ class Unit(Component):
             focuser=self.focuser.status() if self.focuser else None,
             stage=self.stage.status() if self.stage else None,
             guider=self.guider.status() if self.guider else None,  # type: ignore
+            # None until a run has happened, so the field costs nothing on a unit that never
+            # meters flux -- and stays populated afterwards, so the last run's dx/dy and its
+            # flux curve are readable from the unit's own status rather than only from the
+            # products on the share.
+            flux_metering=self.flux_metering.status() if self.flux_metering.has_run else None,
             # solver= self.solver.status(),
             errors=self.errors,
             autofocus=autofocus,
@@ -464,6 +472,13 @@ class Unit(Component):
         # rule, which decides whether tracking is left running and is easy to get wrong.
         if self.guider is not None and (self.is_active(UnitActivities.Acquiring) or self.is_active(UnitActivities.Guiding)):
             attempt("acquisition/guiding", self.guider.stop_acquisition_and_guiding)
+
+        # Asked to stop, not waited for: the run finishes the exposure it is inside and then
+        # unwinds -- resetting the spiral offset so the mount is left where acquisition put
+        # it rather than on an arbitrary cell. Blocking here would hold `abort` for a whole
+        # exposure, and `abort` is the one verb that has to answer promptly.
+        if self.flux_metering.is_active:
+            self.flux_metering.abort()
 
         if self.guider:
             attempt("guider", self.guider.abort)
@@ -1225,6 +1240,279 @@ class Unit(Component):
         """
         return self.spiral.step(forward=False)
 
+    @endpoint(tier=Tier.OPERATION, completion=UnitActivities.FluxMetering)
+    def endpoint_acquire_and_find_max_flux(
+        self,
+        seconds: Annotated[
+            float,
+            Query(
+                gt=0,
+                description=(
+                    "Imager exposure, for the acquisition and for each spiral step. **The ThorCam "
+                    "exposure follows this**, converted to microseconds, so that both frames "
+                    "integrate over the same window. The CS165MU accepts 64 us to 26,843,418 us "
+                    "(~26.8 s); the camera's own range is checked when it is configured, and a "
+                    "value outside it fails the run rather than being silently clamped."
+                ),
+            ),
+        ] = 5.0,
+        ra_j2000_hours: Annotated[
+            str | float | None,
+            Query(
+                pattern=RA_PATTERN,
+                description=(
+                    "### Right Ascension (J2000) in either:\n"
+                    "- decimal hours (e.g., `12.5`) or\n"
+                    "- sexagesimal format (e.g., `12:30:45.123`). \n"
+                    "- Decimal range: `0 <= RA < 24`.\n"
+                    "If not supplied, taken from telescope"
+                ),
+            ),
+        ] = None,
+        dec_j2000_degs: Annotated[
+            str | float | None,
+            Query(
+                pattern=DEC_PATTERN,
+                description=(
+                    "### Declination (J2000) in either:\n"
+                    "- decimal degrees (e.g., `-45.5`) or\n"
+                    "- sexagesimal format (e.g., `-45:30:00.123`). \n"
+                    "- Decimal range: `-90 <= DEC <= 90`.\n"
+                    "If not supplied, taken from telescope"
+                ),
+            ),
+        ] = None,
+        gain: Annotated[
+            int | None,
+            Query(ge=asi.ControlDict[asi.Control.Gain].min_value, le=asi.ControlDict[asi.Control.Gain].max_value),
+        ] = asi.ASI_294MM_DEFAULT_GAIN,
+        number_of_frames: Annotated[
+            int,
+            Query(
+                ge=1,
+                description=(
+                    "Imager+ThorCam pairs per spiral step. The step's flux is their **median**, "
+                    "and the frame the correlation would use is the one paired with the sample "
+                    "nearest it. Prefer an ODD number: the median is then a sample, so that pair "
+                    "is chosen exactly rather than by proximity to an interpolated value. "
+                    "Run time and stored frames both scale with this."
+                ),
+            ),
+        ] = 3,
+        skip_acquisition: Annotated[
+            bool,
+            Query(
+                description=(
+                    "**Engineering only.** Skip the acquisition and spiral from wherever the mount "
+                    "is now, so the walk, the products and the correlation can be exercised in "
+                    "daylight or a closed enclosure with no star to solve on. A run started this "
+                    "way is **not a calibration** -- the star is not on the assumed fibre, so its "
+                    "`dx, dy` measures nothing. It is recorded in `result.json`."
+                )
+            ),
+        ] = False,
+        x_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along RA")] = 0.5,
+        y_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along Dec")] = 0.5,
+        max_rings: Annotated[int, Query(ge=1, description="Ceiling on the search; what normally ends it")] = 6,
+        patience_rings: Annotated[int, Query(ge=1, description="Complete rings without improvement before stopping")] = 1,
+        max_radius_arcsec: Annotated[
+            float, Query(gt=0, description="Runaway guard, cos(dec)-corrected on the RA axis")
+        ] = 10.0,
+        flux_gain: Annotated[
+            int,
+            Query(
+                ge=0,
+                description=(
+                    "ThorCam gain. The CS165MU accepts **0 to 480**; 0 is the floor and the "
+                    "default, which also makes it the only lever against saturation that is "
+                    "*not* available -- shortening `seconds` is."
+                ),
+            ),
+        ] = 0,
+        flux_black_level: Annotated[
+            int,
+            Query(
+                ge=0,
+                description=(
+                    "ThorCam black-level pedestal, subtracted from every pixel when the flux is "
+                    "summed. The CS165MU accepts **0 to 511**. A constant, so it shifts every "
+                    "step's flux equally and cannot move the arg-max."
+                ),
+            ),
+        ] = 3,
+        usable_fraction: Annotated[
+            float,
+            Query(gt=0, le=1, description="Usable fraction of the frame around the fibre, avoiding coma"),
+        ] = 0.66,
+    ):
+        """
+        Acquires the target, then spirals to find the pointing at which most light reaches
+        the **spectrograph fibre**, and measures how far that is from where acquisition put
+        the star.<br>
+        <br>
+        The answer is `dx, dy` in detector pixels: the error in the configured fibre
+        position, since acquisition aims the star at `fiber_x`, `fiber_y` by using it as the
+        plate-solve reference pixel. `fiber_true = fiber_assumed + (dx, dy)`.<br>
+        <br>
+        At each spiral step the mount settles, an imager frame and a ThorCam frame are taken
+        **in parallel**, and the fibre flux is recorded. The search stops when a complete
+        ring adds no improvement — a ring, not a step, because a spiral circles the origin
+        and flux rises and falls on every one of them.<br>
+        <br>
+        The ThorCam exposure follows `seconds`, so a long `seconds` averages over
+        scintillation but is also the only lever against saturation, gain already being at
+        its floor. **Saturation never stops a run**; the result's `argmax_saturated` says
+        whether the answer is usable.<br>
+        <br>
+        Takes 20–40 minutes and writes several GB. Answers at once; watch
+        `find_max_flux_status`, and `unit/abort` stops it. Nothing is written to the
+        configuration database — `dx, dy` land in `result.json` only.
+        """
+        # Parsed here, before anything is spent: a bad coordinate must refuse the request
+        # rather than fail inside a run that has already claimed the mount.
+        try:
+            ra_decimal, dec_decimal = parse_target(ra_j2000_hours, dec_j2000_degs)
+        except ValueError as ex:
+            return CanonicalResponse(errors=[f"{function_name()}: {ex}"])
+
+        params = FluxMeteringParams(
+            seconds=seconds,
+            ra_j2000_hours=ra_decimal,
+            dec_j2000_degs=dec_decimal,
+            gain=gain,
+            number_of_frames=number_of_frames,
+            skip_acquisition=skip_acquisition,
+            x_step_arcsec=x_step_arcsec,
+            y_step_arcsec=y_step_arcsec,
+            max_rings=max_rings,
+            patience_rings=patience_rings,
+            max_radius_arcsec=max_radius_arcsec,
+            flux_gain=flux_gain,
+            flux_black_level=flux_black_level,
+            usable_fraction=usable_fraction,
+        )
+        outcome = self.flux_metering.start(params)
+        if isinstance(outcome, str):
+            return CanonicalResponse(errors=[f"{function_name()}: {outcome}"])
+        return outcome
+
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
+    def endpoint_find_max_flux_status(self):
+        """
+        Progress of the current (or last) `acquire_and_find_max_flux` run: phase, spiral
+        index and cell, the best flux so far and where it was, frames taken, saturated
+        frames, and how the run ended.<br>
+        <br>
+        Deliberately separate from `unit/status`: adding progress fields to the shared
+        status model would put them in front of every `FullUnitStatus` consumer.
+        """
+        return self.flux_metering.status()
+
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
+    def endpoint_flux_metering_runs(self):
+        """
+        Every flux-metering run on this machine's share, newest night first, with the
+        `date` and `seq` that `spiral_correlate_steps` takes.<br>
+        <br>
+        This exists because OpenAPI cannot offer them as a drop-down. A drop-down comes
+        from an `Enum` whose members are fixed when the module is imported, so it would be
+        stale from the first run after the service started -- wrong exactly when it is
+        being used -- and `seq` depends on `date` in a way OpenAPI cannot express at all.
+        Served as data instead, which is also current.<br>
+        <br>
+        Runs with no `result.json` are listed with `complete: false` rather than hidden, so
+        a caller sees them and is told why they are refused instead of wondering where
+        they went.
+        """
+        return correlate.list_runs()
+
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
+    def endpoint_flux_metering_run_steps(
+        self,
+        date: Annotated[
+            str,
+            Query(
+                pattern=correlate.DATE_PATTERN,
+                description="Observing-night folder, `YYYY-MM-DD`, from `flux_metering_runs`.",
+            ),
+        ],
+        seq: Annotated[
+            str,
+            Query(
+                pattern=correlate.SEQ_PATTERN,
+                description="Run sequence number, from `flux_metering_runs`.",
+            ),
+        ],
+    ):
+        """
+        The steps of one run: index, cell, ring, commanded offset, flux, imager frame, and
+        which one was the arg-max.<br>
+        <br>
+        The flux and the cell are the point. Choosing between bare step numbers is
+        guesswork; seeing that step 7 was the arg-max at cell (0, 1) is not.
+        """
+        try:
+            return correlate.list_run_steps(date, seq)
+        except correlate.CorrelationError as e:
+            return CanonicalResponse(errors=[str(e)])
+
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
+    def endpoint_spiral_correlate_steps(
+        self,
+        date: Annotated[
+            str,
+            Query(
+                pattern=correlate.DATE_PATTERN,
+                description="Observing-night folder, `YYYY-MM-DD`, from `flux_metering_runs`.",
+            ),
+        ],
+        seq: Annotated[
+            str,
+            Query(
+                pattern=correlate.SEQ_PATTERN,
+                description="Run sequence number, from `flux_metering_runs`.",
+            ),
+        ],
+        step_a: Annotated[int, Query(ge=0, description="The step to measure FROM.")],
+        step_b: Annotated[int, Query(ge=0, description="The step to measure TO.")],
+    ):
+        """
+        Cross-correlate the imager frames of two steps of one **finished** run, and write
+        the answer beside that run's own products as
+        `correlate-<step_a>-<step_b>.json`.<br>
+        <br>
+        A run correlates exactly one pair -- its reference frame against its arg-max --
+        once, at the end. This is the only way to ask what lies between any other two
+        steps, and the only way to ask it at all of a run already on the share, since the
+        sky has moved.<br>
+        <br>
+        **Everything is taken from the run's own `result.json`**: the usable fraction, the
+        fibre position, the plate scale and the declination. Nothing comes from the live
+        configuration or from where the mount points now -- the declination the run used
+        was read from the mount at the time, so an hour later it belongs to unrelated sky.
+        There are deliberately no overrides: a re-correlation is faithful to the run it
+        describes, or it is refused.<br>
+        <br>
+        **Refused**, with the reason, when the run has no `result.json`, records no
+        terminal state, was aborted, when either step is not in the run or recorded no
+        imager frame, or when a frame is missing from the folder.<br>
+        <br>
+        `commanded_offset_px` is the DIFFERENCE between the two steps' commanded offsets,
+        and is what says whether the measurement means anything: it should equal `(dx, dy)`
+        in magnitude and sign. It is `null` for runs written before the plate scale and
+        declination were recorded -- those cannot be recomputed, and no check beats a
+        quietly wrong one.
+        """
+        try:
+            correlation = correlate.correlate_steps(date, seq, step_a, step_b)
+            written = correlate.write_correlation(correlation)
+        except correlate.CorrelationError as e:
+            return CanonicalResponse(errors=[str(e)])
+        except Exception as e:  # noqa: BLE001 -- a bad frame must not 500 the unit
+            logger.exception(f"{function_name()}: correlation failed")
+            return CanonicalResponse(errors=[f"could not correlate: {e}"])
+        return {"written_to": written, **correlation.model_dump()}
+
     @endpoint(tier=Tier.OPERATION)
     def endpoint_spiral_end_path(self):
         """
@@ -1333,6 +1621,40 @@ class Unit(Component):
             methods=["PUT"],
         )
         add_api_route(router, base_path + "/spiral_end_path", endpoint=self.endpoint_spiral_end_path, methods=["PUT"])
+
+        add_api_route(
+            router,
+            base_path + "/acquire_and_find_max_flux",
+            endpoint=self.endpoint_acquire_and_find_max_flux,
+            methods=["PUT"],
+        )
+        add_api_route(
+            router,
+            base_path + "/find_max_flux_status",
+            endpoint=self.endpoint_find_max_flux_status,
+            methods=["GET"],
+        )
+        add_api_route(
+            router,
+            base_path + "/flux_metering_runs",
+            endpoint=self.endpoint_flux_metering_runs,
+            methods=["GET"],
+        )
+        add_api_route(
+            router,
+            base_path + "/flux_metering_run_steps",
+            endpoint=self.endpoint_flux_metering_run_steps,
+            methods=["GET"],
+        )
+        # PUT, not GET: it writes `correlate-<a>-<b>.json` into the run folder, and
+        # invariant 5 puts every state-changing route behind PUT so a prefetch or a
+        # Swagger "try it out" cannot fire one by accident.
+        add_api_route(
+            router,
+            base_path + "/spiral_correlate_steps",
+            endpoint=self.endpoint_spiral_correlate_steps,
+            methods=["PUT"],
+        )
 
         return router
 
