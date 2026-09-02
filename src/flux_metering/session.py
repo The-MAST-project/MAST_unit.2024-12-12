@@ -108,6 +108,7 @@ class FluxMeteringParams:
     flux_gain: int = 0
     flux_black_level: int = 3
     number_of_frames: int = 3
+    skip_acquisition: bool = False
     usable_fraction: float = 0.66
 
     @property
@@ -247,7 +248,22 @@ class FluxMeteringSession:
         op = function_name()
         try:
             self._open_meter()
-            if not self._acquire():
+            if self.params.skip_acquisition:
+                # Engineering only. The spiral, the products and the correlation can then be
+                # exercised with the mount wherever it happens to point -- in daylight, in a
+                # closed enclosure, with no star and no solve. Without this the whole path is
+                # untestable until a clear night, which is the worst possible first exposure
+                # for code that drives a mount.
+                #
+                # A run started this way is NOT a calibration: the star is not on the assumed
+                # fibre, so `dx, dy` measures nothing. `skip_acquisition` is echoed into
+                # result.json with the rest of the parameters, so such a run can never be
+                # mistaken for a real one after the fact.
+                logger.warning(
+                    "flux metering: acquisition SKIPPED by request -- this run is a shakedown, "
+                    "and its dx/dy is not a fibre-position measurement"
+                )
+            elif not self._acquire():
                 self._finish("acquisition_failed")
                 return
 

@@ -1270,6 +1270,18 @@ class Unit(Component):
                 ),
             ),
         ] = 3,
+        skip_acquisition: Annotated[
+            bool,
+            Query(
+                description=(
+                    "**Engineering only.** Skip the acquisition and spiral from wherever the mount "
+                    "is now, so the walk, the products and the correlation can be exercised in "
+                    "daylight or a closed enclosure with no star to solve on. A run started this "
+                    "way is **not a calibration** -- the star is not on the assumed fibre, so its "
+                    "`dx, dy` measures nothing. It is recorded in `result.json`."
+                )
+            ),
+        ] = False,
         x_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along RA")] = 0.5,
         y_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along Dec")] = 0.5,
         max_rings: Annotated[int, Query(ge=1, description="Ceiling on the search; what normally ends it")] = 6,
@@ -1340,6 +1352,7 @@ class Unit(Component):
             dec_j2000_degs=dec_decimal,
             gain=gain,
             number_of_frames=number_of_frames,
+            skip_acquisition=skip_acquisition,
             x_step_arcsec=x_step_arcsec,
             y_step_arcsec=y_step_arcsec,
             max_rings=max_rings,
