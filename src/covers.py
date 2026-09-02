@@ -8,6 +8,13 @@ from common.activities import CoverActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.endpoints import (
+    Completion,
+    Tier,
+    add_api_route,
+    endpoint,
+    register_component_endpoints,
+)
 from common.interfaces.components import Component
 from common.models.statuses import CoversState, CoverStatus
 from common.utils import RepeatTimer, time_stamp
@@ -66,6 +73,18 @@ class Covers(Component, SwitchedOutlet):
     _instance = None
     _initialized = False
 
+    @property
+    def conf(self):
+        """This component's configuration, live.
+
+        Was snapshotted in ``__init__``, which is why a value edited in the database
+        reached a running unit only at the next service restart. Within one configuration
+        generation this returns the same object every time, so it is a memo lookup, not a
+        rebuild -- which is what makes a property affordable here.
+        """
+        assert self.unit is not None and self.unit.unit_conf is not None
+        return self.unit.unit_conf.covers
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -77,7 +96,6 @@ class Covers(Component, SwitchedOutlet):
 
         self.unit = unit
         assert self.unit is not None and self.unit.unit_conf is not None
-        self.conf = self.unit.unit_conf.covers
 
         # A private client, as Mount and Focuser hold. Not a style choice: Unit builds Covers
         # before it assigns `self.pw`, so `unit.pw` does not exist yet at this point. It costs
@@ -206,9 +224,7 @@ class Covers(Component, SwitchedOutlet):
 
     # ----------------------------------------------------------------- status
 
-    def endpoint_status(self) -> CoverStatus:
-        return self.status()
-
+    @endpoint(tier=Tier.INTERFACE, completion=Completion.IMMEDIATE)
     def status(self) -> CoverStatus:
         state = self.state
         return CoverStatus(
@@ -228,9 +244,7 @@ class Covers(Component, SwitchedOutlet):
 
     # ----------------------------------------------------------------- motion
 
-    def endpoint_open(self):
-        return self.open()
-
+    @endpoint(tier=Tier.OPERATION, completion=CoverActivities.Opening)
     def open(self):
         """
         Starts opening the **MAST** mirror covers
@@ -244,9 +258,7 @@ class Covers(Component, SwitchedOutlet):
             self.end_activity(CoverActivities.Opening)
         return response
 
-    def endpoint_close(self):
-        return self.close()
-
+    @endpoint(tier=Tier.OPERATION, completion=CoverActivities.Closing)
     def close(self):
         """
         Starts closing the **MAST** mirror covers
@@ -261,9 +273,7 @@ class Covers(Component, SwitchedOutlet):
             self.end_activity(CoverActivities.Closing)
         return response
 
-    def endpoint_abort(self):
-        return self.abort()
-
+    @endpoint(tier=Tier.INTERFACE, completion=CoverActivities.Aborting)
     def abort(self):
         """
         Halts cover motion.
@@ -272,6 +282,16 @@ class Covers(Component, SwitchedOutlet):
         in MAST_unit#134 -- it was found by probing 4.1.6, which answers 200 with a status body
         for `/mirrorcover/stop` and 404 for `/mirrorcover/halt` and `/mirrorcover/abort`.
         """
+        was_moving = any(
+            self.is_active(activity)
+            for activity in (
+                CoverActivities.StartingUp,
+                CoverActivities.ShuttingDown,
+                CoverActivities.Closing,
+                CoverActivities.Opening,
+            )
+        )
+
         response = self._mirrorcover_command("stop")
         for activity in (
             CoverActivities.StartingUp,
@@ -281,13 +301,14 @@ class Covers(Component, SwitchedOutlet):
         ):
             if self.is_active(activity):
                 self.end_activity(activity)
+
+        if was_moving:
+            self.start_activity(CoverActivities.Aborting)
         return response
 
     # ----------------------------------------------------------------- lifecycle
 
-    def endpoint_startup(self):
-        return self.startup()
-
+    @endpoint(tier=Tier.INTERFACE, completion=CoverActivities.StartingUp)
     def startup(self):
         """
         Performs the ``startup`` routine for the **MAST** mirror covers
@@ -302,6 +323,7 @@ class Covers(Component, SwitchedOutlet):
             self.open()
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.INTERFACE, completion=CoverActivities.ShuttingDown)
     def shutdown(self):
         """
         Performs the ``shutdown`` procedure for the **MAST** mirror covers
@@ -354,6 +376,13 @@ class Covers(Component, SwitchedOutlet):
                 self._was_shut_down = True
                 self.power_off()
 
+        self._end_abort_when_at_rest()
+
+    def _end_abort_when_at_rest(self) -> None:
+        """End `Aborting` once the covers leave `Moving`. `Error` and `Unknown` are at rest too."""
+        if self.is_active(CoverActivities.Aborting) and self.state != CoversState.Moving:
+            self.end_activity(CoverActivities.Aborting)
+
     # ----------------------------------------------------------------- component contract
 
     @property
@@ -401,16 +430,10 @@ class Covers(Component, SwitchedOutlet):
         :return: APIRouter instance with Covers endpoints
         """
         base_path = Const.BASE_UNIT_PATH + "/covers"
-        tag = "Covers"
 
         router = APIRouter()
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
-        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown)
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
-        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
-        router.add_api_route(base_path + "/connect", tags=[tag], endpoint=self.connect)
-        router.add_api_route(base_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
-        router.add_api_route(base_path + "/open", tags=[tag], endpoint=self.endpoint_open)
-        router.add_api_route(base_path + "/close", tags=[tag], endpoint=self.endpoint_close)
+        register_component_endpoints(router, self, base_path)
+        add_api_route(router, base_path + "/open", endpoint=self.open, methods=["PUT"])
+        add_api_route(router, base_path + "/close", endpoint=self.close, methods=["PUT"])
 
         return router

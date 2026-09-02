@@ -37,6 +37,7 @@ from common.config.rois import FcuVersion
 from common.config.unit import UnitConfig
 from common.const import Const
 from common.dlipowerswitch import PowerSwitchFactory, SwitchedOutlet
+from common.endpoints import Completion, Tier, add_api_route, endpoint
 from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 from common.interfaces.imager import ImagerTypes
@@ -68,6 +69,8 @@ from stage import Stage
 
 logger = get_logger(__name__)
 filer = Filer(logger)
+
+AUTOFOCUS_STOP_TIMEOUT_SECONDS = 30.0
 
 
 def configured_imager() -> ImagerTypes | None:
@@ -131,26 +134,19 @@ class Unit(Component):
 
         self._init_errors: list[str] = []
 
-        self.unit_conf: UnitConfig | None = None
+        # Probe the configuration at startup so a missing or unparseable one is recorded
+        # in _init_errors here, where the unit reports why it came up degraded, rather
+        # than surfacing later from whichever component happened to read it first. The
+        # value is deliberately discarded: `unit_conf` is a property now (see below).
         try:
-            self.unit_conf = Config().get_unit()
+            if Config().get_unit() is None:
+                msg = "unit configuration could not be loaded (no config in database or TOML)"
+                logger.error(msg)
+                self._init_errors.append(msg)
         except Exception as ex:
             msg = f"unit configuration failed to load: {ex}"
             logger.exception(msg)
             self._init_errors.append(msg)
-        if self.unit_conf is None and not self._init_errors:
-            msg = "unit configuration could not be loaded (no config in database or TOML)"
-            logger.error(msg)
-            self._init_errors.append(msg)
-
-        if self.unit_conf is not None:
-            self.min_ra_correction_arcsec = self.unit_conf.guiding.min_ra_correction_arcsec
-            self.min_dec_correction_arcsec = self.unit_conf.guiding.min_dec_correction_arcsec
-            self.autofocus_max_tolerance = self.unit_conf.autofocus.max_tolerance
-        else:
-            self.min_ra_correction_arcsec = 0.0
-            self.min_dec_correction_arcsec = 0.0
-            self.autofocus_max_tolerance = 0.0
         self.autofocus_try: int = 0
 
         self.hostname = socket.gethostname()
@@ -213,6 +209,31 @@ class Unit(Component):
         logger.info("unit: initialized")
 
     @property
+    def unit_conf(self) -> UnitConfig | None:
+        """This unit's configuration, as it is now.
+
+        Was an attribute snapshotted in `__init__`, which is why a value edited in the
+        database used to reach a running unit only at the next service restart.
+
+        Within one configuration generation this returns the *same object* every time, so
+        reading it is a memo lookup and an operation that binds it once at entry holds a
+        stable, self-consistent view for its whole duration. That is the contract long
+        operations rely on -- bind at entry, do not re-read per step -- and it is why this
+        can be a property at all rather than a periodic rebuild.
+
+        Do not mutate what this returns: it is shared with every other reader in the
+        process, and a later generation would silently discard the edit. Use
+        `Config().update_unit()`, which hands a private copy to its mutator.
+        """
+        return Config().get_unit()
+
+    @property
+    def autofocus_max_tolerance(self) -> float:
+        """The configured autofocus tolerance, live. 0.0 when there is no configuration."""
+        conf = self.unit_conf
+        return conf.autofocus.max_tolerance if conf is not None else 0.0
+
+    @property
     def fcu_version(self) -> FcuVersion:
         assert self.stage and self.stage.fcu_version
         return FcuVersion(self.stage.fcu_version)
@@ -221,6 +242,7 @@ class Unit(Component):
         self.start_activity(UnitActivities.StartingUp)
         [comp.startup() for comp in self.components]
 
+    @endpoint(tier=Tier.CONTRACT, completion=UnitActivities.StartingUp)
     def endpoint_startup(self):
         return self.startup()
 
@@ -260,6 +282,7 @@ class Unit(Component):
         self.power_all_off()
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.CONTRACT, completion=UnitActivities.ShuttingDown)
     def endpoint_shutdown(self):
         return self.shutdown()
 
@@ -325,10 +348,18 @@ class Unit(Component):
         for c in self.components:
             c.powerdown()
 
-    def endpoint_status(self) -> CanonicalResponse:
-        return self.status()
+    @endpoint(tier=Tier.CONTRACT, completion=Completion.IMMEDIATE)
+    def endpoint_status(self) -> Any:
+        # Enveloped at registration; `status()` stays a bare FullUnitStatus, which
+        # MAST_common#70 requires -- its fields are typed as the component status models.
+        #
+        # `serialize_ip_addresses` is kept as-is, deliberately: it is a no-op on a Pydantic
+        # model (it handles dict / list / IPv4Address and falls through on everything else),
+        # so it almost certainly does nothing here. Removing it is a separate question from
+        # moving the envelope, and this pass changes no behaviour.
+        return serialize_ip_addresses(self.status())
 
-    def status(self) -> CanonicalResponse:
+    def status(self) -> FullUnitStatus:
         autofocus = (
             {
                 "success": self.autofocus_result.success,
@@ -380,7 +411,7 @@ class Unit(Component):
         )
         ret.type = StatusType.FULL  # Should already be set in the constructor, but WAS NOT, so setting it explicitly here.
 
-        return CanonicalResponse(value=serialize_ip_addresses(ret))
+        return ret
 
     @staticmethod
     def quit():
@@ -391,6 +422,7 @@ class Unit(Component):
 
         app_quit(reason="quit()")
 
+    @endpoint(tier=Tier.CONTRACT)
     def endpoint_abort(self):
         return self.abort()
 
@@ -403,12 +435,18 @@ class Unit(Component):
             self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing)
         ):
             self.autofocuser.stop_autofocus()
-            while self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing):
-                time.sleep(0.2)
+            for flag in (UnitActivities.AutofocusingPWI4, UnitActivities.Autofocusing):
+                if not self.await_activity_clear(flag, timeout=AUTOFOCUS_STOP_TIMEOUT_SECONDS):
+                    msg = (
+                        f"{function_name()}: autofocus did not stop within "
+                        f"{AUTOFOCUS_STOP_TIMEOUT_SECONDS} seconds ({flag!r} still set)"
+                    )
+                    return CanonicalResponse(errors=[msg])
 
         if self.guider:
             self.guider.abort()
         [comp.abort() for comp in self.components]
+        return CanonicalResponse_Ok
 
     def ontimer(self):  # noqa: C901
         if self.unit_shutdown_event.is_set():
@@ -454,32 +492,45 @@ class Unit(Component):
 
                     best_position = autofocus_status.best_position  # type: ignore
                     assert self.unit_conf is not None
-                    self.unit_conf.focuser.known_as_good_position = best_position
-                    try:
-                        Config().set_unit(site_name=None, unit_name=None, unit_conf=self.unit_conf)
-                        logger.info(f"autofocus: saved {best_position=} in the configuration for unit {self.hostname}.")
-                        if autofocus_status.tolerance > self.autofocus_max_tolerance:  # type: ignore
-                            if self.autofocus_try < Unit.MAX_AUTOFOCUS_TRIES:
-                                self.autofocus_try += 1
-                                logger.info(
-                                    f"autofocus: latest {autofocus_status.tolerance=} greater than"  # type: ignore
-                                    + f"{self.autofocus_max_tolerance=}, starting autofocus "
-                                    + f"try #{self.autofocus_try}"
-                                )
-                                self.autofocuser.start_pwi4_autofocus()
-                            else:
-                                logger.info(
-                                    f"autofocus: failed to reach {self.autofocus_max_tolerance=} "
-                                    + f"in {Unit.MAX_AUTOFOCUS_TRIES=}"
-                                )
-                        else:
-                            self.autofocus_try = 0
 
+                    def _save_known_as_good_position(conf: UnitConfig) -> None:
+                        conf.focuser.known_as_good_position = best_position
+
+                    # Only the write is guarded. This `try` used to wrap the retry
+                    # decision below as well, which was harmless while `set_unit` logged
+                    # and returned on failure -- but it now raises (a lost focus position
+                    # is worth reporting), and refuses outright while the configuration is
+                    # degraded. Leaving the retry inside would mean a unit that cannot
+                    # reach its controller also silently stops retrying autofocus.
+                    try:
+                        # update_unit, not set_unit: it mutates a private copy. Editing
+                        # what unit_conf returns would change the model every other
+                        # component in this process is reading, and a later configuration
+                        # generation would silently revert it.
+                        Config().update_unit(_save_known_as_good_position)
+                        logger.info(f"autofocus: saved {best_position=} in the configuration for unit {self.hostname}.")
                     except Exception as e:
                         logger.exception(
                             "failed to save unit_conf for ['focuser']['know_as_good_position']",
                             exc_info=e,
                         )
+
+                    if autofocus_status.tolerance > self.autofocus_max_tolerance:  # type: ignore
+                        if self.autofocus_try < Unit.MAX_AUTOFOCUS_TRIES:
+                            self.autofocus_try += 1
+                            logger.info(
+                                f"autofocus: latest {autofocus_status.tolerance=} greater than"  # type: ignore
+                                + f"{self.autofocus_max_tolerance=}, starting autofocus "
+                                + f"try #{self.autofocus_try}"
+                            )
+                            self.autofocuser.start_pwi4_autofocus()
+                        else:
+                            logger.info(
+                                f"autofocus: failed to reach {self.autofocus_max_tolerance=} "
+                                + f"in {Unit.MAX_AUTOFOCUS_TRIES=}"
+                            )
+                    else:
+                        self.autofocus_try = 0
                 else:
                     logger.error("PlaneWave autofocus failed")
                     self.autofocus_result.best_position = None
@@ -499,22 +550,30 @@ class Unit(Component):
         self.startup()
 
     @property
+    def _operational_components(self) -> list[Component]:
+        """The components this unit's own readiness depends on.
+
+        A list, not a set: `why_not_operational` publishes these in order, and a set's
+        order changes from one process to the next.
+        """
+        components = list(self.components)
+        if self.unit_conf and self.unit_conf.name.lower() == "mastw":
+            components = [c for c in components if c is not self.covers]
+        return components
+
+    @property
     def operational(self) -> bool:
         if self._init_errors:
             return False
-        components = set(self.components)
-        if self.unit_conf and self.unit_conf.name.lower() == "mastw":
-            components.discard(self.covers)
-        return all(c.operational for c in components)
+        return all(c.operational for c in self._operational_components)
 
     @property
     def why_not_operational(self) -> list[str]:
-        if self._init_errors:
-            return list(self._init_errors)
-        components = set(self.components)
-        if self.unit_conf and self.unit_conf.name.lower() == "mastw":
-            components.discard(self.covers)
-        return list(chain.from_iterable(c.why_not_operational for c in components))
+        # `operational` returns early on an init error; this deliberately does not. A unit
+        # that failed to build a component is not operational whatever the rest report, but
+        # that error is only one reason among them -- returning it alone hides the others.
+        reasons = list(self._init_errors)
+        return reasons + list(chain.from_iterable(c.why_not_operational for c in self._operational_components))
 
     @property
     def name(self) -> str:
@@ -557,6 +616,7 @@ class Unit(Component):
             except Exception:
                 logger.exception("websocket.send error")
 
+    @endpoint(tier=Tier.OPERATION)
     def expose(
         self,
         ra_j2000_hours: Annotated[
@@ -838,6 +898,7 @@ class Unit(Component):
         # Closing the series and stopping tracking belong to do_expose's `finally`, so
         # that they happen whether or not this returns normally. They must NOT be here.
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_test_stage_repeatability(
         self,
         start_position: int | str = 50000,
@@ -1000,6 +1061,7 @@ class Unit(Component):
                     )
                 )
 
+    @endpoint(tier=Tier.CONTRACT)
     async def endpoint_execute_assignment(self, assignment: UnitAssignment):
         if not self.operational:
             return CanonicalResponse(errors=self.why_not_operational)
@@ -1011,11 +1073,13 @@ class Unit(Component):
 
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.DEMO, completion=UnitActivities.Dancing)
     async def endpoint_start_dancing(self, style: str = "foxtrot"):
         logger.info(f"unit.dance: dancing the {style} ...")
         self.start_activity(UnitActivities.Dancing, details=[style])
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.DEMO, completion=Completion.IMMEDIATE)
     async def endpoint_stop_dancing(self):
         logger.info("unit.dance: stopping dancing ...")
         self.end_activity(UnitActivities.Dancing)
@@ -1038,6 +1102,7 @@ class Unit(Component):
 
     #     return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION, factory=True)
     def _spiral_new_path_endpoint(self):
         """Build the `spiral_new_path` endpoint with the configured ROI as its defaults.
 
@@ -1097,6 +1162,7 @@ class Unit(Component):
 
         return endpoint_spiral_new_path
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_spiral_next_step(self):
         """
         Takes the next step in the currently defined spiral path.
@@ -1123,6 +1189,7 @@ class Unit(Component):
         """
         return self.spiral.step(forward=True)
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_spiral_previous_step(self):
         """
         Goes back one step in the currently defined spiral path.
@@ -1132,6 +1199,7 @@ class Unit(Component):
         """
         return self.spiral.step(forward=False)
 
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_spiral_end_path(self):
         """
         Ends the spiral session: takes the **final** frame, cross-correlates it against the
@@ -1194,77 +1262,89 @@ class Unit(Component):
         router = APIRouter()
 
         base_path = Const.BASE_UNIT_PATH
-        tag = "Unit"
 
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
-        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown)
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
-        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_status)
+        add_api_route(router, base_path + "/startup", endpoint=self.endpoint_startup, methods=["PUT"])
+        add_api_route(router, base_path + "/shutdown", endpoint=self.endpoint_shutdown, methods=["PUT"])
+        # The one state-changing verb kept on GET as well as PUT, deliberately and
+        # temporarily. MAST_common's shared plan client aborts every committed unit with
+        # method="GET" (models/plans.py:830-831), so PUT-only would answer 405 on the
+        # fleet's abort path -- the last verb that should fail quietly. Accepting both is
+        # the migration step: the client moves to PUT, then GET comes off here. Tracked
+        # on #48; every other state-changing route in this file is PUT-only.
+        add_api_route(router, base_path + "/abort", endpoint=self.endpoint_abort, methods=["GET", "PUT"])
+        add_api_route(router, base_path + "/status", endpoint=self.endpoint_status)
         if self.autofocuser:
-            router.add_api_route(
+            add_api_route(
+                router,
                 base_path + "/start_autofocus",
-                tags=[tag],
                 endpoint=self.autofocuser.start_autofocus,
+                methods=["PUT"],
             )
-            router.add_api_route(
+            add_api_route(
+                router,
                 base_path + "/stop_autofocus",
-                tags=[tag],
                 endpoint=self.autofocuser.endpoint_stop_autofocus,
+                methods=["PUT"],
             )
         if self.acquirer:
-            router.add_api_route(
+            add_api_route(
+                router,
                 base_path + "/start_acquisition_and_guiding",
-                tags=[tag],
                 endpoint=self.acquirer.endpoint_start_acquisition_and_guiding,
+                methods=["PUT"],
             )
         if self.guider:
-            router.add_api_route(
+            add_api_route(
+                router,
                 base_path + "/start_guiding",
-                tags=[tag],
                 endpoint=self.guider.endpoint_start_guiding,
+                methods=["PUT"],
             )
-            router.add_api_route(
+            add_api_route(
+                router,
                 base_path + "/stop_acquisition_and_guiding",
-                tags=[tag],
                 endpoint=self.guider.endpoint_stop_acquisition_and_guiding,
+                methods=["PUT"],
             )
-        router.add_api_route(base_path + "/expose", tags=[tag], endpoint=self.expose)
-        router.add_api_route(
+        add_api_route(router, base_path + "/expose", endpoint=self.expose, methods=["PUT"])
+        add_api_route(
+            router,
             base_path + "/test_stage_repeatability",
-            tags=[tag],
             endpoint=self.endpoint_test_stage_repeatability,
+            methods=["PUT"],
         )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/execute_assignment",
             methods=["PUT"],
-            tags=[tag],
             endpoint=self.endpoint_execute_assignment,
         )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/start_dancing",
-            tags=[tag],
             endpoint=self.endpoint_start_dancing,
+            methods=["PUT"],
         )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/stop_dancing",
-            tags=[tag],
             endpoint=self.endpoint_stop_dancing,
+            methods=["PUT"],
         )
-        # router.add_api_route(
+        # add_api_route(router,
         #     base_path + "/calculate_sky_pixel",
-        #     tags=[tag],
-        #     endpoint=self.set_sky_and_spec_pixel_values,
-        # )
+        #     #     endpoint=self.set_sky_and_spec_pixel_values,
+        # , methods=["PUT"])
 
-        tag = "PlaneWave mount - spiral path"
-        router.add_api_route(base_path + "/spiral_new_path", tags=[tag], endpoint=self._spiral_new_path_endpoint())
-        router.add_api_route(base_path + "/spiral_next_step", tags=[tag], endpoint=self.endpoint_spiral_next_step)
-        router.add_api_route(
+        add_api_route(router, base_path + "/spiral_new_path", endpoint=self._spiral_new_path_endpoint(), methods=["PUT"])
+        add_api_route(router, base_path + "/spiral_next_step", endpoint=self.endpoint_spiral_next_step, methods=["PUT"])
+        add_api_route(
+            router,
             base_path + "/spiral_previous_step",
-            tags=[tag],
             endpoint=self.endpoint_spiral_previous_step,
+            methods=["PUT"],
         )
-        router.add_api_route(base_path + "/spiral_end_path", tags=[tag], endpoint=self.endpoint_spiral_end_path)
+        add_api_route(router, base_path + "/spiral_end_path", endpoint=self.endpoint_spiral_end_path, methods=["PUT"])
 
         tag = "Mount stability campaign"
         router.add_api_route(

@@ -5,7 +5,7 @@ import sys
 import threading
 import time
 from collections import deque
-from enum import Enum, IntEnum, auto
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -13,10 +13,10 @@ from fastapi.routing import APIRouter
 
 from common.activities import StageActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config import Config
 from common.config.rois import FcuVersion
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.endpoints import Completion, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import StageStatus
@@ -37,6 +37,9 @@ for path in [
 ]:
     sys.path.append(str(path))
 
+# The DLL search path is a Windows concern; the import below is not. Splitting them is what
+# lets this module be imported where pyximc resolves but Windows does not -- previously the
+# names came in only inside the platform test, while the module body used them unconditionally.
 if platform.system() == "Windows":
     # Determining the directory with dependencies for windows depending on the bit depth.
     arch_dir = "win64" if "64" in platform.architecture()[0] else "win32"
@@ -45,25 +48,27 @@ if platform.system() == "Windows":
         raise FileNotFoundError(f"Directory with ximc library not found: {lib_dir=}. ")
     os.add_dll_directory(str(lib_dir))  # add dll path into an environment variable
 
-    from pyximc import (
-        POINTER,
-        BorderFlags,
-        EnumerateFlags,  # type: ignore[name]
-        MvcmdStatus,
-        Result,  # type: ignore[name]
-        StateFlags,
-        byref,
-        c_char_p,
-        c_int,
-        cast,
-        device_information_t,
-        edges_settings_t,
-        secure_settings_t,
-        serial_number_t,
-        status_t,
-        string_at,
-    )
-    from pyximc import lib as ximclib  # type: ignore[name]
+# Must follow `add_dll_directory` above, which is what makes the ximc DLL resolvable on
+# Windows, so it cannot move to the top of the file.
+from pyximc import (  # noqa: E402
+    POINTER,
+    BorderFlags,
+    EnumerateFlags,  # type: ignore[name]
+    MvcmdStatus,
+    Result,  # type: ignore[name]
+    StateFlags,
+    byref,
+    c_char_p,
+    c_int,
+    cast,
+    device_information_t,
+    edges_settings_t,
+    secure_settings_t,
+    serial_number_t,
+    status_t,
+    string_at,
+)
+from pyximc import lib as ximclib  # type: ignore[name]  # noqa: E402
 
 RESULT_MAP = {
     Result.Ok: "Ok",
@@ -72,11 +77,6 @@ RESULT_MAP = {
     Result.ValueError: "ValueError",
     Result.NoDevice: "NoDevice",
 }
-
-
-class StageDirection(IntEnum):
-    Up = auto()
-    Down = auto()
 
 
 # The values below are the wire format, and the member names are Python identifiers with no
@@ -108,11 +108,6 @@ STARTUP_PRESET = StagePresetPosition.Sky
 #: The preset names the API accepts, for anyone building a UI over it.
 stage_position_names: list[str] = [p.value for p in StagePresetPosition]
 
-stage_direction_str2int_dict: dict = {
-    "Up": StageDirection.Up,
-    "Down": StageDirection.Down,
-}
-
 
 class Stage(Component, SwitchedOutlet):
     _instance = None
@@ -142,6 +137,18 @@ class Stage(Component, SwitchedOutlet):
         StateFlags.STATE_EXTIO_ALARM: "STATE_EXTIO_ALARM",
     }
 
+    @property
+    def conf(self):
+        """This component's configuration, live.
+
+        Was snapshotted in ``__init__``, which is why a value edited in the database
+        reached a running unit only at the next service restart. Within one configuration
+        generation this returns the same object every time, so it is a memo lookup, not a
+        rebuild -- which is what makes a property affordable here.
+        """
+        assert self.unit is not None and self.unit.unit_conf is not None
+        return self.unit.unit_conf.stage
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -153,14 +160,8 @@ class Stage(Component, SwitchedOutlet):
 
         op = "Stage.__init__"
         self.unit = unit
-        if unit and unit.unit_conf and unit.unit_conf.stage:
-            self.conf = unit.unit_conf.stage
-        else:
-            unit_conf = Config().get_unit()
-            if unit_conf and unit_conf.stage:
-                self.conf = unit_conf.stage
-            else:
-                raise Exception(f"{op}: cannot get stage configuration")
+        if not (unit and unit.unit_conf and unit.unit_conf.stage):
+            raise Exception(f"{op}: cannot get stage configuration")
 
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Stage")
         Component.__init__(self, StageActivities)
@@ -464,9 +465,7 @@ from pyximc import *
             self.connected = False
         return CanonicalResponse_Ok
 
-    def endpoint_startup(self):
-        return self.startup()
-
+    @endpoint(tier=Tier.INTERFACE, completion=StageActivities.StartingUp)
     def startup(self):
         """
         Startup routine for the **MAST** stage.  Makes it ``operational``:
@@ -485,9 +484,7 @@ from pyximc import *
             self.move_to_preset(StagePresetPosition.Sky)
         return CanonicalResponse_Ok
 
-    def endpoint_shutdown(self):
-        return self.shutdown()
-
+    @endpoint(tier=Tier.INTERFACE, completion=Completion.IMMEDIATE)
     def shutdown(self):
         """
         Shutdown routine for the **MAST** stage.  Makes it ``idle``
@@ -534,9 +531,6 @@ from pyximc import *
         if response is not None and response.failed:
             raise ValueError(f"cannot move to {value}: {'; '.join(response.errors or [])}")
 
-    def endpoint_status(self) -> StageStatus:
-        return self.status()
-
     def at_preset_name(self) -> str | None:
         """The preset the stage is currently parked at, as the API spells it.
 
@@ -563,6 +557,7 @@ from pyximc import *
                     return preset.value
         return f"{self.target}"
 
+    @endpoint(tier=Tier.INTERFACE, completion=Completion.IMMEDIATE)
     def status(self) -> StageStatus:
         at_preset = self.at_preset_name()
         target_verbal = self.target_preset_name()
@@ -583,13 +578,18 @@ from pyximc import *
         # logger.info(f"{self._position=}, {target=}")
         return abs(self._position - target) <= self.conf.close_enough
 
+    def _end_abort_when_at_rest(self) -> None:
+        """End `Aborting` once `MVCMD_RUNNING` clears. Not `is_stationary`, which is broken (#150)."""
+        if self.is_active(StageActivities.Aborting) and not self.is_moving:
+            self.end_activity(StageActivities.Aborting)
+
     @property
     def is_stationary(self) -> bool:
         """
         Returns True if the stage was at the same position for the last
           self.latest_positions.maxlen readings (every 2 seconds by ontimer).
         """
-        return self.latest_positions.count == self.latest_positions.maxlen and all(
+        return len(self.latest_positions) == self.latest_positions.maxlen and all(
             pos == self.latest_positions[0] for pos in self.latest_positions
         )
 
@@ -702,6 +702,8 @@ from pyximc import *
 
         self.is_moving = (hw_status.MvCmdSts & MvcmdStatus.MVCMD_RUNNING) != 0
 
+        self._end_abort_when_at_rest()
+
         if not self.is_moving:
             if self.is_active(StageActivities.Moving):
                 if self.is_stationary and not self.close_enough(self.target):
@@ -755,6 +757,7 @@ from pyximc import *
             if self.is_active(StageActivities.Homing):
                 self.end_activity(StageActivities.Homing)
 
+    @endpoint(tier=Tier.OPERATION, completion=StageActivities.Moving)
     def move_to_preset(self, preset: StagePresetPosition) -> CanonicalResponse:
         """
         Starts moving the stage to one of the preset positions.
@@ -840,6 +843,10 @@ from pyximc import *
             logger.exception(msg)
             return CanonicalResponse(errors=[msg])
 
+        # Same reason as the focuser: stationarity has to be concluded from samples taken
+        # after the command, or the pre-move readings report the stage as settled before it
+        # has started (#150).
+        self.latest_positions.clear()
         self.ticks_at_start = self.position
         self.target = position
         self.motion_start_time = datetime.datetime.now(datetime.UTC)
@@ -847,16 +854,16 @@ from pyximc import *
 
         return CanonicalResponse_Ok
 
-    def move_relative(self, direction: StageDirection | str, amount: int | str):
+    @endpoint(tier=Tier.OPERATION, completion=StageActivities.Moving)
+    def move_relative(self, amount: int):
         """
-        Starts moving the stage in the specified direction by the specified number of native units
+        Starts moving the stage by a signed number of native units.
 
         Parameters
         ----------
-        direction
-            The direction to move (**Up**: away from the motor, **Down**: towards the motor)
         amount
-            How many units to move
+            How far to move, and which way: positive is away from the motor, negative is
+            towards it. The sign carries what the `direction` parameter used to (#41).
         """
         op = function_name()
 
@@ -864,12 +871,6 @@ from pyximc import *
         if current_position is None:
             return CanonicalResponse(errors=["cannot get current position"])
 
-        if isinstance(direction, str):
-            direction = StageDirection(stage_direction_str2int_dict[direction])
-        if isinstance(amount, str):
-            amount = abs(int(amount))
-
-        amount *= 1 if direction == StageDirection.Up else -1
         try:
             self.target = current_position + amount
             self.start_activity(StageActivities.Moving, details=[f"from {self.position} to {self.target}"])
@@ -886,9 +887,7 @@ from pyximc import *
             return CanonicalResponse(errors=[msg])
         return CanonicalResponse_Ok
 
-    def endpoint_abort(self):
-        return self.abort()
-
+    @endpoint(tier=Tier.INTERFACE, completion=StageActivities.Aborting)
     def abort(self):
         """
         Aborts any in-progress stage activities
@@ -901,6 +900,7 @@ from pyximc import *
             if self.is_active(activity):
                 self.end_activity(activity)
 
+        self.start_activity(StageActivities.Aborting)
         assert ximclib
         ximclib.command_stop(self.device)
         return CanonicalResponse_Ok
@@ -953,16 +953,18 @@ from pyximc import *
     def was_shut_down(self) -> bool:
         return self._was_shut_down
 
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
     def endpoint_get_position(self) -> CanonicalResponse:
         return self.get_position()
 
     def get_position(self) -> CanonicalResponse:
         return CanonicalResponse(value=self.position)
 
-    def endpoint_set_position(self, pos: int):
-        return self.set_position(pos)
+    @endpoint(tier=Tier.OPERATION, completion=StageActivities.Moving)
+    def endpoint_set_position(self, position: int):
+        return self.set_position(position)
 
-    def set_position(self, pos: int) -> CanonicalResponse:
+    def set_position(self, position: int) -> CanonicalResponse:
         """`PUT /stage/position`: the only way to command an absolute position over the API.
 
         It used to assign the `position` property, which is a second implementation of the
@@ -972,36 +974,31 @@ from pyximc import *
         so a refusal surfaced as a 500 with a traceback, while this returned `Ok`
         unconditionally regardless of what happened.
         """
-        return self.move_absolute(pos)
+        return self.move_absolute(position)
 
     @property
     def api_router(self) -> APIRouter:
         base_stage_path = Const.BASE_UNIT_PATH + "/stage"
-        tag = "Stage"
 
         router = APIRouter()
-        router.add_api_route(base_stage_path + "/startup", tags=[tag], endpoint=self.endpoint_startup)
-        router.add_api_route(base_stage_path + "/shutdown", tags=[tag], endpoint=self.endpoint_shutdown)
-        router.add_api_route(base_stage_path + "/abort", tags=[tag], endpoint=self.endpoint_abort)
-        router.add_api_route(base_stage_path + "/status", tags=[tag], endpoint=self.endpoint_status)
-        router.add_api_route(
+        register_component_endpoints(router, self, base_stage_path)
+        add_api_route(
+            router,
             base_stage_path + "/position",
-            tags=[tag],
             endpoint=self.endpoint_get_position,
         )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_stage_path + "/position",
             methods=["PUT"],
-            tags=[tag],
             endpoint=self.endpoint_set_position,
         )
-        router.add_api_route(base_stage_path + "/connect", tags=[tag], endpoint=self.connect)
-        router.add_api_route(base_stage_path + "/disconnect", tags=[tag], endpoint=self.disconnect)
-        router.add_api_route(base_stage_path + "/move", tags=[tag], endpoint=self.move_relative)
-        router.add_api_route(
+        add_api_route(router, base_stage_path + "/move_relative", endpoint=self.move_relative, methods=["PUT"])
+        add_api_route(
+            router,
             base_stage_path + "/move_to_preset",
-            tags=[tag],
             endpoint=self.move_to_preset,
+            methods=["PUT"],
         )
 
         return router

@@ -4,8 +4,8 @@
 # version is pinned in requirements-dev.txt (ruff==0.16.0); config alone is not
 # enough — formatter output can differ between ruff versions.
 #
-# Migrated from pyproject.toml [tool.ruff] (that file held only ruff config).
-# `extend-select` moved to [lint] (its top-level location is deprecated).
+# Migrated from pyproject.toml [tool.ruff] (that file held only ruff config); the
+# rule list moved to [lint], its top-level location being deprecated.
 
 line-length = 125
 target-version = "py312"
@@ -40,8 +40,16 @@ extend-exclude = [
 # to exclude. Keep this file scoped to this repo's own sources.
 
 [lint]
-# Enable rules from common linters.
-extend-select = [
+# The fleet's rule set, stated as `select` rather than `extend-select`: ruff's own
+# defaults have grown over time (0.16 enables ASYNC, TRY, S, PYI, RUF, LOG, PLR, C4
+# and TC on top of the historical E4/E7/E9/F), so `extend-select` meant the effective
+# rule set changed with the pinned version rather than with a decision -- 53 of the 75
+# findings on `main` came from families nobody had adopted. Pinning it here is the same
+# concern this file's header raises about the formatter.
+#
+# Findings those defaults surfaced are not discarded: #191 is the one real question
+# among them, and #172 records the disposition of the rest.
+select = [
     "F",   # Pyflakes (runtime errors)
     "E",   # pycodestyle (formatting)
     "W",   # pycodestyle warnings
@@ -53,8 +61,20 @@ extend-select = [
     "SIM", # flake8-simplify
     "TID", # tidy imports
 ]
-# Optionally ignore some rules:
-# ignore = ["E501"]  # example: disable line-length enforcement
+# No `ignore`. MAST_common needs `ignore = ["N999"]` because its repo root IS the
+# `common` package, so the module path walks up into CI's `MAST_common` checkout
+# directory and the uppercase makes it invalid. This repo has no root `__init__.py`,
+# so the chain stops at `src/` and N999 never fires -- verified under a CI-named
+# directory.
+
+[lint.mccabe]
+# A ratchet, not a preference. The default is 10; this is the complexity of the worst
+# function in the tree (`solvers/astrometry_dot_net.py: parse_solver_output`), so
+# anything more tangled than what is already here fails. The other two over the default
+# are `phd2/phd2.py: start_exposure` and `imaging/stage_geometry.py:
+# find_spec_stage_position`, both at 11; each one fixed lowers this number in the same
+# PR. #172 carries the list.
+max-complexity = 17
 
 [lint.isort]
 # `common` is MAST_common, our own shared library -- first-party, grouped with
