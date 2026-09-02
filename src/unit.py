@@ -428,24 +428,52 @@ class Unit(Component):
 
     def abort(self):
         """
-        Aborts any in-progress activities
+        Aborts any in-progress activity.
+
+        **Fires every sub-abort and returns; it does not wait for any of them.** Two
+        reasons. Waiting let one slow subsystem prevent the rest from being aborted at
+        all: this used to block up to 30s on autofocus and RETURN AN ERROR if the flag had
+        not cleared, so a stuck autofocus meant the guider, the components and any running
+        acquisition were never told to stop. And abort is the verb the fleet reaches for
+        when something is already wrong -- it has to answer promptly, and it has to reach
+        everything.
+
+        The cancellation protocol throughout is "clear the activity flag": the long
+        operations poll their own flags and unwind themselves. So firing and returning is
+        not a shortcut, it is how the protocol works. A caller that needs to know an
+        operation really stopped watches its flag clear in `status`, the same mechanism
+        every `completion=<flag>` endpoint already publishes.
+
+        Each sub-abort is attempted independently, and a failure in one is collected
+        rather than allowed to skip the others.
         """
+        errors: list[str] = []
+
+        def attempt(what: str, action):
+            try:
+                action()
+            except Exception as ex:  # noqa: BLE001 -- one failed sub-abort must not skip the rest
+                logger.exception(f"{function_name()}: aborting {what} failed")
+                errors.append(f"{what}: {ex}")
 
         if self.autofocuser is not None and (
             self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing)
         ):
-            self.autofocuser.stop_autofocus()
-            for flag in (UnitActivities.AutofocusingPWI4, UnitActivities.Autofocusing):
-                if not self.await_activity_clear(flag, timeout=AUTOFOCUS_STOP_TIMEOUT_SECONDS):
-                    msg = (
-                        f"{function_name()}: autofocus did not stop within "
-                        f"{AUTOFOCUS_STOP_TIMEOUT_SECONDS} seconds ({flag!r} still set)"
-                    )
-                    return CanonicalResponse(errors=[msg])
+            attempt("autofocus", self.autofocuser.stop_autofocus)
+
+        # Acquisition and guiding stop the same way, so abort reuses the verb that already
+        # knows how rather than restating it -- notably the `was_tracking_before_guiding`
+        # rule, which decides whether tracking is left running and is easy to get wrong.
+        if self.guider is not None and (self.is_active(UnitActivities.Acquiring) or self.is_active(UnitActivities.Guiding)):
+            attempt("acquisition/guiding", self.guider.stop_acquisition_and_guiding)
 
         if self.guider:
-            self.guider.abort()
-        [comp.abort() for comp in self.components]
+            attempt("guider", self.guider.abort)
+        for comp in self.components:
+            attempt(f"component {type(comp).__name__}", comp.abort)
+
+        if errors:
+            return CanonicalResponse(errors=errors)
         return CanonicalResponse_Ok
 
     def ontimer(self):  # noqa: C901
@@ -1268,13 +1296,14 @@ class Unit(Component):
 
         add_api_route(router, base_path + "/startup", endpoint=self.endpoint_startup, methods=["PUT"])
         add_api_route(router, base_path + "/shutdown", endpoint=self.endpoint_shutdown, methods=["PUT"])
-        # The one state-changing verb kept on GET as well as PUT, deliberately and
-        # temporarily. MAST_common's shared plan client aborts every committed unit with
-        # method="GET" (models/plans.py:830-831), so PUT-only would answer 405 on the
-        # fleet's abort path -- the last verb that should fail quietly. Accepting both is
-        # the migration step: the client moves to PUT, then GET comes off here. Tracked
-        # on #48; every other state-changing route in this file is PUT-only.
-        add_api_route(router, base_path + "/abort", endpoint=self.endpoint_abort, methods=["GET", "PUT"])
+        # PUT-only, like every other state-changing route here. GET was accepted alongside
+        # it while MAST_common's shared plan client migrated; that client now sends PUT
+        # (models/plans.py), so the shim is gone (#48).
+        #
+        # The two halves must ship together, or common first. A unit carrying this change
+        # answers 405 to a client still sending GET, and it does so on the fleet's abort
+        # path -- the last verb that should fail quietly.
+        add_api_route(router, base_path + "/abort", endpoint=self.endpoint_abort, methods=["PUT"])
         add_api_route(router, base_path + "/status", endpoint=self.endpoint_status)
         if self.autofocuser:
             add_api_route(
