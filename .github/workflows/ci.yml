@@ -58,7 +58,12 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: The-MAST-project/MAST_common
-          ref: master
+          # REVERT TO master BEFORE MERGING. Pinned to the branch of MAST_common#99, which
+          # carries the `TIER_GROUPS` and `operation_area_tag` this PR imports; against
+          # master, `tests/test_app_factory.py` fails to import. MAST_common#99 is additive
+          # and can merge first, at which point this line goes back to `master` and the pin
+          # commit comes off.
+          ref: eli/swagger-area-tags
           path: common
 
       - uses: actions/setup-python@v7
