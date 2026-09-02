@@ -40,7 +40,7 @@ Keyword-only, and `tier` is mandatory: routing an undeclared handler raises
 The tier publishes per operation as `x-stability`, so a client's own test can assert it never
 calls an operator verb. It is also the Swagger group, except on `OPERATION`: an operator route
 is grouped by **area** instead — the path segment before its verb, so `/unit/mount/park` files
-under *Mount — operator* and `/unit/expose` under *Unit — operator*. Nothing to declare; the
+under *Mount (operator)* and `/unit/expose` under *Unit (operator)*. Nothing to declare; the
 group is read from where the route is mounted (#207).
 
 A **new component** needs one entry in `OPERATOR_AREAS` in `src/app.py` for its group to be
