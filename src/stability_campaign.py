@@ -456,7 +456,7 @@ class StabilityCampaign:
             if self.is_active:
                 # Idempotent rather than an error: a double start from an operator or a
                 # retrying client must not spawn a second mesh walker on one mount.
-                return CanonicalResponse(value=asdict(self.state))
+                return asdict(self.state)
 
             if self._unit_is_busy():
                 return CanonicalResponse(
@@ -483,7 +483,7 @@ class StabilityCampaign:
             )
             self.unit.start_activity(UnitActivities.StabilityCampaigning)
 
-            self._thread = threading.Thread(target=self._run, name="stability-campaign", daemon=True)
+            self._thread = threading.Thread(target=self.do_stability_campaign, name="stability-campaign", daemon=True)
             self._thread.start()
             logger.info(f"campaign started, mesh '{self.mesh.version}', products under '{run_folder}'")
             return CanonicalResponse(value=asdict(self.state))
@@ -524,7 +524,7 @@ class StabilityCampaign:
 
     # ------------------------------------------------------------------- walker --
 
-    def _run(self) -> None:
+    def do_stability_campaign(self) -> None:
         assert self.descriptor is not None
         deadline = time.monotonic() + MAX_CAMPAIGN_HOURS * 3600
         last_visit: int | None = None

@@ -1833,6 +1833,7 @@ class Unit(Component):
         """
         return self.spiral.end()
 
+    @endpoint(tier=Tier.OPERATION, completion=UnitActivities.StabilityCampaigning)
     def endpoint_start_stability_campaign(self, pilot: bool = False):
         """
         Starts the mount-stability campaign: walks a fixed alt/az mesh, dwelling at each
@@ -1851,6 +1852,7 @@ class Unit(Component):
         """
         return self.stability.start(pilot=pilot)
 
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
     def endpoint_stop_stability_campaign(self):
         """
         Stops the mount-stability campaign after the sample currently being taken.<br>
@@ -1861,6 +1863,7 @@ class Unit(Component):
         """
         return self.stability.stop()
 
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
     def endpoint_stability_campaign_status(self):
         """
         Reports the campaign's progress: current visit and cell, phase, counts of visits
@@ -1870,7 +1873,7 @@ class Unit(Component):
         A campaign runs unattended for hours; start/stop alone would leave no way to see
         what it is doing.
         """
-        return CanonicalResponse(value=self.stability.status())
+        return self.stability.status()
 
     @property
     def api_router(self) -> APIRouter:
@@ -2000,21 +2003,23 @@ class Unit(Component):
             methods=["PUT"],
         )
 
-        tag = "Mount stability campaign"
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/start_stability_campaign",
-            tags=[tag],
             endpoint=self.endpoint_start_stability_campaign,
+            methods=["PUT"],
         )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/stop_stability_campaign",
-            tags=[tag],
             endpoint=self.endpoint_stop_stability_campaign,
+            methods=["PUT"],
         )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/stability_campaign_status",
-            tags=[tag],
             endpoint=self.endpoint_stability_campaign_status,
+            methods=["GET"],
         )
 
         return router
