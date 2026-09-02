@@ -7,9 +7,9 @@ transport, the response envelope and the Swagger grouping follow.
 If this file disagrees with the code, the code wins — see *Keeping this current*.
 
 Where the text below says *a check* catches something, it means one of the static passes in
-*The static checks*, near the end. Those live on a branch and are run deliberately — they are
-not in this tree and no build runs them, so a check catching something is an audit finding, not
-a red build. What does fail on its own is the import-time refusal of an undeclared handler.
+*The static checks*, near the end. Those live in `tests/contract/` and CI runs them on every
+pull request and every push to `main`, so a check catching something is a red build. The
+import-time refusal of an undeclared handler fails earlier still, before the app starts.
 
 ## 0. Check whether you need to write one
 
@@ -149,12 +149,11 @@ An undeclared route needs none of this to be caught: `common.endpoints.add_api_r
 ## The static checks — where they are, and what each one refuses
 
 The contract's static half is a set of pure AST passes — no hardware, no Mongo, no app fixture —
-that run on any platform in about two seconds. **They are not in this tree.** They live on the
-branch `eli/contract-enforcement` (`#184`), deliberately unlanded: the contract is audited by
-running them against a checkout, not by gating CI or the runtime.
+that run on any platform in about two seconds. They live in `tests/contract/`, and CI runs them
+with the rest of the suite (`pytest tests/`), so a violation reddens the pull request that
+introduces it.
 
 ```bash
-git checkout eli/contract-enforcement
 python -m pytest tests/contract -q
 ```
 
@@ -195,4 +194,4 @@ relaxed, and the audit that revisits it, is `#178`.
 
 By hand: adding a check, a tier or a completion form means editing this file in the same change.
 The test that asserted this file named every check and every `Tier` was withdrawn as `#178` W1,
-whose revisit compares the check modules on `eli/contract-enforcement` against the table above.
+whose revisit compares the modules in `tests/contract/` against the table above.

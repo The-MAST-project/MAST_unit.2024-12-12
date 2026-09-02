@@ -72,16 +72,15 @@ The endpoint contract's static half (#52) is a set of pure AST passes that need 
 no Mongo and no app fixture, and so run on any platform. Each asks a question about the shape
 of the source that running the code cannot answer.
 
-**They are not in this tree.** They live on the branch `eli/contract-enforcement` (#184),
-deliberately unlanded: the contract is audited by running them against a checkout, not by
-gating CI or the runtime. Nothing here imports them and no workflow runs them.
+They live in `tests/contract/`, and CI runs them with the rest of the suite (`pytest tests/`),
+so a violation reddens the pull request that introduces it. Nothing outside the directory
+imports them and they import nothing outside themselves.
 
 ```bash
-git checkout eli/contract-enforcement
 python -m pytest tests/contract -q     # ~2 s, any platform, no hardware
 ```
 
-The runtime half *is* here and is not optional: `common.endpoints.add_api_route` raises
+The runtime half is separate and is not optional: `common.endpoints.add_api_route` raises
 `UndeclaredEndpointError` on a handler that declares nothing, so an undeclared route fails at
 import whether or not anyone has run the checks.
 
