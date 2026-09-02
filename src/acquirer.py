@@ -84,6 +84,57 @@ class Acquirer:
             # deleted with it.
             MoveGuardian().release_folder(acquisition.folder, logger=logger)
 
+    def _cancelled(self) -> bool:
+        """True once `Acquiring` has been cleared -- the protocol's cancel signal.
+
+        Clearing the flag is how everything here is stopped, and `solve_and_correct`
+        already polls it through `parent_activity`, so a cancellation landing during a
+        SOLVE was always honoured. What it was not honoured during is everything between
+        the solves: the stage moves, the `is_moving` spins and the flat five-second
+        settles. That is most of an acquisition's wall-clock time, and the likeliest
+        moment for an operator to give up on one.
+        """
+        return not self.unit.is_active(UnitActivities.Acquiring)
+
+    def _cancellable_sleep(self, seconds: float, poll: float = 0.2) -> bool:
+        """Sleep, returning False the moment the acquisition is cancelled."""
+        deadline = time.monotonic() + seconds
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return not self._cancelled()
+            if self._cancelled():
+                return False
+            time.sleep(min(poll, remaining))
+
+    def _await_stage(self) -> bool:
+        """Wait out a stage move, returning False if cancelled while it runs."""
+        while self.unit.stage.is_moving:  # type: ignore[union-attr]
+            if self._cancelled():
+                return False
+            time.sleep(0.2)
+        return True
+
+    def _abandon(self, op: str, acquisition_exposure_series=None) -> None:
+        """Unwind exactly as a failed phase does.
+
+        A cancelled acquisition must leave the unit in the same state as one that could
+        not reach tolerance -- tracking stopped, the exposure series closed, and no
+        activity flag left set. `Positioning` in particular: `do_acquire` raises it around
+        the stage moves, which is precisely where a cancellation now lands.
+        """
+        logger.info(f"{op}: acquisition cancelled; unwinding")
+        self.unit.end_activity(UnitActivities.Acquiring)
+        if self.unit.is_active(UnitActivities.Positioning):
+            self.unit.end_activity(UnitActivities.Positioning)
+        try:
+            if self.unit.mount is not None:
+                self.unit.mount.stop_tracking()
+            if acquisition_exposure_series is not None and self.unit.imager is not None:
+                self.unit.imager.end_exposure_series(acquisition_exposure_series)
+        except Exception:  # the unwind must finish even if part of it fails
+            logger.exception(f"{op}: error while unwinding a cancelled acquisition")
+
     def do_acquire(self, acquisition: Acquisition):  # noqa: C901
         """
         Called from start_acquisition()
@@ -173,8 +224,9 @@ class Acquirer:
             #
             self.unit.stage.move_to_preset(StagePresetPosition.Sky)
 
-            while self.unit.stage.is_moving:
-                time.sleep(0.2)
+            if not self._await_stage():
+                self._abandon(op)
+                return
             self.unit.mount.wait_until_settled(SettleMode.SLEW)
 
             self.unit.end_activity(UnitActivities.Positioning)
@@ -252,10 +304,13 @@ class Acquirer:
             case FcuVersion.v2:
                 self.unit.stage.move_to_preset(StagePresetPosition.Sky)
 
-        while self.unit.stage.is_moving:
-            time.sleep(0.2)
+        if not self._await_stage():
+            self._abandon(op, acquisition_exposure_series)
+            return
         logger.info("sleeping additional 5 seconds to let the stage stop moving ...")
-        time.sleep(5)
+        if not self._cancellable_sleep(5):
+            self._abandon(op, acquisition_exposure_series)
+            return
         logger.info(f"stage now at {self.unit.stage.position}")
 
         if self.unit.is_active(UnitActivities.Positioning):
@@ -347,10 +402,13 @@ class Acquirer:
         if self.unit.fcu_version == FcuVersion.v2:
             self.unit.stage.move_to_preset(StagePresetPosition.Spec)
             lines.append("moving stage to SPEC")
-        while self.unit.stage.is_moving:
-            time.sleep(0.2)
+        if not self._await_stage():
+            self._abandon(op)
+            return
         logger.info("sleeping additional 5 seconds to let the stage stop moving ...")
-        time.sleep(5)
+        if not self._cancellable_sleep(5):
+            self._abandon(op)
+            return
 
         if self.latest_acquisition.handover_automatically_to_guider:
             lines.append("starting PHD2 guiding")
