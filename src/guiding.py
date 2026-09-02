@@ -17,9 +17,8 @@ from common.activities import Activities
 from common.config.rois import FcuVersion, SpecRoiConfig
 from common.endpoints import Tier, endpoint
 from common.interfaces.guiding import GuiderInterface, GuiderTypes
-from common.interfaces.imager import ImagerRoi, ImagerSettings
 from common.mast_logging import get_logger
-from common.models.statuses import GuiderStatus
+from common.models.statuses import GuiderStatus, ImagerRoi, ImagerSettings
 from common.rois import SpecRoi
 
 logger = get_logger(__name__)
@@ -188,7 +187,7 @@ class Guider(GuiderInterface):
         # stop_acquisition_and_guiding only stops tracking when it wasn't tracking before guiding.
         if self.unit.mount is None:
             return CanonicalResponse(errors=["self.unit.mount is None"])
-        
+
         self.unit.was_tracking_before_guiding = self.unit.mount.is_tracking
         if not self.unit.was_tracking_before_guiding:
             self.unit.mount.start_tracking()

@@ -13,8 +13,8 @@ from common.config import Config
 from common.config.rois import SkyRoiConfig
 from common.endpoints import Tier, endpoint
 from common.filer import Filer, MoveGuardian
-from common.interfaces.imager import ImagerRoi, ImagerSettings
 from common.mast_logging import get_logger
+from common.models.statuses import ImagerRoi, ImagerSettings
 from common.parsers import (
     DEC_PATTERN,
     RA_PATTERN,
@@ -261,7 +261,8 @@ class Autofocuser:
                 )
 
                 logger.info(
-                    f"{op}: starting exposure #{image_no} of {number_of_images} at {focuser_position=} {autofocus_settings.roi=}..."
+                    f"{op}: starting exposure #{image_no} of {number_of_images} "
+                    f"at {focuser_position=} {autofocus_settings.roi=}..."
                 )
                 self.unit.imager.start_exposure(autofocus_settings)
                 logger.info(f"{op}: waiting for exposure #{image_no} of {number_of_images} ...")
@@ -357,9 +358,14 @@ class Autofocuser:
                     time.sleep(0.5)
                 logger.info(f"{op}: focuser stopped moving")
 
-                self.unit.unit_conf.focuser.known_as_good_position = position
+                # `position` bound as a default: this sits inside the retry loop, and
+                # although update_unit calls the mutator synchronously, a closure over a
+                # loop variable is the kind of thing that stops being true later.
+                def _save_known_as_good_position(conf, position: int = position) -> None:
+                    conf.focuser.known_as_good_position = position
+
                 try:
-                    Config().set_unit(unit_name=self.unit.hostname, unit_conf=self.unit.unit_conf)
+                    Config().update_unit(_save_known_as_good_position, unit_name=self.unit.hostname)
                     logger.info(
                         f"saved unit '{self.unit.hostname}' configuration for "
                         + f"focuser known-as-good-position {position}"

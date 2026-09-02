@@ -17,13 +17,12 @@ from pydantic import BaseModel
 from common import asi
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config import Config
 from common.config.phd2 import LimitFrameMode
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
-from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerRoi, ImagerSettings
+from common.interfaces.imager import ImagerExposureSeries, ImagerInterface
 from common.mast_logging import get_logger
-from common.models.statuses import PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
+from common.models.statuses import ImagerRoi, ImagerSettings, PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_debug, function_name
 from phd2.phd2_locate import locate_phd2_exe
@@ -234,6 +233,27 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     DEFAULT_STOP_CAPTURE_TIMEOUT = 10
     _instance = None
     _initialized = False
+    #: The exception that aborted construction, if it did. `__new__` caches the instance
+    #: before `__init__` runs, so without this the second construction site receives a
+    #: half-built object -- either re-running the whole body (launching a second phd2.exe)
+    #: or, once `_initialized` is set unconditionally, silently accepting a broken one.
+    _init_error: BaseException | None = None
+
+    @property
+    def conf(self):
+        """This component's configuration, live.
+
+        Was snapshotted in ``__init__``, which is why a value edited in the database
+        reached a running unit only at the next service restart. Within one configuration
+        generation this returns the same object every time, so it is a memo lookup, not a
+        rebuild -- which is what makes a property affordable here.
+
+        Unlike the other components this one holds no ``unit`` of its own: it is
+        constructed by the imager and reaches the unit through ``self.parent``.
+        """
+        assert self.parent is not None and self.parent.unit is not None
+        assert self.parent.unit.unit_conf is not None
+        return self.parent.unit.unit_conf.phd2
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -248,6 +268,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         _from_imager: bool = False,
     ):
         if self._initialized:
+            # Two sites construct this (imagers/__init__.py, guiding.py). Both must hear
+            # about a construction that failed, not just the first.
+            if self._init_error is not None:
+                raise self._init_error
             return  # singleton, do not re-initialize
 
         GuiderInterface.__init__(self)
@@ -282,9 +306,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.profile_binning: int | None = None
         self.profile_bpp: int | None = None  # bits per pixel
 
-        unit_conf = Config().get_unit()
-        assert unit_conf is not None
-        self.conf = unit_conf.phd2
+        assert self.parent is not None and self.parent.unit is not None, (
+            "PHD2Connector: no parent imager, so no way to reach the unit configuration"
+        )
 
         #
         # We embed the binning and bpp in the profile name, so extract them
@@ -357,14 +381,22 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         try:
             self.connect()
             self.connect_equipment()
-        except PHD2ConnectorError as ex:
-            self.connected = False
-            logger.error(f"{function_name()}: Failed to connect {ex=}")
+            # Inside the guard: its setter is a bare `call()`, so on a torn-down
+            # connection it raises the cleanup's own error over the real one.
+            self.cooler_on = True
+        except Exception as ex:
+            # Not `self.connected = False`: that property's setter disconnects, which nulls
+            # self.conn and makes the next call raise "no connection to PHD2 server" -- the
+            # message that used to reach the API in place of the actual failure.
+            self._connected = False
+            self._init_error = ex
+            logger.error(f"{function_name()}: failed to initialize: {ex}")
+            raise
+        finally:
+            # Always, so a failed construction cannot be re-run by the second site.
+            self._initialized = True
 
-        self.cooler_on = True
         # threading.Thread(name="phd2-reconnector", target=self.reconnect).start()
-
-        self._initialized = True
 
     def can_expose_at(self, binning: int, bpp: int) -> bool | None:
         if self.profile_binning is None:
@@ -401,8 +433,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.disconnect()
 
     def __del__(self):
-        if self.watched_process:
-            self.watched_process.terminate()
+        # getattr, not attribute access: __init__ can abort before watched_process is bound,
+        # and __del__ on that instance then raises an AttributeError with nowhere to go.
+        watched = getattr(self, "watched_process", None)
+        if watched:
+            watched.terminate()
             self.watched_process = None
 
     def equipment_is_connected(self) -> bool:
@@ -562,10 +597,12 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 # |StarMass   |number|the Star Mass value of the guide star|
                 # |SNR        |number|the computed Signal-to-noise ratio of the guide star|
                 # |HFD        |number|the guide star half-flux diameter (HFD) in pixels|
-                # |AvgDist    |number|a smoothed average of the guide distance in pixels (equivalent to value returned by socket server MSG\_REQDIST)|
-                # |RALimited  |boolean|true if step was limited by the Max RA setting (attribute omitted if step was not limited)|
-                # |DecLimited |boolean|true if step was limited by the Max Dec setting (attribute omitted if step was not limited)|
-                # |ErrorCode  |number|the star finder error code, 1=saturated, 2=low SNR, 3=low mass, 4=low HFD, 5=High HFD, 6=edge of frame, 7=mass change, 8=unexpected|
+                # |AvgDist    |number|a smoothed average of the guide distance in pixels (same as MSG\_REQDIST)|
+                # |RALimited  |boolean|true if step was limited by the Max RA setting (omitted if not limited)|
+                # |DecLimited |boolean|true if step was limited by the Max Dec setting (omitted if not limited)|
+                # |ErrorCode  |number|the star finder error code|
+                #   1=saturated, 2=low SNR, 3=low mass, 4=low HFD, 5=High HFD,
+                #   6=edge of frame, 7=mass change, 8=unexpected
                 stats = None
                 boxed_debug(
                     lines=[
@@ -737,7 +774,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 # | Time      | number | time since guiding started, seconds |
                 # | StarMass  | number | star mass value |
                 # | SNR       | number | star SNR value |
-                # | AvgDist   | number |a smoothed average of the guide distance in pixels (equivalent to value returned by socket server MSG\_REQDIST)|
+                # | AvgDist   | number | a smoothed average of the guide distance in pixels (same as MSG\_REQDIST) |
                 # | ErrorCode | number | error code  |
                 # | Status    | string | error message |
                 lines = ["event: Star Lost!"]
@@ -1597,7 +1634,12 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
     @cooler_on.setter
     def cooler_on(self, onoff: bool):
-        self.call("set_cooler_state", onoff)
+        # Guarded like the getter above: an assignment cannot report, so a bare raise here
+        # surfaces at whatever ran next rather than at the caller (MAST_unit#198).
+        try:
+            self.call("set_cooler_state", onoff)
+        except Exception as ex:
+            self.log_and_append_error(f"cooler_on.setter: {ex}")
 
     @property
     def cooler_power(self) -> float | None:

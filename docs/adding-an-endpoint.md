@@ -6,6 +6,11 @@ transport, the response envelope and the Swagger grouping follow.
 
 If this file disagrees with the code, the code wins — see *Keeping this current*.
 
+Where the text below says *a check* catches something, it means one of the static passes in
+*The static checks*, near the end. Those live on a branch and are run deliberately — they are
+not in this tree and no build runs them, so a check catching something is an audit finding, not
+a red build. What does fail on its own is the import-time refusal of an undeclared handler.
+
 ## 0. Check whether you need to write one
 
 `startup`, `shutdown`, `abort` and `status` on a component already exist: they are the
@@ -131,12 +136,26 @@ Thread(name="expose", target=self.do_expose).start()
 Dispatcher `<operation>`, target `do_<operation>`, so a dispatch site says what is running
 without the reader opening the target. A check enforces it.
 
-## 6. Run the checks
+## 6. Run the suite
 
 ```bash
-python -m pytest tests/contract -q     # ~2 s, any platform, no hardware
 ruff check . && ruff format --check .
 python -m pytest tests -q              # the full suite
+```
+
+An undeclared route needs none of this to be caught: `common.endpoints.add_api_route` raises
+`UndeclaredEndpointError` at import, so the app will not start.
+
+## The static checks — where they are, and what each one refuses
+
+The contract's static half is a set of pure AST passes — no hardware, no Mongo, no app fixture —
+that run on any platform in about two seconds. **They are not in this tree.** They live on the
+branch `eli/contract-enforcement` (`#184`), deliberately unlanded: the contract is audited by
+running them against a checkout, not by gating CI or the runtime.
+
+```bash
+git checkout eli/contract-enforcement
+python -m pytest tests/contract -q
 ```
 
 A check failing on something deliberate wants an entry in its `KNOWN_*` dict, keyed to the issue
@@ -144,10 +163,7 @@ that owns the fix — not a silenced check. Only **new** findings fail; an entry
 being true is warned about instead, so read the warnings summary when you land a fix and drop
 the entry you just made stale.
 
-## The checks, and what each one refuses
-
-Open this table when one goes red. All are pure AST passes — no hardware, no Mongo, no app
-fixture — and run on any platform in about two seconds.
+Open this table when one goes red.
 
 | module | refuses |
 |---|---|
@@ -179,4 +195,4 @@ relaxed, and the audit that revisits it, is `#178`.
 
 By hand: adding a check, a tier or a completion form means editing this file in the same change.
 The test that asserted this file named every check and every `Tier` was withdrawn as `#178` W1,
-whose revisit compares `ls tests/contract/test_*.py` against the table above.
+whose revisit compares the check modules on `eli/contract-enforcement` against the table above.

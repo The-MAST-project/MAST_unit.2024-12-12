@@ -270,6 +270,14 @@ def main():
         app_quit(reason=f"configuration error: {ex}")
         sys.exit(1)
 
+    # Track the configuration database from here on, so an edit reaches this unit within
+    # seconds instead of at the next restart. Opt-in by design: it starts a thread holding
+    # a change-stream cursor, which wants an owner with a lifetime -- so it belongs here,
+    # in the service entry point, and not in Config() (constructed by `--help`, by tests,
+    # and by one-shot scripts). Never fatal: a unit that cannot watch still runs on the
+    # configuration it loaded, exactly as before.
+    Config().start_watching()
+
     service_conf = Config().get_service(service_name="unit")
     if service_conf is None:
         logger.error("No server configuration found for 'unit', exiting ...")

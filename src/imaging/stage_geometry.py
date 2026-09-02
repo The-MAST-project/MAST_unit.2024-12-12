@@ -45,8 +45,8 @@ import numpy as np
 from common.activities import StageActivities, UnitActivities
 from common.config import Config
 from common.config.calibration import CalibrationConfig, StageCalibrationConfig
-from common.interfaces.imager import ImagerSettings
 from common.mast_logging import get_logger
+from common.models.statuses import ImagerSettings
 from common.utils import time_stamp
 from imaging.mirror_shadow import ShadowModel, detect_mirror_shadow
 
@@ -460,8 +460,7 @@ class StageCalibrator:
         if image_shape is None:
             self.errors.append("no shadow-present frame -- cannot record image_shape")
             return
-        conf = self.unit.unit_conf
-        assert conf is not None
+        assert self.unit.unit_conf is not None
         stage_cal = StageCalibrationConfig(
             spec_position=int(round(result.spec_position)),  # type: ignore[arg-type]
             slope=result.slope,
@@ -474,11 +473,16 @@ class StageCalibrator:
             timestamp=time_stamp(),
             mechanical_epoch=mech_epoch,
         )
-        if conf.calibration is None:
-            conf.calibration = CalibrationConfig()
-        conf.calibration.stage = stage_cal
+
+        def _save_stage_calibration(conf) -> None:
+            if conf.calibration is None:
+                conf.calibration = CalibrationConfig()
+            conf.calibration.stage = stage_cal
+
         try:
-            Config().set_unit(unit_name=self.unit.hostname, unit_conf=conf)
+            # This site aliased the configuration (`conf = self.unit.unit_conf`) before
+            # editing it, which is the same mutation as the others and harder to grep for.
+            Config().update_unit(_save_stage_calibration, unit_name=self.unit.hostname)
             logger.info(f"saved stage calibration for '{self.unit.hostname}': spec_position={stage_cal.spec_position}")
         except Exception as e:  # noqa: BLE001 -- config write failure is reported to the caller, never fatal to a calibration
             self.errors.append(f"could not save stage calibration for '{self.unit.hostname}': {e}")

@@ -27,6 +27,18 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
     def ascom(self) -> win32com.client.Dispatch:  # type: ignore
         return self._ascom
 
+    @property
+    def conf(self):
+        """This component's configuration, live.
+
+        Was snapshotted in ``__init__``, which is why a value edited in the database
+        reached a running unit only at the next service restart. Within one configuration
+        generation this returns the same object every time, so it is a memo lookup, not a
+        rebuild -- which is what makes a property affordable here.
+        """
+        assert self.unit is not None and self.unit.unit_conf is not None
+        return self.unit.unit_conf.focuser
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -38,7 +50,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
         self.unit = unit
         assert self.unit and self.unit.unit_conf is not None
-        self.conf = self.unit.unit_conf.focuser
         try:
             self._ascom = win32com.client.Dispatch(self.conf.ascom_driver)
         except Exception:

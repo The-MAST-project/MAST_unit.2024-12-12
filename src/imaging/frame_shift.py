@@ -188,8 +188,16 @@ def measure_shift(
     margin_horizontal: int = DEFAULT_MARGIN_HORIZONTAL,
     margin_vertical: int = DEFAULT_MARGIN_VERTICAL,
     upsample: int = DEFAULT_UPSAMPLE,
+    expect_no_motion: bool = False,
 ) -> ShiftResult:
     """Pixel shift that registers `final` onto `reference`.
+
+    `expect_no_motion` says the caller knows the mount did not move between the two
+    frames. It changes nothing about the measurement -- only whether a shift of exactly
+    (0, 0) is reported as suspicious. `at_origin` is a fixed-pattern alarm and reads as
+    one, so firing it when a null result is the *correct* answer tells the operator the
+    opposite of the truth. See the field's own note: it is suspicious "whenever the mount
+    is known to have moved".
 
     Sign convention -- the easy thing to get backwards, so it is pinned by a test:
     ``dx = +10`` means the field CONTENT sits 10 px further along +x in `final` than it
@@ -237,11 +245,13 @@ def measure_shift(
         crop_shape=tuple(ref_prepared.shape),  # type: ignore[arg-type]
         at_origin=bool(shift_x == 0.0 and shift_y == 0.0),
     )
-    if result.at_origin:
+    if result.at_origin and not expect_no_motion:
         logger.warning(
             "frame shift measured as exactly (0, 0): if the mount moved, this is more likely "
             "fixed-pattern noise winning the correlation than a real null result"
         )
+    elif result.at_origin:
+        logger.info("frame shift is exactly (0, 0), as expected: the mount did not move between the two frames")
     if result.confidence < MIN_CONFIDENCE:
         logger.warning(
             "frame shift confidence %.3f is below %.2f: the two frames do not correlate well, so "

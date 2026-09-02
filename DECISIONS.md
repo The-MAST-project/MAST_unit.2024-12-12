@@ -2,6 +2,130 @@
 
 ---
 
+## [2026-08-31] A failed component has no HTTP surface, and that is the reported behaviour
+
+**Why:** `#83` had argued since 2026-08-04 that a component whose `__init__` fails should keep
+its routes: a PHD2 connect failure removes the imager and guider entirely, so
+`GET /unit/imager/start_exposure` answers 404 with no client-side override able to reach it,
+and the live schema carried 50 paths with no `imager`, `guider` or `covers` route on it. That
+was `epic:unit-lifecycle`'s leading invariant -- *every component route is registered
+regardless of hardware state*.
+
+The premise had never been checked, and it does not hold. `MAST_control` and the GUI tree
+contain no `/unit/{mount,covers,focuser,stage,imager}/...` call anywhere; the shared plan
+client's entire unit vocabulary is `status` (GET), `abort` (GET) and `execute_assignment`
+(PUT), all three on the unit router, which `mount_routers` mounts unconditionally. So the
+component routes are operator and debug surface, and the diagnosis they would carry is
+already on the unit path: `Unit.why_not_operational` returns the init errors and `status()`
+reports `mount=None` / `covers=None` per component.
+
+What settled it is the one route that already survives a component failure.
+`/unit/start_acquisition_and_guiding` registers whether or not the guider exists, because
+`Acquirer.__init__` only assigns attributes -- so with the guider unbuilt it accepted the
+call, returned `Ok`, and died on `assert self.unit.guider is not None` in a worker thread,
+after `unit.errors` had been cleared one line above. **Route survival moved the failure rather
+than reporting it.** Four ways of preserving the component surface were priced against that,
+including a refusing placeholder satisfying the `Component` ABC; each bought a fixed schema at
+the cost of a mechanism, and none bought a report anyone reads.
+
+**What:** the invariant is dropped. A component that failed to build has no routes, and
+`#83` was repurposed to the work its own evidence justifies -- making the failure legible
+where it is actually read.
+
+`Unit.why_not_operational` no longer returns `self._init_errors` and stops. An init error is
+one reason among the others, and truncating there meant a unit with a failed component, a
+disconnected mount and a stage off its preset reported the component failure alone -- one
+restart per reason. `operational`'s early return stays, because `all()` over a component set
+missing its failed members answers `True` for a unit that failed to build half of itself;
+that asymmetry now carries a comment, being the kind a later reader would otherwise "fix".
+
+`Acquirer` checks `REQUIRED_COMPONENTS` at the endpoint, before it touches PWI4, and returns
+an envelope naming every missing component in one answer rather than the first. No thread is
+spawned, so nothing can answer `Ok` for work that will not run -- and `Unit.execute_assignment`
+gets the refusal too, which is the plan client's path. `do_acquire` keeps a guard for callers
+that did not check and records on `unit.errors`, which is what `/unit/status` publishes.
+
+**Implications:** two units on the same commit still expose different endpoint sets depending
+on what enumerated at boot, and that is now accepted rather than tracked. Any future client
+that wants to address a component directly must read `/unit/status` first; the OpenAPI schema
+is not a contract about which components exist. The remaining reporting defects are upstream of
+this and unchanged -- `#84` and `#91` manufacture the wrong message inside a component's own
+constructor, so what this makes sure gets *reported* may still be *wrong*.
+
+`assert` is not a precondition. Six of them guarded the acquisition path against a state that
+occurs whenever PHD2 fails to connect; they stated the state could not happen, reached only the
+log when it did, and vanish entirely under `-O`. A source-inspection test keeps them out.
+
+---
+
+## [2026-08-30] The lint gate enforces a named rule set, not ruff's moving defaults
+
+**Why:** the `lint` job had been red on every run since CI landed on 2026-08-09 -- 20
+consecutive failures while the Windows test job passed throughout. A signal that is always
+red cannot report a regression: a change introducing a genuine finding lands into an
+already-failing job, and no reviewer can separate it from the standing count without
+diffing raw job output. #172 registered the state; MAST_common#88 and MAST_common#89 worked
+the same problem first and are the precedent this follows.
+
+The 75 findings were two debts, and only one had been opted into. `ruff.toml` declared ten
+rule families under `extend-select`, which *adds* to ruff's own defaults rather than
+replacing them -- and 0.16's defaults enable ASYNC, TRY, S, PYI, RUF, LOG, PLR, C4 and TC on
+top of the historical E4/E7/E9/F. So 53 of the 75 came from tryceratops, pylint-refactor, RUF
+and flake8-bandit, families nothing in this repo had adopted. They arrived with the version
+pin in `53e5de3`, not with any code change, and the effective rule set would have moved again
+at the next bump.
+
+**What:** three moves, mirroring MAST_common#89.
+
+`select` replaces `extend-select`, fixing the rule set to the ten families the file's own
+comment documents. `[lint.mccabe] max-complexity = 17` is a ratchet at today's worst function
+(`solvers/astrometry_dot_net.py: parse_solver_output`); the two others over the default 10 are
+`phd2/phd2.py: start_exposure` and `imaging/stage_geometry.py: find_spec_stage_position`, both
+at 11, and #172 carries the list. There is no `ignore` line: MAST_common needs `N999`
+suppressed because its repo root *is* the `common` package, so the module path walks up into
+CI's `MAST_common` checkout directory, but this repo has no root `__init__.py` and the chain
+stops at `src/` -- verified under a CI-named directory.
+
+The 22 remaining findings resolved three ways. Nine are mechanical -- seven E501 (a log
+f-string, a commented-out expression, and five rows of the two PHD2 event-protocol reference
+tables), a trailing-whitespace pair inside a dead string literal, and `QualityState` becoming a
+`StrEnum`. Eight sat in two files their own successors already name as superseded -- `coma.py`
+(`optical_center.py` describes it as the sketch "whose least-squares solve and return were left
+commented out", which is exactly its `A`/`C` findings: the linear system is built and never
+solved) and `find_vertical_obstruction.py` (`mirror_shadow.py`'s column-sums predecessor).
+Nothing imported either; both are deleted. The last one is not lint and is not fixed here.
+
+**Rejected:** *adopting the wider default set on purpose.* Defensible, and it surfaced real
+material -- 22 TRY002 sites raising bare `Exception`, six consecutive `exit(0)` calls in
+`imagers/ascom.py` with copy-pasted unreachable code between them. But adopting nine rule
+families is a fleet decision taken once, in MAST_common, not repo by repo, and taking it inside
+a burndown would have bundled a standards change with a cleanup.
+
+*Refactoring the three C901 functions to keep the default 10.* Tighter, and it was considered:
+two are one branch over. `parse_solver_output` at 17 is a real refactor of the astrometry.net
+output parser, and a refactor of the acquisition path does not belong in a lint pass.
+
+*Clearing `dec_avg_rad` as the `F841` it is reported as.* It is the orphan of a `cos(dec)`
+correction that was commented out when the RA wrap-around fix replaced the expression, so
+`delta_ra_arcsec` is now an RA-coordinate difference. That is correct for the PWI4 offset,
+whose `ra` axis is documented as the target RA coordinate -- but the same un-scaled number is
+also compared against `ToleranceConfig.ra_arcsec`, persisted as `Correction.ra_delta`, and used
+to pick the gradual-approach rate. Deleting the variable would erase the only trace of the
+question. It keeps its line under `# noqa: F841` naming #191.
+
+**Unsettled:** `max-complexity = 17` leaves headroom that the default 10 denied -- fourteen
+functions sit at exactly 10 today and could grow to 17 unremarked. The ratchet only guarantees
+the tree gets no worse than its worst point, which is a weaker promise than it looks. Whether
+the 22 TRY002 sites should become domain exceptions is a fleet question MAST_common#88 raises
+and neither repo has answered.
+
+**Implications:** a red `lint` job now means a regression in this PR, which is the whole point
+of it blocking. Anything raising a function past complexity 17, or landing a finding in the ten
+families, fails the build rather than joining a standing count. `ruff check .` locally reports
+only what the contributor introduced.
+
+---
+
 ## [2026-08-19] The API root redirects to `/docs`, and ReDoc is off for real
 
 **Why:** the unit served nothing at `/`. `create_app()` registered `/favicon.ico`, the unit
