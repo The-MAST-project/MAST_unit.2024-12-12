@@ -52,8 +52,9 @@ from common.models.statuses import (
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
 from common.utils import function_name
+from flux_metering.correlate import measure_pair
 from flux_metering.flux_meter import FluxMeter, FluxMeterError, frame_flux, saturated_pixels
-from imaging.frame_shift import MIN_CONFIDENCE, margins_from_fraction, max_reliable_shift, measure_shift
+from imaging.frame_shift import MIN_CONFIDENCE
 from mount import SettleMode
 from spiral_search import resolve_center
 
@@ -460,6 +461,17 @@ class FluxMeteringSession:
         scale = math.cos(math.radians(dec)) if dec is not None else 1.0
         return math.hypot(offset[0] * scale, offset[1])
 
+    def _pixel_scale(self) -> float | None:
+        """The configured plate scale, or None when it is unset.
+
+        Its own method because `_finish` records it beside the run's products: a
+        re-correlation months later must convert arcseconds with the scale THIS run used,
+        not with whatever the configuration says by then.
+        """
+        conf = self.unit.unit_conf
+        scale = conf.imager.pixel_scale_at_bin1 if conf is not None else 0.0
+        return scale if scale and scale > 0.0 else None
+
     def _dec_degrees(self) -> float | None:
         try:
             return float(self.unit.mount.status().dec_j2000_degs)  # type: ignore[union-attr,arg-type]
@@ -597,7 +609,6 @@ class FluxMeteringSession:
         best = max(self.steps, key=lambda s: s.flux)
         shape = reference.shape
         center_x, center_y, center_source = resolve_center(None, None, shape)
-        margin_h, margin_v = margins_from_fraction(shape, self.params.usable_fraction)
 
         # The reference frame and an arg-max at the origin are at the SAME pointing. They
         # are still two separate exposures, so the correlation there is a real null
@@ -607,18 +618,17 @@ class FluxMeteringSession:
         expect_no_motion = best.cell == (0, 0)
 
         final = self._read_fits(best.imager_frame or "")
-        shift = measure_shift(
+        # Through `correlate.measure_pair`, which `spiral_correlate_steps` also calls. Two
+        # implementations of one measurement would eventually disagree, and the
+        # disagreement would surface as a fibre position rather than as an error.
+        shift, magnitude, limit = measure_pair(
             reference,
             final,
             center_x=center_x,
             center_y=center_y,
-            margin_horizontal=margin_h,
-            margin_vertical=margin_v,
+            usable_fraction=self.params.usable_fraction,
             expect_no_motion=expect_no_motion,
         )
-
-        limit = max_reliable_shift(shape, margin_h)
-        magnitude = math.hypot(shift.dx, shift.dy)
         return FluxMeteringResult(
             dx=shift.dx,
             dy=shift.dy,
@@ -658,8 +668,7 @@ class FluxMeteringSession:
         """
         if offset_arcsec is None:
             return None
-        conf = self.unit.unit_conf
-        scale = conf.imager.pixel_scale_at_bin1 if conf is not None else 0.0
+        scale = self._pixel_scale()
         if not scale or scale <= 0.0:
             return None
         dec = self._dec_degrees()
@@ -781,11 +790,29 @@ class FluxMeteringSession:
         # the products against a status they no longer have.
         document = {
             **self.status().model_dump(),
+            # `status()` derives `active` from the worker thread being alive, and _finish
+            # runs INSIDE that thread -- so the live status is necessarily active=True and
+            # mid-phase right here, and assigning to self.state earlier would simply be
+            # overwritten. This document describes a run that is over, and says so;
+            # `terminal_state` carries how it ended. Without these two the result.json on
+            # the share claims forever that the run is still going, which is what every
+            # file written before 2026-09-02 does.
+            "active": False,
+            "phase": "idle",
             "params": asdict(self.params),
             "flux_exposure_us": self.params.flux_exposure_us,
             "flux_meter": self._meter.description if self._meter else None,
             "saturation_level": self._meter.saturation_level if self._meter else None,
             "hostname": self.unit.hostname,
+            # The two live reads the arcsec->pixel conversion depends on, frozen at the
+            # values this run actually used. Both are correct only while the run is
+            # happening: the plate scale can be reconfigured, and the declination is read
+            # from wherever the mount is pointing at the time. `spiral_correlate_steps`
+            # recomputes commanded offsets for arbitrary pairs from these, and reports no
+            # commanded offset at all for runs that predate them -- rather than a number
+            # derived from an unrelated pointing.
+            "pixel_scale_at_bin1": self._pixel_scale(),
+            "dec_degrees": self._dec_degrees(),
         }
 
         try:

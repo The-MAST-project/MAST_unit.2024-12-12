@@ -58,6 +58,7 @@ from common.rois import UnitRoi
 from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers
 from expose_params import MAX_OFFSET_ARCSEC, MAX_OFFSET_DEGREES, resolve_exposure_roi, resolve_offsets
+from flux_metering import correlate
 from flux_metering.session import FluxMeteringParams, FluxMeteringSession, parse_target
 from focuser import Focuser
 from imagers import Imager
@@ -1407,6 +1408,111 @@ class Unit(Component):
         """
         return self.flux_metering.status()
 
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
+    def endpoint_flux_metering_runs(self):
+        """
+        Every flux-metering run on this machine's share, newest night first, with the
+        `date` and `seq` that `spiral_correlate_steps` takes.<br>
+        <br>
+        This exists because OpenAPI cannot offer them as a drop-down. A drop-down comes
+        from an `Enum` whose members are fixed when the module is imported, so it would be
+        stale from the first run after the service started -- wrong exactly when it is
+        being used -- and `seq` depends on `date` in a way OpenAPI cannot express at all.
+        Served as data instead, which is also current.<br>
+        <br>
+        Runs with no `result.json` are listed with `complete: false` rather than hidden, so
+        a caller sees them and is told why they are refused instead of wondering where
+        they went.
+        """
+        return correlate.list_runs()
+
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
+    def endpoint_flux_metering_run_steps(
+        self,
+        date: Annotated[
+            str,
+            Query(
+                pattern=correlate.DATE_PATTERN,
+                description="Observing-night folder, `YYYY-MM-DD`, from `flux_metering_runs`.",
+            ),
+        ],
+        seq: Annotated[
+            str,
+            Query(
+                pattern=correlate.SEQ_PATTERN,
+                description="Run sequence number, from `flux_metering_runs`.",
+            ),
+        ],
+    ):
+        """
+        The steps of one run: index, cell, ring, commanded offset, flux, imager frame, and
+        which one was the arg-max.<br>
+        <br>
+        The flux and the cell are the point. Choosing between bare step numbers is
+        guesswork; seeing that step 7 was the arg-max at cell (0, 1) is not.
+        """
+        try:
+            return correlate.list_run_steps(date, seq)
+        except correlate.CorrelationError as e:
+            return CanonicalResponse(errors=[str(e)])
+
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
+    def endpoint_spiral_correlate_steps(
+        self,
+        date: Annotated[
+            str,
+            Query(
+                pattern=correlate.DATE_PATTERN,
+                description="Observing-night folder, `YYYY-MM-DD`, from `flux_metering_runs`.",
+            ),
+        ],
+        seq: Annotated[
+            str,
+            Query(
+                pattern=correlate.SEQ_PATTERN,
+                description="Run sequence number, from `flux_metering_runs`.",
+            ),
+        ],
+        step_a: Annotated[int, Query(ge=0, description="The step to measure FROM.")],
+        step_b: Annotated[int, Query(ge=0, description="The step to measure TO.")],
+    ):
+        """
+        Cross-correlate the imager frames of two steps of one **finished** run, and write
+        the answer beside that run's own products as
+        `correlate-<step_a>-<step_b>.json`.<br>
+        <br>
+        A run correlates exactly one pair -- its reference frame against its arg-max --
+        once, at the end. This is the only way to ask what lies between any other two
+        steps, and the only way to ask it at all of a run already on the share, since the
+        sky has moved.<br>
+        <br>
+        **Everything is taken from the run's own `result.json`**: the usable fraction, the
+        fibre position, the plate scale and the declination. Nothing comes from the live
+        configuration or from where the mount points now -- the declination the run used
+        was read from the mount at the time, so an hour later it belongs to unrelated sky.
+        There are deliberately no overrides: a re-correlation is faithful to the run it
+        describes, or it is refused.<br>
+        <br>
+        **Refused**, with the reason, when the run has no `result.json`, records no
+        terminal state, was aborted, when either step is not in the run or recorded no
+        imager frame, or when a frame is missing from the folder.<br>
+        <br>
+        `commanded_offset_px` is the DIFFERENCE between the two steps' commanded offsets,
+        and is what says whether the measurement means anything: it should equal `(dx, dy)`
+        in magnitude and sign. It is `null` for runs written before the plate scale and
+        declination were recorded -- those cannot be recomputed, and no check beats a
+        quietly wrong one.
+        """
+        try:
+            correlation = correlate.correlate_steps(date, seq, step_a, step_b)
+            written = correlate.write_correlation(correlation)
+        except correlate.CorrelationError as e:
+            return CanonicalResponse(errors=[str(e)])
+        except Exception as e:  # noqa: BLE001 -- a bad frame must not 500 the unit
+            logger.exception(f"{function_name()}: correlation failed")
+            return CanonicalResponse(errors=[f"could not correlate: {e}"])
+        return {"written_to": written, **correlation.model_dump()}
+
     @endpoint(tier=Tier.OPERATION)
     def endpoint_spiral_end_path(self):
         """
@@ -1527,6 +1633,27 @@ class Unit(Component):
             base_path + "/find_max_flux_status",
             endpoint=self.endpoint_find_max_flux_status,
             methods=["GET"],
+        )
+        add_api_route(
+            router,
+            base_path + "/flux_metering_runs",
+            endpoint=self.endpoint_flux_metering_runs,
+            methods=["GET"],
+        )
+        add_api_route(
+            router,
+            base_path + "/flux_metering_run_steps",
+            endpoint=self.endpoint_flux_metering_run_steps,
+            methods=["GET"],
+        )
+        # PUT, not GET: it writes `correlate-<a>-<b>.json` into the run folder, and
+        # invariant 5 puts every state-changing route behind PUT so a prefetch or a
+        # Swagger "try it out" cannot fire one by accident.
+        add_api_route(
+            router,
+            base_path + "/spiral_correlate_steps",
+            endpoint=self.endpoint_spiral_correlate_steps,
+            methods=["PUT"],
         )
 
         return router
