@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import ValidationError
 
 from common.config import Config, ConfigError
-from common.endpoints import OPENAPI_TAGS
+from common.endpoints import TIER_GROUPS, Tier, operation_area_tag
 from common.filer import Filer
 from common.mast_logging import configure_logging, get_logger
 from common.process import ensure_process_is_running
@@ -128,6 +128,39 @@ async def websocket_disconnect_handler(websocket: WebSocket, exc: WebSocketDisco
 # None when it failed to build, and a unit still serves the ones it has.
 COMPONENT_ATTRIBUTES = ("mount", "covers", "focuser", "stage", "imager")
 
+#: The operator areas in display order, each with its Swagger group description (#207). An area
+#: is the path segment `common.endpoints.area_of` derives, so naming one no route produces
+#: renders an empty group -- `test_every_component_has_an_operator_group` is the guard.
+OPERATOR_AREAS: tuple[tuple[str, str], ...] = (
+    (
+        "unit",
+        "Operator verbs the unit serves itself rather than delegating to one component: the "
+        "spiral search, the acquisition and guiding chain, autofocus, a unit-level exposure "
+        "and the stage repeatability test.",
+    ),
+    (
+        "mount",
+        "Pointing and tracking on the L-550: slews to J2000 and apparent coordinates, alt-az, "
+        "park, find home, tracking on and off.",
+    ),
+    (
+        "focuser",
+        "Absolute and relative focus position, and the known-good preset the acquisition chain falls back to.",
+    ),
+    ("stage", "Linear stage position, relative moves, and the named presets."),
+    ("imager", "Exposures on the acquisition camera, and cooler control."),
+    ("covers", "Mirror covers, open and close."),
+)
+
+#: `openapi_tags` in display order. Only the operator tier is split by area, so
+#: `TIER_GROUPS[Tier.OPERATION]` is unused here and the other three groups are unchanged.
+OPENAPI_TAGS: list[dict[str, str]] = [
+    TIER_GROUPS[Tier.CONTRACT],
+    *({"name": operation_area_tag(area), "description": description} for area, description in OPERATOR_AREAS),
+    TIER_GROUPS[Tier.INTERFACE],
+    TIER_GROUPS[Tier.DEMO],
+]
+
 
 def mount_routers(app: FastAPI, unit) -> None:
     """Mount the unit router and every component router the unit managed to build.
@@ -218,7 +251,7 @@ def create_app(unit=None) -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     def read_root():
-        """Send the bare root to the tier-grouped Swagger page (#170).
+        """Send the bare root to the grouped Swagger page (#170).
 
         Out of the schema on purpose: every documented route carries exactly one tier tag
         (#39), and this one is navigation rather than an operation to call.

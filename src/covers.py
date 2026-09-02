@@ -207,6 +207,13 @@ class Covers(Component, SwitchedOutlet):
             return False
         return mirrorcover.get("mirrorcover.is_connected", "false").lower() == "true"
 
+    @connected.setter
+    def connected(self, value: bool) -> None:
+        if value:
+            self.connect()
+        else:
+            self.disconnect()
+
     @property
     def state(self) -> CoversState:
         mirrorcover = self._mirrorcover_status()

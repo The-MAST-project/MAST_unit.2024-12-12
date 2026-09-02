@@ -25,7 +25,7 @@ from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
 import app as app_module
-from common.endpoints import TIER_TAGS, Tier
+from common.endpoints import TIER_TAGS, Tier, operation_area_tag
 
 # Defect 2's real assertion: reaching this line means importing `app` spawned nothing.
 # `conftest` installs the process guard before collection, so a module-level spawn would
@@ -153,9 +153,39 @@ def test_redoc_is_not_served():
         assert client.get("/redoc").status_code == 404
 
 
-def test_the_schema_declares_the_tier_groups_in_display_order():
-    """#39: Swagger groups by contract tier, most depended-upon first, each with its promise."""
+def test_the_schema_declares_the_groups_in_display_order():
+    """#39 grouped by tier; #207 splits the operator tier by area and leaves the rest alone.
+
+    Order is the requirement, not just membership -- `openapi_tags` is the only control Swagger
+    UI offers over which heading a reader meets first, and the contract surface leading is the
+    point of having it.
+    """
     schema = app_module.create_app().openapi()
 
-    assert [group["name"] for group in schema["tags"]] == [TIER_TAGS[tier] for tier in Tier]
+    assert [group["name"] for group in schema["tags"]] == [
+        TIER_TAGS[Tier.CONTRACT],
+        *(operation_area_tag(area) for area, _ in app_module.OPERATOR_AREAS),
+        TIER_TAGS[Tier.INTERFACE],
+        TIER_TAGS[Tier.DEMO],
+    ]
     assert all(group["description"] for group in schema["tags"])
+
+
+def test_the_operator_tier_is_not_a_group_of_its_own():
+    """Every operator route is filed under an area, so the flat tier tag names nothing."""
+    names = {group["name"] for group in app_module.create_app().openapi()["tags"]}
+
+    assert TIER_TAGS[Tier.OPERATION] not in names
+
+
+def test_every_component_has_an_operator_group():
+    """#207: the ordered list is hand-written, so a sixth component would render undescribed.
+
+    `area_of` derives a group from wherever a route is mounted; nothing makes `OPERATOR_AREAS`
+    keep up. This is what fails when a component is added to `COMPONENT_ATTRIBUTES` and not
+    here -- the drift the derivation cannot prevent on its own.
+    """
+    declared = {group["name"] for group in app_module.OPENAPI_TAGS}
+
+    for attribute in app_module.COMPONENT_ATTRIBUTES:
+        assert operation_area_tag(attribute) in declared, f"{attribute} has no operator group"

@@ -18,6 +18,7 @@ from common.endpoints import Completion, Tier, add_api_route, endpoint, register
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import MountStatus, SpiralSettings
+from common.object_resolver import TOTAL_TIMEOUT_SECONDS, ObjectNameError, resolve_object_name
 from common.parsers import (
     DEC_PATTERN,
     RA_PATTERN,
@@ -756,15 +757,22 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         logger.info(f"stopped tracking (from {caller_name()})")
         return CanonicalResponse_Ok
 
-    def goto_ra_dec_j2000(self, ra: float, dec: float):
+    def goto_ra_dec_j2000(self, ra: float, dec: float, target_label: str | None = None):
         """Slew to an equatorial J2000 position. Internal API: RAISES on failure.
 
         Four callers (acquirer, autofocusing, stage_geometry, dance) invoke this directly
         and ignore the return value, so a failure reported by returning would become a
         silent no-op -- an acquisition carrying on believing it had slewed.
         `endpoint_goto_ra_dec_j2000` is what converts a failure into a CanonicalResponse.
+
+        `target_label` replaces the bare (ra, dec) in `self.target` when the caller knows
+        something the coordinates do not carry -- `goto_object` uses it to record the name
+        asked for and the catalogue that answered. Same reasoning as
+        `goto_ra_dec_apparent`, which labels its frame for exactly this reason: an operator
+        reading the status view cannot tell from two numbers where they came from, and a
+        misresolution is invisible at every layer below this one.
         """
-        self.target = (ra, dec)
+        self.target = target_label if target_label is not None else (ra, dec)
         self.start_activity(MountActivities.Slewing, details=[f"target={self.target}"])
         try:
             self.pw.mount_goto_ra_dec_j2000(ra, dec)
@@ -810,6 +818,59 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         carries the target, is what says when it finishes.
         """
         return self._goto_equatorial(self.goto_ra_dec_j2000, ra_j2000_hours, dec_j2000_degs, function_name())
+
+    @endpoint(tier=Tier.OPERATION, completion=MountActivities.Slewing)
+    def endpoint_goto_object(
+        self,
+        object_name: Annotated[
+            str,
+            Query(
+                description=(
+                    "### Object name to resolve to J2000 coordinates.\n"
+                    "- resolved against **TNS** (for `AT`/`SN` designations) and **Sesame** "
+                    "(SIMBAD / NED / VizieR)\n"
+                    "- **moving targets are refused**: comets, minor planets and solar-system "
+                    "bodies have no fixed J2000, only an ephemeris at an instant\n"
+                    "- the catalogue that answered is reported in the mount's `target`"
+                )
+            ),
+        ],
+        resolve_timeout: Annotated[
+            float,
+            Query(gt=0, description="Seconds to spend resolving the name before giving up"),
+        ] = TOTAL_TIMEOUT_SECONDS,
+    ) -> CanonicalResponse:
+        """
+        Resolve an object name to J2000 coordinates, then slew there.
+
+        Exactly `goto_ra_dec_j2000` once the name is resolved -- same frame, same guards,
+        and tracking is likewise left alone.<br>
+        **Nothing is slewed if the name does not resolve.** A name that cannot be turned
+        into a fixed position is an error, never a best guess: a misresolution is
+        indistinguishable from success at every layer below this one -- the mount slews
+        normally, guiding locks, and a spectrum is taken of the wrong object.
+        """
+        op = function_name()
+        try:
+            resolved = resolve_object_name(object_name, total_timeout=resolve_timeout)
+        except ObjectNameError as e:
+            # Includes MovingTargetError. Both are the caller's cue to report and move on,
+            # and neither is a reason to point the telescope anywhere.
+            logger.error(f"{op}: {e}")
+            return CanonicalResponse(errors=[f"{op}: {e}"])
+
+        # What the operator will see in the status view for the rest of the slew. The name
+        # they asked for, the identifier that matched, and who said so -- an alias match is
+        # the case most likely to have resolved to the wrong thing, so it is worth the room.
+        label = f"{object_name} = {resolved.canonical_name or object_name} [{resolved.database or resolved.resolver}]"
+        logger.info(f"{op}: '{object_name}' resolved to {label}")
+
+        return self._goto_equatorial(
+            lambda ra, dec: self.goto_ra_dec_j2000(ra, dec, target_label=label),
+            resolved.ra_j2000_hours,
+            resolved.dec_j2000_degs,
+            op,
+        )
 
     def goto_ra_dec_apparent(self, ra: float, dec: float):
         """Slew to an equatorial position of DATE. Internal API: RAISES on failure.
@@ -1106,6 +1167,14 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             base_path + "/goto_ra_dec_apparent",
             methods=["PUT"],
             endpoint=self.endpoint_goto_ra_dec_apparent,
+        )
+        # PUT for the same reason as its siblings: it slews. That the name resolution in
+        # front of it is a read changes nothing -- what the route DOES is move the mount.
+        add_api_route(
+            router,
+            base_path + "/goto_object",
+            methods=["PUT"],
+            endpoint=self.endpoint_goto_object,
         )
         # PUT, not GET: invariant 5 of the endpoint contract (#48, decided 2026-07-20) --
         # state-changing routes are PUT so a caching proxy, a link prefetch or a Swagger
