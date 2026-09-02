@@ -37,9 +37,16 @@ Keyword-only, and `tier` is mandatory: routing an undeclared handler raises
 | `INTERFACE` | generated only. Never declare it by hand |
 | `DEMO` | parked demonstrations. Implies `deprecated=True`, so the route renders struck through |
 
-The tier is the Swagger group and publishes per operation as `x-stability`, so a client's own
-test can assert it never calls an operator verb. **Do not pass `tags=`** — it is ignored with a
-warning, and a check keeps this tree free of them.
+The tier publishes per operation as `x-stability`, so a client's own test can assert it never
+calls an operator verb. It is also the Swagger group, except on `OPERATION`: an operator route
+is grouped by **area** instead — the path segment before its verb, so `/unit/mount/park` files
+under *Mount (operator)* and `/unit/expose` under *Unit (operator)*. Nothing to declare; the
+group is read from where the route is mounted (#207).
+
+A **new component** needs one entry in `OPERATOR_AREAS` in `src/app.py` for its group to be
+described and ordered; `test_every_component_has_an_operator_group` fails until it is there.
+
+**Do not pass `tags=`** — it is ignored with a warning, and a check keeps this tree free of them.
 
 ### completion
 
