@@ -90,10 +90,17 @@ class ThorCam:
         # Full scale from the camera's own bit depth. Deriving it here is what keeps
         # "saturated" meaning the same thing if the camera is reconfigured or replaced.
         self._saturation = (1 << int(camera.bit_depth)) - 1
+        # The ranges go in too, because this string is what `result.json` carries as the
+        # run's record of its instrument. A run whose settings were refused, or which sat
+        # near a limit, is then explicable from the products alone -- without them a reader
+        # has to find the same camera and ask it.
         self._description = (
             f"{camera.model} sn={camera.serial_number} "
             f"{camera.sensor_width_pixels}x{camera.sensor_height_pixels} "
-            f"bit_depth={camera.bit_depth}"
+            f"bit_depth={camera.bit_depth} (full scale {self._saturation}) "
+            f"exposure_us={tuple(camera.exposure_time_range_us)} "
+            f"gain={tuple(camera.gain_range)} "
+            f"black_level={tuple(camera.black_level_range)}"
         )
         logger.info(f"opened {self._description}")
 

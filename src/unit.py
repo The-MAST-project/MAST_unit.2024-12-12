@@ -1215,7 +1215,17 @@ class Unit(Component):
     def endpoint_acquire_and_find_max_flux(
         self,
         seconds: Annotated[
-            float, Query(gt=0, description="Imager exposure, for the acquisition and for each spiral step")
+            float,
+            Query(
+                gt=0,
+                description=(
+                    "Imager exposure, for the acquisition and for each spiral step. **The ThorCam "
+                    "exposure follows this**, converted to microseconds, so that both frames "
+                    "integrate over the same window. The CS165MU accepts 64 us to 26,843,418 us "
+                    "(~26.8 s); the camera's own range is checked when it is configured, and a "
+                    "value outside it fails the run rather than being silently clamped."
+                ),
+            ),
         ] = 5.0,
         ra_j2000_hours: Annotated[
             str | float | None,
@@ -1267,8 +1277,28 @@ class Unit(Component):
         max_radius_arcsec: Annotated[
             float, Query(gt=0, description="Runaway guard, cos(dec)-corrected on the RA axis")
         ] = 10.0,
-        flux_gain: Annotated[int, Query(ge=0, description="ThorCam gain (CS165MU range 0-480)")] = 0,
-        flux_black_level: Annotated[int, Query(ge=0, description="ThorCam black level (CS165MU range 0-511)")] = 3,
+        flux_gain: Annotated[
+            int,
+            Query(
+                ge=0,
+                description=(
+                    "ThorCam gain. The CS165MU accepts **0 to 480**; 0 is the floor and the "
+                    "default, which also makes it the only lever against saturation that is "
+                    "*not* available -- shortening `seconds` is."
+                ),
+            ),
+        ] = 0,
+        flux_black_level: Annotated[
+            int,
+            Query(
+                ge=0,
+                description=(
+                    "ThorCam black-level pedestal, subtracted from every pixel when the flux is "
+                    "summed. The CS165MU accepts **0 to 511**. A constant, so it shifts every "
+                    "step's flux equally and cannot move the arg-max."
+                ),
+            ),
+        ] = 3,
         usable_fraction: Annotated[
             float,
             Query(gt=0, le=1, description="Usable fraction of the frame around the fibre, avoiding coma"),
