@@ -33,6 +33,7 @@ import statistics
 import threading
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -735,16 +736,34 @@ class FluxMeteringSession:
         filer.move_ram_to_shared(path)
 
     def _read_fits(self, file_name: str) -> np.ndarray:
-        """Read a frame back, from the share if the mover has already taken it."""
+        """Read a frame back, from the share if the mover has already taken it.
+
+        The fallback is the normal path, not an edge case: frames are handed to
+        `move_ram_to_shared` as they are written, so by the time the arg-max frame is
+        wanted -- at the end of the run -- it has usually gone. The reference frame,
+        read moments after being written, usually has not. A first real run failed here
+        for exactly that reason while the reference had read fine.
+
+        `change_top_to` compares against roots stored POSIX-style ("D:/MAST/"), while
+        this folder comes from pathlib and is spelled with backslashes, so the prefix
+        test silently fails unless the path is converted first. `move_ram_to_shared`
+        documents the same two-spellings problem and converts for the same reason.
+        """
         if self.state.folder is None:
             raise FluxMeteringError("no folder")
         local = os.path.join(self.state.folder, file_name)
         if os.path.exists(local):
             return np.asarray(fits.getdata(local), dtype=float)
-        shared_folder = filer.change_top_to(FilerTop.Shared, self.state.folder)
+
+        shared_folder = filer.change_top_to(FilerTop.Shared, Path(self.state.folder).as_posix())
         if shared_folder is None:
-            raise FluxMeteringError(f"'{file_name}' is neither on the ram disk nor under a known root")
-        return np.asarray(fits.getdata(os.path.join(shared_folder, file_name)), dtype=float)
+            raise FluxMeteringError(
+                f"'{file_name}' is neither on the ram disk nor under a known root (folder '{self.state.folder}')"
+            )
+        moved = os.path.join(shared_folder, file_name)
+        if not os.path.exists(moved):
+            raise FluxMeteringError(f"'{file_name}' is neither at '{local}' nor at '{moved}'")
+        return np.asarray(fits.getdata(moved), dtype=float)
 
     def _finish(self, terminal: str) -> None:
         """Write the result, put the mount back, and release the unit.

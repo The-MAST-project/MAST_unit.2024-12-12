@@ -449,3 +449,45 @@ def test_a_bad_coordinate_raises_rather_than_being_guessed_at():
 
     with pytest.raises(ValueError):
         parse_target("not a coordinate", None)
+
+
+def test_a_moved_frame_is_read_from_the_share(tmp_path, monkeypatch):
+    """The fallback is the normal path, not an edge case: frames go to the mover as they
+    are written, so the arg-max frame has usually LEFT the ram disk by the time the
+    correlation wants it. A first real run failed here because `change_top_to` compares
+    against roots spelled POSIX-style while the folder came from pathlib with backslashes,
+    so the prefix test silently missed."""
+    import flux_metering.session as session_module
+    from common.filer import FilerTop
+
+    ram, shared = tmp_path / "ram" / "run", tmp_path / "shared" / "run"
+    shared.mkdir(parents=True)
+    ram.mkdir(parents=True)
+    fits.PrimaryHDU(data=np.full((8, 8), 7, dtype=np.uint16)).writeto(shared / "step-00000-00.fits")
+
+    def change_top_to(top, path):
+        # As the real one does: a plain prefix test against a posix-spelled root.
+        assert top is FilerTop.Shared
+        posix_ram = ram.as_posix()
+        return path.replace(posix_ram, shared.as_posix()) if path.startswith(posix_ram) else None
+
+    monkeypatch.setattr(session_module.filer, "change_top_to", change_top_to)
+
+    s = FluxMeteringSession.__new__(FluxMeteringSession)
+    s.state = session_module.FluxMeteringStatus(folder=str(ram))  # backslashes on Windows
+
+    data = s._read_fits("step-00000-00.fits")
+
+    assert data.shape == (8, 8)
+    assert data[0][0] == 7
+
+
+def test_a_frame_that_is_nowhere_says_where_it_looked(tmp_path, monkeypatch):
+    import flux_metering.session as session_module
+
+    monkeypatch.setattr(session_module.filer, "change_top_to", lambda top, path: None)
+    s = FluxMeteringSession.__new__(FluxMeteringSession)
+    s.state = session_module.FluxMeteringStatus(folder=str(tmp_path))
+
+    with pytest.raises(session_module.FluxMeteringError, match="neither on the ram disk"):
+        s._read_fits("missing.fits")
