@@ -64,7 +64,18 @@ class ThorCam:
             raise FluxMeterError(f"the Thorlabs SDK would not start: {ex}") from ex
 
         if not serials:
-            raise FluxMeterError("no Thorlabs camera was found")
+            # Named possibilities, not just the symptom. The SDK reports an empty list
+            # identically for "unplugged", "no driver" and "someone else has it", and the
+            # first time this fired the cause was the second: the camera enumerated as a
+            # bare `TSI` device with problem code 28 (CM_PROB_FAILED_INSTALL), because the
+            # Python wheel ships the user-mode DLLs but NOT the kernel driver. A working
+            # install shows `Thorlabs Camera Zelux`, status OK, service CYUSB3.
+            raise FluxMeterError(
+                "the Thorlabs SDK loaded but found no camera. Either it is not connected, "
+                "or ThorCam is not installed so the USB driver is missing (check Device "
+                r"Manager for a device on USB\VID_1313 -- problem code 28 means no driver), "
+                "or another process already has the camera open."
+            )
         if len(serials) > 1:
             # Not an error: say which one was taken, so a second camera appearing does not
             # silently change which one the measurement came from.
@@ -99,7 +110,7 @@ class ThorCam:
 
     # ----------------------------------------------------------------- operation --
 
-    def configure(self, exposure_us: int, gain: float, black_level: int) -> None:
+    def configure(self, exposure_us: int, gain: int, black_level: int) -> None:
         """Apply the run's settings, refusing an exposure the camera will not honour.
 
         The exposure is not chosen for this camera -- it follows the imager's, so that the

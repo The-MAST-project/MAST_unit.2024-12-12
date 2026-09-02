@@ -31,10 +31,15 @@ class FluxMeter(Protocol):
     imitate a wide API stops being evidence that the real one works.
     """
 
-    def configure(self, exposure_us: int, gain: float, black_level: int) -> None:
+    def configure(self, exposure_us: int, gain: int, black_level: int) -> None:
         """Apply the settings for this run. Raises `FluxMeterError` if the camera will not
         take them -- notably an exposure outside its supported range, which must fail loudly
-        rather than be silently clamped."""
+        rather than be silently clamped.
+
+        All three are INTEGERS, because the SDK's setters are `c_int`: a float reaches
+        ctypes and raises `TypeError: int expected` rather than being rounded. On the
+        CS165MU the ranges are gain (0, 480), black level (0, 511) and exposure
+        (64, 26843418) us."""
         ...
 
     def expose(self) -> np.ndarray:
@@ -120,7 +125,7 @@ class SimulatedFluxMeter:
         self.black_level: int | None = None
         self.closed = False
 
-    def configure(self, exposure_us: int, gain: float, black_level: int) -> None:
+    def configure(self, exposure_us: int, gain: int, black_level: int) -> None:
         if exposure_us <= 0:
             raise FluxMeterError(f"exposure_us must be positive, got {exposure_us}")
         self.exposure_us, self.gain, self.black_level = exposure_us, gain, black_level

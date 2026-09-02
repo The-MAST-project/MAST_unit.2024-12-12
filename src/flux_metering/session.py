@@ -105,7 +105,7 @@ class FluxMeteringParams:
     max_rings: int = 6
     patience_rings: int = 1
     max_radius_arcsec: float = 10.0
-    flux_gain: float = 0.0
+    flux_gain: int = 0
     flux_black_level: int = 3
     number_of_frames: int = 3
     usable_fraction: float = 0.66
