@@ -19,7 +19,7 @@ Read `docs/adding-an-endpoint.md` first. The HTTP surface is declared at the def
 
 **Update it in the same change; nothing checks it.** `test_endpoint_guide.py`, which asserted the guide named every check module and every `Tier`, was withdrawn as #178 W1. So adding a `Tier` or a completion form, or changing what any static check enforces, means editing the guide's corresponding table in the same commit.
 
-The static checks themselves are **not in this tree** — they live on `eli/contract-enforcement` (#184), run by hand against a checkout rather than wired into CI or the runtime. #178's revisit compares the check modules on that branch against the guide's table, so drift surfaces there instead of in a build.
+The static checks themselves live in `tests/contract/` and run in CI with the rest of the suite, so a violation reddens the pull request that introduces it. #178's revisit compares those modules against the guide's table.
 
 ## Gotchas
 
