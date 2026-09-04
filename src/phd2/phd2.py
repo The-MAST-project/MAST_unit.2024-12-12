@@ -7,7 +7,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from enum import IntFlag, auto
+from enum import IntFlag, StrEnum, auto
 from pathlib import Path
 from typing import Literal
 
@@ -38,6 +38,31 @@ class CoolerStatus(BaseModel):
     coolerOn: bool  # noqa: N815
     setpoint: float
     power: float
+
+
+class SettleOutcome(StrEnum):
+    """How a wait for settle ended."""
+
+    SETTLED = "settled"  # PHD2 reported SettleDone with status 0 and no error
+    FAILED = "failed"  # PHD2 reported SettleDone, and rejected it
+    TIMED_OUT = "timed out"  # a settle was in progress and had not finished when the wait expired
+    NEVER_REPORTED = "never reported"  # nothing was settling for the whole wait
+
+
+@dataclass(frozen=True)
+class SettleResult:
+    """The ending of a wait for settle, and how long the wait actually took."""
+
+    outcome: SettleOutcome
+    elapsed: float
+    detail: str = ""
+
+    @property
+    def settled(self) -> bool:
+        return self.outcome is SettleOutcome.SETTLED
+
+    def __str__(self) -> str:
+        return f"settle {self.outcome} after {self.elapsed:.1f}s" + (f" ({self.detail})" if self.detail else "")
 
 
 class SettleModel(BaseModel):
@@ -569,8 +594,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         unit = self.parent.unit
 
         settle_timeout = self.settling_settings.timeout + 60
-        if not self.wait_for_settle(timeout=settle_timeout):
-            logger.error(f"{op}: guiding did not settle within {settle_timeout}s, not inserting the fold mirror")
+        settle = self.wait_for_settle(timeout=settle_timeout)
+        if not settle.settled:
+            logger.error(f"{op}: {settle}, not inserting the fold mirror")
             unit.end_activity(UnitActivities.PreGuiding)
             return
 
@@ -1181,20 +1207,30 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 self.settle = None
             raise
 
-    def wait_for_settle(self, timeout: float) -> bool:
+    def wait_for_settle(self, timeout: float) -> SettleResult:
         """Block until the settle started by the latest guide/dither completes.
 
-        Returns True when PHD2 reported a successful SettleDone, False on a
-        settle failure or when the timeout expires first.
+        Reports which ending it saw and how long it waited. A settle PHD2 rejected,
+        a settle still running when the wait expired, and a settle that never
+        started are three faults with three different fixes, so they are three
+        outcomes rather than one false (#86).
         """
-        deadline = time.time() + timeout
+        started = time.time()
+        deadline = started + timeout
+        saw_a_settle = False
         while time.time() < deadline:
             with self.lock:
                 s = self.settle
-            if s is not None and s.done:
-                return s.status == 0 and not s.error
+            if s is not None:
+                saw_a_settle = True
+                if s.done:
+                    elapsed = time.time() - started
+                    if s.status == 0 and not s.error:
+                        return SettleResult(SettleOutcome.SETTLED, elapsed)
+                    return SettleResult(SettleOutcome.FAILED, elapsed, f"status={s.status}, error={s.error}")
             time.sleep(1)
-        return False
+        outcome = SettleOutcome.TIMED_OUT if saw_a_settle else SettleOutcome.NEVER_REPORTED
+        return SettleResult(outcome, time.time() - started)
 
     def is_settling(self):
         """Check if phd2 is currently in the process of settling after a Guide
