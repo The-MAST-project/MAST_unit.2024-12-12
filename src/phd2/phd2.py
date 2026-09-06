@@ -7,7 +7,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from enum import IntFlag, auto
+from enum import IntFlag, StrEnum, auto
 from pathlib import Path
 from typing import Literal
 
@@ -17,16 +17,18 @@ from pydantic import BaseModel
 from common import asi
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config.phd2 import LimitFrameMode
+from common.config.phd2 import ExcludeRegionMode, LimitFrameMode
+from common.config.rois import FcuVersion
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface
 from common.mast_logging import get_logger
 from common.models.statuses import ImagerRoi, ImagerSettings, PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
 from common.process import WatchedProcess
-from common.utils import Coord, RepeatTimer, boxed_debug, function_name
+from common.utils import Coord, RepeatTimer, Timeout, boxed_debug, function_name
 from phd2.phd2_locate import locate_phd2_exe
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
+from stage import StagePresetPosition
 
 logger = get_logger(__name__)
 
@@ -36,6 +38,31 @@ class CoolerStatus(BaseModel):
     coolerOn: bool  # noqa: N815
     setpoint: float
     power: float
+
+
+class SettleOutcome(StrEnum):
+    """How a wait for settle ended."""
+
+    SETTLED = "settled"  # PHD2 reported SettleDone with status 0 and no error
+    FAILED = "failed"  # PHD2 reported SettleDone, and rejected it
+    TIMED_OUT = "timed out"  # a settle was in progress and had not finished when the wait expired
+    NEVER_REPORTED = "never reported"  # nothing was settling for the whole wait
+
+
+@dataclass(frozen=True)
+class SettleResult:
+    """The ending of a wait for settle, and how long the wait actually took."""
+
+    outcome: SettleOutcome
+    elapsed: float
+    detail: str = ""
+
+    @property
+    def settled(self) -> bool:
+        return self.outcome is SettleOutcome.SETTLED
+
+    def __str__(self) -> str:
+        return f"settle {self.outcome} after {self.elapsed:.1f}s" + (f" ({self.detail})" if self.detail else "")
 
 
 class SettleModel(BaseModel):
@@ -547,6 +574,49 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         stats.peak_dec = dec._peak
         return stats
 
+    def _wait_for_stage_at_spec(self, stage):
+        while not stage.at_preset(StagePresetPosition.Spec):
+            time.sleep(1)
+
+    def do_fcu_v2_spec_handover(self, stage_timeout: int = 60):
+        """Insert the fold mirror only after guiding has locked and settled,
+        bracketing the stage travel with a full pause: the lock position
+        survives the pause, so open-loop drift during the ~30 s travel is
+        corrected back on resume instead of frozen into the exposure.
+
+        Ready-for-exposure (UnitActivities.Guiding) means stage at SPEC and
+        guiding resumed.  There is deliberately no settle gate after resume -
+        the few-pixel pull-back decays into the science integration
+        (2026-07-03 exclusion-region proposal).
+        """
+        op = f"{function_name()}"
+        assert self.parent is not None and self.parent.unit is not None
+        unit = self.parent.unit
+
+        settle_timeout = self.settling_settings.timeout + 60
+        settle = self.wait_for_settle(timeout=settle_timeout)
+        if not settle.settled:
+            logger.error(f"{op}: {settle}, not inserting the fold mirror")
+            unit.end_activity(UnitActivities.PreGuiding)
+            return
+
+        self.pause(full=True)
+        try:
+            unit.stage.move_to_preset(StagePresetPosition.Spec)
+            with Timeout(stage_timeout) as t:
+                t.run(self._wait_for_stage_at_spec, unit.stage)
+        except Exception as ex:
+            # deliberately left paused: resuming with the mirror mid-field
+            # would guide on a half-occulted field
+            logger.error(f"{op}: fold-mirror insertion failed ({ex!r}); guiding stays paused")
+            unit.end_activity(UnitActivities.PreGuiding)
+            return
+
+        self.unpause()
+        unit.end_activity(UnitActivities.PreGuiding)
+        unit.start_activity(UnitActivities.Guiding)
+        boxed_debug(logger, ["stage at SPEC, guiding resumed", "ready for exposure"])
+
     def _handle_event(self, ev):  # noqa: C901
         e = ev["Event"]
 
@@ -566,6 +636,17 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 boxed_debug(lines=[f"{function_name()}: {e}, {self.version=}, {self.sub_version=}"], logger=logger)
 
             case "StartGuiding":
+                if (
+                    self.parent is not None
+                    and self.parent.unit is not None
+                    and self.parent.unit.fcu_version == FcuVersion.v2
+                ):
+                    boxed_debug(lines=[f"{function_name()}: {e}, settle, then insert the fold mirror"], logger=logger)
+                    # guiding has locked but the fold mirror is not in yet: not ready for
+                    # exposure until do_fcu_v2_spec_handover ends this and starts Guiding
+                    self.parent.unit.start_activity(UnitActivities.PreGuiding)
+                    threading.Thread(target=self.do_fcu_v2_spec_handover).start()
+
                 self.start_activity(PHD2Activities.Guiding)
                 if self.guiding_verification_timer is not None:
                     self.guiding_verification_timer.start()
@@ -681,6 +762,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             case "Paused":
                 with self.lock:
                     self.app_state = "Paused"
+                boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
+
+            case "Resumed":
+                with self.lock:
+                    self.app_state = "Guiding"
                 boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
 
             case "StartCalibration":
@@ -942,6 +1028,64 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.call("set_limit_frame", params={"roi": None})
             self.need_to_reset_limit_frame = False
 
+    def set_exclude_region(self, roi: ImagerRoi | None = None):
+        """Set (or reset, with roi=None) the PHD2 guide-star exclusion region.
+
+        The region (unbinned camera pixels) is excluded from guide-star
+        auto-selection so guiding locks only on stars the fold mirror will not
+        occult. Requires the set_exclude_region PHD2 API (2.6.14dev1mastbuild4+);
+        setting a region on an older build fails loudly, but a reset failure is
+        ignored — an older build has no exclusion state to reset.
+        """
+        if not self.connected:
+            logger.error(f"{function_name()}: not connected")
+
+        if roi is not None:
+            logger.info(f"{function_name()}: setting {roi=}")
+            self.call("set_exclude_region", params={"roi": [roi.x, roi.y, roi.width, roi.height]})
+        else:
+            logger.debug(f"{function_name()}: resetting exclusion region")
+            try:
+                self.call("set_exclude_region", params={"roi": None})
+            except PHD2ConnectorError as ex:
+                logger.debug(f"{function_name()}: reset not supported by this PHD2 build (nothing to reset): {ex=}")
+
+    def _apply_configured_exclude_region(self):
+        """Set-or-reset the exclusion region from phd2.exclude_region before every
+        guide, like the limit frame: the region is runtime-only in PHD2 but survives
+        across guide sessions within one PHD2 process."""
+        exclude_region = self.conf.exclude_region
+        match exclude_region.mode:
+            case ExcludeRegionMode.FIXED:
+                stale = exclude_region.stale_derivation()
+                if stale:
+                    raise PHD2ConnectorError(
+                        f"{function_name()}: stale exclusion region ({stale}) - "
+                        "re-run the shadow measurement instead of guiding with a stale rectangle"
+                    )
+                # verbatim: the rectangle is a measured shadow band plus a deliberate
+                # pad, and the exclusion is a *selection* filter rather than a sensor
+                # readout crop, so no camera alignment constraint applies to it -
+                # ImagerRoi conditioning would only shift the placement
+                # (same reasoning as the limit frame, MAST_common#17)
+                self.set_exclude_region(
+                    roi=ImagerRoi.verbatim(
+                        x=exclude_region.x,
+                        y=exclude_region.y,
+                        width=exclude_region.width,
+                        height=exclude_region.height,
+                    )
+                )
+                # the exclusion only filters *auto-selection*: a star already selected
+                # (e.g. left over from the previous guide session) survives it and the
+                # guide RPC would lock on it without re-selecting. Force a fresh
+                # selection so the region is honored.
+                self.call("deselect_star")
+            case ExcludeRegionMode.OFF:
+                # a measured rectangle may be stored while the region is off (the
+                # per-unit measure-now-enable-later workflow); mode alone decides
+                self.set_exclude_region(roi=None)
+
     def guide(
         self,
         imager_settings: ImagerSettings | None = None,
@@ -984,6 +1128,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 self.cooler_on = True
 
             assert imager_settings and imager_settings.roi
+            self._apply_configured_exclude_region()
             if new_interface:
                 # roi = imager_settings.roi.binned(imager_settings.binning)
                 roi = imager_settings.roi
@@ -1061,6 +1206,31 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             with self.lock:
                 self.settle = None
             raise
+
+    def wait_for_settle(self, timeout: float) -> SettleResult:
+        """Block until the settle started by the latest guide/dither completes.
+
+        Reports which ending it saw and how long it waited. A settle PHD2 rejected,
+        a settle still running when the wait expired, and a settle that never
+        started are three faults with three different fixes, so they are three
+        outcomes rather than one false (#86).
+        """
+        started = time.time()
+        deadline = started + timeout
+        saw_a_settle = False
+        while time.time() < deadline:
+            with self.lock:
+                s = self.settle
+            if s is not None:
+                saw_a_settle = True
+                if s.done:
+                    elapsed = time.time() - started
+                    if s.status == 0 and not s.error:
+                        return SettleResult(SettleOutcome.SETTLED, elapsed)
+                    return SettleResult(SettleOutcome.FAILED, elapsed, f"status={s.status}, error={s.error}")
+            time.sleep(1)
+        outcome = SettleOutcome.TIMED_OUT if saw_a_settle else SettleOutcome.NEVER_REPORTED
+        return SettleResult(outcome, time.time() - started)
 
     def is_settling(self):
         """Check if phd2 is currently in the process of settling after a Guide
@@ -1269,9 +1439,13 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         st, _ = self.get_status()
         return self._is_guiding(st)
 
-    def pause(self):
-        """pause guiding (looping exposures continues)"""
-        self.call("set_paused", True)
+    def pause(self, full: bool = False):
+        """Pause guiding; with full=True PHD2 also stops taking guide exposures.
+
+        Pausing keeps the selected star, the calibration and the lock position,
+        so unpause() resumes correcting toward the same lock position.
+        """
+        self.call("set_paused", [True, "full"] if full else True)
 
     def unpause(self):
         """un-pause guiding"""
@@ -1338,6 +1512,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     height=limit_frame.height,
                 )
         logger.info(f"{function_name()}: limit frame: mode={limit_frame.mode}, roi={guiding_settings.roi}")
+        exclude_region = self.conf.exclude_region
+        logger.info(
+            f"{function_name()}: exclusion region: mode={exclude_region.mode}, "
+            f"roi=({exclude_region.x}, {exclude_region.y}, {exclude_region.width}, {exclude_region.height})"
+        )
 
         requested_binning: Literal[1, 2] = guiding_settings.binning if guiding_settings and guiding_settings.binning else 1
         if requested_binning != self.profile_binning:
