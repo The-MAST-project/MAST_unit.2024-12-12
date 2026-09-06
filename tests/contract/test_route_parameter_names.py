@@ -36,7 +36,7 @@ def _routes_by_leaf(trees: dict[str, ast.Module]) -> dict[str, list[tuple[str, s
             path = call.args[1]
             leaf = path.right.value if isinstance(path, ast.BinOp) and isinstance(path.right, ast.Constant) else None
             if leaf is None:
-                # f-string form, e.g. f"{base_path}/{UnitEndpoint.STATUS}"
+                # f-string form, e.g. f"{base_path}/status"
                 text = ast.unparse(path)
                 leaf = text.rsplit("/", 1)[-1].rstrip('"').rstrip("}") if "/" in text else None
             if not isinstance(leaf, str):
