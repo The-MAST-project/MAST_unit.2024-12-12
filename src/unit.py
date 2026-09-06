@@ -64,6 +64,7 @@ from mount import Mount, SettleMode
 from PlaneWave import pwi4_client
 from solving import Solver
 from spiral_search import SpiralSearch, guiding_roi
+from stability_campaign import StabilityCampaign
 from stage import Stage
 
 logger = get_logger(__name__)
@@ -201,6 +202,7 @@ class Unit(Component):
         self.errors: list[str] = list(self._init_errors)
 
         self.spiral = SpiralSearch(self)
+        self.stability = StabilityCampaign(self)
         self.latest_acquisition: Acquisition | None = None
 
         self._initialized = True
@@ -1240,6 +1242,48 @@ class Unit(Component):
         """
         return self.spiral.end()
 
+    @endpoint(tier=Tier.OPERATION, completion=UnitActivities.StabilityCampaigning)
+    def endpoint_start_stability_campaign(self, pilot: bool = False):
+        """
+        Starts the mount-stability campaign: walks a fixed alt/az mesh, dwelling at each
+        cell first UNGUIDED then GUIDED, recording servo telemetry at ~45 Hz.<br>
+        <br>
+        The cell visited at any moment is derived from a campaign-wide slot clock rather
+        than from this unit's own progress, so **two units running the campaign visit the
+        same cell at the same time** and each cell yields a simultaneous pair. The first
+        unit to start writes the shared epoch; the second adopts it.<br>
+        <br>
+        - **pilot** runs the 10-cell subset of the full 40-cell mesh, for shakedown
+          nights. It is a strict subset, so pilot data pools with the full campaign.<br>
+        <br>
+        Refuses to start while the unit is acquiring, guiding, focusing or solving. The
+        campaign measures only -- nothing gates on its output.
+        """
+        return self.stability.start(pilot=pilot)
+
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
+    def endpoint_stop_stability_campaign(self):
+        """
+        Stops the mount-stability campaign after the sample currently being taken.<br>
+        <br>
+        A cell counts only once both of its dwells are written, so stopping mid-dwell
+        discards that visit rather than contributing a short one. The mount is parked on
+        the way out.
+        """
+        return self.stability.stop()
+
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
+    def endpoint_stability_campaign_status(self):
+        """
+        Reports the campaign's progress: current visit and cell, phase, counts of visits
+        attempted/completed/skipped, cells that yielded no guide star, and per-cell
+        coverage.<br>
+        <br>
+        A campaign runs unattended for hours; start/stop alone would leave no way to see
+        what it is doing.
+        """
+        return self.stability.status()
+
     @property
     def api_router(self) -> APIRouter:
         """
@@ -1333,6 +1377,25 @@ class Unit(Component):
             methods=["PUT"],
         )
         add_api_route(router, base_path + "/spiral_end_path", endpoint=self.endpoint_spiral_end_path, methods=["PUT"])
+
+        add_api_route(
+            router,
+            base_path + "/start_stability_campaign",
+            endpoint=self.endpoint_start_stability_campaign,
+            methods=["PUT"],
+        )
+        add_api_route(
+            router,
+            base_path + "/stop_stability_campaign",
+            endpoint=self.endpoint_stop_stability_campaign,
+            methods=["PUT"],
+        )
+        add_api_route(
+            router,
+            base_path + "/stability_campaign_status",
+            endpoint=self.endpoint_stability_campaign_status,
+            methods=["GET"],
+        )
 
         return router
 
