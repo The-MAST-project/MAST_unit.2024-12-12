@@ -89,7 +89,7 @@ def test_the_focuser_ends_aborting_once_it_stops(monkeypatch):
     f.unit = None
     monkeypatch.setattr(type(f), "connected", property(lambda self: True))
     monkeypatch.setattr(type(f), "position", property(lambda self: 1000))
-    f.known_as_good_position = 1000
+    monkeypatch.setattr(type(f), "known_as_good_position", property(lambda self: 1000))
     f.target = None
 
     Focuser.ontimer(f)
@@ -104,7 +104,7 @@ def test_the_focuser_holds_aborting_while_it_is_still_moving(monkeypatch):
     f.unit = None
     monkeypatch.setattr(type(f), "connected", property(lambda self: True))
     monkeypatch.setattr(type(f), "position", property(lambda self: 1300))
-    f.known_as_good_position = 1000
+    monkeypatch.setattr(type(f), "known_as_good_position", property(lambda self: 1000))
     f.target = None
 
     Focuser.ontimer(f)

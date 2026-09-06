@@ -2,6 +2,73 @@
 
 ---
 
+## [2026-09-06] Live configuration is a per-attribute property, not a per-section one
+
+**Why:** #214. `dece718` converted each component's `conf` to a property over `unit_conf` and
+guarded the result, but the guard looked for one shape -- `self.conf = ...` as a plain
+assignment -- and the conversion stopped at the same boundary. Two shapes went through it.
+
+`phd2.settle` was copied field by field into `self.settling_settings` in `__init__` and used
+for the life of the process, so `PHD2Connector` carried two configuration sections with
+opposite reload semantics and nothing at either call site saying which was which. It was
+found the hard way: on mast01, night of 2026-09-02/03, the settle criterion was raised from
+`pixels: 2` to `pixels: 4` mid-session to give the fold-mirror handover headroom against a
+1.8-2.8 px guide error. The edit was confirmed in the database and never reached PHD2. Two
+conclusions had to be revised afterwards -- the handover that succeeded had settled against
+2 px, not the loosened value, and the run that failed had straddled that same threshold
+rather than failing inexplicably. **The cost is not staleness. It is that an operator changes
+a value, observes no effect, and reasons from a run that used the previous one.**
+
+`ASCOMImager` held a whole snapshotted section, `self.conf: ImagerConfig = ...`, which the
+guard walked past because an annotated assignment is `ast.AnnAssign` and it only visited
+`ast.Assign`. Six sites in all: `settling_settings`, `profile_binning` / `profile_bpp`,
+`ASCOMImager.conf` and its `temp_check_interval`, `Focuser.known_as_good_position`, and
+`Stage.presets`.
+
+**What was decided:** the unit of liveness is the **attribute**, not the section. Each of the
+six becomes a property deriving from `self.conf`, and the guard was widened to the whole
+shape -- annotated and tuple targets included, and with taint tracking through locals, since
+`settle` reached its attribute via a local and a check reading only `self.conf` cannot see
+that. What stays a one-time read is now **explicit and small**: a `CONSTRUCTION_TIME`
+allowlist of five bindings that cannot change without reconstructing the component (two
+ASCOM COM objects, two driver identities, one `RepeatTimer` period), each with its reason,
+each keyed on the attribute rather than a line, and every one of them asserted to still
+match a real site, so the list cannot quietly come to describe code that is no longer there.
+
+Three sites were **not** made live, deliberately. `phd2.validation_interval` fixes a
+`RepeatTimer`'s period and decides whether the timer exists at all, so an edit reaches
+guiding validation at the next restart however the code is written; it is now a local, which
+says so. `Stage`'s `stage_model` and `device_info` were only ever built to be logged on the
+next line, and are locals for the same reason. A property in any of the three would advertise
+a liveness it cannot deliver.
+
+`Focuser.known_as_good_position` changes behavior slightly and on purpose. `autofocusing.py`
+used to set the in-memory attribute, move the focuser, and then persist through
+`Config().update_unit()`; the in-memory write is gone, because `set_unit` re-reads the
+`units` collection before returning and the writer therefore sees its own write. The
+consequence is that a **failed** save no longer leaves the attribute disagreeing with the
+database: the focuser sits at the new position, the reported known-good position is the one
+that would be restored at startup, and the failure is logged rather than papered over.
+
+**Implications:** editing any of these on a running unit now takes effect at the next call,
+which is what the configuration UI has implied since MAST_common #95/#96. Two guards were
+checked by reintroducing the pattern and confirming they fail -- the derived form through a
+local, and the annotated section assignment. `SettleModel` and `PHD2Configuration`, unit-local
+duplicates of `common.config.phd2`'s models, are retired: the property returns what the
+configuration holds, so a second declaration of the same three fields had nothing left to do.
+
+The same class of bug is untouched elsewhere in the org and belongs to those repos: MAST_spec
+has 24 such sites and calls `Config().start_watching()` nowhere, MAST_common snapshots the
+power-switch configuration in a factory-cached `DliPowerSwitch` (so it is in this unit's
+runtime path), and MAST_control has three, though its own refresh timer may already cover
+them.
+
+Settle progress also now logs the criterion in force alongside the distance. The distances
+were logged and the threshold they were being judged against was not, which is the reason
+none of this was visible on the night.
+
+---
+
 ## [2026-08-31] A failed component has no HTTP surface, and that is the reported behaviour
 
 **Why:** `#83` had argued since 2026-08-04 that a component whose `__init__` fails should keep

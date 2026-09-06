@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from common import asi
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config.phd2 import LimitFrameMode
+from common.config.phd2 import LimitFrameMode, PHD2SettleConfig
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface
@@ -36,17 +36,6 @@ class CoolerStatus(BaseModel):
     coolerOn: bool  # noqa: N815
     setpoint: float
     power: float
-
-
-class SettleModel(BaseModel):
-    pixels: int = 0
-    time: int = 0
-    timeout: int = 0
-
-
-class PHD2Configuration(BaseModel):
-    profile: str = "PWI4+asi-native,binning=1,bpp=16"
-    settle: SettleModel
 
 
 class PHD2Activities(IntFlag):
@@ -255,6 +244,35 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         assert self.parent.unit.unit_conf is not None
         return self.parent.unit.unit_conf.phd2
 
+    @property
+    def settling_settings(self) -> PHD2SettleConfig:
+        """The settle criterion in force, live -- the same reload semantics as `conf`.
+
+        This section alone was copied out in ``__init__`` and used for the life of the
+        process, so editing the criterion on a running unit did nothing while editing a
+        neighboring field in the same document took effect on the next call. On mast01,
+        night of 2026-09-02/03, `pixels` was raised 2 -> 4 mid-session, the edit never
+        reached PHD2, and two conclusions drawn from that night had to be revised.
+        """
+        return self.conf.settle
+
+    @property
+    def profile_binning(self) -> int | None:
+        """Binning embedded in the configured profile name, live."""
+        return self._profile_int("binning")
+
+    @property
+    def profile_bpp(self) -> int | None:
+        """Bits per pixel embedded in the configured profile name, live."""
+        return self._profile_int("bpp")
+
+    def _profile_int(self, key: str) -> int | None:
+        for part in self.conf.profile.split(",")[1:]:
+            name, _, value = part.partition("=")
+            if name.strip().lower() == key:
+                return int(value.strip())
+        return None
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -303,46 +321,26 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.stats = PHD2GuideStats()
         self.settle = None
         self._setpoint: float | None = None
-        self.profile_binning: int | None = None
-        self.profile_bpp: int | None = None  # bits per pixel
 
         assert self.parent is not None and self.parent.unit is not None, (
             "PHD2Connector: no parent imager, so no way to reach the unit configuration"
         )
 
-        #
-        # We embed the binning and bpp in the profile name, so extract them
-        #
-        profile_name_parts = self.conf.profile.split(",")
-        for part in profile_name_parts[1:]:
-            key_value = part.split("=")
-            if len(key_value) == 2:
-                key = key_value[0].strip().lower()
-                value = key_value[1].strip().lower()
-                if key == "binning":
-                    self.profile_binning = int(value)
-                elif key == "bpp":
-                    self.profile_bpp = int(value)
-
-        self.validation_interval = self.conf.validation_interval
-
-        default_settling = self.conf.settle
-        self.settling_settings: SettleModel = SettleModel(
-            pixels=default_settling.pixels,
-            time=default_settling.time,
-            timeout=default_settling.timeout,
-        )
         self.errors = []
 
         self.image_was_saved: bool = False
         self.image_saved_event: threading.Event = threading.Event()
 
+        # Read once, deliberately: it fixes a RepeatTimer's period and decides whether the
+        # timer exists at all, so a later edit reaches guiding validation at the next
+        # restart however this is written. A property would advertise otherwise.
+        validation_interval = self.conf.validation_interval
         self.guiding_verification_timer: RepeatTimer | None = None
-        if self.validation_interval != 0:
-            logger.info(f"{function_name()}: guiding validation every {self.validation_interval} seconds")
-            self.guiding_verification_timer = RepeatTimer(interval=self.validation_interval, function=self.validate_guiding)
+        if validation_interval != 0:
+            logger.info(f"{function_name()}: guiding validation every {validation_interval} seconds")
+            self.guiding_verification_timer = RepeatTimer(interval=validation_interval, function=self.validate_guiding)
         else:
-            logger.info(f"{function_name()}: no guiding validation ({self.validation_interval=})")
+            logger.info(f"{function_name()}: no guiding validation ({validation_interval=})")
 
         self.restart_event: threading.Event = threading.Event()
 
@@ -658,6 +656,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 boxed_debug(
                     lines=[
                         f"{function_name()}: Settling in progress, distance={s.distance:.2f}",
+                        f"settle_px={s.settle_px} (the criterion in force)",
                         f"time={s.time:.1f}s, settle_time={s.settle_time:.1f}s",
                     ],
                     logger=logger,
@@ -676,7 +675,13 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 with self.lock:
                     self.settle = s
                     self.stats = stats
-                boxed_debug(lines=[f"{function_name()}: Settling done, status={s.status}, error={s.error}"], logger=logger)
+                boxed_debug(
+                    lines=[
+                        f"{function_name()}: Settling done, status={s.status}, error={s.error}",
+                        f"settle_px={self.settle_px} (the criterion it was judged against)",
+                    ],
+                    logger=logger,
+                )
 
             case "Paused":
                 with self.lock:
@@ -945,7 +950,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def guide(
         self,
         imager_settings: ImagerSettings | None = None,
-        settling_settings: SettleModel | None = None,
+        settling_settings: PHD2SettleConfig | None = None,
         new_interface: bool = False,
     ):
         """Start guiding with the given settling parameters. PHD2 takes care

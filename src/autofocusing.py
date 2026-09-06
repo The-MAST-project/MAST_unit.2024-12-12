@@ -350,8 +350,7 @@ class Autofocuser:
 
                 position: int = int(self.latest_result.best_focus_position)
                 logger.info(f"{op}: moving focuser to best focus position {position} ...")
-                self.unit.focuser.known_as_good_position = position
-                self.unit.focuser.position = self.unit.focuser.known_as_good_position
+                self.unit.focuser.position = position
 
                 logger.info(f"{op}: waiting for focuser to stop moving ...")
                 while self.unit.focuser.is_active(FocuserActivities.Moving):
