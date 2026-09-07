@@ -799,6 +799,31 @@ class Unit(Component):
                 ),
             ),
         ] = None,
+        start_tracking: Annotated[
+            bool,
+            Query(
+                description=(
+                    "#### Start the mount tracking before exposing.\n"
+                    "Default `true`, which is the historical behavior. Pass `false` when the "
+                    "caller has already established tracking and does not want it re-commanded: "
+                    "`start_tracking` has no *already tracking?* guard, so it re-issues "
+                    "`mount_tracking_on` (resetting any non-sidereal rate) and then waits at "
+                    "least a second for PWI4 to confirm."
+                ),
+            ),
+        ] = True,
+        stop_tracking: Annotated[
+            bool,
+            Query(
+                description=(
+                    "#### Stop the mount tracking after the last exposure.\n"
+                    "Default `true`, which is the historical behavior. Pass `false` to expose "
+                    "without ending the pointing -- two exposures that must share a field, or "
+                    "a frame taken while guiding is paused, where stopping the mount would let "
+                    "the field walk away before guiding resumes."
+                ),
+            ),
+        ] = True,
     ) -> CanonicalResponse:
 
         if seconds_between_exposures is not None:
@@ -894,6 +919,8 @@ class Unit(Component):
                 height,
                 binning,
                 gain,
+                start_tracking,
+                stop_tracking,
             ],
         ).start()
         return CanonicalResponse_Ok
@@ -912,6 +939,8 @@ class Unit(Component):
         height: int = 1300,
         binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
         gain: int = asi.ASI_294MM_DEFAULT_GAIN,
+        start_tracking: bool = True,
+        stop_tracking: bool = True,
     ) -> CanonicalResponse:
 
         assert self.mount is not None
@@ -921,7 +950,8 @@ class Unit(Component):
         seconds = exposure_seconds
 
         try:
-            self.mount.start_tracking()
+            if start_tracking:
+                self.mount.start_tracking()
             exposure_series = self.imager.start_exposure_series(purpose="unit.do_exposure")
             try:
                 self._expose_repeatedly(
@@ -941,13 +971,14 @@ class Unit(Component):
             except Exception:
                 # This runs in `expose-thread`, where an exception would otherwise vanish
                 # entirely -- the endpoint has already returned "ok" to the caller. Logging
-                # is the only trace there is; the finally below is what stops the mount
-                # tracking forever and the exposure series dangling.
+                # is the only trace there is; the finally below is what keeps the exposure
+                # series from dangling and, unless the caller asked otherwise, stops the mount.
                 logger.exception(f"{op}: exposure run failed")
                 return CanonicalResponse(errors=[f"{op}: exposure run failed, see the log"])
             finally:
                 self.imager.end_exposure_series(exposure_series)
-                self.mount.stop_tracking()
+                if stop_tracking:
+                    self.mount.stop_tracking()
             return CanonicalResponse_Ok
         finally:
             # Outside the inner try, because start_tracking() and start_exposure_series()
