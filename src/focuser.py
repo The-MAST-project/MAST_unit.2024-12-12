@@ -39,6 +39,16 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         assert self.unit is not None and self.unit.unit_conf is not None
         return self.unit.unit_conf.focuser
 
+    @property
+    def known_as_good_position(self) -> int:
+        """The position autofocus last converged on, live.
+
+        It is persisted through `Config().update_unit()`, which re-reads the `units`
+        collection before returning -- so the run that just saved a new position reads it
+        back here immediately, with the watcher on or off.
+        """
+        return self.conf.known_as_good_position
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -74,7 +84,6 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         else:
             self.upper_limit = response.value
 
-        self.known_as_good_position = self.conf.known_as_good_position
         logger.info(f"focuser: known_as_good_position: {self.known_as_good_position}")
 
         self._was_shut_down = False
