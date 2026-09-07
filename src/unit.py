@@ -1415,6 +1415,18 @@ class Unit(Component):
             )
             add_api_route(
                 router,
+                base_path + "/pause_guiding",
+                endpoint=self.guider.endpoint_pause_guiding,
+                methods=["PUT"],
+            )
+            add_api_route(
+                router,
+                base_path + "/resume_guiding",
+                endpoint=self.guider.endpoint_resume_guiding,
+                methods=["PUT"],
+            )
+            add_api_route(
+                router,
                 base_path + "/stop_acquisition_and_guiding",
                 endpoint=self.guider.endpoint_stop_acquisition_and_guiding,
                 methods=["PUT"],
