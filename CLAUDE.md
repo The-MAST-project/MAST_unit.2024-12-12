@@ -23,6 +23,15 @@ The static checks themselves live in `tests/contract/` and run in CI with the re
 
 ## Gotchas
 
+### Never copy a configuration value into an instance attribute
+The unit reads its configuration **live**: `Unit.unit_conf` is a property over `Config().get_unit()`, each component's `conf` is a property over its section, and `MAST_common` keys the accessor memo on the configuration *generation*, so a property is a dict probe rather than a rebuild. Writing `self.x = self.conf.y` in `__init__` — or via a local, which is how #214 happened — opts that one value out of it silently: the operator edits it, sees no effect, and reasons from a run that used the old value.
+
+- Read through the property at the point of use. For a multi-step operation, bind `conf = self.unit.unit_conf` **once at entry** — within one generation an accessor returns the same object, so that is a stable view for the whole operation, by design.
+- Read-modify-write goes through `Config().update_unit()`, which mutates a private deep copy and re-reads before returning. Never assign into anything reached through `unit_conf`: accessors are memoized per generation, so the edit would be shared with every other reader and then silently reverted.
+- A binding that genuinely cannot change without reconstructing the component (a COM object, a driver identity, a `RepeatTimer` period) goes in `CONSTRUCTION_TIME` in `tests/test_config_is_live.py` **with its reason**, or stays a local. Every entry must still match a real site.
+
+`tests/test_config_is_live.py` enforces all of it at the source level (AST, so it runs off a unit) and drives each live attribute across a configuration change.
+
 ### `solve-field` needs lapack on PATH
 Any Windows-side wrapper around the cygwin `solve-field.exe` must prepend **both** `C:\cygwin64\bin` **and** the POSIX path `/usr/lib/lapack` to `PATH` before spawning the solver:
 

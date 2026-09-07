@@ -32,7 +32,6 @@ except (ImportError, NameError) as ex:  # NameError: stage.py off-Windows
 
 from common.config.phd2 import LimitFrameConfig, LimitFrameMode, PHD2Config
 from common.models.statuses import ImagerRoi, ImagerSettings
-from phd2.phd2 import SettleModel
 
 # The derived ROI is conditioned by ImagerRoi.model_post_init (mod-8 width /
 # mod-2 height at all supported binnings, center-preserving shrink), so its
@@ -63,11 +62,8 @@ def make_connector(limit_frame: LimitFrameConfig | None = None) -> PHD2Connector
     p.settle = None
     p.settle_px = 0
     p.lock = threading.Lock()
-    p.settling_settings = SettleModel(pixels=1, time=0, timeout=0)
     p.errors = []
     p.app_state = ""
-    p.profile_binning = 1
-    p.profile_bpp = 16
     p.call = MagicMock(name="call", return_value={})
     doc = dict(LEGACY_PHD2_DOC)
     if limit_frame is not None:
@@ -198,7 +194,9 @@ class TestAcquisitionPathUntouched:
     the phd2.limit_frame config must play no role there (#51 scope pin)."""
 
     def _expose(self, p: PHD2Connector, use_set_limit_frame: bool) -> None:
-        p.parent = None  # skip activity bookkeeping
+        # The parent stays: `profile_binning` / `profile_bpp` are derived from the
+        # configuration now, and that is reached through it. Its activity bookkeeping is
+        # absorbed by the mock.
         p.image_was_saved = False
         settings = ImagerSettings(
             seconds=1.0,

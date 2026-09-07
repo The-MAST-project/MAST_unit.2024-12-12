@@ -149,6 +149,25 @@ class Stage(Component, SwitchedOutlet):
         assert self.unit is not None and self.unit.unit_conf is not None
         return self.unit.unit_conf.stage
 
+    @property
+    def presets(self) -> dict[StagePresetPosition, int]:
+        """The preset positions, live.
+
+        Two sources, which is why this was a dict built in ``__init__`` and then added to
+        after enumeration: `sky` and `spec` are configuration, and were snapshotted; the
+        travel-derived three are not configuration at all -- they come from the
+        controller's edge settings and are known only once the device answers.
+        """
+        presets = {
+            StagePresetPosition.Sky: self.conf.presets.sky,
+            StagePresetPosition.Spec: self.conf.presets.spec,
+        }
+        if self.min_travel is not None and self.max_travel is not None:
+            presets[StagePresetPosition.Min] = self.min_travel
+            presets[StagePresetPosition.Max] = self.max_travel
+            presets[StagePresetPosition.Middle] = int((self.max_travel - self.min_travel) / 2)
+        return presets
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -187,11 +206,6 @@ class Stage(Component, SwitchedOutlet):
         if not self.is_on():
             self.power_on()
             time.sleep(3)
-
-        self.presets = {
-            StagePresetPosition.Sky: self.conf.presets.sky,
-            StagePresetPosition.Spec: self.conf.presets.spec,
-        }
 
         # This is device search and enumeration with probing. It gives more information about devices.
         probe_flags = EnumerateFlags.ENUMERATE_PROBE
@@ -253,7 +267,6 @@ class Stage(Component, SwitchedOutlet):
             case _:
                 logger.warning(f"{op}: unsupported stage model in config: '{self.conf.model}'")
                 raise Exception(f"{op}: unsupported stage model '{self.conf.model}'")
-        self.stage_model = self.conf.model
 
         serial_number = serial_number_t()
         result = ximclib.get_serial_number(self.device, byref(serial_number))
@@ -310,20 +323,15 @@ class Stage(Component, SwitchedOutlet):
             else:
                 self.info["eeprom_connected"] = False
 
-        self.device_info = (
+        device_info = (
             f"port='{comport}', manufacturer='{self.info['controller']}', product='{self.info['product']}', "
-            + f"version='{self.info['version']}', model='{self.stage_model}', serial={self.serial_number}, "
+            + f"version='{self.info['version']}', model='{self.conf.model}', serial={self.serial_number}, "
             + f"fcu_version='{self.fcu_version.value}', "
             + f"EEPROM connected={self.info.get('eeprom_connected', 'unknown')}, "
             + f"range={self.min_travel}..{self.max_travel} (borders by: {self.border_by}), "
             + f"close_enough={self.conf.close_enough}"
         )
         self.stage_lock = threading.Lock()
-
-        if self.min_travel is not None and self.max_travel is not None:
-            self.presets[StagePresetPosition.Min] = self.min_travel
-            self.presets[StagePresetPosition.Max] = self.max_travel
-            self.presets[StagePresetPosition.Middle] = int((self.max_travel - self.min_travel) / 2)
 
         # get initial values from the hardware
         hw_status = status_t()
@@ -339,7 +347,7 @@ class Stage(Component, SwitchedOutlet):
         self.timer.name = "stage-timer-thread"
         self.timer.start()
 
-        logger.info(f"detected: {self.device_info}")
+        logger.info(f"detected: {device_info}")
 
         self.home()
         self._initialized = True

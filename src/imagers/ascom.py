@@ -91,6 +91,21 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
     def ascom(self) -> win32com.client.Dispatch:  # type: ignore
         return self._ascom
 
+    @property
+    def conf(self) -> ImagerConfig:
+        """This component's configuration, live, exactly as `Imager.conf` is.
+
+        The backend held its own snapshot of the same section: an annotated assignment,
+        which is why the source-level guard walked past it.
+        """
+        assert self.parent_imager.unit is not None and self.parent_imager.unit.unit_conf is not None
+        return self.parent_imager.unit.unit_conf.imager
+
+    @property
+    def temp_check_interval(self) -> int:
+        """How often `ontimer` re-reads the CCD temperature, live."""
+        return self.conf.temp_check_interval
+
     def __init__(
         self,
         parent_imager: Imager,
@@ -112,12 +127,7 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         self.parent_imager = parent_imager
         self.prog_id = prog_id
 
-        self.defaults = {
-            "temp_check_interval": 15,
-        }
-
         assert self.parent_imager.unit and self.parent_imager.unit.unit_conf is not None
-        self.conf: ImagerConfig = self.parent_imager.unit.unit_conf.imager
         Component.__init__(self, ImagerActivities)
 
         if not prog_id:
@@ -140,7 +150,6 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         self.latest_settings: ImagerSettings | None = None
         self.latest_temperature_check: datetime.datetime | None = None
-        self.temp_check_interval = self.conf.temp_check_interval
 
         self._is_exposing: bool = False
         self.operational_set_point: float = -25
