@@ -1391,10 +1391,28 @@ class Unit(Component):
             flux_black_level=flux_black_level,
             usable_fraction=usable_fraction,
         )
+
+        # Refuse BEFORE touching the stage. `start()` checks this too, but it is called
+        # after the move below, so without this a request that is going to be refused --
+        # a run already in progress, the unit guiding, no acquirer -- would already have
+        # commanded the folding mirror. Same reason `parse_target` is hoisted above:
+        # nothing may be spent until the request is known to be servable.
+        refusal = self.flux_metering.require_can_start()
+        if refusal is not None:
+            return CanonicalResponse(errors=[f"{function_name()}: {refusal}"])
+
+        # The folding mirror is put in by `do_acquire_and_find_max_flux`, on the run's own
+        # thread. It is a 21-22 second traverse, and this route is documented to answer at
+        # once; waiting here would hold a FastAPI worker for the whole move and turn an
+        # immediate route into a slow one for every caller. `find_max_flux_status` reports
+        # `positioning` while it happens.
         outcome = self.flux_metering.start(params)
         if isinstance(outcome, str):
             return CanonicalResponse(errors=[f"{function_name()}: {outcome}"])
-        return outcome
+        # The run is dispatched and `UnitActivities.FluxMetering` -- this endpoint's
+        # declared completion flag -- is already raised, so a caller answered Ok can watch
+        # it immediately.
+        return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
     def endpoint_find_max_flux_status(self):

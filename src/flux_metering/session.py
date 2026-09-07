@@ -57,6 +57,7 @@ from flux_metering.flux_meter import FluxMeter, FluxMeterError, frame_flux, satu
 from imaging.frame_shift import MIN_CONFIDENCE
 from mount import SettleMode
 from spiral_search import resolve_center
+from stage import StagePresetPosition
 
 if TYPE_CHECKING:
     from unit import Unit
@@ -70,6 +71,11 @@ REFERENCE_IMAGE = "reference.fits"
 #: procedure is meaningless without a converged acquisition, so this is a ceiling on
 #: waiting, not a tolerance of its own.
 ACQUISITION_TIMEOUT_SECONDS = 900.0
+
+#: How long to wait for the folding mirror to reach SPEC. A Sky->Spec traverse was measured
+#: at 21-22 seconds on mast02 (2026-09-02), so this is a generous ceiling on a move that
+#: normally takes half a minute -- not a tolerance.
+STAGE_TIMEOUT_SECONDS = 120.0
 
 #: A pixel count, not a boolean. The ThorCam's field is black, so one hot pixel or a cosmic
 #: ray would otherwise mark every frame of a 30-minute run as saturated.
@@ -183,6 +189,12 @@ class FluxMeteringSession:
             return f"the unit is busy ({self.unit.activities_verbal})"
         if self.unit.acquirer is None:
             return "no acquirer, so the star cannot be put on the fibre"
+        # The fibre sees light only with the folding mirror in, so a run without a stage
+        # would meter darkness and report it as a flux curve. Here with its siblings
+        # rather than as an `assert` at the call site: an assert is stripped under
+        # `python -O`, and the envelope renders AssertionError as an anonymous error.
+        if self.unit.stage is None:
+            return "no stage, so the folding mirror cannot be put in"
 
         # Checked here rather than discovered mid-run: a run that starts with the ram disk
         # already near full has nowhere to put its first frames, and the mover cannot help
@@ -249,6 +261,9 @@ class FluxMeteringSession:
         caller watching it."""
         op = function_name()
         try:
+            if not self._position_folding_mirror():
+                self._finish("failed")
+                return
             self._open_meter()
             if self.params.skip_acquisition:
                 # Engineering only. The spiral, the products and the correlation can then be
@@ -282,6 +297,50 @@ class FluxMeteringSession:
             logger.exception(f"{op}: flux metering failed")
             self.state.last_error = str(ex)
             self._finish("failed")
+
+    def _position_folding_mirror(self) -> bool:
+        """Put the folding mirror in, and WAIT for it to arrive. True when it is there.
+
+        On the worker thread rather than in the endpoint, because it takes 21-22 seconds
+        on this hardware and the route is documented to answer at once. `state.phase` says
+        what is happening, so the wait is visible in `find_max_flux_status` rather than
+        merely long.
+
+        Waits on POSITION, not on `Stage.is_moving`. `is_moving` is a plain attribute
+        refreshed by the stage's 2-second `ontimer` poll, and `move_to_preset` does not set
+        it -- so for up to one poll period after a move is commanded it still reads False,
+        and a `while stage.is_moving` loop falls straight through. On the night of
+        2026-09-02 that raced every time: `_await_stage` returned 6 ms into a 133,000-count
+        move, and the acquisition went on to expose with the mirror a quarter of the way
+        across. `at_preset` is true when the mirror is actually there, whenever the poll
+        last ran.
+        """
+        stage = self.unit.stage
+        if stage is None:  # `require_can_start` refuses this; here so the wait cannot lie
+            self.state.last_error = "no stage, so the folding mirror cannot be put in"
+            return False
+
+        self.state.phase = "positioning"
+        if stage.at_preset(StagePresetPosition.Spec):
+            return True
+
+        logger.info("flux metering: moving the folding mirror to SPEC")
+        stage.move_to_preset(StagePresetPosition.Spec)
+
+        deadline = time.monotonic() + STAGE_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            if self._stop.is_set():
+                self.state.last_error = "aborted while positioning the folding mirror"
+                return False
+            if stage.at_preset(StagePresetPosition.Spec):
+                logger.info(f"flux metering: folding mirror at SPEC (position={stage.position})")
+                return True
+            time.sleep(0.2)
+
+        self.state.last_error = (
+            f"the folding mirror did not reach SPEC within {STAGE_TIMEOUT_SECONDS:g}s (position={stage.position})"
+        )
+        return False
 
     def _acquire(self) -> bool:
         """Put the star on the ASSUMED fibre position, and wait for it to get there.

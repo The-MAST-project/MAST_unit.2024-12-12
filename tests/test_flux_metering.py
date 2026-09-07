@@ -106,6 +106,35 @@ class FakeMount:
         )
 
 
+class FakeStage:
+    """A folding-mirror stage that arrives after a given number of polls.
+
+    `is_moving` is deliberately ALWAYS False -- that is the real stage's behaviour for up
+    to one 2-second poll period after a move is commanded, because `move_to_preset` does
+    not set it and only `ontimer` refreshes it. Any wait built on that flag falls straight
+    through, which is what happened on 2026-09-02.
+    """
+
+    def __init__(self, polls_to_arrive: int = 3, arrives: bool = True):
+        self._remaining = polls_to_arrive
+        self._arrives = arrives
+        self.moves: list = []
+        self.is_moving = False
+        self.position = 150000
+
+    def at_preset(self, preset) -> bool:
+        if not self._arrives:
+            return False
+        if self._remaining > 0:
+            self._remaining -= 1
+            return False
+        self.position = 283350
+        return True
+
+    def move_to_preset(self, preset):
+        self.moves.append(preset)
+
+
 class FakeUnit:
     def __init__(self, mount, imager):
         self.mount = mount
@@ -114,6 +143,7 @@ class FakeUnit:
         self.hostname = "test-unit"
         self.unit_conf = SimpleNamespace(acquisition=SimpleNamespace(gain=170))
         self.acquirer = object()
+        self.stage = FakeStage()
         self.activities = 0
         self.activities_verbal = []
         self.started: list = []
@@ -623,3 +653,103 @@ def test_an_unrequested_target_is_absent_rather_than_defaulted(walked):
 def test_a_requested_target_is_recorded(walked):
     _s, folder = walked(ra_j2000_hours=13.5, dec_j2000_degs=41.0)
     assert "13.5" in _header(folder, "flux-00000-00.fits")["OBJECT"]
+
+
+# ------------------------------------------------------------- the start guard --
+
+
+def test_a_run_with_everything_present_is_allowed(session):
+    """Guards the refusal tests below: if this returned a refusal they would all pass
+    vacuously, on whatever reason happened to fire first."""
+    s, _unit, _mount, _meter = session()
+    assert s.require_can_start() is None
+
+
+def test_a_run_without_a_stage_is_refused(session):
+    """No stage means no folding mirror, and the fibre only sees light with the mirror in --
+    so such a run would meter darkness and report it as a flux curve.
+
+    A refusal string rather than an `assert`: asserts vanish under `python -O`, and the
+    envelope renders AssertionError as an anonymous error the caller cannot act on.
+    """
+    s, unit, _mount, _meter = session()
+    unit.stage = None
+
+    refusal = s.require_can_start()
+
+    assert refusal is not None
+    assert "folding mirror" in refusal
+
+
+def test_a_second_run_is_refused_while_one_is_in_progress(session):
+    s, _unit, _mount, _meter = session()
+    s._thread = SimpleNamespace(is_alive=lambda: True)
+    assert "already in progress" in (s.require_can_start() or "")
+
+
+def test_a_busy_unit_is_refused_and_says_what_it_is_doing(session):
+    from common.activities import UnitActivities
+
+    s, unit, _mount, _meter = session()
+    unit.activities = UnitActivities.Guiding
+
+    refusal = s.require_can_start()
+
+    assert refusal is not None and "busy" in refusal
+
+
+# ------------------------------------------------- positioning the folding mirror --
+
+
+def test_it_waits_for_the_folding_mirror_rather_than_for_is_moving(session):
+    """The 2026-09-02 regression.
+
+    `Stage.is_moving` is a plain attribute refreshed by a 2-second poll, and
+    `move_to_preset` does not set it -- so `while stage.is_moving` returns immediately and
+    the run exposes with the mirror still travelling. `FakeStage.is_moving` is permanently
+    False, so a wait built on it would return before `at_preset` was ever true.
+    """
+    s, unit, _mount, _meter = session()
+    unit.stage = FakeStage(polls_to_arrive=4)
+
+    assert s._position_folding_mirror() is True
+    assert unit.stage.at_preset(None) is True  # it really did arrive
+    assert unit.stage.moves, "the mirror was never commanded to SPEC"
+
+
+def test_a_mirror_already_at_spec_is_not_commanded(session):
+    s, unit, _mount, _meter = session()
+    unit.stage = FakeStage(polls_to_arrive=0)
+
+    assert s._position_folding_mirror() is True
+    assert unit.stage.moves == [], "no move was needed"
+
+
+def test_a_mirror_that_never_arrives_fails_the_run(session, monkeypatch):
+    """Fails with a stated reason rather than exposing into a dark fibre."""
+    import flux_metering.session as session_module
+
+    monkeypatch.setattr(session_module, "STAGE_TIMEOUT_SECONDS", 0.5)
+    s, unit, _mount, _meter = session()
+    unit.stage = FakeStage(arrives=False)
+
+    assert s._position_folding_mirror() is False
+    assert "did not reach SPEC" in (s.state.last_error or "")
+
+
+def test_positioning_is_visible_in_the_status(session):
+    s, unit, _mount, _meter = session()
+    unit.stage = FakeStage(polls_to_arrive=2)
+
+    s._position_folding_mirror()
+
+    assert s.state.phase == "positioning"
+
+
+def test_an_abort_during_positioning_stops_the_run(session):
+    s, unit, _mount, _meter = session()
+    unit.stage = FakeStage(arrives=False)
+    s._stop.set()
+
+    assert s._position_folding_mirror() is False
+    assert "aborted" in (s.state.last_error or "")
