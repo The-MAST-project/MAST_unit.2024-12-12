@@ -72,6 +72,11 @@ REFERENCE_IMAGE = "reference.fits"
 #: waiting, not a tolerance of its own.
 ACQUISITION_TIMEOUT_SECONDS = 900.0
 
+#: How long to wait, at the end of a run, for a reference solve that is somehow still
+#: going. It has had the whole spiral already; this only stops a wedged solver from holding
+#: the run open forever.
+SOLVE_JOIN_TIMEOUT_SECONDS = 60.0
+
 #: How long to wait for the folding mirror to reach SPEC. A Sky->Spec traverse was measured
 #: at 21-22 seconds on mast02 (2026-09-02), so this is a generous ceiling on a move that
 #: normally takes half a minute -- not a tolerance.
@@ -143,6 +148,8 @@ class FluxMeteringSession:
         #: open a real ThorCam when the run starts.
         self._injected_meter = flux_meter
         self._meter: FluxMeter | None = None
+        self._solve_thread: threading.Thread | None = None
+        self._reference_solution: dict[str, Any] | None = None
         self.state = FluxMeteringStatus()
         self.params = FluxMeteringParams()
         self.steps: list[FluxMeteringStep] = []
@@ -286,6 +293,9 @@ class FluxMeteringSession:
 
             self.state.phase = "reference"
             reference = self._expose_reference()
+            # Started here, joined in `_finish`: it overlaps the whole spiral, so its ~13 s
+            # costs the run nothing.
+            self.start_solving_the_reference()
 
             self.state.phase = "spiral"
             terminal = self._walk_spiral()
@@ -341,6 +351,79 @@ class FluxMeteringSession:
             f"the folding mirror did not reach SPEC within {STAGE_TIMEOUT_SECONDS:g}s (position={stage.position})"
         )
         return False
+
+    def start_solving_the_reference(self) -> None:
+        """Kick off the reference solve; it runs while the spiral walks.
+
+        A background thread because the solve takes ~13 s against a spiral that takes
+        tens of minutes, and nothing in the walk depends on the answer -- it is joined in
+        `_finish`, by which time it has long finished. Blocking here would add 13 s to
+        every run for a number nobody needs until the end.
+        """
+        if self.state.reference_frame is None:
+            return
+        self._solve_thread = threading.Thread(
+            name="solve-reference",
+            target=self.do_solve_reference,
+            args=(self.state.reference_frame,),
+            daemon=True,
+        )
+        self._solve_thread.start()
+
+    def do_solve_reference(self, file_name: str) -> None:
+        """Plate-solve the reference frame, recording the outcome in `_reference_solution`.
+
+        Never raises and never fails the run. A WCS is worth having and is not worth losing
+        a spiral for: it is what turns `dx, dy` in detector pixels into a statement about
+        the sky, and its `pixel_scale` is a MEASURED plate scale to set beside the
+        configured one that `commanded_offset_px` depends on (MAST_unit#138 records that
+        value having been 0.0 in the database).
+
+        Solving does not touch the frame. The backend opens it read-only and works in
+        `<ram>/tmp/`, and its artifacts are named `<frame>,solver=<name>.fits` and
+        `...-result.txt`, so they land beside the original rather than over it.
+        """
+        started = time.monotonic()
+        try:
+            from solvers.mastrometry import MastrometryDotNet
+
+            # The backend directly, not `Solver`: `Solver.solve()` takes an exposure of its
+            # own, and the whole point here is to solve a frame that already exists.
+            # mastrometry is what the design fixes for this procedure in any case.
+            result = MastrometryDotNet().solve(
+                unit=self.unit,
+                phase="spec",
+                full_frame_input_image_path=self._frame_path(file_name),
+            )
+        except Exception as ex:  # noqa: BLE001 -- a lost WCS must not cost the run
+            logger.exception("flux metering: solving the reference frame failed")
+            self._reference_solution = {"frame": file_name, "succeeded": False, "errors": [str(ex)]}
+            return
+
+        elapsed = time.monotonic() - started
+        if result is None or not result.succeeded:
+            errors = list(result.errors) if result is not None and result.errors else ["no result"]
+            logger.warning(f"flux metering: the reference frame did not solve ({errors})")
+            self._reference_solution = {"frame": file_name, "succeeded": False, "errors": errors}
+            return
+
+        solution = result.solution.model_dump() if result.solution is not None else {}
+        logger.info(
+            f"flux metering: reference solved in {elapsed:.1f}s -- "
+            f"ra={solution.get('ra_hours')}h dec={solution.get('dec_degs')}d "
+            f"scale={solution.get('pixel_scale')} rotation={solution.get('rotation_angle_degs')}"
+        )
+        self._reference_solution = {
+            "frame": file_name,
+            "succeeded": True,
+            "elapsed_seconds": round(elapsed, 1),
+            # NOTE `pixel_scale` is of the DOWNSAMPLED frame the solver builds, not of the
+            # detector: the backend bins 2x2 before solving. Recorded raw, and not halved
+            # here, because the factor is the backend's business and a derived number that
+            # silently assumes it would be wrong the day it changes.
+            "downsample_factor_note": "pixel_scale is per downsampled pixel (the solver bins 2x2)",
+            **solution,
+        }
 
     def _acquire(self) -> bool:
         """Put the star on the ASSUMED fibre position, and wait for it to get there.
@@ -958,11 +1041,19 @@ class FluxMeteringSession:
         test silently fails unless the path is converted first. `move_ram_to_shared`
         documents the same two-spellings problem and converts for the same reason.
         """
+        return np.asarray(fits.getdata(self._frame_path(file_name)), dtype=float)
+
+    def _frame_path(self, file_name: str) -> str:
+        """Where a frame actually is: the ram disk, or the share if the mover took it.
+
+        Split out of `_read_fits` so the solver can be pointed at the same file without
+        reading it into memory first -- a full frame is 94 MB on disk and 374 MB as float64.
+        """
         if self.state.folder is None:
             raise FluxMeteringError("no folder")
         local = os.path.join(self.state.folder, file_name)
         if os.path.exists(local):
-            return np.asarray(fits.getdata(local), dtype=float)
+            return local
 
         shared_folder = filer.change_top_to(FilerTop.Shared, Path(self.state.folder).as_posix())
         if shared_folder is None:
@@ -972,7 +1063,7 @@ class FluxMeteringSession:
         moved = os.path.join(shared_folder, file_name)
         if not os.path.exists(moved):
             raise FluxMeteringError(f"'{file_name}' is neither at '{local}' nor at '{moved}'")
-        return np.asarray(fits.getdata(moved), dtype=float)
+        return moved
 
     def _finish(self, terminal: str) -> None:
         """Write the result, put the mount back, and release the unit.
@@ -984,6 +1075,16 @@ class FluxMeteringSession:
         """
         self.state.terminal_state = terminal
         self.state.ended_at = isoformat_utc()
+
+        # The solve was started when the reference was taken and has had the whole spiral to
+        # finish. Joined -- with a bound, so a wedged solver cannot hold a run open -- because
+        # its answer belongs in the document being built two lines below.
+        if self._solve_thread is not None and self._solve_thread.is_alive():
+            logger.info("flux metering: waiting for the reference solve to finish")
+            self._solve_thread.join(timeout=SOLVE_JOIN_TIMEOUT_SECONDS)
+            if self._solve_thread.is_alive():
+                logger.warning("flux metering: the reference solve did not finish; recording it as unfinished")
+                self._reference_solution = {"succeeded": False, "errors": ["the solve did not finish in time"]}
 
         # The JSON is the status model plus what only the run itself knows: what was asked
         # for, and which camera answered. One document, so a reader is never left joining
@@ -1013,6 +1114,10 @@ class FluxMeteringSession:
             # derived from an unrelated pointing.
             "pixel_scale_at_bin1": self._pixel_scale(),
             "dec_degrees": self._dec_degrees(),
+            # The reference frame's own WCS: where the field actually was, at what scale and
+            # rotation. `pixel_scale` here is MEASURED, so it can be set against the
+            # configured `pixel_scale_at_bin1` above that `commanded_offset_px` relies on.
+            "reference_solution": self._reference_solution,
         }
 
         try:

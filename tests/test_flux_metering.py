@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -753,3 +754,119 @@ def test_an_abort_during_positioning_stops_the_run(session):
 
     assert s._position_folding_mirror() is False
     assert "aborted" in (s.state.last_error or "")
+
+
+# ------------------------------------------------- solving the reference frame --
+
+
+def _fake_solver(monkeypatch, *, result=None, raises=None, delay=0.0, recorder=None):
+    """Stand in for MastrometryDotNet. Imported inside `do_solve_reference`, so the patch
+    goes on the module it is imported FROM."""
+    import solvers.mastrometry as mastrometry_module
+
+    class FakeSolver:
+        def solve(self, unit=None, phase=None, full_frame_input_image_path=None, **kw):
+            if recorder is not None:
+                recorder.append(full_frame_input_image_path)
+            if delay:
+                time.sleep(delay)
+            if raises is not None:
+                raise raises
+            return result
+
+    monkeypatch.setattr(mastrometry_module, "MastrometryDotNet", FakeSolver)
+
+
+def _solution(**kw):
+    from common.solving import SolvingResult, SolvingSolution
+
+    base = {"ra_hours": 3.967, "dec_degs": -13.51, "pixel_scale": 0.524085, "rotation_angle_degs": 158.559}
+    return SolvingResult(succeeded=True, solution=SolvingSolution(**{**base, **kw}))
+
+
+def _ready(session, tmp_path, name="reference-00.fits"):
+    s, unit, _mount, _meter = session()
+    (tmp_path / name).write_bytes(b"not really a fits, the solver is faked")
+    s.state.reference_frame = name
+    return s, unit
+
+
+def test_a_solved_reference_is_recorded(session, tmp_path, monkeypatch):
+    _fake_solver(monkeypatch, result=_solution())
+    s, _unit = _ready(session, tmp_path)
+
+    s.start_solving_the_reference()
+    s._solve_thread.join(5)
+
+    assert s._reference_solution["succeeded"] is True
+    assert s._reference_solution["pixel_scale"] == pytest.approx(0.524085)
+    assert s._reference_solution["rotation_angle_degs"] == pytest.approx(158.559)
+    assert s._reference_solution["frame"] == "reference-00.fits"
+
+
+def test_the_solve_does_not_block_the_walk(session, tmp_path, monkeypatch):
+    """It runs while the spiral walks. A solve takes ~13 s against a spiral of tens of
+    minutes, and nothing in the walk depends on the answer."""
+    _fake_solver(monkeypatch, result=_solution(), delay=1.0)
+    s, _unit = _ready(session, tmp_path)
+
+    started = time.monotonic()
+    s.start_solving_the_reference()
+    returned_in = time.monotonic() - started
+
+    assert returned_in < 0.5, "start_solving_the_reference blocked"
+    assert s._solve_thread.is_alive()
+    s._solve_thread.join(5)
+
+
+def test_a_solver_that_raises_does_not_fail_the_run(session, tmp_path, monkeypatch):
+    """A WCS is worth having and is not worth losing a spiral for."""
+    _fake_solver(monkeypatch, raises=RuntimeError("solve-field is not installed"))
+    s, _unit = _ready(session, tmp_path)
+
+    s.start_solving_the_reference()
+    s._solve_thread.join(5)
+
+    assert s._reference_solution["succeeded"] is False
+    assert "solve-field" in s._reference_solution["errors"][0]
+
+
+def test_a_refusal_to_solve_is_recorded_rather_than_raised(session, tmp_path, monkeypatch):
+    from common.solving import SolvingResult
+
+    _fake_solver(monkeypatch, result=SolvingResult(succeeded=False, errors=["too few sources"]))
+    s, _unit = _ready(session, tmp_path)
+
+    s.start_solving_the_reference()
+    s._solve_thread.join(5)
+
+    assert s._reference_solution["succeeded"] is False
+    assert s._reference_solution["errors"] == ["too few sources"]
+
+
+def test_the_solver_is_handed_the_path_and_the_frame_is_left_alone(session, tmp_path, monkeypatch):
+    """The frame is an input, never an output. The backend opens it read-only and writes
+    its artifacts as `<frame>,solver=<name>.fits` beside it, so the original cannot be
+    overwritten -- and a full frame is 94 MB, so it is passed by path, not read in."""
+    seen: list = []
+    _fake_solver(monkeypatch, result=_solution(), recorder=seen)
+    s, _unit = _ready(session, tmp_path)
+    frame = tmp_path / "reference-00.fits"
+    before = frame.read_bytes()
+
+    s.start_solving_the_reference()
+    s._solve_thread.join(5)
+
+    assert seen == [str(frame)]
+    assert frame.read_bytes() == before
+
+
+def test_nothing_is_solved_when_there_is_no_reference(session, tmp_path, monkeypatch):
+    _fake_solver(monkeypatch, result=_solution())
+    s, _unit, _mount, _meter = session()
+    s.state.reference_frame = None
+
+    s.start_solving_the_reference()
+
+    assert s._solve_thread is None
+    assert s._reference_solution is None
