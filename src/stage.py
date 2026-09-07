@@ -339,7 +339,7 @@ class Stage(Component, SwitchedOutlet):
             result = ximclib.get_status(self.device, byref(hw_status))
         if result == Result.Ok:
             self._position = hw_status.CurPosition
-            self.is_moving = hw_status.MvCmdSts & MvcmdStatus.MVCMD_RUNNING
+            self.is_moving = (hw_status.MvCmdSts & MvcmdStatus.MVCMD_RUNNING) != 0
 
         self.latest_positions = deque(maxlen=3)
 
@@ -376,6 +376,11 @@ class Stage(Component, SwitchedOutlet):
                 with Timeout(60) as timeout:
                     result = timeout.run(ximclib.command_homezero, self.device)
                 if result == Result.Ok:
+                    # Homing moves the stage, so the same staleness applies. Left out, a
+                    # caller waiting on `is_moving` after a home would see the pre-move
+                    # False -- and a fix that covered only the move paths would read as
+                    # complete while leaving one way in.
+                    self.is_moving = True
                     self.start_activity(StageActivities.Homing)
             except TimeoutError as ex:
                 logger.error(f"{op}: timeout during homing: {ex}")
@@ -858,6 +863,14 @@ from pyximc import *
         self.ticks_at_start = self.position
         self.target = position
         self.motion_start_time = datetime.datetime.now(datetime.UTC)
+        # Set HERE, not left to `ontimer`. `is_moving` is refreshed only by that 2-second
+        # poll, so between issuing the command and the next tick it still reads False --
+        # and `while stage.is_moving` therefore falls straight through on a move that has
+        # only just begun. On 2026-09-02 `acquirer._await_stage` returned 6 ms into a
+        # 133,000-count traverse and the acquisition exposed with the fold mirror in
+        # transit. The flag now means "a move has been commanded and not yet observed to
+        # finish", which is what every caller already assumed it meant.
+        self.is_moving = True
         self.start_activity(StageActivities.Moving, details=[f"from {self.position} to {self.target}"])
 
         return CanonicalResponse_Ok
@@ -881,6 +894,7 @@ from pyximc import *
 
         try:
             self.target = current_position + amount
+            self.is_moving = True  # before the command, for the reason in `move_absolute`
             self.start_activity(StageActivities.Moving, details=[f"from {self.position} to {self.target}"])
             with self.stage_lock:
                 assert ximclib
