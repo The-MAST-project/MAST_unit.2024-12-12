@@ -11,6 +11,7 @@ simply wired to the wrong one of the two implementations.
 
 from __future__ import annotations
 
+from collections import deque
 from types import SimpleNamespace
 
 import pytest
@@ -106,3 +107,69 @@ def test_the_property_setter_raises_on_refusal():
 
     with pytest.raises(ValueError, match="out of range"):
         Stage.position.fset(stub, 999_999)
+
+
+# ------------------------------------------- is_moving is set by the command, not the poll --
+
+
+def _movable_stub(monkeypatch, **kw):
+    """A stub that reaches PAST `command_move` into the post-command bookkeeping."""
+    import threading
+
+    import stage as stage_module
+
+    monkeypatch.setattr(
+        stage_module,
+        "ximclib",
+        SimpleNamespace(command_move=lambda *a, **k: stage_module.Result.Ok),
+    )
+    return _stub(
+        device=1,
+        stage_lock=threading.Lock(),
+        latest_positions=deque(maxlen=3),
+        ticks_at_start=None,
+        target=None,
+        motion_start_time=None,
+        is_moving=False,
+        start_activity=lambda *a, **k: None,
+        **kw,
+    )
+
+
+def test_a_commanded_move_sets_is_moving_before_any_poll_runs(monkeypatch):
+    """The 2026-09-02 race.
+
+    `is_moving` is refreshed only by the stage's 2-second `ontimer`, so if the command does
+    not set it, `while stage.is_moving` reads the pre-move False and returns immediately.
+    `acquirer._await_stage` did exactly that, 6 ms into a 133,000-count traverse, and the
+    acquisition exposed with the fold mirror in transit.
+
+    No poll runs in this test -- that is the point. The flag must be true purely because a
+    move was commanded.
+    """
+    stub = _movable_stub(monkeypatch)
+
+    result = Stage.move_absolute(stub, 200000)
+
+    assert result.succeeded
+    assert stub.is_moving is True
+
+
+def test_is_moving_is_not_set_when_the_move_is_refused(monkeypatch):
+    """Already close enough: no command is issued, so nothing may claim motion. Without
+    this the test above would pass on a stub that set the flag unconditionally."""
+    stub = _movable_stub(monkeypatch, close_enough=lambda _p: True)
+
+    result = Stage.move_absolute(stub, 200000)
+
+    assert result.succeeded
+    assert stub.is_moving is False
+
+
+def test_is_moving_is_not_set_when_the_position_is_out_of_range(monkeypatch):
+    stub = _movable_stub(monkeypatch)
+
+    result = Stage.move_absolute(stub, MAX_TRAVEL + 1)
+
+    assert result.failed
+    assert stub.is_moving is False
