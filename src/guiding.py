@@ -197,6 +197,46 @@ class Guider(GuiderInterface):
         return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION)
+    def endpoint_pause_guiding(self, full: bool = True):
+        """
+        Pause guiding, keeping the selected star, the calibration and the lock position, so
+        that `resume_guiding` corrects back toward the same lock rather than re-acquiring.
+
+        With `full` (the default) PHD2 also stops taking guide exposures, which is what the
+        fold-mirror handover uses: the camera is free while the stage travels, and the frame
+        the loop resumes on is a fresh one rather than one taken through a moving mirror.
+
+        Pausing is not stopping. `stop_acquisition_and_guiding` discards the lock; this does
+        not, which is the whole point of it.
+        """
+        op = function_name()
+        if not isinstance(self._backend, PHD2Connector):
+            return CanonicalResponse(errors=[f"{op}: only the PHD2 backend can pause"])
+        if not self.is_guiding:
+            return CanonicalResponse(errors=[f"{op}: not guiding"])
+
+        self._backend.pause(full=full)
+        return CanonicalResponse_Ok
+
+    @endpoint(tier=Tier.OPERATION)
+    def endpoint_resume_guiding(self):
+        """
+        Resume a paused guide loop, correcting back toward the lock position it kept.
+
+        This is also the only way out of the state the fold-mirror handover leaves behind
+        when the mirror fails to insert: it pauses, refuses to resume onto a half-occulted
+        field, and says so in the log. Without this route the operator's only recoveries are
+        to start the acquisition over or to restart the service, which drives the focuser to
+        `known_as_good_position` on the way up (#213).
+        """
+        op = function_name()
+        if not isinstance(self._backend, PHD2Connector):
+            return CanonicalResponse(errors=[f"{op}: only the PHD2 backend can pause"])
+
+        self._backend.unpause()
+        return CanonicalResponse_Ok
+
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_stop_acquisition_and_guiding(self):
         return self.stop_acquisition_and_guiding()
 
