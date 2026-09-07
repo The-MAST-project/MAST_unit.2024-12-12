@@ -44,6 +44,8 @@ class ThorCam:
         self._camera = None
         self._saturation: int | None = None
         self._description = "ThorCam(unopened)"
+        self._model: str | None = None
+        self._serial_number: str | None = None
 
     # ------------------------------------------------------------------ lifecycle --
 
@@ -90,6 +92,10 @@ class ThorCam:
         # Full scale from the camera's own bit depth. Deriving it here is what keeps
         # "saturated" meaning the same thing if the camera is reconfigured or replaced.
         self._saturation = (1 << int(camera.bit_depth)) - 1
+        # Kept as fields, not parsed back out of `_description`, because they go into the
+        # frames' INSTRUME and CAMSN cards and must not depend on that string's shape.
+        self._model = str(camera.model)
+        self._serial_number = str(camera.serial_number)
         # The ranges go in too, because this string is what `result.json` carries as the
         # run's record of its instrument. A run whose settings were refused, or which sat
         # near a limit, is then explicable from the products alone -- without them a reader
@@ -187,6 +193,14 @@ class ThorCam:
     @property
     def description(self) -> str:
         return self._description
+
+    @property
+    def model(self) -> str:
+        return self._model or "unknown"
+
+    @property
+    def serial_number(self) -> str:
+        return self._serial_number or "unknown"
 
     def _require_camera(self):
         if self._camera is None:

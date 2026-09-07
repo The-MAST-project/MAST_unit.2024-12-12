@@ -95,7 +95,15 @@ class FakeMount:
         self.settles += 1
 
     def status(self):
-        return SimpleNamespace(dec_j2000_degs=41.0)
+        # The full set the frame headers read. `_pointing` takes all four from ONE status
+        # call, so a fake that carried only dec would make the pointing cards silently
+        # absent rather than wrong -- and the tests would pass while proving nothing.
+        return SimpleNamespace(
+            dec_j2000_degs=41.0,
+            ra_j2000_hours=13.5,
+            ha_hours=0.25,
+            lmst_hours=14.0,
+        )
 
 
 class FakeUnit:
@@ -491,3 +499,127 @@ def test_a_frame_that_is_nowhere_says_where_it_looked(tmp_path, monkeypatch):
 
     with pytest.raises(session_module.FluxMeteringError, match="neither on the ram disk"):
         s._read_fits("missing.fits")
+
+
+# --------------------------------------------------------------- frame headers --
+#
+# The ThorCam frames used to carry only the six mandatory structural keywords, so one
+# separated from its run folder was anonymous -- and `flux-00007-00.fits` is a name that
+# repeats in every run on the share. These pin what each frame now says about itself.
+
+
+@pytest.fixture
+def walked(session, tmp_path):
+    """A finished walk whose products sit in a properly shaped run folder.
+
+    The folder shape matters: RUNDATE and RUNSEQ are read back out of it, so a bare
+    tmp_path would omit them and the test would prove nothing.
+    """
+    folder = tmp_path / "2026-09-01" / "FluxMetering" / "0004"
+    folder.mkdir(parents=True)
+
+    def build(**params):
+        s, unit, mount, meter = session(**params)
+        s.state.folder = str(folder)
+        s._expose_reference()
+        s._walk_spiral()
+        return s, folder
+
+    return build
+
+
+def _header(folder, name):
+    return fits.getheader(str(folder / name))
+
+
+def test_a_flux_frame_carries_the_settings_it_was_taken_with(walked):
+    _s, folder = walked(flux_gain=7, flux_black_level=3)
+    h = _header(folder, "flux-00000-00.fits")
+
+    assert h["INSTRUME"] == "SimulatedFluxMeter"  # the CAMERA, not the hostname
+    assert h["TELESCOP"] == "test-unit"  # the hostname belongs here
+    assert h["CAMSN"] == "simulated"
+    assert h["GAIN"] == 7
+    assert h["CREATOR"] == "MAST flux_metering"
+    assert h["DATE-OBS"] and h["DATE-END"]
+    assert "EXPOSURE" not in h  # EXPTIME only; not a third convention
+
+
+def test_the_black_level_is_recorded_so_the_frame_can_be_re_reduced(walked):
+    """`frame_flux` subtracts it, so a frame without it cannot have its flux recomputed --
+    the number needed for the sum absent from the data being summed."""
+    _s, folder = walked(flux_black_level=5)
+    assert _header(folder, "flux-00000-00.fits")["BLKLEVEL"] == 5
+
+
+def test_a_step_frame_locates_itself_in_its_run(walked):
+    _s, folder = walked()
+    h = _header(folder, "flux-00000-00.fits")
+
+    assert h["RUNDATE"] == "2026-09-01"
+    assert h["RUNSEQ"] == "0004"
+    assert h["STEPIDX"] == 0
+    assert h["RING"] == 0
+    # The one card tying this frame to the imager frame of the same exposure window; that
+    # pairing otherwise exists only inside result.json.
+    assert h["IMGFRAME"] == "step-00000-00.fits"
+
+
+def test_the_cards_describe_the_step_being_exposed_not_the_previous_one(walked):
+    """`self.state` is advanced only AFTER a step's exposures finish, so cards read off it
+    would be one step stale. They come from `_measure_step`'s arguments instead."""
+    s, folder = walked()
+    later = next(step for step in s.steps if step.index == 3)
+    h = _header(folder, "flux-00003-00.fits")
+
+    assert h["STEPIDX"] == 3
+    assert (h["CELLX"], h["CELLY"]) == tuple(later.cell)
+    assert h["RING"] == later.ring
+
+
+def test_the_reference_frame_omits_the_step_cards(walked):
+    """Omitted, not zeroed: zeros would read as the origin cell, which is a real cell."""
+    _s, folder = walked()
+    h = _header(folder, "reference-flux-00.fits")
+
+    for card in ("STEPIDX", "CELLX", "CELLY", "RING", "OFFRA", "OFFDEC"):
+        assert card not in h
+    # It is still identifiable as a frame of this run.
+    assert h["CREATOR"] == "MAST flux_metering"
+    assert h["RUNSEQ"] == "0004"
+    assert h["IMGFRAME"] == "reference-00.fits"
+
+
+def test_the_pointing_is_recorded_in_degrees_and_named(walked):
+    _s, folder = walked()
+    h = _header(folder, "flux-00000-00.fits")
+
+    assert h["RA"] == pytest.approx(13.5 * 15)  # hours -> degrees, so nobody has to guess
+    assert h["DEC"] == pytest.approx(41.0)
+    assert h["EQUINOX"] == 2000.0
+    assert h["RADESYS"] == "ICRS"
+    assert h["HA"] == pytest.approx(0.25)
+    assert h["LMST"] == pytest.approx(14.0)
+
+
+def test_no_wcs_is_written(walked):
+    """The ThorCam sees only the light out of the fibre and has no field. A missing card is
+    an absence; a WCS would be an assertion that these pixels map to sky, and would invite a
+    solver to solve it and DS9 to overlay catalogues on it."""
+    _s, folder = walked()
+    h = _header(folder, "flux-00000-00.fits")
+
+    for card in ("CRVAL1", "CRVAL2", "CRPIX1", "CRPIX2", "CTYPE1", "CTYPE2", "CD1_1", "CDELT1"):
+        assert card not in h
+
+
+def test_an_unrequested_target_is_absent_rather_than_defaulted(walked):
+    """On a skip_acquisition run no target was asked for. Absent, so a reader can tell that
+    from a target that happened to be at the origin."""
+    _s, folder = walked()
+    assert "OBJECT" not in _header(folder, "flux-00000-00.fits")
+
+
+def test_a_requested_target_is_recorded(walked):
+    _s, folder = walked(ra_j2000_hours=13.5, dec_j2000_degs=41.0)
+    assert "13.5" in _header(folder, "flux-00000-00.fits")["OBJECT"]

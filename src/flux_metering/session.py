@@ -493,18 +493,53 @@ class FluxMeteringSession:
         """
         try:
             captured["flux_started"] = isoformat_utc()
+            # Sampled here, beside the timestamps, rather than read when the frame is
+            # written. The write follows by milliseconds, so reading it there would
+            # usually be right -- but right by luck about timing, and wrong the moment a
+            # write is retried or deferred. The same trap as `_commanded_offset_px`, whose
+            # declination is only correct while the run is still happening.
+            captured["pointing"] = self._pointing()
             captured["flux_frame"] = self._meter.expose()  # type: ignore[union-attr]
             captured["flux_ended"] = isoformat_utc()
         except Exception as ex:  # noqa: BLE001 -- reported through `captured`, not swallowed
             captured["flux_error"] = ex
 
-    def _expose_pair(self, imager_name: str, flux_name: str) -> FluxMeteringExposure:
+    def _pointing(self) -> dict[str, float | None]:
+        """Where the mount is, in one read.
+
+        One `mount.status()` for all four values: separate reads would sample four
+        different instants, and during a spiral step the mount is being offset between
+        them. Alt/az are deliberately absent -- they are not on `MountStatus` and would
+        cost a PWI4 round trip, and both they and the airmass are derivable afterwards
+        from RA/Dec, DATE-OBS and the site coordinates.
+        """
+        try:
+            status = self.unit.mount.status()  # type: ignore[union-attr]
+            return {
+                "ra_j2000_hours": status.ra_j2000_hours,
+                "dec_j2000_degs": status.dec_j2000_degs,
+                "ha_hours": status.ha_hours,
+                "lmst_hours": status.lmst_hours,
+            }
+        except Exception:  # noqa: BLE001 -- metadata must never fail an exposure
+            logger.warning("could not read the mount's pointing for the frame header")
+            return {}
+
+    def _expose_pair(
+        self, imager_name: str, flux_name: str, step: tuple[int, Any, int, Any] | None = None
+    ) -> FluxMeteringExposure:
         """One imager frame and one ThorCam frame, exposed in parallel.
 
         In parallel because they must cover the same window -- see
         `FluxMeteringParams.flux_exposure_us` -- and each records its own start and end, so
         the overlap is verifiable afterwards rather than assumed. The imager path goes
         through PHD2 and does not necessarily begin the instant it is asked.
+
+        `step` is `(index, cell, ring, offset_arcsec)` and is passed DOWN from
+        `_measure_step` rather than read off `self.state`, which does not yet describe this
+        step: the state is advanced after the exposures complete, so it still holds the
+        previous one here. The reference exposure passes None and its frame omits the step
+        cards entirely, rather than carrying zeros that would read as the origin cell.
         """
         captured: dict[str, Any] = {}
         flux_thread = threading.Thread(name="flux-exposure", target=self.do_flux_exposure, args=(captured,))
@@ -523,7 +558,7 @@ class FluxMeteringSession:
             raise FluxMeteringError(f"the flux exposure failed: {captured['flux_error']}")
 
         frame = captured["flux_frame"]
-        self._write_fits(flux_name, frame)
+        self._write_fits(flux_name, frame, cards=self._flux_cards(captured, imager_name, step))
 
         n_saturated = saturated_pixels(frame, self._meter.saturation_level)  # type: ignore[union-attr]
         return FluxMeteringExposure(
@@ -564,7 +599,13 @@ class FluxMeteringSession:
         by flux is defensible: it picks a typical moment rather than an excursion.
         """
         exposures = [
-            self._expose_pair(f"step-{index:05d}-{n:02d}.fits", f"flux-{index:05d}-{n:02d}.fits")
+            self._expose_pair(
+                f"step-{index:05d}-{n:02d}.fits",
+                f"flux-{index:05d}-{n:02d}.fits",
+                # From the arguments, not self.state: the state still describes the
+                # PREVIOUS step here, being advanced only once these exposures are done.
+                step=(index, cell, ring, offset),
+            )
             for n in range(self.params.number_of_frames)
         ]
         flux, representative = self.representative_of([e.flux for e in exposures])
@@ -736,12 +777,112 @@ class FluxMeteringSession:
         filer.move_ram_to_shared(path)
         return data
 
-    def _write_fits(self, file_name: str, data: np.ndarray) -> None:
+    def _flux_cards(
+        self, captured: dict[str, Any], imager_name: str, step: tuple[int, Any, int, Any] | None
+    ) -> list[tuple[str, Any, str]]:
+        """The header for one ThorCam frame: (keyword, value, comment).
+
+        These frames used to carry nothing but the six mandatory structural keywords, so a
+        flux frame separated from its run folder was anonymous -- and `flux-00007-00.fits`
+        is a name that repeats in every run on the share. Everything here is already known
+        at the moment of the exposure; it was simply never written down.
+
+        `BLKLEVEL` is the one that matters most. `frame_flux` subtracts it, so without it
+        the frame cannot be re-reduced: the number needed to recompute the flux was absent
+        from the data you would recompute it from.
+
+        Deliberately NO WCS. The ThorCam sees only the light emerging from the fibre and
+        has no field, so `CRVAL`/`CRPIX`/`CTYPE` would assert that these pixels map to sky.
+        A missing card is an absence; a wrong WCS invites a solver to solve it and DS9 to
+        overlay catalogues on it.
+        """
+        meter = self._meter
+        pointing = captured.get("pointing") or {}
+        date, seq = self._run_labels()
+
+        cards: list[tuple[str, Any, str]] = [
+            ("DATE-OBS", captured.get("flux_started"), "UTC at the start of this exposure"),
+            ("DATE-END", captured.get("flux_ended"), "UTC at the end of this exposure"),
+            # Seconds, matching imagers/saving.py. Not EXPOSURE, which the PHD2-written
+            # imager frames use: writing both would create a third convention rather than
+            # settle the two that exist.
+            ("EXPTIME", self.params.flux_exposure_us / 1e6, "exposure time in seconds"),
+            # The CAMERA, per the FITS standard, and matching what PHD2 writes on the
+            # imager frames. This deliberately disagrees with imagers/saving.py, which
+            # puts the hostname here; the hostname belongs in TELESCOP, below. Do not
+            # "fix" this into agreement with the wrong one.
+            ("INSTRUME", meter.model if meter else None, "the flux meter"),
+            ("CAMSN", meter.serial_number if meter else None, "flux meter serial number"),
+            ("GAIN", self.params.flux_gain, "flux meter gain"),
+            ("BLKLEVEL", self.params.flux_black_level, "black level subtracted by frame_flux"),
+            ("SATURATE", meter.saturation_level if meter else None, "full scale ADU"),
+            ("TELESCOP", self.unit.hostname, "the unit"),
+            ("CREATOR", "MAST flux_metering", "what wrote this frame"),
+            # The observing night is NOT derivable from DATE-OBS by a reader who does not
+            # know it turns at 12:00 UTC, so it is stated.
+            ("RUNDATE", date, "observing night (turns at 12:00 UTC)"),
+            ("RUNSEQ", seq, "flux metering run sequence"),
+            # The single card that ties this frame to the imager frame sharing its exposure
+            # window. That pairing otherwise exists only inside result.json.
+            ("IMGFRAME", imager_name, "imager frame of the same exposure pair"),
+        ]
+
+        if step is not None:
+            index, cell, ring, offset = step
+            cards += [
+                ("STEPIDX", index, "spiral step index"),
+                # Split because a tuple is not a legal FITS card value.
+                ("CELLX", cell[0] if cell else None, "spiral cell x"),
+                ("CELLY", cell[1] if cell else None, "spiral cell y"),
+                ("RING", ring, "spiral ring"),
+                ("OFFRA", offset[0] if offset else None, "commanded RA offset, arcsec"),
+                ("OFFDEC", offset[1] if offset else None, "commanded Dec offset, arcsec"),
+            ]
+
+        ra_hours = pointing.get("ra_j2000_hours")
+        cards += [
+            # Degrees, so no reader has to guess whether RA is hours or degrees.
+            ("RA", ra_hours * 15.0 if ra_hours is not None else None, "mount J2000 RA, degrees"),
+            ("DEC", pointing.get("dec_j2000_degs"), "mount J2000 Dec, degrees"),
+            ("EQUINOX", 2000.0, "equinox of RA/DEC"),
+            ("RADESYS", "ICRS", "reference frame of RA/DEC"),
+            ("HA", pointing.get("ha_hours"), "hour angle, hours"),
+            ("LMST", pointing.get("lmst_hours"), "local mean sidereal time, hours"),
+        ]
+        if self.params.ra_j2000_hours is not None and self.params.dec_j2000_degs is not None:
+            # Only when one was actually requested. Left absent on a skip_acquisition run
+            # so a reader can tell "no target was asked for" from "the target was here".
+            cards.append(
+                (
+                    "OBJECT",
+                    f"{self.params.ra_j2000_hours:.6f}h {self.params.dec_j2000_degs:+.6f}d",
+                    "requested target (J2000)",
+                )
+            )
+        return cards
+
+    def _run_labels(self) -> tuple[str | None, str | None]:
+        """(observing night, sequence) from the run folder, whose shape is
+        `<...>/<date>/FluxMetering/<seq>`."""
+        if self.state.folder is None:
+            return None, None
+        parts = Path(self.state.folder).parts
+        if len(parts) >= 3 and parts[-2] == "FluxMetering":
+            return parts[-3], parts[-1]
+        return None, None
+
+    def _write_fits(self, file_name: str, data: np.ndarray, cards: list[tuple[str, Any, str]] | None = None) -> None:
         if self.state.folder is None:
             raise FluxMeteringError("no folder")
         path = os.path.join(self.state.folder, file_name)
+        header = fits.Header()
+        for keyword, value, comment in cards or []:
+            # A card whose value is unknown is omitted rather than written empty: a header
+            # that says nothing about a thing is honest, one that says "" is not.
+            if value is not None:
+                header[keyword] = (value, comment)
         with MoveGuardian().protect(path):
-            fits.PrimaryHDU(data=np.asarray(data)).writeto(path, overwrite=True)
+            fits.PrimaryHDU(data=np.asarray(data), header=header).writeto(path, overwrite=True)
         filer.move_ram_to_shared(path)
 
     def _read_fits(self, file_name: str) -> np.ndarray:

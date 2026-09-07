@@ -60,6 +60,21 @@ class FluxMeter(Protocol):
         """Model and serial, for the run's metadata."""
         ...
 
+    @property
+    def model(self) -> str:
+        """The camera model, for the frame's `INSTRUME`.
+
+        Separate from `description` rather than parsed out of it: `description` is a
+        human-readable blob whose shape is free to change, and a FITS card built by
+        splitting it would break silently the first time it did.
+        """
+        ...
+
+    @property
+    def serial_number(self) -> str:
+        """The camera serial, for the frame's `CAMSN`. Which physical camera took this."""
+        ...
+
     def close(self) -> None: ...
 
 
@@ -152,6 +167,14 @@ class SimulatedFluxMeter:
     @property
     def description(self) -> str:
         return f"SimulatedFluxMeter(peak_cell={self.peak_cell}, sigma_cells={self.sigma_cells})"
+
+    @property
+    def model(self) -> str:
+        return "SimulatedFluxMeter"
+
+    @property
+    def serial_number(self) -> str:
+        return "simulated"
 
     def close(self) -> None:
         self.closed = True
