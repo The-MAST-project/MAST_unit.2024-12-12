@@ -8,6 +8,8 @@ constructing one reaches for a mount, a camera, a power switch and MongoDB.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 # No platform guard: `conftest` stubs the absent hardware modules, so this runs on a dev
@@ -85,6 +87,7 @@ class Stub(FakeActivities):
         self.imager = FakeImager()
         self.mount = FakeMount()
         self.raised = False
+        self._expose_cancelled = threading.Event()
 
     def _expose_repeatedly(self, *args, **kwargs):
         if self.raised:

@@ -124,6 +124,19 @@ class Unit(Component):
 
         self._connected: bool = False
 
+        # Cancellation for the exposure run, and nothing else. It is deliberately private
+        # and deliberately NOT a second public state: `UnitActivities.Exposing` stays the
+        # one thing a client watches, and keeps meaning "a run is in flight" -- cleared
+        # only once `do_expose` has really unwound. If abort cleared that flag instead
+        # (the protocol `abort` describes), the guard in `expose` would open while the old
+        # thread was still between its wait and its `finally`, and a prompt second run
+        # would overwrite `current_exposure_series` and hand the old thread a ValueError.
+        #
+        # Three read sites, all in `_expose_repeatedly`, so it can be lifted out whole:
+        # #81's asyncio dispatch would replace it with real task cancellation, and a
+        # general per-operation handle would subsume it. Do not grow it into a mode.
+        self._expose_cancelled: threading.Event = threading.Event()
+
         self.was_tracking_before_guiding: bool = False
 
         # Handlers live on the root logger now, not on this one -- look there.
@@ -442,10 +455,23 @@ class Unit(Component):
         operation really stopped watches its flag clear in `status`, the same mechanism
         every `completion=<flag>` endpoint already publishes.
 
+        **The exposure run is the one exception, and on purpose.** It is cancelled through
+        `_expose_cancelled` rather than by clearing `UnitActivities.Exposing`, so that flag
+        goes on meaning "a run is in flight" until the thread has closed its exposure series
+        and stopped tracking. Clearing it here would open `expose`'s one-run-at-a-time guard
+        while the old thread was still unwinding, and a second run arriving in that window
+        overwrites the series the first is about to close (#212).
+
         Each sub-abort is attempted independently, and a failure in one is collected
         rather than allowed to skip the others.
         """
         errors: list[str] = []
+
+        # Before the sub-aborts, so the run cannot start another frame in the gap. The
+        # imager's own abort, fired below with the rest of the components, is what releases
+        # a thread already parked waiting for a readout that is no longer coming.
+        if self.is_active(UnitActivities.Exposing):
+            self._expose_cancelled.set()
 
         def attempt(what: str, action):
             try:
@@ -674,7 +700,19 @@ class Unit(Component):
         subfolder: str | None = None,
         exposure_seconds: float = 3,
         repeats: int = 1,
-        seconds_between_exposures: float = 0,
+        cadence_seconds: Annotated[
+            float,
+            Query(
+                description=(
+                    "#### Seconds from one exposure **start** to the next.\n"
+                    "- omitted or `0` - no pacing; each exposure follows the one before\n"
+                    "- otherwise the run is paced to this period, measured start to start\n"
+                    "- an exposure that overruns the period does **not** shorten the next "
+                    "one or skip it: the cadence is best-effort, and the run simply falls "
+                    "behind"
+                ),
+            ),
+        ] = 0,
         fiber_x: int | None = None,
         fiber_y: int | None = None,
         width: int | None = None,
@@ -787,6 +825,7 @@ class Unit(Component):
         # begun bootstrapping, not once the target runs, so a caller that polls the instant
         # it sees this Ok would find the unit idle and read the run as already over.
         # do_expose's outermost `finally` is what ends it.
+        self._expose_cancelled.clear()
         self.start_activity(UnitActivities.Exposing, details=[f"{repeats} x {exposure_seconds}s"])
         Thread(
             name="expose-thread",
@@ -797,7 +836,7 @@ class Unit(Component):
                 repeats,
                 ra_offsets,
                 dec_offsets,
-                seconds_between_exposures,
+                cadence_seconds,
                 fiber_x,
                 fiber_y,
                 width,
@@ -815,7 +854,7 @@ class Unit(Component):
         repeats: int = 1,
         ra_offsets: list[float] | None = None,
         dec_offsets: list[float] | None = None,
-        seconds_between_exposures: float = 0,
+        cadence_seconds: float = 0,
         fiber_x: int = 6000,
         fiber_y: int = 2500,
         width: int = 1500,
@@ -846,7 +885,7 @@ class Unit(Component):
                     height,
                     ra_offsets,
                     dec_offsets,
-                    seconds_between_exposures,
+                    cadence_seconds,
                 )
             except Exception:
                 # This runs in `expose-thread`, where an exception would otherwise vanish
@@ -878,16 +917,19 @@ class Unit(Component):
         height: int,
         ra_offsets: list[float] | None,
         dec_offsets: list[float] | None,
-        seconds_between_exposures: float,
+        cadence_seconds: float,
     ) -> None:
         assert self.mount is not None
         assert self.imager is not None
         op = function_name()
         for repeat in range(repeats):
-            end = None
-            if seconds_between_exposures != 0.0:
-                start = datetime.datetime.now(tz=datetime.UTC)
-                end = start + datetime.timedelta(seconds=seconds_between_exposures)
+            if self._expose_cancelled.is_set():
+                logger.info(f"{op}: cancelled before exposure #{repeat} (of {repeats})")
+                return
+
+            next_start = None
+            if cadence_seconds != 0.0:
+                next_start = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(seconds=cadence_seconds)
 
             unit_roi = UnitRoi(fiber_x, fiber_y, width, height)
             default_folder = PathMaker().make_exposures_folder()
@@ -917,14 +959,27 @@ class Unit(Component):
                 with MoveGuardian().protect(image_path):
                     self.imager.start_exposure(imager_settings)
                     self.imager.wait_for_image_saved()
+                # An aborted exposure is released without a readout, so there is no file
+                # here to move and `move_ram_to_shared` would be the next exception.
+                if self._expose_cancelled.is_set():
+                    logger.info(f"{op}: cancelled during exposure #{repeat} (of {repeats}); no frame to move")
+                    return
                 filer.move_ram_to_shared(image_path)
 
-            if end is not None and seconds_between_exposures != 0.0:
-                now = datetime.datetime.now(tz=datetime.UTC)
-                if now < end:
-                    period = (end - now).seconds
-                    logger.info(f"{op}: sleeping {period} seconds till next exposure ...")
-                    time.sleep(period)
+            if next_start is not None:
+                # total_seconds(), not `.seconds`, which is the seconds-of-day component of
+                # a timedelta and drops the sub-second remainder.
+                period = (next_start - datetime.datetime.now(tz=datetime.UTC)).total_seconds()
+                if period > 0:
+                    logger.info(f"{op}: holding the {cadence_seconds}s cadence, {period:.1f}s to the next start ...")
+                    if self._expose_cancelled.wait(timeout=period):
+                        logger.info(f"{op}: cancelled while holding the cadence")
+                        return
+                else:
+                    logger.info(
+                        f"{op}: exposure #{repeat} overran the {cadence_seconds}s cadence "
+                        f"by {-period:.1f}s; starting the next one now"
+                    )
 
             if ra_offsets is not None or dec_offsets is not None:
                 if ra_offsets is not None and dec_offsets is not None:
