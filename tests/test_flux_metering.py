@@ -765,6 +765,8 @@ def _fake_solver(monkeypatch, *, result=None, raises=None, delay=0.0, recorder=N
     import solvers.mastrometry as mastrometry_module
 
     class FakeSolver:
+        name = "mastrometry.net"  # the real backend has one; the session records it
+
         def solve(self, unit=None, phase=None, full_frame_input_image_path=None, **kw):
             if recorder is not None:
                 recorder.append(full_frame_input_image_path)
@@ -870,3 +872,253 @@ def test_nothing_is_solved_when_there_is_no_reference(session, tmp_path, monkeyp
 
     assert s._solve_thread is None
     assert s._reference_solution is None
+
+
+# ------------------------------------------- which plate scale the conversion uses --
+
+
+def _with_solution(session, pixel_scale=0.524085, succeeded=True):
+    s, unit, _mount, _meter = session()
+    s._reference_solution = {"succeeded": succeeded, "pixel_scale": pixel_scale}
+    return s, unit
+
+
+def test_the_solved_scale_wins_over_the_configured_one(session):
+    """The solved value is measured from this run's own reference frame; the configured one
+    is a database field that has already been wrong once (MAST_unit#138, where it sat at 0.0
+    and made commanded_offset_px silently absent)."""
+    from solvers.mastrometry import DOWNSAMPLE_FACTOR
+
+    s, _unit = _with_solution(session, pixel_scale=0.524085)
+
+    scale, source = s._effective_pixel_scale()
+
+    assert scale == pytest.approx(0.524085 / DOWNSAMPLE_FACTOR)
+    assert "solved" in source
+
+
+def test_the_downsample_factor_comes_from_the_backend_not_a_hardcoded_two(session):
+    """The solver reports its scale per DOWNSAMPLED pixel. Dividing by a literal 2 would go
+    quietly wrong the day the backend changed it, so the constant is imported."""
+    import solvers.mastrometry as mastrometry_module
+
+    s, _unit = _with_solution(session, pixel_scale=1.0)
+    original = mastrometry_module.DOWNSAMPLE_FACTOR
+    try:
+        mastrometry_module.DOWNSAMPLE_FACTOR = 4
+        assert s._solved_pixel_scale_at_bin1() == pytest.approx(0.25)
+    finally:
+        mastrometry_module.DOWNSAMPLE_FACTOR = original
+
+
+def test_a_run_that_did_not_solve_falls_back_to_the_configured_scale(session):
+    s, unit, _mount, _meter = session()
+    s._reference_solution = {"succeeded": False, "errors": ["too few sources"]}
+    unit.unit_conf = SimpleNamespace(
+        acquisition=SimpleNamespace(gain=170), imager=SimpleNamespace(pixel_scale_at_bin1=0.2616)
+    )
+
+    scale, source = s._effective_pixel_scale()
+
+    assert scale == pytest.approx(0.2616)
+    assert "configured" in source and "did not solve" in source
+
+
+def test_neither_a_solve_nor_a_configured_scale_says_so(session):
+    s, unit, _mount, _meter = session()
+    unit.unit_conf = SimpleNamespace(acquisition=SimpleNamespace(gain=170), imager=SimpleNamespace(pixel_scale_at_bin1=0.0))
+
+    scale, source = s._effective_pixel_scale()
+
+    assert scale is None
+    assert "neither" in source
+
+
+def test_the_commanded_offset_uses_the_solved_scale(session):
+    """The end-to-end version: the number the run checks itself against is computed from
+    the measurement, not from configuration."""
+    s, unit = _with_solution(session, pixel_scale=1.0)  # -> 0.5 arcsec/px at bin 1
+    unit.unit_conf = SimpleNamespace(acquisition=SimpleNamespace(gain=170), imager=SimpleNamespace(pixel_scale_at_bin1=0.25))
+    unit.mount.status = lambda: SimpleNamespace(dec_j2000_degs=0.0, ra_j2000_hours=0.0, ha_hours=0.0, lmst_hours=0.0)
+
+    offset = s._commanded_offset_px((0.0, 2.0))
+
+    # 2.0 arcsec at the SOLVED 0.5 arcsec/px = 4 px. At the configured 0.25 it would be 8.
+    assert offset[1] == pytest.approx(4.0)
+
+
+def test_the_solve_is_joined_before_the_correlation_needs_it(session, tmp_path, monkeypatch):
+    """`_measure` converts arcsec with the solved scale, so the answer must be in before it
+    runs -- not merely before the document is written, which is one line later."""
+    _fake_solver(monkeypatch, result=_solution(), delay=0.4)
+    s, _unit = _ready(session, tmp_path)
+
+    s.start_solving_the_reference()
+    s._await_reference_solve()
+
+    assert s._solve_thread is not None and not s._solve_thread.is_alive()
+    assert s._reference_solution["succeeded"] is True
+
+
+# ------------------------------------------------- dx, dy on the sky --
+
+
+def _solved(session, **cd):
+    s, unit, _mount, _meter = session()
+    base = {"succeeded": True, "dec_degs": -13.51, "pixel_scale": 0.524085}
+    s._reference_solution = {**base, **cd}
+    return s, unit
+
+
+def test_the_declination_comes_from_the_solve_not_the_mount(session):
+    """`_dec_degrees` reads wherever the mount is pointing WHEN ASKED, so it is right only
+    while the run is happening. The solve pins it to the reference frame."""
+    s, unit = _solved(session)
+    unit.mount.status = lambda: SimpleNamespace(dec_j2000_degs=41.0, ra_j2000_hours=0, ha_hours=0, lmst_hours=0)
+
+    dec, source = s._effective_dec()
+
+    assert dec == pytest.approx(-13.51)
+    assert "solved" in source
+
+
+def test_the_declination_falls_back_to_the_mount_when_nothing_solved(session):
+    s, unit, _mount, _meter = session()
+    s._reference_solution = {"succeeded": False}
+
+    dec, source = s._effective_dec()
+
+    assert dec == pytest.approx(41.0)  # the fake mount's
+    assert "mount" in source and "did not solve" in source
+
+
+def test_the_sky_offset_uses_the_cd_matrix(session):
+    """A clean 90-degree rotation with no mirror: +x on the detector is +Dec, +y is -RA."""
+    from solvers.mastrometry import DOWNSAMPLE_FACTOR
+
+    scale_deg = 0.5 / 3600.0  # 0.5 arcsec per downsampled pixel
+    s, _unit = _solved(session, cd1_1=0.0, cd1_2=-scale_deg, cd2_1=scale_deg, cd2_2=0.0)
+
+    dra, ddec, source = s._sky_offset(dx=2.0 * DOWNSAMPLE_FACTOR, dy=0.0)
+
+    assert dra == pytest.approx(0.0)
+    assert ddec == pytest.approx(1.0)  # 2 downsampled px at 0.5 arcsec
+    assert "CD matrix" in source
+
+
+def test_parity_is_honoured_rather_than_assumed(session):
+    """The reason the CD matrix is used instead of `rotation_angle_degs`.
+
+    These two matrices describe the SAME rotation and differ only in handedness. A
+    conversion built on a rotation angle alone cannot tell them apart: it would give the
+    same dRA for both -- right in magnitude, wrong in sign for one. That is the error
+    section 9.1 of the design calls the likeliest bug in the whole procedure.
+    """
+    from solvers.mastrometry import DOWNSAMPLE_FACTOR
+
+    scale_deg = 1.0 / 3600.0
+    one_pixel = 1.0 * DOWNSAMPLE_FACTOR
+
+    upright, _ = _solved(session, cd1_1=scale_deg, cd1_2=0.0, cd2_1=0.0, cd2_2=scale_deg)
+    mirrored, _ = _solved(session, cd1_1=-scale_deg, cd1_2=0.0, cd2_1=0.0, cd2_2=scale_deg)
+
+    upright_dra, _, _ = upright._sky_offset(dx=one_pixel, dy=0.0)
+    mirrored_dra, _, _ = mirrored._sky_offset(dx=one_pixel, dy=0.0)
+
+    assert upright_dra == pytest.approx(1.0)
+    assert mirrored_dra == pytest.approx(-1.0)
+
+
+def test_no_cd_matrix_means_no_sky_offset_and_a_reason(session):
+    s, _unit = _solved(session)  # solved, but no CD terms
+    dra, ddec, source = s._sky_offset(dx=5.0, dy=5.0)
+
+    assert dra is None and ddec is None
+    assert "no CD matrix" in source
+
+
+def test_an_unsolved_reference_means_no_sky_offset_and_a_reason(session):
+    s, _unit, _mount, _meter = session()
+    s._reference_solution = {"succeeded": False}
+
+    dra, ddec, source = s._sky_offset(dx=5.0, dy=5.0)
+
+    assert dra is None and ddec is None
+    assert "did not solve" in source
+
+
+# --------------------------- the measurement, written into the solved frame's header --
+
+
+def _solved_frame(session, tmp_path, name="reference-00,solver=mastrometry.net.fits"):
+    """A session whose solve produced an artifact, with that artifact on disk."""
+    s, unit, _mount, _meter = session()
+    s.state.reference_frame = "reference-00.fits"
+    s._solver_name = "mastrometry.net"
+    s._reference_solution = {"succeeded": True, "dec_degs": -13.5}
+    fits.PrimaryHDU(data=np.zeros((8, 8), dtype=np.uint16)).writeto(tmp_path / name, overwrite=True)
+    return s, tmp_path / name
+
+
+def _result(**kw):
+    from common.models.statuses import FluxMeteringResult
+
+    base = {"dx": 1.25, "dy": -3.5, "sky_dx_arcsec": 0.33, "sky_dy_arcsec": -0.92, "confidence": 0.87}
+    return FluxMeteringResult(**{**base, **kw})
+
+
+def test_the_measurement_is_written_into_the_solved_frames_header(session, tmp_path):
+    s, artifact = _solved_frame(session, tmp_path)
+
+    s.do_record_sky_offset(_result())
+
+    h = fits.getheader(str(artifact))
+    assert h["FMDXPX"] == pytest.approx(1.25)
+    assert h["FMDYPX"] == pytest.approx(-3.5)
+    assert h["FMDXSKY"] == pytest.approx(0.33)
+    assert h["FMDYSKY"] == pytest.approx(-0.92)
+    assert h["FMLOWCNF"] is False
+
+
+def test_the_original_reference_frame_is_never_written_to(session, tmp_path):
+    """The original is an input, and the correlation depends on it being exactly what the
+    run exposed. Only the solver's own copy is annotated."""
+    s, _artifact = _solved_frame(session, tmp_path)
+    original = tmp_path / "reference-00.fits"
+    fits.PrimaryHDU(data=np.zeros((8, 8), dtype=np.uint16)).writeto(original, overwrite=True)
+    before = original.read_bytes()
+
+    s.do_record_sky_offset(_result())
+
+    assert original.read_bytes() == before
+
+
+def test_a_missing_solved_frame_does_not_fail_the_run(session, tmp_path, monkeypatch):
+    """The backend places that file from a background cleanup thread, so it may be absent.
+    A header that cannot be annotated is a lost convenience, not a lost run."""
+    import flux_metering.session as session_module
+
+    monkeypatch.setattr(session_module, "SOLVED_FRAME_WAIT_SECONDS", 0.2)
+    s, artifact = _solved_frame(session, tmp_path)
+    artifact.unlink()
+
+    s.do_record_sky_offset(_result())  # must not raise
+
+
+def test_nothing_is_written_when_there_was_no_solve(session, tmp_path):
+    s, artifact = _solved_frame(session, tmp_path)
+    s._solver_name = None
+    before = artifact.read_bytes()
+
+    s.do_record_sky_offset(_result())
+
+    assert artifact.read_bytes() == before
+
+
+def test_a_low_confidence_measurement_says_so_in_the_header(session, tmp_path):
+    """So a reader of the frame cannot take an unusable dx/dy at face value."""
+    s, artifact = _solved_frame(session, tmp_path)
+
+    s.do_record_sky_offset(_result(low_confidence=True, confidence=0.01))
+
+    assert fits.getheader(str(artifact))["FMLOWCNF"] is True

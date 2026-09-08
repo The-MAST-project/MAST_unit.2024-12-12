@@ -72,6 +72,10 @@ REFERENCE_IMAGE = "reference.fits"
 #: waiting, not a tolerance of its own.
 ACQUISITION_TIMEOUT_SECONDS = 900.0
 
+#: How long to wait for the solver's background cleanup to put the solved frame beside the
+#: original. It is normally there within a second; this only avoids assuming it.
+SOLVED_FRAME_WAIT_SECONDS = 30.0
+
 #: How long to wait, at the end of a run, for a reference solve that is somehow still
 #: going. It has had the whole spiral already; this only stops a wedged solver from holding
 #: the run open forever.
@@ -150,6 +154,7 @@ class FluxMeteringSession:
         self._meter: FluxMeter | None = None
         self._solve_thread: threading.Thread | None = None
         self._reference_solution: dict[str, Any] | None = None
+        self._solver_name: str | None = None
         self.state = FluxMeteringStatus()
         self.params = FluxMeteringParams()
         self.steps: list[FluxMeteringStep] = []
@@ -301,7 +306,14 @@ class FluxMeteringSession:
             terminal = self._walk_spiral()
 
             self.state.phase = "correlating"
+            # Joined HERE, not in `_finish`: the correlation below converts arcsec to
+            # pixels with the SOLVED plate scale, so the answer has to be in before
+            # `_measure` runs, not merely before the document is written. It has had the
+            # whole spiral to finish and normally returned long ago.
+            self._await_reference_solve()
             self.state.result = self._measure(reference)
+            if self.state.result is not None:
+                self.do_record_sky_offset(self.state.result)
             self._finish(terminal)
         except Exception as ex:  # the thread owns the mount; it must land it safely
             logger.exception(f"{op}: flux metering failed")
@@ -390,7 +402,9 @@ class FluxMeteringSession:
             # The backend directly, not `Solver`: `Solver.solve()` takes an exposure of its
             # own, and the whole point here is to solve a frame that already exists.
             # mastrometry is what the design fixes for this procedure in any case.
-            result = MastrometryDotNet().solve(
+            solver = MastrometryDotNet()
+            self._solver_name = solver.name
+            result = solver.solve(
                 unit=self.unit,
                 phase="spec",
                 full_frame_input_image_path=self._frame_path(file_name),
@@ -421,9 +435,172 @@ class FluxMeteringSession:
             # detector: the backend bins 2x2 before solving. Recorded raw, and not halved
             # here, because the factor is the backend's business and a derived number that
             # silently assumes it would be wrong the day it changes.
-            "downsample_factor_note": "pixel_scale is per downsampled pixel (the solver bins 2x2)",
+            "downsample_factor_note": "pixel_scale and the CD matrix are per downsampled pixel",
             **solution,
         }
+
+    def _await_reference_solve(self) -> None:
+        """Wait out the reference solve, at most once. Bounded, so a wedged solver cannot
+        hold a run open -- it has already had the whole spiral."""
+        thread = self._solve_thread
+        if thread is None or not thread.is_alive():
+            return
+        logger.info("flux metering: waiting for the reference solve to finish")
+        thread.join(timeout=SOLVE_JOIN_TIMEOUT_SECONDS)
+        if thread.is_alive():
+            logger.warning("flux metering: the reference solve did not finish in time")
+            self._reference_solution = {"succeeded": False, "errors": ["the solve did not finish in time"]}
+
+    def _solved_pixel_scale_at_bin1(self) -> float | None:
+        """The plate scale the reference frame actually had, in arcsec per bin-1 pixel.
+
+        The solver reports its scale per DOWNSAMPLED pixel -- it bins the full frame before
+        handing it to astrometry.net -- so the factor is divided out here, using the
+        backend's own constant rather than a hardcoded 2 that would go quietly wrong the
+        day the backend changed it.
+        """
+        solution = self._reference_solution
+        if not solution or not solution.get("succeeded"):
+            return None
+        scale = solution.get("pixel_scale")
+        if not scale or scale <= 0:
+            return None
+        from solvers.mastrometry import DOWNSAMPLE_FACTOR
+
+        return scale / DOWNSAMPLE_FACTOR
+
+    def _solved_frame_name(self) -> str | None:
+        """The solver's own copy of the reference frame, which carries the WCS.
+
+        Named by the backend as `<frame>,solver=<name>.fits`, so it sits beside the original
+        rather than over it. Built from the solver's reported name rather than a literal, so
+        a different backend does not silently produce a path that never resolves.
+        """
+        if self._solver_name is None or self.state.reference_frame is None:
+            return None
+        return self.state.reference_frame.replace(".fits", f",solver={self._solver_name}.fits")
+
+    def do_record_sky_offset(self, result: FluxMeteringResult) -> None:
+        """Write the measurement into the solved frame's FITS header.
+
+        Into the SOLVED frame, never the original: that one is an input, and the whole
+        correlation depends on it being byte-identical to what the run exposed. The solved
+        copy is an artifact the backend produced, so annotating it costs nothing and puts
+        the answer where the WCS that produced it already lives -- open the file and both
+        the astrometry and what it was used for are in one header.
+
+        The backend hands that file to a background cleanup thread, so it may not be in
+        place the instant the solve returns; this waits briefly rather than assuming. Every
+        failure is swallowed: a header that could not be annotated is a lost convenience,
+        not a lost run, and the same numbers are in `result.json` regardless.
+        """
+        name = self._solved_frame_name()
+        if name is None or result.dx is None:
+            return
+
+        deadline = time.monotonic() + SOLVED_FRAME_WAIT_SECONDS
+        path = None
+        while time.monotonic() < deadline:
+            try:
+                path = self._frame_path(name)
+                break
+            except FluxMeteringError:
+                time.sleep(0.5)
+        if path is None:
+            logger.warning(f"flux metering: '{name}' never appeared; the sky offset is in result.json only")
+            return
+
+        try:
+            with MoveGuardian().protect(path), fits.open(path, mode="update") as hdul:
+                header = hdul[0].header  # type: ignore[union-attr]
+                header["FMDXPX"] = (round(result.dx, 4), "flux metering dx, detector pixels")
+                header["FMDYPX"] = (round(result.dy, 4), "flux metering dy, detector pixels")
+                if result.sky_dx_arcsec is not None and result.sky_dy_arcsec is not None:
+                    header["FMDXSKY"] = (round(result.sky_dx_arcsec, 4), "dRA*cos(dec), arcsec")
+                    header["FMDYSKY"] = (round(result.sky_dy_arcsec, 4), "dDec, arcsec")
+                if result.confidence is not None:
+                    header["FMCONF"] = (round(result.confidence, 4), "correlation confidence")
+                header["FMLOWCNF"] = (bool(result.low_confidence), "below MIN_CONFIDENCE: dx/dy not usable")
+                header["HISTORY"] = "MAST flux metering: FMDX/FMDY are the fibre offset measured against this frame"
+            logger.info(f"flux metering: recorded the sky offset in '{name}'")
+        except Exception as ex:  # noqa: BLE001 -- an un-annotated header must not cost a run
+            logger.warning(f"flux metering: could not annotate '{name}': {ex}")
+
+    def _sky_offset(self, dx: float, dy: float) -> tuple[float | None, float | None, str]:
+        """(dRA*cos(dec), dDec) in arcsec for a detector offset, and how it was obtained.
+
+        This is what makes `dx, dy` mean something outside this detector. The whole point of
+        the procedure is a fibre position, and a fibre position expressed in pixels is only
+        interpretable by someone holding the same camera at the same rotation.
+
+        Uses the WCS **CD matrix** rather than `rotation_angle_degs`. The rotation angle says
+        how the field is turned; it does not say whether it is MIRRORED, and assuming the
+        wrong parity flips the sign of dRA while leaving its magnitude correct -- an error
+        that looks entirely plausible and is exactly the class section 9.1 of the design
+        calls "the likeliest bug in the whole procedure". The CD matrix carries rotation,
+        scale and parity in one object and cannot be half-right.
+
+        The matrix is per DOWNSAMPLED pixel, because the backend bins before solving, so the
+        offset is scaled into that grid first. Near the reference pixel the standard
+        coordinates it produces are dRA*cos(dec) and dDec to well under a milliarcsecond at
+        these separations.
+        """
+        solution = self._reference_solution
+        if not solution or not solution.get("succeeded"):
+            return None, None, "the reference frame did not solve"
+        cd = [solution.get(k) for k in ("cd1_1", "cd1_2", "cd2_1", "cd2_2")]
+        if any(term is None for term in cd):
+            return None, None, "the solved frame carried no CD matrix"
+
+        from solvers.mastrometry import DOWNSAMPLE_FACTOR
+
+        cd1_1, cd1_2, cd2_1, cd2_2 = (float(term) for term in cd)  # type: ignore[arg-type]
+        dxd, dyd = dx / DOWNSAMPLE_FACTOR, dy / DOWNSAMPLE_FACTOR
+        return (
+            3600.0 * (cd1_1 * dxd + cd1_2 * dyd),
+            3600.0 * (cd2_1 * dxd + cd2_2 * dyd),
+            "the solved frame's WCS CD matrix (rotation and parity together)",
+        )
+
+    def _effective_dec(self) -> tuple[float | None, str]:
+        """(declination, where it came from) for the cos(dec) factor.
+
+        The SOLVED declination wins, for the same reason the solved plate scale does: it is
+        measured from this run's own reference frame. `_dec_degrees()` reads
+        `mount.status().dec_j2000_degs`, which is correct only while the run is happening --
+        it is wherever the telescope is pointing when asked, so a re-correlation an hour
+        later gets an unrelated part of the sky. The solve pins it to the frame.
+
+        The mount is the fallback, and which was used is recorded beside the answer.
+        """
+        solution = self._reference_solution
+        if solution and solution.get("succeeded") and solution.get("dec_degs") is not None:
+            return float(solution["dec_degs"]), "solved from the reference frame"
+        mount_dec = self._dec_degrees()
+        if mount_dec is not None:
+            return mount_dec, "the mount's pointing (the reference did not solve)"
+        return None, "neither a solve nor a mount reading"
+
+    def _effective_pixel_scale(self) -> tuple[float | None, str]:
+        """(scale, where it came from) for the arcsec->pixel conversion.
+
+        The SOLVED scale wins. It is measured from this run's own reference frame, where
+        the configured one is a database value that has already been wrong once: MAST_unit#138
+        records `pixel_scale_at_bin1` sitting at 0.0, which made `commanded_offset_px` -- the
+        only check on whether a correlation means anything -- silently absent.
+
+        Configuration is the fallback, not the default, and which was used is recorded
+        beside the answer. The two have been measured to agree to about 0.15% (solved
+        0.2620 against configured 0.2616 on 2026-09-02), so this changes no conclusion
+        drawn so far; it removes the dependence on a value nothing verifies.
+        """
+        solved = self._solved_pixel_scale_at_bin1()
+        if solved is not None:
+            return solved, "solved from the reference frame"
+        configured = self._pixel_scale()
+        if configured is not None:
+            return configured, "the configured pixel_scale_at_bin1 (the reference did not solve)"
+        return None, "neither a solve nor a configured plate scale"
 
     def _acquire(self) -> bool:
         """Put the star on the ASSUMED fibre position, and wait for it to get there.
@@ -812,6 +989,7 @@ class FluxMeteringSession:
             usable_fraction=self.params.usable_fraction,
             expect_no_motion=expect_no_motion,
         )
+        sky_dx, sky_dy, sky_source = self._sky_offset(shift.dx, shift.dy)
         return FluxMeteringResult(
             dx=shift.dx,
             dy=shift.dy,
@@ -836,6 +1014,10 @@ class FluxMeteringSession:
             argmax_saturated=best.saturated,
             saturated_frame_count=self.state.saturated_frames,
             commanded_offset_px=self._commanded_offset_px(best.offset_arcsec),
+            commanded_offset_source=self._effective_pixel_scale()[1],
+            sky_dx_arcsec=sky_dx,
+            sky_dy_arcsec=sky_dy,
+            sky_offset_source=sky_source,
         )
 
     def _commanded_offset_px(self, offset_arcsec) -> tuple[float, float] | None:
@@ -851,10 +1033,10 @@ class FluxMeteringSession:
         """
         if offset_arcsec is None:
             return None
-        scale = self._pixel_scale()
+        scale, _source = self._effective_pixel_scale()
         if not scale or scale <= 0.0:
             return None
-        dec = self._dec_degrees()
+        dec, _dec_source = self._effective_dec()
         # cos(dec) on the RA axis for the same reason the radius cap carries it: the step is
         # RA COORDINATE arcsec, and the sky moves by that times cos(dec).
         ra_scale = math.cos(math.radians(dec)) if dec is not None else 1.0
@@ -1076,15 +1258,9 @@ class FluxMeteringSession:
         self.state.terminal_state = terminal
         self.state.ended_at = isoformat_utc()
 
-        # The solve was started when the reference was taken and has had the whole spiral to
-        # finish. Joined -- with a bound, so a wedged solver cannot hold a run open -- because
-        # its answer belongs in the document being built two lines below.
-        if self._solve_thread is not None and self._solve_thread.is_alive():
-            logger.info("flux metering: waiting for the reference solve to finish")
-            self._solve_thread.join(timeout=SOLVE_JOIN_TIMEOUT_SECONDS)
-            if self._solve_thread.is_alive():
-                logger.warning("flux metering: the reference solve did not finish; recording it as unfinished")
-                self._reference_solution = {"succeeded": False, "errors": ["the solve did not finish in time"]}
+        # Normally already joined, before the correlation. Repeated here because `_finish`
+        # also runs on the failure paths, which never reach that point.
+        self._await_reference_solve()
 
         # The JSON is the status model plus what only the run itself knows: what was asked
         # for, and which camera answered. One document, so a reader is never left joining
@@ -1113,7 +1289,17 @@ class FluxMeteringSession:
             # commanded offset at all for runs that predate them -- rather than a number
             # derived from an unrelated pointing.
             "pixel_scale_at_bin1": self._pixel_scale(),
-            "dec_degrees": self._dec_degrees(),
+            # The scale actually used for the arcsec->pixel conversion, and where it came
+            # from. `spiral_correlate_steps` reads this so a re-correlation converts the way
+            # the run did, rather than picking its own source years later.
+            "pixel_scale_at_bin1_used": self._effective_pixel_scale()[0],
+            "pixel_scale_source": self._effective_pixel_scale()[1],
+            "pixel_scale_at_bin1_solved": self._solved_pixel_scale_at_bin1(),
+            # The declination the conversion used, and its source. NOT `_pointing()`, which
+            # is per-frame telemetry: this is the one number the arcsec->pixel maths needs.
+            "dec_degrees": self._effective_dec()[0],
+            "dec_source": self._effective_dec()[1],
+            "dec_degrees_mount": self._dec_degrees(),
             # The reference frame's own WCS: where the field actually was, at what scale and
             # rotation. `pixel_scale` here is MEASURED, so it can be set against the
             # configured `pixel_scale_at_bin1` above that `commanded_offset_px` relies on.

@@ -30,6 +30,15 @@ if TYPE_CHECKING:
     from unit import Unit  # type: ignore[import-untyped]
 
 
+#: Simulated binning applied to the full frame before solving, to speed astrometry.net up.
+#:
+#: Module level because it is not private arithmetic: a solved `pixel_scale` is per
+#: DOWNSAMPLED pixel, so anyone converting it back to a detector scale must divide by
+#: exactly this. A caller that hardcoded 2 would be silently wrong the day it changed --
+#: and the flux-metering run now derives its plate scale from a solve.
+DOWNSAMPLE_FACTOR: int = 2
+
+
 class MastrometryDotNet(SolverInterface):
     """
     A PlateSolverInterface implementation that uses the astrometry.net solver
@@ -155,7 +164,7 @@ class MastrometryDotNet(SolverInterface):
             #
             refpix: tuple[float, float] | None = None  # (--crpix-x, --crpix-y), fractional; see pixel_grid.py
 
-            downsample_factor: int = 2  # simulated binning factor (2x2), to speed up solving by reducing the image size
+            downsample_factor: int = DOWNSAMPLE_FACTOR
 
             imager_roi: ImagerRoi | None = None
 
@@ -410,6 +419,17 @@ class MastrometryDotNet(SolverInterface):
                     ret.solution.dec_rads = float(Angle(ret.solution.dec_degs, unit="deg").radian)  # type: ignore[assignment]
                 else:
                     logger.warning(f"no CRVAL1/CRVAL2 in solved FITS header of '{new_fits_path}'")
+
+                # The CD matrix, from the same header. Carried so a caller can convert a
+                # pixel offset into a sky offset without assuming a parity: rotation alone
+                # does not say whether the field is mirrored, and guessing wrong flips RA.
+                if all(k in header for k in ("CD1_1", "CD1_2", "CD2_1", "CD2_2")):
+                    ret.solution.cd1_1 = float(header["CD1_1"])
+                    ret.solution.cd1_2 = float(header["CD1_2"])
+                    ret.solution.cd2_1 = float(header["CD2_1"])
+                    ret.solution.cd2_2 = float(header["CD2_2"])
+                else:
+                    logger.warning(f"no CD matrix in solved FITS header of '{new_fits_path}'")
         else:
             ret = SolvingResult(
                 succeeded=False,

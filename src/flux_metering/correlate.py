@@ -215,7 +215,11 @@ def _commanded_difference(
     shift should equal. Reporting one step's own offset would look like a check and be one
     only when the other step was the origin.
     """
-    scale = document.get("pixel_scale_at_bin1")
+    # The scale the RUN used, which since 2026-09-07 is the one solved from its own
+    # reference frame. Falling back to `pixel_scale_at_bin1` for runs written before that
+    # key existed -- those recorded only the configured value, and it is what they used.
+    scale = document.get("pixel_scale_at_bin1_used") or document.get("pixel_scale_at_bin1")
+    scale_source = document.get("pixel_scale_source") or "the configured pixel_scale_at_bin1"
     dec = document.get("dec_degrees")
     if not scale or scale <= 0:
         return None, (
@@ -228,9 +232,9 @@ def _commanded_difference(
     # cos(dec) on the RA axis only, as in the session: the step is RA COORDINATE arcsec and
     # the sky moves by that times cos(dec). The run's declination, never the mount's now.
     ra_scale = math.cos(math.radians(dec)) if dec is not None else 1.0
-    source = "the run's recorded plate scale and declination"
+    source = f"{scale_source}, and the run's recorded declination"
     if dec is None:
-        source = "the run's recorded plate scale; it recorded no declination, so cos(dec) was taken as 1"
+        source = f"{scale_source}; the run recorded no declination, so cos(dec) was taken as 1"
     return (
         ((offset_b[0] - offset_a[0]) * ra_scale / scale, (offset_b[1] - offset_a[1]) / scale),
         source,
@@ -301,7 +305,7 @@ def correlate_steps(date: str, seq: str, step_a: int, step_b: int) -> SpiralStep
         fiber_x=int(center_x),
         fiber_y=int(center_y),
         fiber_source=result.get("fiber_source"),
-        pixel_scale_at_bin1=document.get("pixel_scale_at_bin1"),
+        pixel_scale_at_bin1=document.get("pixel_scale_at_bin1_used") or document.get("pixel_scale_at_bin1"),
         dec_degrees=document.get("dec_degrees"),
     )
 
