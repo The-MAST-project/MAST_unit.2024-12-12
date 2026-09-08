@@ -642,7 +642,7 @@ class Unit(Component):
             except Exception:
                 logger.exception("websocket.send error")
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=UnitActivities.Exposing)
     def expose(
         self,
         ra_j2000_hours: Annotated[
@@ -723,6 +723,12 @@ class Unit(Component):
         if self.imager is None:
             return CanonicalResponse(errors=["imager is not initialized"])
 
+        # Ahead of the slew: a second call must not move the mount out from under a run in
+        # flight, and one flag bit cannot represent two runs -- the first to finish would
+        # clear it while the second is still exposing.
+        if self.is_active(UnitActivities.Exposing):
+            return CanonicalResponse(errors=["expose: an exposure run is already in flight"])
+
         # Both or neither. A coordinate on its own used to be accepted and then quietly
         # dropped: the slew below requires BOTH to be floats, so supplying only RA meant
         # no slew, no error, and a caller believing it had pointed somewhere it had not.
@@ -754,14 +760,8 @@ class Unit(Component):
             except ValueError as e:
                 return CanonicalResponse(errors=[f"expose: bad dec_j2000_degs '{dec_j2000_degs}' -- {e}"])
 
-        assert self.mount is not None
-        if (ra_j2000_hours is not None and isinstance(ra_j2000_hours, float)) and (
-            dec_j2000_degs is not None and isinstance(dec_j2000_degs, float)
-        ):
-            logger.info(f"slewing mount to ra={ra_j2000_hours}, dec={dec_j2000_degs}")
-            self.mount.goto_ra_dec_j2000(ra=ra_j2000_hours, dec=dec_j2000_degs)
-            self.mount.wait_until_settled(SettleMode.SLEW)
-
+        # Every parameter is checked before the mount is commanded: these are pure, and a
+        # rejected offset list must not leave the telescope somewhere new.
         try:
             ra_offsets = resolve_offsets(ra_offsets, repeats, "ra_offsets")
             dec_offsets = resolve_offsets(dec_offsets, repeats, "dec_offsets")
@@ -775,6 +775,19 @@ class Unit(Component):
         except ValueError as e:
             return CanonicalResponse(errors=[f"expose: {e}"])
 
+        assert self.mount is not None
+        if (ra_j2000_hours is not None and isinstance(ra_j2000_hours, float)) and (
+            dec_j2000_degs is not None and isinstance(dec_j2000_degs, float)
+        ):
+            logger.info(f"slewing mount to ra={ra_j2000_hours}, dec={dec_j2000_degs}")
+            self.mount.goto_ra_dec_j2000(ra=ra_j2000_hours, dec=dec_j2000_degs)
+            self.mount.wait_until_settled(SettleMode.SLEW)
+
+        # Raised here, not in the thread body: Thread.start() returns once the thread has
+        # begun bootstrapping, not once the target runs, so a caller that polls the instant
+        # it sees this Ok would find the unit idle and read the run as already over.
+        # do_expose's outermost `finally` is what ends it.
+        self.start_activity(UnitActivities.Exposing, details=[f"{repeats} x {exposure_seconds}s"])
         Thread(
             name="expose-thread",
             target=self.do_expose,
@@ -817,34 +830,40 @@ class Unit(Component):
         op = function_name()
         seconds = exposure_seconds
 
-        self.mount.start_tracking()
-        exposure_series = self.imager.start_exposure_series(purpose="unit.do_exposure")
         try:
-            self._expose_repeatedly(
-                repeats,
-                seconds,
-                subfolder,
-                gain,
-                binning,
-                fiber_x,
-                fiber_y,
-                width,
-                height,
-                ra_offsets,
-                dec_offsets,
-                seconds_between_exposures,
-            )
-        except Exception:
-            # This runs in `expose-thread`, where an exception would otherwise vanish
-            # entirely -- the endpoint has already returned "ok" to the caller. Logging
-            # is the only trace there is; the finally below is what stops the mount
-            # tracking forever and the exposure series dangling.
-            logger.exception(f"{op}: exposure run failed")
-            return CanonicalResponse(errors=[f"{op}: exposure run failed, see the log"])
+            self.mount.start_tracking()
+            exposure_series = self.imager.start_exposure_series(purpose="unit.do_exposure")
+            try:
+                self._expose_repeatedly(
+                    repeats,
+                    seconds,
+                    subfolder,
+                    gain,
+                    binning,
+                    fiber_x,
+                    fiber_y,
+                    width,
+                    height,
+                    ra_offsets,
+                    dec_offsets,
+                    seconds_between_exposures,
+                )
+            except Exception:
+                # This runs in `expose-thread`, where an exception would otherwise vanish
+                # entirely -- the endpoint has already returned "ok" to the caller. Logging
+                # is the only trace there is; the finally below is what stops the mount
+                # tracking forever and the exposure series dangling.
+                logger.exception(f"{op}: exposure run failed")
+                return CanonicalResponse(errors=[f"{op}: exposure run failed, see the log"])
+            finally:
+                self.imager.end_exposure_series(exposure_series)
+                self.mount.stop_tracking()
+            return CanonicalResponse_Ok
         finally:
-            self.imager.end_exposure_series(exposure_series)
-            self.mount.stop_tracking()
-        return CanonicalResponse_Ok
+            # Outside the inner try, because start_tracking() and start_exposure_series()
+            # are outside it too: either can raise, and the flag `expose` raised would then
+            # be stranded set for the life of the process, with the run visibly never over.
+            self.end_activity(UnitActivities.Exposing)
 
     def _expose_repeatedly(
         self,

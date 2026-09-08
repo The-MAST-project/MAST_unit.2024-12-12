@@ -2,6 +2,52 @@
 
 ---
 
+## [2026-09-08] `/expose` refuses a second run, because one flag bit cannot describe two
+
+**Why:** #218. `PUT /unit/expose` dispatched `expose-thread` and answered `Ok`, which meant
+only that a thread had been started -- whether the run was exposing, finished, or had died in
+`mount.start_tracking()` was not observable from the API at all. The answer is the completion
+signal every operation that outlives its response is supposed to publish (#43, invariant 3):
+`UnitActivities.Exposing`, raised by the endpoint and cleared by the thread.
+
+That flag is one bit, and one bit cannot represent two concurrent runs. The first to finish
+would clear it while the second was still exposing, publishing a completion that had not
+happened -- and a false signal is worse than no signal, because a client waits on it with
+nothing looking wrong. So the flag and the refusal are one change rather than two.
+
+**What was decided:** a second `PUT /unit/expose` arriving while a run is in flight is
+**refused**, not queued, and refused **ahead of the slew**, so it cannot point the telescope
+somewhere else while the run already going is exposing. Queuing was rejected because `expose`
+is an operator verb driven by hand: a request silently deferred by an unknown number of
+minutes is harder to act on than one that comes straight back saying no.
+
+Two smaller choices belong to the same edit. The flag is raised in the **endpoint**, not in
+`do_expose`, because `Thread.start()` returns once the thread has begun bootstrapping and not
+once the target body runs -- raising it in the thread leaves a window where the caller holds
+`Ok` and the unit reads idle. And it is cleared in `do_expose`'s **outermost** `finally`,
+outside the one that closes the exposure series, because `mount.start_tracking()` and
+`imager.start_exposure_series()` sit outside that try and either can raise; a flag stranded
+there would describe a run that never ends, for the life of the process.
+
+The ROI and offset parameters are now validated **before** the slew. They are pure, they were
+checked after it, and a rejected offset list therefore left the telescope somewhere new and
+returned an error about a parameter. Validating first also leaves the flag with exactly one
+start site and one end site, which is what the static check in
+`tests/contract/test_completion_flags.py` can see all of.
+
+**Implications:** `endpoint_execute_assignment` refuses on `not self.is_idle()`, so a
+hand-driven exposure now blocks a controller assignment on the same camera. That is the right
+reading of "busy" and was not the case before. #212 asked for this same in-flight state for
+its own reasons and can now build on it -- `abort` clearing `Exposing`, and the repeat loop
+and its `time.sleep` honoring it, are that issue's work and are deliberately not here.
+
+`.github/workflows/ci.yml` carries a **temporary pin** to `MAST_common`'s branch of the same
+name for the life of this pair, and is reverted to `master` before merge. Without it the
+suite dies at collection on `UnitActivities.Exposing` and reports nothing else; #208 is the
+standing fix, and #178 R3 records the previous time this was paid by hand.
+
+---
+
 ## [2026-09-06] Live configuration is a per-attribute property, not a per-section one
 
 **Why:** #214. `dece718` converted each component's `conf` to a property over `unit_conf` and
