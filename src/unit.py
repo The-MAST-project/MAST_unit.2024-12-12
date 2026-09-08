@@ -6,6 +6,7 @@ import os
 import socket
 import threading
 import time
+from collections.abc import Callable
 from enum import Enum
 from itertools import chain
 from pathlib import Path
@@ -371,6 +372,28 @@ class Unit(Component):
         return serialize_ip_addresses(self.status())
 
     def status(self) -> FullUnitStatus:
+        """The unit's own state plus every component's, with one component's failure contained.
+
+        `status` is what a caller reaches for when something is **already** wrong, so a sick
+        component is the moment the rest of the picture matters most. Reading the nine live
+        values inline meant any one of them raising cost the caller the whole response -- no
+        mount, no covers, no activity flags -- which is how a crossed PHD2 reply took the unit's
+        entire status down on 2026-09-08 while every other component answered normally (#222).
+
+        Same shape as `abort`, and for the same reason: attempt each independently, collect
+        what failed, and report it rather than swallow it.
+        """
+        op = function_name()
+        failures: list[str] = []
+
+        def report(what: str, read: Callable, default: Any = None) -> Any:
+            try:
+                return read()
+            except Exception as ex:  # noqa: BLE001 -- one sick component must not cost the rest
+                logger.exception(f"{op}: reading {what} failed")
+                failures.append(f"{what}: unavailable ({ex})")
+                return default
+
         autofocus = (
             {
                 "success": self.autofocus_result.success,
@@ -405,17 +428,26 @@ class Unit(Component):
             **self.component_status().model_dump(),
             id=id(self),
             powered=True,
-            guiding=self.guider.is_guiding if self.guider else False,
-            autofocusing=self.autofocuser.is_autofocusing if self.autofocuser else False,
-            power_switch=self.power_switch.status() if self.power_switch else None,
-            mount=self.mount.status() if self.mount else None,
-            imager=self.imager.status() if self.imager else None,  # type: ignore
-            covers=self.covers.status() if self.covers else None,
-            focuser=self.focuser.status() if self.focuser else None,
-            stage=self.stage.status() if self.stage else None,
-            guider=self.guider.status() if self.guider else None,  # type: ignore
+            # `is_guiding` reaches PHD2 over the RPC and `is_autofocusing` reads the unit's
+            # connection state, so these two are live reads like the seven below them, not
+            # attribute lookups.
+            guiding=report("guider.is_guiding", lambda: self.guider.is_guiding, default=False) if self.guider else False,
+            autofocusing=(
+                report("autofocuser.is_autofocusing", lambda: self.autofocuser.is_autofocusing, default=False)
+                if self.autofocuser
+                else False
+            ),
+            power_switch=report("power_switch.status", self.power_switch.status) if self.power_switch else None,
+            mount=report("mount.status", self.mount.status) if self.mount else None,
+            imager=report("imager.status", self.imager.status) if self.imager else None,  # type: ignore
+            covers=report("covers.status", self.covers.status) if self.covers else None,
+            focuser=report("focuser.status", self.focuser.status) if self.focuser else None,
+            stage=report("stage.status", self.stage.status) if self.stage else None,
+            guider=report("guider.status", self.guider.status) if self.guider else None,  # type: ignore
             # solver= self.solver.status(),
-            errors=self.errors,
+            # A new list: `self.errors` is the unit's own standing errors, and a read that
+            # failed on this request must not be appended to it.
+            errors=self.errors + failures,
             autofocus=autofocus,
             corrections=all_corrections,
             date=time_stamp(),
