@@ -58,7 +58,11 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: The-MAST-project/MAST_common
-          ref: master
+          # TEMPORARY PIN -- revert to `master` before this branch merges.
+          # #218 needs UnitActivities.Exposing, which lives on MAST_common's branch of the
+          # same name; against `master` the suite dies at collection with AttributeError
+          # and reports nothing else. #208 is the standing fix.
+          ref: expose-completion-flag
           path: common
 
       - uses: actions/setup-python@v7
