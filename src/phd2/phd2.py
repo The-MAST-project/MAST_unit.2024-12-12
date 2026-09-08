@@ -1425,8 +1425,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         return CanonicalResponse_Ok
 
     def endpoint_abort(self) -> CanonicalResponse:
-        self.stop_capture()
-        return CanonicalResponse_Ok
+        # Through abort_exposure, which is what ends ImagerActivities.Exposing and releases a
+        # parked waiter. A bare stop_capture() did neither, so the route Unit.abort actually
+        # takes -- Imager.abort -> endpoint_abort -- left the imager reporting Exposing.
+        return self.abort_exposure()
 
     @property
     def connected(self) -> bool:
@@ -1529,6 +1531,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
         logger.info(f"{function_name()}: starting {settings.seconds} seconds exposure")
         self.image_was_saved = False
+        # An abort sets this to release a waiter. Cleared here so a set left over from the
+        # previous frame cannot end this one's wait before the image exists.
+        self.image_saved_event.clear()
         if self.parent is not None:
             self.parent.start_activity(ImagerActivities.Exposing, details=[f"{settings.seconds} seconds"])
             self.parent.start_activity(
@@ -1578,9 +1583,18 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
     def abort_exposure(self) -> CanonicalResponse:
         logger.info(f"{function_name()}: aborting exposure")
-        self.call("stop_capture")
-        if self.parent is not None:
-            self.parent.end_activity(ImagerActivities.Exposing)
+        try:
+            self.call("stop_capture")
+        finally:
+            if self.parent is not None:
+                self.parent.end_activity(ImagerActivities.Exposing)
+                self.parent.end_activity(ImagerActivities.Saving)
+            # PHD2 does emit SingleFrameComplete(success=False) when a single-frame capture
+            # is stopped -- measured on mast01, 2026-09-08 -- and that event is the only
+            # thing that ever sets this. So the release below is what a stop that races the
+            # capture, or an RPC that never answers, depends on: the wait is unbounded, and
+            # a caller left in it never returns and never runs its cleanup (MAST_unit#212).
+            self.image_saved_event.set()
         return CanonicalResponse_Ok
 
     def wait_for_image_ready(self):

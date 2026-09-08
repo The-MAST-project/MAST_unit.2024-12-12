@@ -407,6 +407,11 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
             return CanonicalResponse(errors=["already exposing"])
 
         self.image_was_saved = False
+        # An abort sets both events, and only the one a caller was parked on gets consumed.
+        # A new exposure must not start with the other still raised, or its wait returns at
+        # once on a signal from the previous frame.
+        self.image_saved_event.clear()
+        self.image_ready_event.clear()
 
         try:
             # enforce settings
@@ -454,6 +459,15 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
             if parent_imager:
                 parent_imager.end_activity(ImagerActivities.Exposing)
+
+            # This is where an exposure run actually parks -- `start_exposure` waits for the
+            # save inline -- so `abort_exposure` sets both events to release it. Nothing was
+            # read or saved when that happens, so the frame is reported as failed rather
+            # than returned as though it had been taken.
+            if settings.save and not self.image_was_saved:
+                self.errors.append(f"{op}: aborted before the image was saved")
+            elif not settings.save and not self.image_was_read:
+                self.errors.append(f"{op}: aborted before the image was read")
         else:
             if response.errors:
                 self.errors.extend(response.errors)
@@ -480,6 +494,12 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
                 self.errors.append(f"failed to abort (failure='{response.failure}')")
         if parent_imager:
             parent_imager.end_activity(ImagerActivities.Exposing)
+        # No readout is coming, so nothing else will ever set these. A caller parked on
+        # either -- in `start_exposure` or in the two waiters below -- would otherwise never
+        # return, and its cleanup never run. Both waiters re-check what they were waiting
+        # for, so being woken here is not mistaken for an image.
+        self.image_ready_event.set()
+        self.image_saved_event.set()
         return CanonicalResponse(errors=self.errors) if self.errors else CanonicalResponse_Ok
 
     def stop_exposure(self):
@@ -918,8 +938,14 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
 
         if not self.image_was_saved:
             self.image_saved_event.wait()
-            logger.info(f"{op}: got image_saved_event")
             self.image_saved_event.clear()
+            # The check above runs before the wait, so it cannot release a caller already
+            # inside it -- an abort does, by setting the event. `image_was_saved` is what
+            # tells the two apart.
+            if not self.image_was_saved:
+                logger.info(f"{op}: released with no image (aborted)")
+                return
+            logger.info(f"{op}: got image_saved_event")
 
     def wait_for_image_ready(self):
         op = function_name()
@@ -930,8 +956,11 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         if not self.image_was_read:
             # logger.info(f"{op}: image was not read, waiting for image_ready_event ...")
             self.image_ready_event.wait()
-            logger.info(f"{op}: image was not read, got image_ready_event")
             self.image_ready_event.clear()
+            if not self.image_was_read:
+                logger.info(f"{op}: released with no image (aborted)")
+                return
+            logger.info(f"{op}: image was not read, got image_ready_event")
 
     @property
     def can_send_image_ready_event(self) -> bool:

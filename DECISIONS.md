@@ -2,6 +2,140 @@
 
 ---
 
+## [2026-09-08] Aborting an exposure run: a private event, not the activity flag
+
+**Why:** #212, reported from an on-sky run -- `/abort` during an exposure run raised and left
+the service unusable. The chain is: `abort_exposure()` ends `ImagerActivities.Exposing` but
+never sets `image_saved_event`, so the run thread is never released; `do_expose`'s `finally`
+never runs; the exposure series is never closed and the mount never stops tracking; and the
+next `/expose` overwrites `current_exposure_series`, so the eventual `end_exposure_series`
+raises `ValueError`.
+
+**Where the thread parks depends on the backend, and the issue names only one of the two
+places.** With the ASCOM backend it is *not* `wait_for_image_saved()`: `start_exposure` waits
+for the save **inline**, so by the time `_expose_repeatedly` reaches `wait_for_image_saved()`
+the image is long since saved and that call returns at once. With the PHD2 and ZWO backends
+`start_exposure` returns immediately and the wait is where the issue says. A fix aimed at one
+of the two would have looked right and changed nothing on half the fleet -- and mast01, where
+this was measured, runs the PHD2 backend.
+
+**What was decided.** Two mechanisms, each owned by the component it belongs to, and
+deliberately not one shared one:
+
+- **The imager releases its own waiters -- all three of them.** `abort_exposure()` sets
+  `image_saved_event` and `image_ready_event` after ending the activity, because no readout
+  is coming to set them, and `start_exposure` clears them so a release left unconsumed by one
+  frame cannot end the next frame's wait early. On ASCOM the waits also re-check what they
+  were waiting for on waking (the existing checks run *before* the wait, which is why they
+  cannot release a caller already inside one) and `start_exposure` reports the frame as failed
+  rather than returning as though an image had been taken. This is correct however the abort
+  arrived, and needs no knowledge of the unit.
+
+  **The requirement now lives on `ImagerInterface`** (`common/interfaces/imager.py`), because
+  all three implementations had the identical hole -- stop the sensor, return, leave the caller
+  parked on an event nothing will ever set. It was never an ASCOM quirk; it was an unstated
+  half of what `abort_exposure` means, and a fourth backend would have rediscovered it.
+  `PHD2Connector.endpoint_abort` additionally called `stop_capture()` and nothing else, so the
+  route `Unit.abort` actually takes left the imager reporting `Exposing`; it goes through
+  `abort_exposure` now.
+- **The unit stops its own loop**, through a private `threading.Event`,
+  `Unit._expose_cancelled`, read at three sites in `_expose_repeatedly`: before each frame,
+  after the wait returns and before the frame is moved to the shared store, and as the
+  timeout of the cadence hold, which replaces a bare `time.sleep`.
+
+**The event is not the activity flag, and that is the point.** The house protocol -- stated
+in `Unit.abort` and followed by `stop_acquisition_and_guiding` and `stop_autofocus` -- is that
+a stop verb clears the activity flag and the long body polls it. Following that here would
+have reopened the bug being fixed: clearing `UnitActivities.Exposing` opens `expose`'s
+one-run-at-a-time guard **while the old thread is still between its wait and its `finally`**,
+so a second run arriving in that window overwrites the series the first is about to close and
+hands it the same `ValueError`. Keeping the flag up until `do_expose` has really unwound is
+what makes the completion signal mean what #218 published it to mean.
+
+The cost is a second piece of state, and it is held to being **private and small on purpose**:
+no enum member, nothing in `status`, nothing on the wire, three read sites all in one function.
+It is a stand-in for cancellation the language should provide -- #81's `asyncio.to_thread`
+dispatch would replace it with real task cancellation, and a general per-operation handle would
+subsume it -- so it is written to be lifted out whole rather than grown into a mode.
+
+**`seconds_between_exposures` is now `cadence_seconds`.** The number was always start-to-start
+cadence while the name promised a gap between exposures, which is what produced the reported
+`sleeping 54 seconds` after a 6-second exposure at 60. The behavior is the one operators
+expect and is kept: an exposure that overruns the period does not shorten the next or skip it,
+the run simply falls behind, and that is now stated on the endpoint and logged when it happens.
+Only the name and the documentation change. `(end - now).seconds` -- the seconds-of-day
+component of a timedelta, which drops the sub-second remainder -- becomes `.total_seconds()`.
+
+The old name survives as a **deprecated parameter that is refused**, because FastAPI ignores a
+query parameter it does not recognise: a stale Swagger URL or a saved call would otherwise be
+answered `Ok`, run with no pacing at all, and say nothing about why. A rename on a
+hand-driven endpoint has to be loud in both places, not just in the schema. It is marked
+`deprecated=True` so Swagger strikes it through, and carries an audit date -- **2026-11-08** --
+after which the parameter and its refusal are deleted if nothing is still sending it.
+
+**Implications:** `/abort` ends an exposure run at the next frame boundary instead of wedging
+it, and the run's frames stop being moved after the point of cancellation. One item of #212
+needed nothing: aborting every component independently already landed on `main` with the
+`attempt()` helper.
+
+Measured on mast01, 2026-09-08, on the PHD2 backend: `/abort` 9 s into a 20 s frame produced
+`SingleFrameComplete(success=False)` 5.7 s later, then `cancelled during exposure #0 (of 3);
+no frame to move`, the series closed, `stopped tracking (from do_expose)`, and the flag ended
+at 17.12 s. No frame was written for the cancelled exposure, an `/expose` issued straight
+afterwards was accepted and completed, and no `Cannot end exposure series` appeared. So PHD2
+*does* emit the completion event for a stopped single-frame capture -- which makes the release
+above insurance rather than the only thing standing between an abort and a wedged service. It
+is kept because the wait is unbounded and that event is the only thing that ever sets it: a
+stop that races the capture, or an RPC that never answers (#220), still parks the caller.
+
+---
+
+## [2026-09-08] `/expose` refuses a second run, because one flag bit cannot describe two
+
+**Why:** #218. `PUT /unit/expose` dispatched `expose-thread` and answered `Ok`, which meant
+only that a thread had been started -- whether the run was exposing, finished, or had died in
+`mount.start_tracking()` was not observable from the API at all. The answer is the completion
+signal every operation that outlives its response is supposed to publish (#43, invariant 3):
+`UnitActivities.Exposing`, raised by the endpoint and cleared by the thread.
+
+That flag is one bit, and one bit cannot represent two concurrent runs. The first to finish
+would clear it while the second was still exposing, publishing a completion that had not
+happened -- and a false signal is worse than no signal, because a client waits on it with
+nothing looking wrong. So the flag and the refusal are one change rather than two.
+
+**What was decided:** a second `PUT /unit/expose` arriving while a run is in flight is
+**refused**, not queued, and refused **ahead of the slew**, so it cannot point the telescope
+somewhere else while the run already going is exposing. Queuing was rejected because `expose`
+is an operator verb driven by hand: a request silently deferred by an unknown number of
+minutes is harder to act on than one that comes straight back saying no.
+
+Two smaller choices belong to the same edit. The flag is raised in the **endpoint**, not in
+`do_expose`, because `Thread.start()` returns once the thread has begun bootstrapping and not
+once the target body runs -- raising it in the thread leaves a window where the caller holds
+`Ok` and the unit reads idle. And it is cleared in `do_expose`'s **outermost** `finally`,
+outside the one that closes the exposure series, because `mount.start_tracking()` and
+`imager.start_exposure_series()` sit outside that try and either can raise; a flag stranded
+there would describe a run that never ends, for the life of the process.
+
+The ROI and offset parameters are now validated **before** the slew. They are pure, they were
+checked after it, and a rejected offset list therefore left the telescope somewhere new and
+returned an error about a parameter. Validating first also leaves the flag with exactly one
+start site and one end site, which is what the static check in
+`tests/contract/test_completion_flags.py` can see all of.
+
+**Implications:** `endpoint_execute_assignment` refuses on `not self.is_idle()`, so a
+hand-driven exposure now blocks a controller assignment on the same camera. That is the right
+reading of "busy" and was not the case before. #212 asked for this same in-flight state for
+its own reasons and can now build on it -- `abort` clearing `Exposing`, and the repeat loop
+and its `time.sleep` honoring it, are that issue's work and are deliberately not here.
+
+`.github/workflows/ci.yml` carries a **temporary pin** to `MAST_common`'s branch of the same
+name for the life of this pair, and is reverted to `master` before merge. Without it the
+suite dies at collection on `UnitActivities.Exposing` and reports nothing else; #208 is the
+standing fix, and #178 R3 records the previous time this was paid by hand.
+
+---
+
 ## [2026-09-06] Live configuration is a per-attribute property, not a per-section one
 
 **Why:** #214. `dece718` converted each component's `conf` to a property over `unit_conf` and
