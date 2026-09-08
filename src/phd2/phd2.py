@@ -1,6 +1,7 @@
 import copy
 import json
 import math
+import queue
 import selectors
 import socket
 import threading
@@ -81,6 +82,19 @@ class PHD2GuideStats:
         self.rms_dec = 0.0
         self.peak_ra = 0.0
         self.peak_dec = 0.0
+
+
+#: How long `call` waits for a reply. Not an estimate of how long PHD2 takes to do the work --
+#: these RPCs answer as soon as PHD2 has accepted the request, and progress arrives on the
+#: event stream -- but a bound where there was none, so a reply that never comes raises instead
+#: of parking a request thread. FastAPI serves each request on its own worker thread, so a
+#: parked caller costs one of those permanently.
+DEFAULT_RPC_TIMEOUT = 30.0
+
+#: `set_connected` drives the camera and mount connect, the one call here that does real work
+#: before answering. Generous on purpose: this bound exists to catch a lost reply, not a slow
+#: camera.
+CONNECT_RPC_TIMEOUT = 120.0
 
 
 class PHD2ConnectorError(Exception):
@@ -308,8 +322,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self._terminate = False
         self.worker = None
         self.lock = threading.Lock()
-        self.cond = threading.Condition()
-        self.response = None
+        # Guards the request counter and the pending map together, so an id cannot be handed
+        # out without its slot being registered in the same breath.
+        self._rpc_lock = threading.Lock()
+        self._next_request_id = 0
+        self._pending: dict[int, queue.SimpleQueue] = {}
+        # One writer at a time: write_line loops on socket.send, so two callers can interleave
+        # partial sends and hand PHD2 a spliced line.
+        self._send_lock = threading.Lock()
         self.app_state = ""
         self.avg_dist = 0
         self.version = ""
@@ -820,6 +840,17 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if not self.conn:
             raise RuntimeError("no connection to PHD2 server")
 
+        try:
+            self._read_forever()
+        finally:
+            # Whichever way the loop left, nothing will deliver a reply again. Without this a
+            # caller in `call` waits out its whole timeout for an answer that cannot arrive --
+            # and before there was a timeout, for the life of the process.
+            self._fail_pending("the reader thread exited")
+
+    def _read_forever(self):
+        assert self.conn is not None
+
         while not self._terminate:
             try:
                 line = self.conn.read_line()
@@ -849,13 +880,31 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 # print("DBG: ignoring invalid json response")
                 continue
             if "jsonrpc" in j:
-                # a response
-                # print(f"DBG: R: {line}\n")
-                with self.cond:
-                    self.response = j
-                    self.cond.notify()
+                self._deliver(j)
             else:
                 self._handle_event(j)
+
+    def _deliver(self, response: dict) -> None:
+        """Hand a reply to the caller that asked for it, and to nobody else.
+
+        A reply nobody is waiting for is logged rather than kept. The shape this replaces --
+        one shared slot plus `notify()` -- had no way to tell the two apart, so an orphan reply
+        was handed to whichever caller happened to be woken.
+        """
+        request_id = response.get("id")
+        with self._rpc_lock:
+            slot = self._pending.pop(request_id, None)
+        if slot is None:
+            logger.warning(f"{function_name()}: reply with no caller waiting, id={request_id!r}; dropping it")
+            return
+        slot.put(response)
+
+    def _fail_pending(self, reason: str) -> None:
+        """Release every waiting caller when nothing will ever deliver a reply again."""
+        with self._rpc_lock:
+            waiting, self._pending = self._pending, {}
+        for request_id, slot in waiting.items():
+            slot.put(PHD2ConnectorError(f"no reply to id={request_id}: {reason}"))
 
     def connect(self):
         """connect to PHD2 -- call Connect before calling any of the server API methods below"""
@@ -891,8 +940,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         # print("DBG: disconnect done")
 
     @staticmethod
-    def _make_jsonrpc(method, params):
-        req = {"method": method, "id": 1}
+    def _make_jsonrpc(method, params, request_id: int):
+        req = {"method": method, "id": request_id}
         if params is not None:
             if isinstance(params, list | dict):
                 req["params"] = params
@@ -905,25 +954,39 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def _failed(res):
         return "error" in res
 
-    def call(self, method, params=None):
-        """this function can be used for raw JSONRPC method
-        invocation. Generally you won't need to use this as it is much
-        more convenient to use the higher-level methods below
+    def call(self, method, params=None, timeout: float = DEFAULT_RPC_TIMEOUT):
+        """Raw JSON-RPC invocation. The higher-level methods below are usually what you want.
 
+        Every request carries its own id and waits on its own slot, which the reader fills.
+        Both halves matter: the id is what lets a reply find its caller, and the private slot
+        is what makes a wake-up impossible to steal. Sharing one slot between callers -- the
+        shape this replaces -- delivered replies to the wrong caller *and* lost the rightful
+        one's wake-up permanently, because `notify()` wakes an arbitrary waiter (MAST_unit#220).
         """
         if not self.conn:
             raise RuntimeError("no connection to PHD2 server")
 
-        s = self._make_jsonrpc(method, params)
-        # print(f"DBG: Call: {s}")
-        # send request
-        self.conn.write_line(s + "\r\n")
-        # wait for response
-        with self.cond:
-            while not self.response:
-                self.cond.wait()
-            response = self.response
-            self.response = None
+        slot: queue.SimpleQueue = queue.SimpleQueue()
+        with self._rpc_lock:
+            self._next_request_id += 1
+            request_id = self._next_request_id
+            self._pending[request_id] = slot
+
+        try:
+            with self._send_lock:
+                self.conn.write_line(self._make_jsonrpc(method, params, request_id) + "\r\n")
+            try:
+                response = slot.get(timeout=timeout)
+            except queue.Empty:
+                raise PHD2ConnectorError(
+                    f"{function_name()}: no reply to {method=} (id={request_id}) within {timeout} seconds"
+                ) from None
+        finally:
+            with self._rpc_lock:
+                self._pending.pop(request_id, None)
+
+        if isinstance(response, PHD2ConnectorError):
+            raise response
         if self._failed(response):
             raise PHD2ConnectorError(
                 f"{function_name()}: error from RPC: {method=}, {params=}, message={response['error']['message']}"
@@ -1196,14 +1259,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 logger.error(f"{function_name()}: unknown profile '{self.conf.profile}', {existing_profiles=}")
                 raise PHD2ConnectorError(f"invalid phd2 profile name: {self.conf.profile}")
             self.stop_capture()
-            self.call("set_connected", False)
+            self.call("set_connected", False, timeout=CONNECT_RPC_TIMEOUT)
             self.call("set_profile", profile_id)
-        self.call("set_connected", True)
+        self.call("set_connected", True, timeout=CONNECT_RPC_TIMEOUT)
 
     def disconnect_equipment(self):
         """disconnect equipment"""
         self.stop_capture()
-        self.call("set_connected", False)
+        self.call("set_connected", False, timeout=CONNECT_RPC_TIMEOUT)
 
     def get_status(self):
         """get the AppState

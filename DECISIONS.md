@@ -2,6 +2,66 @@
 
 ---
 
+## [2026-09-08] A PHD2 reply belongs to one caller: a slot per request, not a slot per connection
+
+**Why:** #220. Every request carried `"id": 1`, the reader thread put each reply into one
+shared `self.response`, and `call` waited on one `Condition`. Nothing tied a reply to the
+request that asked for it, so with two callers in flight the reply went to whichever thread
+`notify()` happened to wake. That produced two failures at once, and both were observed on
+mast01 on 2026-09-08 while validating #218 and #212:
+
+- **the wrong caller returned someone else's answer** -- `PHD2GuiderStatus.is_settling` given
+  `{'temperature': 4.9}`, `cooler_power` given a `bool`; 26 such errors in ten minutes;
+- **the rightful caller never returned.** `notify()` wakes one waiter, and `call` re-checked
+  under `while not self.response`, so a caller whose reply had already been consumed had
+  nothing left to wake it. `GET /unit/status` and `GET /unit/imager/status` stopped answering
+  entirely -- three consecutive 60-second timeouts -- while `/mount/status` and
+  `/covers/status` answered in 0.6 s. The app was healthy; one path was blocked.
+
+It needs no unusual load. FastAPI serves each request on its own worker thread, so two
+overlapping `GET /unit/status` calls are enough; the 2 s `ontimer` and the expose path's
+`set_limit_frame` widen the window further. A 1 Hz status poll from one test client was what
+surfaced it.
+
+**What was decided:** a monotonic id per request, and a **`queue.SimpleQueue` per request**
+that the reader delivers into. `call` registers its slot and its id under one lock, writes,
+and waits on its own queue.
+
+The alternative -- keep the `Condition` and change `notify()` to `notify_all()`, with each
+waiter checking for its own reply -- also works, and was not chosen. It fixes the lost wake-up
+while keeping the shape that caused it: every reply still wakes every caller, and correctness
+still rests on each one re-checking a shared structure correctly. A private queue makes the
+class of bug unrepresentable rather than handled: there is no shared slot to take from, and
+`SimpleQueue.get(timeout=...)` is the wait, the wake-up and the timeout in one primitive.
+
+**Three things came with it.**
+
+- **A timeout.** `call` was unbounded, which is why the failure was a hang rather than an
+  error. `DEFAULT_RPC_TIMEOUT` is 30 s, with `set_connected` given 120 s since the equipment
+  connect is the one call here that does real work before answering. These are bounds against
+  a lost reply, not estimates of PHD2's working time -- every RPC in this file answers once
+  PHD2 has accepted the request, and progress arrives on the event stream.
+- **A lock around the send.** `PHD2Connection.write_line` loops on `socket.send`, so two
+  callers could interleave partial sends and hand PHD2 a spliced line. Same root cause --
+  unsynchronised shared access to one connection -- so it belongs in the same change.
+- **The reader releases everyone on the way out.** `_worker` now wraps the read loop and fails
+  every pending caller in a `finally`. A connection that goes away is the other way a caller
+  waits for nothing, and it was silent before.
+
+An unmatched reply is now **logged and dropped** rather than handed to an arbitrary waiter.
+That line is the tell if any of this is ever wrong again.
+
+**Implications:** all 36 call sites are inside `phd2/phd2.py` and none changed. `call` can now
+raise `PHD2ConnectorError` where it previously blocked, which is the point -- but it means a
+caller that never handled a failing RPC now sees one. The reproduction is cheap on a unit:
+poll `GET /unit/status` at 1 Hz from two clients at once.
+
+**Not fixed here, and worth its own issue:** `Unit.status()` lets a guider exception take down
+the entire status response, which is why a crossed reply cost the whole unit its `status`
+rather than the guider section of it.
+
+---
+
 ## [2026-09-08] Aborting an exposure run: a private event, not the activity flag
 
 **Why:** #212, reported from an on-sky run -- `/abort` during an exposure run raised and left
