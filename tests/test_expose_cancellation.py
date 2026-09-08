@@ -235,9 +235,17 @@ class TestAbortReachesTheRun:
         assert not stub._expose_cancelled.is_set()
 
 
-class TestTheImagerReleasesItsWaiters:
-    """`abort_exposure` ends `ImagerActivities.Exposing`, but nothing was ever going to set
-    the events a caller is parked on -- the readout it was waiting for is not coming."""
+class TestEveryBackendReleasesItsWaiters:
+    """The contract `ImagerInterface.abort_exposure` now states, asserted per backend.
+
+    All three implementations had the same hole: stop the sensor, return, and leave whoever
+    was waiting for the readout parked on an event nothing will ever set. The parked caller is
+    an exposure run, so its cleanup never runs either -- no closed exposure series, no stopped
+    tracking, and a `ValueError` on the next run (MAST_unit#212).
+
+    Where each backend parks differs, and the difference is why the fix had to be per backend:
+    the ASCOM one waits inline inside `start_exposure`, the other two in `wait_for_image_saved`.
+    """
 
     class Backend:
         def __init__(self, saved: bool = False, read: bool = False):
@@ -263,3 +271,63 @@ class TestTheImagerReleasesItsWaiters:
 
         assert backend.image_saved_event.is_set()
         assert backend.image_ready_event.is_set()
+
+    class Phd2Backend:
+        def __init__(self):
+            self.image_was_saved = False
+            self.image_saved_event = threading.Event()
+            self.parent = None
+            self.calls: list[str] = []
+
+        def call(self, method, params=None):
+            self.calls.append(method)
+
+    def test_phd2_abort_stops_the_capture_and_releases(self):
+        from phd2.phd2 import PHD2Connector
+
+        backend = self.Phd2Backend()
+
+        PHD2Connector.abort_exposure(backend)  # type: ignore[arg-type]
+
+        assert backend.calls == ["stop_capture"]
+        assert backend.image_saved_event.is_set()
+
+    def test_phd2_releases_even_when_the_stop_fails(self):
+        """`stop_capture` goes over the same RPC that may be why the abort was needed."""
+        from phd2.phd2 import PHD2Connector
+
+        backend = self.Phd2Backend()
+
+        def refuse(method, params=None):
+            raise RuntimeError("PHD2 did not answer")
+
+        backend.call = refuse  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError):
+            PHD2Connector.abort_exposure(backend)  # type: ignore[arg-type]
+
+        assert backend.image_saved_event.is_set(), "the release must not depend on the stop succeeding"
+
+    class ZwoBackend:
+        def __init__(self):
+            self.connected = True
+            self.cam_id = 0
+            self.image_was_saved = False
+            self.image_was_read = False
+            self.image_saved_event = threading.Event()
+            self.image_read_event = threading.Event()
+            self.parent_imager = None
+
+    def test_zwo_abort_releases_both_waiters(self, monkeypatch):
+        import zwo
+
+        monkeypatch.setattr(zwo.zwoasi, "stopExposure", lambda cam_id: None, raising=False)
+        backend = self.ZwoBackend()
+        # The stand-in is not a ZWOImager, so the helper the method under test calls has to
+        # be bound onto it; the alternative is constructing one, which reaches for a camera.
+        backend._release_waiters = types.MethodType(zwo.ZWOImager._release_waiters, backend)
+
+        zwo.ZWOImager.abort_exposure(backend)  # type: ignore[arg-type]
+
+        assert backend.image_saved_event.is_set()
+        assert backend.image_read_event.is_set()

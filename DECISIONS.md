@@ -11,22 +11,33 @@ never runs; the exposure series is never closed and the mount never stops tracki
 next `/expose` overwrites `current_exposure_series`, so the eventual `end_exposure_series`
 raises `ValueError`.
 
-**One correction to the issue's reading.** It places the parked thread in
-`wait_for_image_saved()`. The thread is one level further in: `start_exposure` waits for the
-save **inline** (`imagers/ascom.py`), so by the time `_expose_repeatedly` reaches
-`wait_for_image_saved()` the image is long since saved and that call returns at once. A fix
-aimed only at the named function would have looked right and changed nothing.
+**Where the thread parks depends on the backend, and the issue names only one of the two
+places.** With the ASCOM backend it is *not* `wait_for_image_saved()`: `start_exposure` waits
+for the save **inline**, so by the time `_expose_repeatedly` reaches `wait_for_image_saved()`
+the image is long since saved and that call returns at once. With the PHD2 and ZWO backends
+`start_exposure` returns immediately and the wait is where the issue says. A fix aimed at one
+of the two would have looked right and changed nothing on half the fleet -- and mast01, where
+this was measured, runs the PHD2 backend.
 
 **What was decided.** Two mechanisms, each owned by the component it belongs to, and
 deliberately not one shared one:
 
-- **The imager releases its own waiters.** `abort_exposure()` sets `image_saved_event` and
-  `image_ready_event` after ending the activity, because no readout is coming to set them,
-  and the waits re-check what they were waiting for on waking -- the existing checks run
-  *before* the wait, which is exactly why they cannot release a caller already inside it.
-  `start_exposure` then reports the frame as failed instead of returning as though an image
-  had been taken. This is correct however the abort arrived, and needs no knowledge of the
-  unit.
+- **The imager releases its own waiters -- all three of them.** `abort_exposure()` sets
+  `image_saved_event` and `image_ready_event` after ending the activity, because no readout
+  is coming to set them, and `start_exposure` clears them so a release left unconsumed by one
+  frame cannot end the next frame's wait early. On ASCOM the waits also re-check what they
+  were waiting for on waking (the existing checks run *before* the wait, which is why they
+  cannot release a caller already inside one) and `start_exposure` reports the frame as failed
+  rather than returning as though an image had been taken. This is correct however the abort
+  arrived, and needs no knowledge of the unit.
+
+  **The requirement now lives on `ImagerInterface`** (`common/interfaces/imager.py`), because
+  all three implementations had the identical hole -- stop the sensor, return, leave the caller
+  parked on an event nothing will ever set. It was never an ASCOM quirk; it was an unstated
+  half of what `abort_exposure` means, and a fourth backend would have rediscovered it.
+  `PHD2Connector.endpoint_abort` additionally called `stop_capture()` and nothing else, so the
+  route `Unit.abort` actually takes left the imager reporting `Exposing`; it goes through
+  `abort_exposure` now.
 - **The unit stops its own loop**, through a private `threading.Event`,
   `Unit._expose_cancelled`, read at three sites in `_expose_repeatedly`: before each frame,
   after the wait returns and before the frame is moved to the shared store, and as the
@@ -66,6 +77,16 @@ after which the parameter and its refusal are deleted if nothing is still sendin
 it, and the run's frames stop being moved after the point of cancellation. One item of #212
 needed nothing: aborting every component independently already landed on `main` with the
 `attempt()` helper.
+
+Measured on mast01, 2026-09-08, on the PHD2 backend: `/abort` 9 s into a 20 s frame produced
+`SingleFrameComplete(success=False)` 5.7 s later, then `cancelled during exposure #0 (of 3);
+no frame to move`, the series closed, `stopped tracking (from do_expose)`, and the flag ended
+at 17.12 s. No frame was written for the cancelled exposure, an `/expose` issued straight
+afterwards was accepted and completed, and no `Cannot end exposure series` appeared. So PHD2
+*does* emit the completion event for a stopped single-frame capture -- which makes the release
+above insurance rather than the only thing standing between an abort and a wedged service. It
+is kept because the wait is unbounded and that event is the only thing that ever sets it: a
+stop that races the capture, or an RPC that never answers (#220), still parks the caller.
 
 ---
 

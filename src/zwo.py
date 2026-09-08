@@ -314,6 +314,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             return CanonicalResponse(errors=["not exposing"])
 
         zwoasi.stopExposure(self.cam_id)
+        self._release_waiters()
         return CanonicalResponse_Ok
 
     def status(self) -> ImagerBackendStatus:
@@ -406,6 +407,10 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         self.errors = []
         self.image_was_read = False
         self.image_was_saved = False
+        # An abort releases whoever is waiting by setting these, and only the one that had a
+        # waiter gets consumed. A new exposure must not start with the other still raised.
+        self.image_read_event.clear()
+        self.image_saved_event.clear()
 
         self.set_control(asi.Control.Exposure, int(settings.seconds * 1000000))  # micro seconds
 
@@ -474,7 +479,20 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             return CanonicalResponse(errors=["not connected"])
 
         zwoasi.stopExposure(self.cam_id)
+        self._release_waiters()
         return CanonicalResponse_Ok
+
+    def _release_waiters(self) -> None:
+        """End the exposure and wake anything waiting on a readout that is not coming.
+
+        `stopExposure` halts the sensor; nothing after it ever sets these events, so a caller
+        parked in `wait_for_image_saved` or `wait_for_image_ready` would wait for the life of
+        the process -- and the run that owns it would never reach its cleanup (MAST_unit#212).
+        """
+        if self.parent_imager is not None:
+            self.parent_imager.end_activity(ImagerActivities.Exposing)
+        self.image_read_event.set()
+        self.image_saved_event.set()
 
     def wait_for_image_ready(self):
         if not self.image_was_read:
