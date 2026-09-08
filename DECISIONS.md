@@ -2,6 +2,46 @@
 
 ---
 
+## [2026-09-08] `status` reports what it could not read, instead of failing whole
+
+**Why:** #222. `Unit.status()` built `FullUnitStatus` from nine live reads inline, so any one
+of them raising cost the caller the entire response -- the endpoint wrapper turned the
+exception into a canonical error with no value at all. No mount, no covers, no activity flags,
+no `errors` list.
+
+That is the wrong failure mode for **this** endpoint specifically. `status` is what a caller
+reaches for *because* something is already wrong, so a sick component is the moment the rest of
+the picture matters most. Measured on mast01, 2026-09-08: a crossed PHD2 reply (#220) made
+`guider_status()` raise a `ValidationError`, and `GET /unit/status` returned nothing usable
+while `/mount/status`, `/covers/status` and `/openapi.json` all answered in about 0.6 s. Two
+facts with nothing to do with the guider went dark with it -- whether an exposure run was in
+flight, and whether the mount was tracking.
+
+**What was decided:** each of the nine reads is attempted independently; a failure yields
+`None` for that section (or `False` for the two booleans, which are typed `bool` and need a
+usable value), and is **named in the response**. This is `abort`'s `attempt()` shape applied to
+the other verb that has to work when things are broken, and for the same reason: one failing
+part must not skip the rest.
+
+**Two of the nine are not obvious.** `guider.is_guiding` reaches PHD2 over the RPC and
+`autofocuser.is_autofocusing` reads the unit's connection state. They read like attribute
+lookups and are live calls, which is exactly how they escaped notice on an all-or-nothing path.
+
+**Reported through `errors`, not a new field.** A per-section health map on `FullUnitStatus`
+would be a wire-contract change to a CONTRACT-tier model, and `errors` already means "these
+things are wrong right now" -- which is precisely what an unreadable component is. Each entry
+names the read and carries the exception text, so `mount.status: unavailable (...)` says both
+what is missing and why. The list is **built fresh** (`self.errors + failures`): `self.errors`
+is the unit's standing state, and a read that failed on one request has no business being
+appended to it permanently.
+
+**What this deliberately does not do:** it does not make a component's `status()` raising
+acceptable. That is still a defect wherever it happens, and the traceback is still logged in
+full. What changes is who pays for it -- the component's own section, rather than every
+consumer of the unit's status.
+
+---
+
 ## [2026-09-08] Aborting an exposure run: a private event, not the activity flag
 
 **Why:** #212, reported from an on-sky run -- `/abort` during an exposure run raised and left
