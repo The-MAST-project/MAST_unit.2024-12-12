@@ -323,3 +323,29 @@ class TestValidationPrecedesTheSlew:
         assert response == CanonicalResponse_Ok
         assert stub.mount.slews == [(12.5, -45.5)]
         assert len(dispatched) == 1
+
+
+class TestTheRenamedParameter:
+    """`seconds_between_exposures` became `cadence_seconds`. FastAPI ignores a query
+    parameter it does not know, so without an explicit refusal a stale URL would be
+    answered `Ok`, run with no pacing at all, and give no hint why.
+
+    Deprecated 2026-09-08; audit 2026-11-08 and delete both the parameter and this class."""
+
+    def test_the_old_name_is_refused(self, dispatched):
+        stub = Stub()
+
+        response = Unit.expose(stub, seconds_between_exposures=60)  # type: ignore[arg-type]
+
+        assert response.failed
+        assert "cadence_seconds" in response.errors[0], "the error must name the parameter to use instead"
+        assert dispatched == [], "a refused request starts no run"
+        assert not stub.is_active(UnitActivities.Exposing)
+
+    def test_the_new_name_is_accepted(self, dispatched):
+        stub = Stub()
+
+        response = Unit.expose(stub, cadence_seconds=60)  # type: ignore[arg-type]
+
+        assert response == CanonicalResponse_Ok
+        assert len(dispatched) == 1

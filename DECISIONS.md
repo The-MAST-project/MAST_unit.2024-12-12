@@ -55,11 +55,16 @@ the run simply falls behind, and that is now stated on the endpoint and logged w
 Only the name and the documentation change. `(end - now).seconds` -- the seconds-of-day
 component of a timedelta, which drops the sub-second remainder -- becomes `.total_seconds()`.
 
+The old name survives as a **deprecated parameter that is refused**, because FastAPI ignores a
+query parameter it does not recognise: a stale Swagger URL or a saved call would otherwise be
+answered `Ok`, run with no pacing at all, and say nothing about why. A rename on a
+hand-driven endpoint has to be loud in both places, not just in the schema. It is marked
+`deprecated=True` so Swagger strikes it through, and carries an audit date -- **2026-11-08** --
+after which the parameter and its refusal are deleted if nothing is still sending it.
+
 **Implications:** `/abort` ends an exposure run at the next frame boundary instead of wedging
-it, and the run's frames stop being moved after the point of cancellation. A caller that
-supplies the old parameter name gets no error and no pacing, since FastAPI ignores unknown
-query parameters -- the rename is loud in Swagger and silent over a stale URL. One item of
-#212 needed nothing: aborting every component independently already landed on `main` with the
+it, and the run's frames stop being moved after the point of cancellation. One item of #212
+needed nothing: aborting every component independently already landed on `main` with the
 `attempt()` helper.
 
 ---

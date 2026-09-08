@@ -713,6 +713,17 @@ class Unit(Component):
                 ),
             ),
         ] = 0,
+        # DEPRECATED 2026-09-08, audit 2026-11-08 -- delete this parameter and its refusal
+        # below once nothing is still sending it. It is here because FastAPI ignores a query
+        # parameter it does not know: without it a stale Swagger URL or a saved call would
+        # be answered `Ok`, run with no pacing whatsoever, and say nothing about why.
+        seconds_between_exposures: Annotated[
+            float | None,
+            Query(
+                deprecated=True,
+                description="**Renamed to `cadence_seconds`.** Supplying this is refused; it is not read.",
+            ),
+        ] = None,
         fiber_x: int | None = None,
         fiber_y: int | None = None,
         width: int | None = None,
@@ -757,6 +768,14 @@ class Unit(Component):
             ),
         ] = None,
     ) -> CanonicalResponse:
+
+        if seconds_between_exposures is not None:
+            return CanonicalResponse(
+                errors=[
+                    "expose: seconds_between_exposures was renamed to cadence_seconds, and is "
+                    "seconds from one exposure start to the next"
+                ]
+            )
 
         if self.imager is None:
             return CanonicalResponse(errors=["imager is not initialized"])
