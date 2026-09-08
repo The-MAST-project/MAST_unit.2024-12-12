@@ -41,9 +41,20 @@ class of bug unrepresentable rather than handled: there is no shared slot to tak
   connect is the one call here that does real work before answering. These are bounds against
   a lost reply, not estimates of PHD2's working time -- every RPC in this file answers once
   PHD2 has accepted the request, and progress arrives on the event stream.
-- **A lock around the send.** `PHD2Connection.write_line` loops on `socket.send`, so two
-  callers could interleave partial sends and hand PHD2 a spliced line. Same root cause --
-  unsynchronised shared access to one connection -- so it belongs in the same change.
+- **A lock around the send**, *inside* `PHD2Connection.write_line`. It loops on `socket.send`,
+  so two callers could interleave partial sends -- which does not produce two delayed requests
+  but two malformed ones, since PHD2 parses the stream line by line. Same root cause as the
+  crossed replies (unsynchronised shared access to one connection), so it belongs in the same
+  change. It sits on the connection rather than on `PHD2Connector` because what it protects is
+  that socket: a lock held by the caller has to be remembered by every future caller, and one
+  held by the object cannot be forgotten. It also keeps the connector at two locks -- its
+  pre-existing `self.lock` for connector state, and `_rpc_lock` for the ids and the pending
+  map -- rather than three.
+
+  The two are deliberately **not** merged. `_rpc_lock` is taken by the reader thread to deliver
+  a reply, and holding it across the send would mean a caller blocked in `send()` -- a full
+  socket buffer, a slow PHD2 -- stops the reader delivering *any* reply, and stops it
+  dispatching events too, since it is the same thread.
 - **The reader releases everyone on the way out.** `_worker` now wraps the read loop and fails
   every pending caller in a `finally`. A connection that goes away is the other way a caller
   waits for nothing, and it was silent before.

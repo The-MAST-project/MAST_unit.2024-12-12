@@ -136,6 +136,7 @@ class PHD2Connection:
         self.sock = None
         self.sel = None
         self._terminate = False
+        self._write_lock = threading.Lock()
 
     def __del__(self):
         self.disconnect()
@@ -202,15 +203,24 @@ class PHD2Connection:
         return self.lines.pop(0)
 
     def write_line(self, s):
+        """Put one whole line on the wire, and only one at a time.
+
+        `send` accepts as much as the socket has room for and reports how much, so this loops
+        -- and every turn of the loop is a gap another thread can write into. Unsynchronised,
+        two callers do not produce two delayed requests; they produce two malformed ones, since
+        PHD2 parses the stream line by line. The lock lives here rather than on the caller
+        because what it protects is this socket.
+        """
         if not self.sock:
             raise RuntimeError("{function_name()}: socket not connected")
         b = s.encode()
-        totsent = 0
-        while totsent < len(b):
-            sent = self.sock.send(b[totsent:])
-            if sent == 0:
-                raise RuntimeError("{function_name()}: socket connection broken")
-            totsent += sent
+        with self._write_lock:
+            totsent = 0
+            while totsent < len(b):
+                sent = self.sock.send(b[totsent:])
+                if sent == 0:
+                    raise RuntimeError("{function_name()}: socket connection broken")
+                totsent += sent
 
     def terminate(self):
         self._terminate = True
@@ -327,9 +337,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self._rpc_lock = threading.Lock()
         self._next_request_id = 0
         self._pending: dict[int, queue.SimpleQueue] = {}
-        # One writer at a time: write_line loops on socket.send, so two callers can interleave
-        # partial sends and hand PHD2 a spliced line.
-        self._send_lock = threading.Lock()
         self.app_state = ""
         self.avg_dist = 0
         self.version = ""
@@ -973,8 +980,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self._pending[request_id] = slot
 
         try:
-            with self._send_lock:
-                self.conn.write_line(self._make_jsonrpc(method, params, request_id) + "\r\n")
+            self.conn.write_line(self._make_jsonrpc(method, params, request_id) + "\r\n")
             try:
                 response = slot.get(timeout=timeout)
             except queue.Empty:

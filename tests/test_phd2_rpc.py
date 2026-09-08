@@ -24,7 +24,7 @@ import time
 
 import pytest
 
-from phd2.phd2 import PHD2Connector, PHD2ConnectorError
+from phd2.phd2 import PHD2Connection, PHD2Connector, PHD2ConnectorError
 
 SHORT_TIMEOUT = 0.3
 
@@ -48,7 +48,6 @@ def make_connector() -> PHD2Connector:
     p = object.__new__(PHD2Connector)
     p.conn = FakeConnection()
     p._rpc_lock = threading.Lock()
-    p._send_lock = threading.Lock()
     p._next_request_id = 0
     p._pending = {}
     p._terminate = False
@@ -172,20 +171,56 @@ class TestNobodyWaitsForever:
         assert "no reply" in str(failures[0])
 
 
+class PartialSendingSocket:
+    """A socket that never sends a whole buffer at once.
+
+    Which is the normal case rather than a contrived one: `send` returns how many bytes it
+    accepted, and `write_line` loops until the rest is gone. Every gap in that loop is a
+    chance for another thread to put its own bytes on the wire.
+    """
+
+    CHUNK = 4
+
+    def __init__(self):
+        self.chunks: list[bytes] = []
+        self._lock = threading.Lock()
+
+    def send(self, data: bytes) -> int:
+        accepted = data[: self.CHUNK]
+        time.sleep(0.001)
+        with self._lock:
+            self.chunks.append(accepted)
+        return len(accepted)
+
+    def close(self) -> None:
+        pass
+
+    def written(self) -> bytes:
+        with self._lock:
+            return b"".join(self.chunks)
+
+
 class TestOneWriterAtATime:
-    """`write_line` loops on `socket.send`, so two callers writing at once can hand PHD2 a
-    spliced line. Nothing about the id fixes that -- it needs the send serialized."""
+    """Two callers writing at once must not hand PHD2 a spliced line.
 
-    def test_the_send_happens_under_the_lock(self):
-        connector = make_connector()
-        held: list[bool] = []
+    Nothing about the request id helps here: correlation decides who a *reply* belongs to,
+    while this is about the request never arriving as one line in the first place. PHD2 parses
+    the stream line by line, so a splice is not a delayed request -- it is two malformed ones.
+    """
 
-        def observe(line: str) -> None:
-            held.append(connector._send_lock.locked())
+    def test_two_writers_do_not_splice_a_line(self):
+        connection = PHD2Connection()
+        connection.sock = PartialSendingSocket()  # type: ignore[assignment]
+        first = '{"method":"get_app_state","id":1}' + "\r\n"
+        second = '{"method":"get_exposure","id":2}' + "\r\n"
 
-        connector.conn.write_line = observe  # type: ignore[method-assign]
+        writers = [threading.Thread(target=connection.write_line, args=(line,)) for line in (first, second)]
+        for writer in writers:
+            writer.start()
+        for writer in writers:
+            writer.join(timeout=5)
 
-        with pytest.raises(PHD2ConnectorError):
-            connector.call("get_app_state", timeout=SHORT_TIMEOUT)
+        written = connection.sock.written()  # type: ignore[union-attr]
 
-        assert held == [True]
+        assert first.encode() in written, f"the first line arrived spliced: {written!r}"
+        assert second.encode() in written, f"the second line arrived spliced: {written!r}"
