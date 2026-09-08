@@ -55,10 +55,13 @@ jobs:
           path: unit
 
       - name: Check out MAST_common as a sibling
+        # Pinned to this branch's paired MAST_common#13, not master: master has no
+        # ExcludeRegionMode, so every importing module errors at collection. Returns
+        # to `master` before this PR merges - see #208, and #178's R3 for last time.
         uses: actions/checkout@v7
         with:
           repository: The-MAST-project/MAST_common
-          ref: master
+          ref: eli/exclude-region
           path: common
 
       - uses: actions/setup-python@v7
