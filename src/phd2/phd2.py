@@ -3,6 +3,7 @@ import json
 import math
 import queue
 import selectors
+import shutil
 import socket
 import threading
 import time
@@ -126,6 +127,11 @@ class PHD2GuideStats:
 #: of parking a request thread. FastAPI serves each request on its own worker thread, so a
 #: parked caller costs one of those permanently.
 DEFAULT_RPC_TIMEOUT = 30.0
+
+#: How long `wait_for_image_saved` will wait before deciding the image is not coming.
+#: Generous against the longest exposure the fleet takes plus the write of a ~75 MB frame
+#: over USB, and short against a night: the point is that it ends, not that it is tight.
+IMAGE_SAVE_TIMEOUT = 300.0
 
 #: `set_connected` drives the camera and mount connect, the one call here that does real work
 #: before answering. Generous on purpose: this bound exists to catch a lost reply, not a slow
@@ -1869,21 +1875,39 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             )
 
         if self._is_guiding(self.app_state):
-            # while guiding we use save_image()
+            # PHD2 will not take a separate exposure while it is guiding, so this hands
+            # back the most recent GUIDE frame instead. That frame is whatever the guide
+            # loop was taking: the limit-frame crop, the profile's exposure and the
+            # profile's gain -- NOT what `settings` asked for. A caller requesting 10 s at
+            # gain 60 gets neither, silently, and nothing here can change that.
             try:
-                self.call("save_image", {"path": settings.image_path})
+                response = self.call("save_image", {"path": settings.image_path})
             except PHD2ConnectorError as ex:
                 self.log_and_append_error(f"{ex=}")
+            else:
+                self._adopt_saved_image(response, settings.image_path)
         else:
-            # while not guiding we use capture_single_frame()
-
+            # Not guiding -- which includes PAUSED. The limit frame is passed inline
+            # rather than through `set_limit_frame`, because PHD2 refuses that call
+            # whenever a guide session exists at all:
+            #
+            #   "Cannot set the frame limit ROI while calibrating or guiding."
+            #
+            # measured on mast01 2026-09-08 with app_state=Paused. The refusal used to be
+            # caught and logged here, after which this method fell through without ever
+            # calling `capture_single_frame` -- so no image was taken, no
+            # SingleFrameComplete was emitted, and the caller blocked in
+            # `wait_for_image_saved` for ever (MAST_unit#225).
+            #
+            # `capture_single_frame` carries its own `limit_frame` parameter, so no ROI
+            # mutation is needed and there is nothing to refuse or to restore afterwards.
             try:
                 assert settings.roi
-                if settings.use_set_limit_frame:
-                    self.set_limit_frame(roi=settings.roi)
-                else:
-                    self.set_limit_frame(roi=None)
-
+                limit = (
+                    settings.roi
+                    if settings.use_set_limit_frame
+                    else ImagerRoi(x=0, y=0, width=self.camera_x_size, height=self.camera_y_size)
+                )
                 self.call(
                     "capture_single_frame",
                     params={
@@ -1894,12 +1918,72 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                         "binning": settings.binning,
                         "save": True,
                         "path": settings.image_path,
+                        "limit_frame": [limit.x, limit.y, limit.width, limit.height],
                     },
                 )
 
             except PHD2ConnectorError as ex:
                 self.log_and_append_error(f"{ex=}")
-        return CanonicalResponse(errors=self.errors) if self.errors else CanonicalResponse_Ok
+
+        if self.errors:
+            # The capture never started, so nothing will ever set `image_saved_event`.
+            # Release it here rather than leaving the caller to block on an image that
+            # cannot arrive: a caught exception that strands a waiter is worse than an
+            # uncaught one, which is the same lesson #212 drew for abort.
+            self._release_unstarted_exposure()
+            return CanonicalResponse(errors=self.errors)
+        return CanonicalResponse_Ok
+
+    def _adopt_saved_image(self, response: dict | None, image_path: str) -> None:
+        """Move the file `save_image` actually wrote to where the caller asked for it.
+
+        PHD2's `save_image` ignores the `path` parameter. It writes a temp file of its own
+        choosing and returns the name in the reply:
+
+            request  {"method":"save_image","params":{"path":"D:/MAST/.../seq=0000,...fits"}}
+            response {"result":{"filename":"C:\\Users\\mast\\AppData\\Local\\phd2\\sav7C03.tmp"}}
+
+        Measured on mast01, 2026-09-08. Every exposure taken while guiding on this fleet
+        has therefore been written to a temp file and lost -- unnoticed, because the caller
+        hung before it could look, and a hang reads as a slow exposure.
+
+        Nothing on this path emits `SingleFrameComplete`, so the waiter is released here
+        too. The RPC is synchronous and the file exists by the time it returns.
+        """
+        written = ((response or {}).get("result") or {}).get("filename")
+        if not written:
+            self.log_and_append_error(f"{function_name()}: save_image returned no filename ({response=})")
+            self._release_unstarted_exposure()
+            return
+
+        try:
+            destination = Path(image_path)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(written, destination)
+        except OSError as ex:
+            self.log_and_append_error(f"{function_name()}: could not move {written} to {image_path} ({ex})")
+            self._release_unstarted_exposure()
+            return
+
+        logger.info(f"{function_name()}: guide frame {written} -> {image_path}")
+        self.image_was_saved = True
+        self.image_saved_event.set()
+        if self.parent is not None:
+            self.parent.end_activity(ImagerActivities.Saving)
+            self.parent.end_activity(ImagerActivities.Exposing)
+
+    def _release_unstarted_exposure(self) -> None:
+        """Let go of an exposure that never began, and drop its activity flags.
+
+        `UnitActivities.Exposing` is cleared by `do_expose`'s `finally`, which only runs
+        once the caller returns -- so a stranded waiter also strands that flag, and
+        MAST_unit#219's one-run guard then refuses every later exposure in the run. One
+        frame that cannot start costs all of them.
+        """
+        self.image_saved_event.set()
+        if self.parent is not None:
+            self.parent.end_activity(ImagerActivities.Saving)
+            self.parent.end_activity(ImagerActivities.Exposing)
 
     def stop_exposure(self) -> CanonicalResponse:
         logger.info(f"{function_name()}: stopping exposure")
@@ -1927,10 +2011,25 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def wait_for_image_ready(self):
         return
 
-    def wait_for_image_saved(self):
+    def wait_for_image_saved(self, timeout: float = IMAGE_SAVE_TIMEOUT):
+        """Block until the image is on disk, or until the wait is released, or time out.
+
+        Bounded deliberately. Every hang traced tonight ended here, on an event that
+        nothing left alive would ever set, and an unbounded wait turns any such fault into
+        a stalled run rather than an error: `do_expose`'s `finally` never runs, so the
+        exposure series dangles, the mount is never released, and `UnitActivities.Exposing`
+        stays raised until something aborts (MAST_unit#212, #225).
+
+        A timeout is reported and the activity flags dropped, rather than raising: the
+        caller is mid-run and an error it can see beats an exception from a worker thread
+        it cannot.
+        """
         if not self.image_was_saved:
-            self.image_saved_event.wait()
-            # logger.info(f"{op}: got image_saved_event")
+            if not self.image_saved_event.wait(timeout):
+                self.log_and_append_error(f"{function_name()}: no image after {timeout:.0f}s; releasing the wait")
+                if self.parent is not None:
+                    self.parent.end_activity(ImagerActivities.Saving)
+                    self.parent.end_activity(ImagerActivities.Exposing)
             self.image_saved_event.clear()
         self.reset_limit_frame_if_needed()
 
