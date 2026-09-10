@@ -49,6 +49,20 @@ class Autofocuser:
     is_autofocusing = False
 
 
+class FluxMetering:
+    """A session that has run, so `status` takes the branch that actually reads it."""
+
+    has_run = True
+
+    def __init__(self, failure: str | None = None):
+        self.failure = failure
+
+    def status(self):
+        if self.failure:
+            raise RuntimeError(self.failure)
+        return None
+
+
 class Stub:
     """Enough of a Unit to run `status`'s own body."""
 
@@ -59,6 +73,10 @@ class Stub:
         self.guider = parts.pop("guider", Guider())
         for name in ("power_switch", "mount", "imager", "covers", "focuser", "stage"):
             setattr(self, name, parts.pop(name, Part()))
+        # Not in the loop above: it is not a component and is never None on a real Unit --
+        # `Unit.__init__` always builds a FluxMeteringSession -- but `status` reads it, so a
+        # Stub without one raises where the real thing cannot.
+        self.flux_metering = parts.pop("flux_metering", FluxMetering())
         assert not parts, f"unknown parts: {sorted(parts)}"
 
     def component_status(self) -> ComponentStatus:

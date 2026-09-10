@@ -203,6 +203,16 @@ class TestAbortReachesTheRun:
         guider = None
         components: list = []
 
+        class _FluxMetering:
+            """Idle: `Unit.abort` asks it to stop only when a run is in flight."""
+
+            is_active = False
+
+            def abort(self):
+                raise AssertionError("an idle flux-metering session must not be aborted")
+
+        flux_metering = _FluxMetering()
+
         def __init__(self, exposing: bool):
             self.activities = {UnitActivities.Exposing} if exposing else set()
             self._expose_cancelled = threading.Event()

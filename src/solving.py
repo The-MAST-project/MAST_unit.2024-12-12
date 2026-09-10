@@ -16,11 +16,10 @@ from common.config.unit import AcquisitionConfig, ToleranceConfig
 from common.const import Const
 from common.corrections import Correction, Corrections
 from common.filer import Filer, MoveGuardian
-from common.interfaces.solving import SolverInterface, SolvingResult, SolvingTolerance
+from common.interfaces.solving import SolverId, SolverInterface, SolvingResult, SolvingTolerance
 from common.mast_logging import get_logger
 from common.models.statuses import ImagerSettings
 from common.safety import safety_get_sensor
-from common.solving import SolverId
 from common.utils import Coord, boxed_log, function_name, isoformat_zulu
 from mount import SettleMode
 
