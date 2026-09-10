@@ -2,6 +2,248 @@
 
 ---
 
+## [2026-09-08] `status` reports what it could not read, instead of failing whole
+
+**Why:** #222. `Unit.status()` built `FullUnitStatus` from nine live reads inline, so any one
+of them raising cost the caller the entire response -- the endpoint wrapper turned the
+exception into a canonical error with no value at all. No mount, no covers, no activity flags,
+no `errors` list.
+
+That is the wrong failure mode for **this** endpoint specifically. `status` is what a caller
+reaches for *because* something is already wrong, so a sick component is the moment the rest of
+the picture matters most. Measured on mast01, 2026-09-08: a crossed PHD2 reply (#220) made
+`guider_status()` raise a `ValidationError`, and `GET /unit/status` returned nothing usable
+while `/mount/status`, `/covers/status` and `/openapi.json` all answered in about 0.6 s. Two
+facts with nothing to do with the guider went dark with it -- whether an exposure run was in
+flight, and whether the mount was tracking.
+
+**What was decided:** each of the nine reads is attempted independently; a failure yields
+`None` for that section (or `False` for the two booleans, which are typed `bool` and need a
+usable value), and is **named in the response**. This is `abort`'s `attempt()` shape applied to
+the other verb that has to work when things are broken, and for the same reason: one failing
+part must not skip the rest.
+
+**Two of the nine are not obvious.** `guider.is_guiding` reaches PHD2 over the RPC and
+`autofocuser.is_autofocusing` reads the unit's connection state. They read like attribute
+lookups and are live calls, which is exactly how they escaped notice on an all-or-nothing path.
+
+**Reported through `errors`, not a new field.** A per-section health map on `FullUnitStatus`
+would be a wire-contract change to a CONTRACT-tier model, and `errors` already means "these
+things are wrong right now" -- which is precisely what an unreadable component is. Each entry
+names the read and carries the exception text, so `mount.status: unavailable (...)` says both
+what is missing and why. The list is **built fresh** (`self.errors + failures`): `self.errors`
+is the unit's standing state, and a read that failed on one request has no business being
+appended to it permanently.
+
+**What this deliberately does not do:** it does not make a component's `status()` raising
+acceptable. That is still a defect wherever it happens, and the traceback is still logged in
+full. What changes is who pays for it -- the component's own section, rather than every
+consumer of the unit's status.
+## [2026-09-08] A PHD2 reply belongs to one caller: a slot per request, not a slot per connection
+
+**Why:** #220. Every request carried `"id": 1`, the reader thread put each reply into one
+shared `self.response`, and `call` waited on one `Condition`. Nothing tied a reply to the
+request that asked for it, so with two callers in flight the reply went to whichever thread
+`notify()` happened to wake. That produced two failures at once, and both were observed on
+mast01 on 2026-09-08 while validating #218 and #212:
+
+- **the wrong caller returned someone else's answer** -- `PHD2GuiderStatus.is_settling` given
+  `{'temperature': 4.9}`, `cooler_power` given a `bool`; 26 such errors in ten minutes;
+- **the rightful caller never returned.** `notify()` wakes one waiter, and `call` re-checked
+  under `while not self.response`, so a caller whose reply had already been consumed had
+  nothing left to wake it. `GET /unit/status` and `GET /unit/imager/status` stopped answering
+  entirely -- three consecutive 60-second timeouts -- while `/mount/status` and
+  `/covers/status` answered in 0.6 s. The app was healthy; one path was blocked.
+
+It needs no unusual load. FastAPI serves each request on its own worker thread, so two
+overlapping `GET /unit/status` calls are enough; the 2 s `ontimer` and the expose path's
+`set_limit_frame` widen the window further. A 1 Hz status poll from one test client was what
+surfaced it.
+
+**What was decided:** a monotonic id per request, and a **`queue.SimpleQueue` per request**
+that the reader delivers into. `call` registers its slot and its id under one lock, writes,
+and waits on its own queue.
+
+The alternative -- keep the `Condition` and change `notify()` to `notify_all()`, with each
+waiter checking for its own reply -- also works, and was not chosen. It fixes the lost wake-up
+while keeping the shape that caused it: every reply still wakes every caller, and correctness
+still rests on each one re-checking a shared structure correctly. A private queue makes the
+class of bug unrepresentable rather than handled: there is no shared slot to take from, and
+`SimpleQueue.get(timeout=...)` is the wait, the wake-up and the timeout in one primitive.
+
+**Three things came with it.**
+
+- **A timeout.** `call` was unbounded, which is why the failure was a hang rather than an
+  error. `DEFAULT_RPC_TIMEOUT` is 30 s, with `set_connected` given 120 s since the equipment
+  connect is the one call here that does real work before answering. These are bounds against
+  a lost reply, not estimates of PHD2's working time -- every RPC in this file answers once
+  PHD2 has accepted the request, and progress arrives on the event stream.
+- **A lock around the send**, *inside* `PHD2Connection.write_line`. It loops on `socket.send`,
+  so two callers could interleave partial sends -- which does not produce two delayed requests
+  but two malformed ones, since PHD2 parses the stream line by line. Same root cause as the
+  crossed replies (unsynchronised shared access to one connection), so it belongs in the same
+  change. It sits on the connection rather than on `PHD2Connector` because what it protects is
+  that socket: a lock held by the caller has to be remembered by every future caller, and one
+  held by the object cannot be forgotten. It also keeps the connector at two locks -- its
+  pre-existing `self.lock` for connector state, and `_rpc_lock` for the ids and the pending
+  map -- rather than three.
+
+  The two are deliberately **not** merged. `_rpc_lock` is taken by the reader thread to deliver
+  a reply, and holding it across the send would mean a caller blocked in `send()` -- a full
+  socket buffer, a slow PHD2 -- stops the reader delivering *any* reply, and stops it
+  dispatching events too, since it is the same thread.
+- **The reader releases everyone on the way out.** `_worker` now wraps the read loop and fails
+  every pending caller in a `finally`. A connection that goes away is the other way a caller
+  waits for nothing, and it was silent before.
+
+An unmatched reply is now **logged and dropped** rather than handed to an arbitrary waiter.
+That line is the tell if any of this is ever wrong again.
+
+**Implications:** all 36 call sites are inside `phd2/phd2.py` and none changed. `call` can now
+raise `PHD2ConnectorError` where it previously blocked, which is the point -- but it means a
+caller that never handled a failing RPC now sees one. The reproduction is cheap on a unit:
+poll `GET /unit/status` at 1 Hz from two clients at once.
+
+**Not fixed here, and worth its own issue:** `Unit.status()` lets a guider exception take down
+the entire status response, which is why a crossed reply cost the whole unit its `status`
+rather than the guider section of it.
+
+---
+
+## [2026-09-08] Aborting an exposure run: a private event, not the activity flag
+
+**Why:** #212, reported from an on-sky run -- `/abort` during an exposure run raised and left
+the service unusable. The chain is: `abort_exposure()` ends `ImagerActivities.Exposing` but
+never sets `image_saved_event`, so the run thread is never released; `do_expose`'s `finally`
+never runs; the exposure series is never closed and the mount never stops tracking; and the
+next `/expose` overwrites `current_exposure_series`, so the eventual `end_exposure_series`
+raises `ValueError`.
+
+**Where the thread parks depends on the backend, and the issue names only one of the two
+places.** With the ASCOM backend it is *not* `wait_for_image_saved()`: `start_exposure` waits
+for the save **inline**, so by the time `_expose_repeatedly` reaches `wait_for_image_saved()`
+the image is long since saved and that call returns at once. With the PHD2 and ZWO backends
+`start_exposure` returns immediately and the wait is where the issue says. A fix aimed at one
+of the two would have looked right and changed nothing on half the fleet -- and mast01, where
+this was measured, runs the PHD2 backend.
+
+**What was decided.** Two mechanisms, each owned by the component it belongs to, and
+deliberately not one shared one:
+
+- **The imager releases its own waiters -- all three of them.** `abort_exposure()` sets
+  `image_saved_event` and `image_ready_event` after ending the activity, because no readout
+  is coming to set them, and `start_exposure` clears them so a release left unconsumed by one
+  frame cannot end the next frame's wait early. On ASCOM the waits also re-check what they
+  were waiting for on waking (the existing checks run *before* the wait, which is why they
+  cannot release a caller already inside one) and `start_exposure` reports the frame as failed
+  rather than returning as though an image had been taken. This is correct however the abort
+  arrived, and needs no knowledge of the unit.
+
+  **The requirement now lives on `ImagerInterface`** (`common/interfaces/imager.py`), because
+  all three implementations had the identical hole -- stop the sensor, return, leave the caller
+  parked on an event nothing will ever set. It was never an ASCOM quirk; it was an unstated
+  half of what `abort_exposure` means, and a fourth backend would have rediscovered it.
+  `PHD2Connector.endpoint_abort` additionally called `stop_capture()` and nothing else, so the
+  route `Unit.abort` actually takes left the imager reporting `Exposing`; it goes through
+  `abort_exposure` now.
+- **The unit stops its own loop**, through a private `threading.Event`,
+  `Unit._expose_cancelled`, read at three sites in `_expose_repeatedly`: before each frame,
+  after the wait returns and before the frame is moved to the shared store, and as the
+  timeout of the cadence hold, which replaces a bare `time.sleep`.
+
+**The event is not the activity flag, and that is the point.** The house protocol -- stated
+in `Unit.abort` and followed by `stop_acquisition_and_guiding` and `stop_autofocus` -- is that
+a stop verb clears the activity flag and the long body polls it. Following that here would
+have reopened the bug being fixed: clearing `UnitActivities.Exposing` opens `expose`'s
+one-run-at-a-time guard **while the old thread is still between its wait and its `finally`**,
+so a second run arriving in that window overwrites the series the first is about to close and
+hands it the same `ValueError`. Keeping the flag up until `do_expose` has really unwound is
+what makes the completion signal mean what #218 published it to mean.
+
+The cost is a second piece of state, and it is held to being **private and small on purpose**:
+no enum member, nothing in `status`, nothing on the wire, three read sites all in one function.
+It is a stand-in for cancellation the language should provide -- #81's `asyncio.to_thread`
+dispatch would replace it with real task cancellation, and a general per-operation handle would
+subsume it -- so it is written to be lifted out whole rather than grown into a mode.
+
+**`seconds_between_exposures` is now `cadence_seconds`.** The number was always start-to-start
+cadence while the name promised a gap between exposures, which is what produced the reported
+`sleeping 54 seconds` after a 6-second exposure at 60. The behavior is the one operators
+expect and is kept: an exposure that overruns the period does not shorten the next or skip it,
+the run simply falls behind, and that is now stated on the endpoint and logged when it happens.
+Only the name and the documentation change. `(end - now).seconds` -- the seconds-of-day
+component of a timedelta, which drops the sub-second remainder -- becomes `.total_seconds()`.
+
+The old name survives as a **deprecated parameter that is refused**, because FastAPI ignores a
+query parameter it does not recognise: a stale Swagger URL or a saved call would otherwise be
+answered `Ok`, run with no pacing at all, and say nothing about why. A rename on a
+hand-driven endpoint has to be loud in both places, not just in the schema. It is marked
+`deprecated=True` so Swagger strikes it through, and carries an audit date -- **2026-11-08** --
+after which the parameter and its refusal are deleted if nothing is still sending it.
+
+**Implications:** `/abort` ends an exposure run at the next frame boundary instead of wedging
+it, and the run's frames stop being moved after the point of cancellation. One item of #212
+needed nothing: aborting every component independently already landed on `main` with the
+`attempt()` helper.
+
+Measured on mast01, 2026-09-08, on the PHD2 backend: `/abort` 9 s into a 20 s frame produced
+`SingleFrameComplete(success=False)` 5.7 s later, then `cancelled during exposure #0 (of 3);
+no frame to move`, the series closed, `stopped tracking (from do_expose)`, and the flag ended
+at 17.12 s. No frame was written for the cancelled exposure, an `/expose` issued straight
+afterwards was accepted and completed, and no `Cannot end exposure series` appeared. So PHD2
+*does* emit the completion event for a stopped single-frame capture -- which makes the release
+above insurance rather than the only thing standing between an abort and a wedged service. It
+is kept because the wait is unbounded and that event is the only thing that ever sets it: a
+stop that races the capture, or an RPC that never answers (#220), still parks the caller.
+
+---
+
+## [2026-09-08] `/expose` refuses a second run, because one flag bit cannot describe two
+
+**Why:** #218. `PUT /unit/expose` dispatched `expose-thread` and answered `Ok`, which meant
+only that a thread had been started -- whether the run was exposing, finished, or had died in
+`mount.start_tracking()` was not observable from the API at all. The answer is the completion
+signal every operation that outlives its response is supposed to publish (#43, invariant 3):
+`UnitActivities.Exposing`, raised by the endpoint and cleared by the thread.
+
+That flag is one bit, and one bit cannot represent two concurrent runs. The first to finish
+would clear it while the second was still exposing, publishing a completion that had not
+happened -- and a false signal is worse than no signal, because a client waits on it with
+nothing looking wrong. So the flag and the refusal are one change rather than two.
+
+**What was decided:** a second `PUT /unit/expose` arriving while a run is in flight is
+**refused**, not queued, and refused **ahead of the slew**, so it cannot point the telescope
+somewhere else while the run already going is exposing. Queuing was rejected because `expose`
+is an operator verb driven by hand: a request silently deferred by an unknown number of
+minutes is harder to act on than one that comes straight back saying no.
+
+Two smaller choices belong to the same edit. The flag is raised in the **endpoint**, not in
+`do_expose`, because `Thread.start()` returns once the thread has begun bootstrapping and not
+once the target body runs -- raising it in the thread leaves a window where the caller holds
+`Ok` and the unit reads idle. And it is cleared in `do_expose`'s **outermost** `finally`,
+outside the one that closes the exposure series, because `mount.start_tracking()` and
+`imager.start_exposure_series()` sit outside that try and either can raise; a flag stranded
+there would describe a run that never ends, for the life of the process.
+
+The ROI and offset parameters are now validated **before** the slew. They are pure, they were
+checked after it, and a rejected offset list therefore left the telescope somewhere new and
+returned an error about a parameter. Validating first also leaves the flag with exactly one
+start site and one end site, which is what the static check in
+`tests/contract/test_completion_flags.py` can see all of.
+
+**Implications:** `endpoint_execute_assignment` refuses on `not self.is_idle()`, so a
+hand-driven exposure now blocks a controller assignment on the same camera. That is the right
+reading of "busy" and was not the case before. #212 asked for this same in-flight state for
+its own reasons and can now build on it -- `abort` clearing `Exposing`, and the repeat loop
+and its `time.sleep` honoring it, are that issue's work and are deliberately not here.
+
+`.github/workflows/ci.yml` carries a **temporary pin** to `MAST_common`'s branch of the same
+name for the life of this pair, and is reverted to `master` before merge. Without it the
+suite dies at collection on `UnitActivities.Exposing` and reports nothing else; #208 is the
+standing fix, and #178 R3 records the previous time this was paid by hand.
+
+---
+
 ## [2026-09-06] Live configuration is a per-attribute property, not a per-section one
 
 **Why:** #214. `dece718` converted each component's `conf` to a property over `unit_conf` and

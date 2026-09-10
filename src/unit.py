@@ -6,6 +6,7 @@ import os
 import socket
 import threading
 import time
+from collections.abc import Callable
 from enum import Enum
 from itertools import chain
 from pathlib import Path
@@ -125,6 +126,19 @@ class Unit(Component):
         Component.__init__(self, UnitActivities)
 
         self._connected: bool = False
+
+        # Cancellation for the exposure run, and nothing else. It is deliberately private
+        # and deliberately NOT a second public state: `UnitActivities.Exposing` stays the
+        # one thing a client watches, and keeps meaning "a run is in flight" -- cleared
+        # only once `do_expose` has really unwound. If abort cleared that flag instead
+        # (the protocol `abort` describes), the guard in `expose` would open while the old
+        # thread was still between its wait and its `finally`, and a prompt second run
+        # would overwrite `current_exposure_series` and hand the old thread a ValueError.
+        #
+        # Three read sites, all in `_expose_repeatedly`, so it can be lifted out whole:
+        # #81's asyncio dispatch would replace it with real task cancellation, and a
+        # general per-operation handle would subsume it. Do not grow it into a mode.
+        self._expose_cancelled: threading.Event = threading.Event()
 
         self.was_tracking_before_guiding: bool = False
 
@@ -361,6 +375,28 @@ class Unit(Component):
         return serialize_ip_addresses(self.status())
 
     def status(self) -> FullUnitStatus:
+        """The unit's own state plus every component's, with one component's failure contained.
+
+        `status` is what a caller reaches for when something is **already** wrong, so a sick
+        component is the moment the rest of the picture matters most. Reading the nine live
+        values inline meant any one of them raising cost the caller the whole response -- no
+        mount, no covers, no activity flags -- which is how a crossed PHD2 reply took the unit's
+        entire status down on 2026-09-08 while every other component answered normally (#222).
+
+        Same shape as `abort`, and for the same reason: attempt each independently, collect
+        what failed, and report it rather than swallow it.
+        """
+        op = function_name()
+        failures: list[str] = []
+
+        def report(what: str, read: Callable, default: Any = None) -> Any:
+            try:
+                return read()
+            except Exception as ex:  # noqa: BLE001 -- one sick component must not cost the rest
+                logger.exception(f"{op}: reading {what} failed")
+                failures.append(f"{what}: unavailable ({ex})")
+                return default
+
         autofocus = (
             {
                 "success": self.autofocus_result.success,
@@ -395,22 +431,35 @@ class Unit(Component):
             **self.component_status().model_dump(),
             id=id(self),
             powered=True,
-            guiding=self.guider.is_guiding if self.guider else False,
-            autofocusing=self.autofocuser.is_autofocusing if self.autofocuser else False,
-            power_switch=self.power_switch.status() if self.power_switch else None,
-            mount=self.mount.status() if self.mount else None,
-            imager=self.imager.status() if self.imager else None,  # type: ignore
-            covers=self.covers.status() if self.covers else None,
-            focuser=self.focuser.status() if self.focuser else None,
-            stage=self.stage.status() if self.stage else None,
-            guider=self.guider.status() if self.guider else None,  # type: ignore
+            # `is_guiding` reaches PHD2 over the RPC and `is_autofocusing` reads the unit's
+            # connection state, so these two are live reads like the seven below them, not
+            # attribute lookups.
+            guiding=report("guider.is_guiding", lambda: self.guider.is_guiding, default=False) if self.guider else False,
+            autofocusing=(
+                report("autofocuser.is_autofocusing", lambda: self.autofocuser.is_autofocusing, default=False)
+                if self.autofocuser
+                else False
+            ),
+            power_switch=report("power_switch.status", self.power_switch.status) if self.power_switch else None,
+            mount=report("mount.status", self.mount.status) if self.mount else None,
+            imager=report("imager.status", self.imager.status) if self.imager else None,  # type: ignore
+            covers=report("covers.status", self.covers.status) if self.covers else None,
+            focuser=report("focuser.status", self.focuser.status) if self.focuser else None,
+            stage=report("stage.status", self.stage.status) if self.stage else None,
+            guider=report("guider.status", self.guider.status) if self.guider else None,  # type: ignore
+            # Through `report` like its neighbours: `has_run` is a plain attribute, but
+            # `status()` walks the step list and a sick run must not cost the whole status.
             # None until a run has happened, so the field costs nothing on a unit that never
             # meters flux -- and stays populated afterwards, so the last run's dx/dy and its
             # flux curve are readable from the unit's own status rather than only from the
             # products on the share.
-            flux_metering=self.flux_metering.status() if self.flux_metering.has_run else None,
+            flux_metering=(
+                report("flux_metering.status", self.flux_metering.status) if self.flux_metering.has_run else None
+            ),
             # solver= self.solver.status(),
-            errors=self.errors,
+            # A new list: `self.errors` is the unit's own standing errors, and a read that
+            # failed on this request must not be appended to it.
+            errors=self.errors + failures,
             autofocus=autofocus,
             corrections=all_corrections,
             date=time_stamp(),
@@ -450,10 +499,23 @@ class Unit(Component):
         operation really stopped watches its flag clear in `status`, the same mechanism
         every `completion=<flag>` endpoint already publishes.
 
+        **The exposure run is the one exception, and on purpose.** It is cancelled through
+        `_expose_cancelled` rather than by clearing `UnitActivities.Exposing`, so that flag
+        goes on meaning "a run is in flight" until the thread has closed its exposure series
+        and stopped tracking. Clearing it here would open `expose`'s one-run-at-a-time guard
+        while the old thread was still unwinding, and a second run arriving in that window
+        overwrites the series the first is about to close (#212).
+
         Each sub-abort is attempted independently, and a failure in one is collected
         rather than allowed to skip the others.
         """
         errors: list[str] = []
+
+        # Before the sub-aborts, so the run cannot start another frame in the gap. The
+        # imager's own abort, fired below with the rest of the components, is what releases
+        # a thread already parked waiting for a readout that is no longer coming.
+        if self.is_active(UnitActivities.Exposing):
+            self._expose_cancelled.set()
 
         def attempt(what: str, action):
             try:
@@ -657,7 +719,7 @@ class Unit(Component):
             except Exception:
                 logger.exception("websocket.send error")
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=UnitActivities.Exposing)
     def expose(
         self,
         ra_j2000_hours: Annotated[
@@ -689,7 +751,30 @@ class Unit(Component):
         subfolder: str | None = None,
         exposure_seconds: float = 3,
         repeats: int = 1,
-        seconds_between_exposures: float = 0,
+        cadence_seconds: Annotated[
+            float,
+            Query(
+                description=(
+                    "#### Seconds from one exposure **start** to the next.\n"
+                    "- omitted or `0` - no pacing; each exposure follows the one before\n"
+                    "- otherwise the run is paced to this period, measured start to start\n"
+                    "- an exposure that overruns the period does **not** shorten the next "
+                    "one or skip it: the cadence is best-effort, and the run simply falls "
+                    "behind"
+                ),
+            ),
+        ] = 0,
+        # DEPRECATED 2026-09-08, audit 2026-11-08 -- delete this parameter and its refusal
+        # below once nothing is still sending it. It is here because FastAPI ignores a query
+        # parameter it does not know: without it a stale Swagger URL or a saved call would
+        # be answered `Ok`, run with no pacing whatsoever, and say nothing about why.
+        seconds_between_exposures: Annotated[
+            float | None,
+            Query(
+                deprecated=True,
+                description="**Renamed to `cadence_seconds`.** Supplying this is refused; it is not read.",
+            ),
+        ] = None,
         fiber_x: int | None = None,
         fiber_y: int | None = None,
         width: int | None = None,
@@ -735,8 +820,22 @@ class Unit(Component):
         ] = None,
     ) -> CanonicalResponse:
 
+        if seconds_between_exposures is not None:
+            return CanonicalResponse(
+                errors=[
+                    "expose: seconds_between_exposures was renamed to cadence_seconds, and is "
+                    "seconds from one exposure start to the next"
+                ]
+            )
+
         if self.imager is None:
             return CanonicalResponse(errors=["imager is not initialized"])
+
+        # Ahead of the slew: a second call must not move the mount out from under a run in
+        # flight, and one flag bit cannot represent two runs -- the first to finish would
+        # clear it while the second is still exposing.
+        if self.is_active(UnitActivities.Exposing):
+            return CanonicalResponse(errors=["expose: an exposure run is already in flight"])
 
         # Both or neither. A coordinate on its own used to be accepted and then quietly
         # dropped: the slew below requires BOTH to be floats, so supplying only RA meant
@@ -769,14 +868,8 @@ class Unit(Component):
             except ValueError as e:
                 return CanonicalResponse(errors=[f"expose: bad dec_j2000_degs '{dec_j2000_degs}' -- {e}"])
 
-        assert self.mount is not None
-        if (ra_j2000_hours is not None and isinstance(ra_j2000_hours, float)) and (
-            dec_j2000_degs is not None and isinstance(dec_j2000_degs, float)
-        ):
-            logger.info(f"slewing mount to ra={ra_j2000_hours}, dec={dec_j2000_degs}")
-            self.mount.goto_ra_dec_j2000(ra=ra_j2000_hours, dec=dec_j2000_degs)
-            self.mount.wait_until_settled(SettleMode.SLEW)
-
+        # Every parameter is checked before the mount is commanded: these are pure, and a
+        # rejected offset list must not leave the telescope somewhere new.
         try:
             ra_offsets = resolve_offsets(ra_offsets, repeats, "ra_offsets")
             dec_offsets = resolve_offsets(dec_offsets, repeats, "dec_offsets")
@@ -790,6 +883,20 @@ class Unit(Component):
         except ValueError as e:
             return CanonicalResponse(errors=[f"expose: {e}"])
 
+        assert self.mount is not None
+        if (ra_j2000_hours is not None and isinstance(ra_j2000_hours, float)) and (
+            dec_j2000_degs is not None and isinstance(dec_j2000_degs, float)
+        ):
+            logger.info(f"slewing mount to ra={ra_j2000_hours}, dec={dec_j2000_degs}")
+            self.mount.goto_ra_dec_j2000(ra=ra_j2000_hours, dec=dec_j2000_degs)
+            self.mount.wait_until_settled(SettleMode.SLEW)
+
+        # Raised here, not in the thread body: Thread.start() returns once the thread has
+        # begun bootstrapping, not once the target runs, so a caller that polls the instant
+        # it sees this Ok would find the unit idle and read the run as already over.
+        # do_expose's outermost `finally` is what ends it.
+        self._expose_cancelled.clear()
+        self.start_activity(UnitActivities.Exposing, details=[f"{repeats} x {exposure_seconds}s"])
         Thread(
             name="expose-thread",
             target=self.do_expose,
@@ -799,7 +906,7 @@ class Unit(Component):
                 repeats,
                 ra_offsets,
                 dec_offsets,
-                seconds_between_exposures,
+                cadence_seconds,
                 fiber_x,
                 fiber_y,
                 width,
@@ -817,7 +924,7 @@ class Unit(Component):
         repeats: int = 1,
         ra_offsets: list[float] | None = None,
         dec_offsets: list[float] | None = None,
-        seconds_between_exposures: float = 0,
+        cadence_seconds: float = 0,
         fiber_x: int = 6000,
         fiber_y: int = 2500,
         width: int = 1500,
@@ -832,34 +939,40 @@ class Unit(Component):
         op = function_name()
         seconds = exposure_seconds
 
-        self.mount.start_tracking()
-        exposure_series = self.imager.start_exposure_series(purpose="unit.do_exposure")
         try:
-            self._expose_repeatedly(
-                repeats,
-                seconds,
-                subfolder,
-                gain,
-                binning,
-                fiber_x,
-                fiber_y,
-                width,
-                height,
-                ra_offsets,
-                dec_offsets,
-                seconds_between_exposures,
-            )
-        except Exception:
-            # This runs in `expose-thread`, where an exception would otherwise vanish
-            # entirely -- the endpoint has already returned "ok" to the caller. Logging
-            # is the only trace there is; the finally below is what stops the mount
-            # tracking forever and the exposure series dangling.
-            logger.exception(f"{op}: exposure run failed")
-            return CanonicalResponse(errors=[f"{op}: exposure run failed, see the log"])
+            self.mount.start_tracking()
+            exposure_series = self.imager.start_exposure_series(purpose="unit.do_exposure")
+            try:
+                self._expose_repeatedly(
+                    repeats,
+                    seconds,
+                    subfolder,
+                    gain,
+                    binning,
+                    fiber_x,
+                    fiber_y,
+                    width,
+                    height,
+                    ra_offsets,
+                    dec_offsets,
+                    cadence_seconds,
+                )
+            except Exception:
+                # This runs in `expose-thread`, where an exception would otherwise vanish
+                # entirely -- the endpoint has already returned "ok" to the caller. Logging
+                # is the only trace there is; the finally below is what stops the mount
+                # tracking forever and the exposure series dangling.
+                logger.exception(f"{op}: exposure run failed")
+                return CanonicalResponse(errors=[f"{op}: exposure run failed, see the log"])
+            finally:
+                self.imager.end_exposure_series(exposure_series)
+                self.mount.stop_tracking()
+            return CanonicalResponse_Ok
         finally:
-            self.imager.end_exposure_series(exposure_series)
-            self.mount.stop_tracking()
-        return CanonicalResponse_Ok
+            # Outside the inner try, because start_tracking() and start_exposure_series()
+            # are outside it too: either can raise, and the flag `expose` raised would then
+            # be stranded set for the life of the process, with the run visibly never over.
+            self.end_activity(UnitActivities.Exposing)
 
     def _expose_repeatedly(
         self,
@@ -874,16 +987,19 @@ class Unit(Component):
         height: int,
         ra_offsets: list[float] | None,
         dec_offsets: list[float] | None,
-        seconds_between_exposures: float,
+        cadence_seconds: float,
     ) -> None:
         assert self.mount is not None
         assert self.imager is not None
         op = function_name()
         for repeat in range(repeats):
-            end = None
-            if seconds_between_exposures != 0.0:
-                start = datetime.datetime.now(tz=datetime.UTC)
-                end = start + datetime.timedelta(seconds=seconds_between_exposures)
+            if self._expose_cancelled.is_set():
+                logger.info(f"{op}: cancelled before exposure #{repeat} (of {repeats})")
+                return
+
+            next_start = None
+            if cadence_seconds != 0.0:
+                next_start = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(seconds=cadence_seconds)
 
             unit_roi = UnitRoi(fiber_x, fiber_y, width, height)
             default_folder = PathMaker().make_exposures_folder()
@@ -913,14 +1029,27 @@ class Unit(Component):
                 with MoveGuardian().protect(image_path):
                     self.imager.start_exposure(imager_settings)
                     self.imager.wait_for_image_saved()
+                # An aborted exposure is released without a readout, so there is no file
+                # here to move and `move_ram_to_shared` would be the next exception.
+                if self._expose_cancelled.is_set():
+                    logger.info(f"{op}: cancelled during exposure #{repeat} (of {repeats}); no frame to move")
+                    return
                 filer.move_ram_to_shared(image_path)
 
-            if end is not None and seconds_between_exposures != 0.0:
-                now = datetime.datetime.now(tz=datetime.UTC)
-                if now < end:
-                    period = (end - now).seconds
-                    logger.info(f"{op}: sleeping {period} seconds till next exposure ...")
-                    time.sleep(period)
+            if next_start is not None:
+                # total_seconds(), not `.seconds`, which is the seconds-of-day component of
+                # a timedelta and drops the sub-second remainder.
+                period = (next_start - datetime.datetime.now(tz=datetime.UTC)).total_seconds()
+                if period > 0:
+                    logger.info(f"{op}: holding the {cadence_seconds}s cadence, {period:.1f}s to the next start ...")
+                    if self._expose_cancelled.wait(timeout=period):
+                        logger.info(f"{op}: cancelled while holding the cadence")
+                        return
+                else:
+                    logger.info(
+                        f"{op}: exposure #{repeat} overran the {cadence_seconds}s cadence "
+                        f"by {-period:.1f}s; starting the next one now"
+                    )
 
             if ra_offsets is not None or dec_offsets is not None:
                 if ra_offsets is not None and dec_offsets is not None:

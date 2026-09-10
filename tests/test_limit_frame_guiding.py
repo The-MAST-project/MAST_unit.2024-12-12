@@ -64,6 +64,7 @@ def make_connector(limit_frame: LimitFrameConfig | None = None) -> PHD2Connector
     p.lock = threading.Lock()
     p.errors = []
     p.app_state = ""
+    p.image_saved_event = threading.Event()
     p.call = MagicMock(name="call", return_value={})
     doc = dict(LEGACY_PHD2_DOC)
     if limit_frame is not None:
