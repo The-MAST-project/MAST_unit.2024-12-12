@@ -780,7 +780,7 @@ def _fake_solver(monkeypatch, *, result=None, raises=None, delay=0.0, recorder=N
 
 
 def _solution(**kw):
-    from common.solving import SolvingResult, SolvingSolution
+    from common.interfaces.solving import SolvingResult, SolvingSolution
 
     base = {"ra_hours": 3.967, "dec_degs": -13.51, "pixel_scale": 0.524085, "rotation_angle_degs": 158.559}
     return SolvingResult(succeeded=True, solution=SolvingSolution(**{**base, **kw}))
@@ -834,7 +834,7 @@ def test_a_solver_that_raises_does_not_fail_the_run(session, tmp_path, monkeypat
 
 
 def test_a_refusal_to_solve_is_recorded_rather_than_raised(session, tmp_path, monkeypatch):
-    from common.solving import SolvingResult
+    from common.interfaces.solving import SolvingResult
 
     _fake_solver(monkeypatch, result=SolvingResult(succeeded=False, errors=["too few sources"]))
     s, _unit = _ready(session, tmp_path)

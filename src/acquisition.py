@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING, Any
 from common import asi
 from common.corrections import Corrections
 from common.filer import Filer, MoveGuardian
+from common.interfaces.solving import SolverId
 from common.mast_logging import get_logger
 from common.paths import PathMaker
-from common.solving import SolverId
 from plotting import plot_acquisition_corrections, plot_phase_corrections
 
 if TYPE_CHECKING:
