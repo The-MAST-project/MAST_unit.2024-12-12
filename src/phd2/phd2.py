@@ -415,7 +415,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.restart_event: threading.Event = threading.Event()
 
         self.sky_quality: SeeingQualityWhilePHD2Guiding = SeeingQualityWhilePHD2Guiding()
-        self.lock_supervisor: GuideLockSupervisor = GuideLockSupervisor(config=self.conf.lock_validity)
+        self.lock_supervisor: GuideLockSupervisor = GuideLockSupervisor()
 
         phd2_exe = locate_phd2_exe()
         if phd2_exe is None:
@@ -627,7 +627,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 background=ev.get("Background"),
                 background_sigma=ev.get("BackgroundSigma"),
                 lost=lost,
-            )
+            ),
+            # Read live: a threshold edited in the controller DB must take effect on
+            # the next frame, not at the next restart. Snapshotting configuration is
+            # how a mid-session phd2.settle edit became a silent no-op on 2026-09-02.
+            config=self.conf.lock_validity,
         )
         if state.entered_not_a_star:
             # Once per episode, not once per frame. The lost-star beep of

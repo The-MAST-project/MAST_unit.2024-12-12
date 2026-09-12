@@ -34,6 +34,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from common.config.phd2 import LockValidityConfig
+
 # ---------- models ----------
 
 
@@ -67,48 +69,6 @@ class LockMetrics(BaseModel):
     background_sigma: float | None = None
     lost: bool = False
     guiding_paused: bool = False
-
-
-class LockValidityConfig(BaseModel):
-    #: Frames before the session scale is trusted. Eight is ~113 s at the measured
-    #: 9.58 s cadence. Below it the 2026-09-08 replay produces a false alarm; above
-    #: it nothing improves, and the closest sound frame sits 1.34x clear of the cut.
-    warmup_frames: int = Field(default=8, ge=3, le=200)
-
-    #: How many masses the scale is taken over. Sixty is ~10 minutes -- long enough
-    #: to be stable, short enough to follow a field change after a re-guide.
-    scale_window_frames: int = Field(default=60, ge=10, le=1000)
-
-    #: Below this fraction of the session scale the lock is not that object. The
-    #: empty band on 2026-09-08 runs 0.021 to 0.085, so 0.05 sits in the middle of
-    #: a region containing no frames at all.
-    artifact_mass_fraction: float = Field(default=0.05, gt=0.0, lt=1.0)
-
-    #: Stateless test. A real star's peak stands clear of the sky; an artifact's
-    #: peak *is* the sky. Expressed in sigma so it is free of the exposure, the
-    #: gain and the moon -- an absolute ADU threshold is none of those things.
-    min_peak_sigma_over_background: float = Field(default=15.0, gt=0)
-
-    #: Stateless test, second half: flux per unit peak. A star fills the aperture
-    #: and gives ~40; a few noise pixels over threshold give ~5. Set between them,
-    #: nearer the artifacts, because a bright star with a tight core lands low.
-    min_mass_over_peak: float = Field(default=12.0, gt=0)
-
-    #: Frames a verdict must persist before the state changes. One frame of bad
-    #: seeing should not flip the state, and one good frame should not clear it.
-    hysteresis_frames: int = Field(default=2, ge=1, le=20)
-
-    #: Without the PHD2 build that reports peak and background, run the session
-    #: test alone rather than refusing to run. False is the honest default: half a
-    #: check is better than none, and the log says which half is missing.
-    require_background: bool = False
-
-    #: **Does reaching NotAStar stop the guiding?** Detection and action are
-    #: separate switches on purpose. The supervisor is meant to run for a night
-    #: reporting only, so the state can be read against what actually happened
-    #: before anything acts on it -- and so the action can be withdrawn without
-    #: losing the signal if it proves too eager.
-    end_guiding_on_not_a_star: bool = False
 
 
 class LockValidityState(BaseModel):
@@ -163,9 +123,16 @@ class GuideLockSupervisor(BaseModel):
         self._pending_count = 0
         self.state = LockValidityState()
 
-    def update(self, frame: LockMetrics) -> LockValidityState:
+    def update(self, frame: LockMetrics, config: LockValidityConfig | None = None) -> LockValidityState:
+        """Judge one frame.
+
+        `config` is passed per frame rather than held, so a threshold edited in the
+        controller DB takes effect on the next frame instead of at the next restart.
+        The connector that owns this reads `unit_conf.phd2.lock_validity` live and
+        hands it in; the default is only for tests and for a caller with no DB.
+        """
+        config = config or self.config
         state = self.state
-        config = self.config
         state.entered_not_a_star = False
 
         if frame.guiding_paused:
@@ -176,11 +143,11 @@ class GuideLockSupervisor(BaseModel):
 
         if frame.lost or not frame.star_mass:
             state.frame_verdict = LockValidity.NoLock
-            self._settle(LockValidity.NoLock, ["PHD2 reported no usable star"])
+            self._settle(LockValidity.NoLock, ["PHD2 reported no usable star"], config)
             return state
 
-        stateless_bad = self._stateless_verdict(frame, reasons)
-        session_bad = self._session_verdict(frame, reasons)
+        stateless_bad = self._stateless_verdict(frame, reasons, config)
+        session_bad = self._session_verdict(frame, reasons, config)
 
         if stateless_bad or session_bad:
             verdict = LockValidity.NotAStar
@@ -199,12 +166,12 @@ class GuideLockSupervisor(BaseModel):
             while len(self._scale_window) > config.scale_window_frames:
                 self._scale_window.popleft()
 
-        self._settle(verdict, reasons)
+        self._settle(verdict, reasons, config)
         return state
 
     # ---------- the two tests ----------
 
-    def _stateless_verdict(self, frame: LockMetrics, reasons: list[str]) -> bool:
+    def _stateless_verdict(self, frame: LockMetrics, reasons: list[str], config: LockValidityConfig) -> bool:
         """Does this lock stand above the sky, and does its light fill the aperture?
 
         Needs nothing remembered, so it is the only thing with an opinion during
@@ -212,7 +179,6 @@ class GuideLockSupervisor(BaseModel):
         artifact -- where the session scale is itself the artifact.
         """
         state = self.state
-        config = self.config
         state.peak_sigma_over_background = None
         state.mass_over_peak = None
 
@@ -238,10 +204,9 @@ class GuideLockSupervisor(BaseModel):
         # faint one in a bright sky sits low on peak-over-sky.
         return len(reasons) >= 2
 
-    def _session_verdict(self, frame: LockMetrics, reasons: list[str]) -> bool:
+    def _session_verdict(self, frame: LockMetrics, reasons: list[str], config: LockValidityConfig) -> bool:
         """This frame's mass against the brightness the session established."""
         state = self.state
-        config = self.config
         if len(self._scale_window) < config.warmup_frames:
             state.session_mass_scale = None
             state.mass_fraction = None
@@ -258,7 +223,7 @@ class GuideLockSupervisor(BaseModel):
 
     # ---------- state transitions ----------
 
-    def _settle(self, verdict: LockValidity, reasons: list[str]) -> None:
+    def _settle(self, verdict: LockValidity, reasons: list[str], config: LockValidityConfig) -> None:
         """Hold a verdict for `hysteresis_frames` before it becomes the state.
 
         One frame of bad seeing should not flip the state, and one lucky frame
@@ -266,7 +231,6 @@ class GuideLockSupervisor(BaseModel):
         findings, so they apply at once.
         """
         state = self.state
-        config = self.config
 
         if verdict in (LockValidity.WarmingUp, LockValidity.Unknown) or verdict == state.validity:
             self._pending = None
