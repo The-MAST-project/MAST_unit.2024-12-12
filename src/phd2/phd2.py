@@ -26,13 +26,20 @@ from common.interfaces.guiding import GuiderInterface
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface
 from common.mast_logging import get_logger
 from common.models.latest import LatestGuidingSkyQuality
-from common.models.statuses import ImagerRoi, ImagerSettings, PHD2GuiderStatus, PHD2ImagerStatus
+from common.models.statuses import (
+    ImagerRoi,
+    ImagerSettings,
+    LockValidityStatus,
+    PHD2GuiderStatus,
+    PHD2ImagerStatus,
+)
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, Timeout, boxed_debug, function_name
 from failure_streaks import FailureStreaks
 from phd2.fits_header import stamp_cooling
 from phd2.limit_frame import limit_frame_accepted, limit_frame_covers_sensor, limit_frame_extent
 from phd2.phd2_locate import locate_phd2_exe
+from science.lock_validity import GuideLockSupervisor, LockMetrics
 from science.sky_quality import GuidingSkyQuality
 from stage import StagePresetPosition
 
@@ -441,6 +448,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.restart_event: threading.Event = threading.Event()
 
         self.sky_quality = GuidingSkyQuality()
+        self.lock_supervisor: GuideLockSupervisor = GuideLockSupervisor(config=self.conf.lock_validity)
 
         phd2_exe = locate_phd2_exe()
         if phd2_exe is None:
@@ -674,6 +682,37 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def _is_guiding(st):
         return st == "Guiding" or st == "LostLock"
 
+    def _update_lock_validity(self, ev, lost: bool = False) -> None:
+        """Feed one PHD2 event to the lock supervisor and log a change of state.
+
+        `Peak`, `Background` and `BackgroundSigma` arrive only from PHD2
+        2.6.14dev1mastbuild5 onward; on an older build they are absent and the
+        supervisor falls back to the session-scale test alone, which is why they
+        are read with `.get` rather than asserted.
+        """
+        previous = self.lock_supervisor.state.validity
+        state = self.lock_supervisor.update(
+            LockMetrics(
+                star_mass=ev.get("StarMass") or 0.0,
+                snr=ev.get("SNR") or 0.0,
+                hfd_pixels=ev.get("HFD") or 0.0,
+                peak=ev.get("Peak"),
+                background=ev.get("Background"),
+                background_sigma=ev.get("BackgroundSigma"),
+                lost=lost,
+            )
+        )
+        if state.entered_not_a_star:
+            # Once per episode, not once per frame. The lost-star beep of
+            # 2026-09-08 fired 635 times because it keyed on the condition
+            # rather than its onset, and was switched off for being useless.
+            logger.error(
+                f"{function_name()}: guiding is NOT on a star: {'; '.join(state.reasons)} "
+                f"(mass_fraction={state.mass_fraction}, scale={state.session_mass_scale})"
+            )
+        elif state.validity is not previous:
+            logger.info(f"{function_name()}: lock validity {previous} -> {state.validity}")
+
     @staticmethod
     def _get_accumulated_stats(ra, dec):
         stats = PHD2GuideStats()
@@ -756,6 +795,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     self.parent.unit.start_activity(UnitActivities.PreGuiding)
                     threading.Thread(target=self.do_fcu_v2_spec_handover).start()
 
+                # A new session is a new field and a new brightness scale. Carrying
+                # the old one across a re-guide would judge a faint field against a
+                # bright field's median -- the error an absolute threshold makes.
+                self.lock_supervisor.reset()
                 self.start_activity(PHD2Activities.Guiding)
                 self._start_sky_quality()
                 if self.guiding_verification_timer is not None:
@@ -835,6 +878,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     if not self.sky_quality.running:  # guiding when the unit (re)connected
                         self._start_sky_quality()
                     self.sky_quality.guide_step(ev)
+                self._update_lock_validity(ev)
 
             case "SettleBegin":
                 self.start_activity(PHD2Activities.Settling)
@@ -979,6 +1023,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 with self.lock:
                     self.app_state = "LostLock"
                     self.avg_dist = ev["AvgDist"]
+                self._update_lock_validity(ev, lost=True)
                 # | Attribute | Type | Description |
                 # |:----------|:-----|:------------|
                 # | Frame     | number | frame number |
@@ -1621,12 +1666,22 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         wrapper came to pass `capacity="imager"` to ASCOM and ZWO, neither of
         which takes an argument: `/imager/status` was a 500 on both (#100).
         """
+        lock = self.lock_supervisor.state
         return PHD2GuiderStatus(
             identifier=self.identifier,
             is_guiding=self.is_guiding,
             is_settling=self.is_settling(),
             app_state=self.app_state,
             avg_dist=self.avg_dist,
+            lock_validity=LockValidityStatus(
+                validity=str(lock.validity),
+                frame_verdict=str(lock.frame_verdict),
+                mass_fraction=lock.mass_fraction,
+                session_mass_scale=lock.session_mass_scale,
+                peak_sigma_over_background=lock.peak_sigma_over_background,
+                mass_over_peak=lock.mass_over_peak,
+                reasons=lock.reasons,
+            ),
         )
 
     @property
