@@ -86,7 +86,7 @@ class LockValidityState(BaseModel):
     mass_fraction: float | None = None
     #: The stateless pair, None when the build does not report background.
     peak_sigma_over_background: float | None = None
-    mass_over_peak: float | None = None
+    mass_over_peak_hfd2: float | None = None
     #: Which test objected, for a log line that says why rather than just what.
     reasons: list[str] = Field(default_factory=list)
     frames_seen: int = 0
@@ -180,7 +180,7 @@ class GuideLockSupervisor(BaseModel):
         """
         state = self.state
         state.peak_sigma_over_background = None
-        state.mass_over_peak = None
+        state.mass_over_peak_hfd2 = None
 
         if frame.peak is None or frame.background is None:
             if config.require_background:
@@ -193,11 +193,13 @@ class GuideLockSupervisor(BaseModel):
             if excess < config.min_peak_sigma_over_background:
                 reasons.append(f"peak {excess:.1f}sigma over sky, want {config.min_peak_sigma_over_background:.0f}")
 
-        if frame.peak > 0:
-            ratio = frame.star_mass / frame.peak
-            state.mass_over_peak = ratio
-            if ratio < config.min_mass_over_peak:
-                reasons.append(f"mass/peak {ratio:.1f}, want {config.min_mass_over_peak:.0f}")
+        if frame.peak > 0 and frame.hfd_pixels > 0:
+            # Normalised by the seeing disc: raw mass/peak tracks HFD at r = 0.90,
+            # so an un-normalised floor condemns sharp stars on a good night.
+            ratio = frame.star_mass / (frame.peak * frame.hfd_pixels**2)
+            state.mass_over_peak_hfd2 = ratio
+            if ratio < config.min_mass_over_peak_hfd2:
+                reasons.append(f"concentration {ratio:.2f}, want {config.min_mass_over_peak_hfd2:.2f}")
 
         # Both halves must object. Either alone is a real population of sound
         # frames: a bright star with a tight core sits low on mass/peak, and a
