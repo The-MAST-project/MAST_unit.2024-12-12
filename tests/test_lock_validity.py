@@ -125,3 +125,21 @@ def test_runs_without_background_on_an_older_phd2_build():
     assert state.peak_sigma_over_background is None
     state = s.update(LockMetrics(star_mass=5_300.0))
     assert state.frame_verdict is LockValidity.NotAStar, "the session test still works alone"
+
+
+def test_thresholds_are_read_live_per_frame():
+    """A threshold edited in the controller DB must bite on the next frame.
+
+    Snapshotting configuration is how a mid-session `phd2.settle` edit became a
+    silent no-op on 2026-09-02, and the whole point of putting these numbers in
+    the DB is that a night can retune them without a deployment.
+    """
+    from common.config.phd2 import LockValidityConfig
+
+    s = GuideLockSupervisor()
+    feed(s, STAR, 20)
+    faint = dict(STAR, star_mass=100_000.0)  # 0.2 of the scale: sound by default
+    assert s.update(LockMetrics(**faint)).frame_verdict is LockValidity.OnStar
+
+    strict = LockValidityConfig(artifact_mass_fraction=0.5)
+    assert s.update(LockMetrics(**faint), config=strict).frame_verdict is LockValidity.NotAStar
