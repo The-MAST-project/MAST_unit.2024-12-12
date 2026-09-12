@@ -143,3 +143,41 @@ def test_thresholds_are_read_live_per_frame():
 
     strict = LockValidityConfig(artifact_mass_fraction=0.5)
     assert s.update(LockMetrics(**faint), config=strict).frame_verdict is LockValidity.NotAStar
+
+
+def test_the_assessment_survives_the_guider_recovering():
+    """An operator asked to approve stopping the guide may only look afterwards.
+
+    On 2026-09-08 the guider flickered between accepting an artifact and losing
+    it, so a person reading `validity` at an arbitrary moment saw whichever it
+    happened to be. The episode has to outlive the state.
+    """
+    s = GuideLockSupervisor()
+    feed(s, STAR, 20)
+    feed(s, ARTIFACT, 6)
+    assert s.state.validity is LockValidity.NotAStar
+    assessment = s.state.worst_assessment
+    assert assessment is not None and assessment.ongoing
+    assert assessment.frames >= 4
+    assert assessment.worst_mass_fraction < 0.05
+
+    feed(s, STAR, 6)
+    assert s.state.validity is LockValidity.OnStar
+    kept = s.state.worst_assessment
+    assert kept is not None, "the case must still be there once the guider recovers"
+    assert not kept.ongoing
+    assert kept.frames >= 4
+    assert kept.worst_mass_fraction < 0.05
+
+
+def test_one_bad_frame_and_a_long_episode_are_distinguishable():
+    """Both read NotAStar. Only the frame count separates them, and that is the
+    difference between a glitch and eleven minutes of guiding on nothing."""
+    brief = GuideLockSupervisor()
+    feed(brief, STAR, 20)
+    feed(brief, ARTIFACT, 3)
+    long = GuideLockSupervisor()
+    feed(long, STAR, 20)
+    feed(long, ARTIFACT, 40)
+    assert brief.state.validity is long.state.validity is LockValidity.NotAStar
+    assert long.state.worst_assessment.frames > 10 * brief.state.worst_assessment.frames

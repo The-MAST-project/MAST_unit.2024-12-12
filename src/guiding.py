@@ -197,6 +197,30 @@ class Guider(GuiderInterface):
         return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION)
+    def endpoint_stop_guiding(self):
+        """Stop guiding and discard the lock.
+
+        The counterpart an operator needs when the lock-validity assessment says
+        the guider is not on a star: `pause_guiding` deliberately keeps the lock,
+        which is the last thing wanted when the lock itself is the problem, and
+        `stop_acquisition_and_guiding` also unwinds the acquisition and stops the
+        mount tracking, which is more than "stop guiding" should mean.
+
+        The judgement stays with the operator. `guider.backend.lock_validity`
+        carries the assessment and the evidence behind it -- including
+        `worst_assessment`, which survives the state recovering -- and this is
+        what acts on it once a person agrees.
+        """
+        op = function_name()
+        if self.unit is None:
+            return CanonicalResponse(errors=[f"{op}: no unit"])
+        if not self.is_guiding:
+            return CanonicalResponse(errors=[f"{op}: not guiding"])
+
+        self.stop_guiding()
+        return CanonicalResponse_Ok
+
+    @endpoint(tier=Tier.OPERATION)
     def endpoint_pause_guiding(self, full: bool = True):
         """
         Pause guiding, keeping the selected star, the calibration and the lock position, so

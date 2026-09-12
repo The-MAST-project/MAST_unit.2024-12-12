@@ -28,6 +28,7 @@ to catch: on 2026-09-08 it could judge 2 of 14 artifact frames.
 
 from __future__ import annotations
 
+import datetime
 import statistics
 from collections import deque
 from enum import StrEnum
@@ -35,6 +36,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 from common.config.phd2 import LockValidityConfig
+from common.utils import isoformat_zulu
 
 # ---------- models ----------
 
@@ -71,6 +73,30 @@ class LockMetrics(BaseModel):
     guiding_paused: bool = False
 
 
+class LockAssessment(BaseModel):
+    """One episode of the guider not being on a star, kept after it ends.
+
+    An operator asked to approve stopping the guide needs the evidence, and the
+    live state is a poor place to find it: on 2026-09-08 the guider flickered
+    between accepting an artifact and losing it altogether, so anyone reading
+    `validity` at an arbitrary moment saw whichever it happened to be. This
+    latches the episode -- when it began, how long it has run, and the numbers
+    that made the call -- so the case survives the state recovering.
+    """
+
+    began_at: str
+    frames: int = 0
+    #: Worst (lowest) mass fraction seen in the episode, and the frame count over
+    #: which it held. A single bad frame and eleven minutes of them look identical
+    #: in `validity`; they should not look identical to a person deciding.
+    worst_mass_fraction: float | None = None
+    worst_peak_sigma_over_background: float | None = None
+    reasons: list[str] = Field(default_factory=list)
+    #: True while this is still happening. False once the guider recovered, and
+    #: the record is then kept as history rather than as a live finding.
+    ongoing: bool = True
+
+
 class LockValidityState(BaseModel):
     validity: LockValidity = LockValidity.Unknown
     #: This frame's own verdict, before hysteresis. The two answer different
@@ -90,6 +116,10 @@ class LockValidityState(BaseModel):
     #: Which test objected, for a log line that says why rather than just what.
     reasons: list[str] = Field(default_factory=list)
     frames_seen: int = 0
+    #: The current or most recent episode of NotAStar, kept after it ends so the
+    #: evidence is still there when a person comes to look. This is what a decision
+    #: to stop the guide should be made against, not the instantaneous `validity`.
+    worst_assessment: LockAssessment | None = None
     #: Set for exactly the update that moves *into* NotAStar. The alarm and the
     #: mid-cycle abort key on this, not on the state: 2026-09-08's lost-star beep
     #: fired 635 times because it keyed on the condition rather than its onset.
@@ -157,6 +187,7 @@ class GuideLockSupervisor(BaseModel):
             verdict = LockValidity.OnStar
 
         state.frame_verdict = verdict
+        self._record_evidence(verdict, reasons)
 
         # Only a frame judged sound feeds the scale. A collapse must not be allowed
         # to drag the baseline it is measured against -- that is the failure that
@@ -223,6 +254,22 @@ class GuideLockSupervisor(BaseModel):
             return True
         return False
 
+    def _record_evidence(self, verdict: LockValidity, reasons: list[str]) -> None:
+        """Accumulate the case for the live episode, if there is one."""
+        assessment = self.state.worst_assessment
+        if assessment is None or not assessment.ongoing or verdict is not LockValidity.NotAStar:
+            return
+        assessment.frames += 1
+        assessment.reasons = reasons
+        fraction = self.state.mass_fraction
+        if fraction is not None and (assessment.worst_mass_fraction is None or fraction < assessment.worst_mass_fraction):
+            assessment.worst_mass_fraction = fraction
+        excess = self.state.peak_sigma_over_background
+        if excess is not None and (
+            assessment.worst_peak_sigma_over_background is None or excess < assessment.worst_peak_sigma_over_background
+        ):
+            assessment.worst_peak_sigma_over_background = excess
+
     # ---------- state transitions ----------
 
     def _settle(self, verdict: LockValidity, reasons: list[str], config: LockValidityConfig) -> None:
@@ -253,6 +300,11 @@ class GuideLockSupervisor(BaseModel):
             was = state.validity
             state.validity = verdict
             state.entered_not_a_star = verdict is LockValidity.NotAStar and was is not LockValidity.NotAStar
+            if state.entered_not_a_star:
+                state.worst_assessment = LockAssessment(began_at=isoformat_zulu(datetime.datetime.now(datetime.UTC)))
+            elif was is LockValidity.NotAStar and state.worst_assessment is not None:
+                # Kept, not cleared: the operator may only look after it recovered.
+                state.worst_assessment.ongoing = False
             self._pending = None
             self._pending_count = 0
 
