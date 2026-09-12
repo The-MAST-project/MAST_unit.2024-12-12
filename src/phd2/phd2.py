@@ -1570,7 +1570,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 mass_fraction=lock.mass_fraction,
                 session_mass_scale=lock.session_mass_scale,
                 peak_sigma_over_background=lock.peak_sigma_over_background,
-                mass_over_peak=lock.mass_over_peak,
+                mass_over_peak_hfd2=lock.mass_over_peak_hfd2,
                 reasons=lock.reasons,
             ),
         )
