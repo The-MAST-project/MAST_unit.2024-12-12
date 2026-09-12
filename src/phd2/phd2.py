@@ -27,6 +27,7 @@ from common.mast_logging import get_logger
 from common.models.statuses import (
     ImagerRoi,
     ImagerSettings,
+    LockAssessmentStatus,
     LockValidityStatus,
     PHD2GuiderStatus,
     PHD2ImagerStatus,
@@ -1572,6 +1573,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 peak_sigma_over_background=lock.peak_sigma_over_background,
                 mass_over_peak_hfd2=lock.mass_over_peak_hfd2,
                 reasons=lock.reasons,
+                worst_assessment=(
+                    None if lock.worst_assessment is None else LockAssessmentStatus(**lock.worst_assessment.model_dump())
+                ),
             ),
         )
 
