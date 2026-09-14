@@ -83,3 +83,10 @@ pyserial==3.5
 python-ulid==3.1.0
 rich==15.0.0
 astroplan==0.10.1
+
+# Direct dependencies of flux_metering/aperture_photometry_single.py, which imports both
+# at module level. Present until now only because scikit-image happens to pull them in, so
+# nothing stopped a scikit-image change from removing them from under the aperture
+# photometry. Pinned from the live unit environment like everything above.
+scipy==1.18.0
+tifffile==2026.8.16
