@@ -52,8 +52,9 @@ from common.models.statuses import (
 from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
 from common.utils import function_name
+from flux_metering.aperture_photometry_single import SATURATION_ADU
 from flux_metering.correlate import measure_pair
-from flux_metering.flux_meter import FluxMeter, FluxMeterError, frame_flux, saturated_pixels
+from flux_metering.flux_meter import FluxMeter, FluxMeterError, measure_frame, saturated_pixels
 from imaging.frame_shift import MIN_CONFIDENCE
 from mount import SettleMode
 from spiral_search import resolve_center
@@ -86,9 +87,15 @@ SOLVE_JOIN_TIMEOUT_SECONDS = 60.0
 #: normally takes half a minute -- not a tolerance.
 STAGE_TIMEOUT_SECONDS = 120.0
 
-#: A pixel count, not a boolean. The ThorCam's field is black, so one hot pixel or a cosmic
-#: ray would otherwise mark every frame of a 30-minute run as saturated.
-SATURATED_PIXELS_ALLOWED = 5
+#: A pixel count, not a boolean -- but now counted INSIDE the 36 px aperture rather than
+#: over the whole frame, which changes what it has to defend against.
+#:
+#: The old value of 5 answered "one hot pixel anywhere in 1.5 million could otherwise mark
+#: every frame saturated". Inside the aperture that argument is much weaker, and the
+#: quantity it must separate is different: a genuinely clipped fibre core shows TENS of
+#: pixels at the rail, while a cosmic ray or a hot pixel that happens to fall in the
+#: aperture shows one or two. Run 0006's step 22 had exactly one.
+SATURATED_PIXELS_ALLOWED = 2
 
 #: Below this much free space on the ram disk, a step waits for the mover to catch up before
 #: exposing again.
@@ -154,6 +161,10 @@ class FluxMeteringSession:
         self._meter: FluxMeter | None = None
         self._solve_thread: threading.Thread | None = None
         self._reference_solution: dict[str, Any] | None = None
+        #: Where the aperture last found the fibre. Frames with nothing to detect are
+        #: measured here instead, so a dark cell yields a small number through the same
+        #: window rather than a hole in the curve.
+        self._last_aperture_position: tuple[float, float] | None = None
         self._solver_name: str | None = None
         self.state = FluxMeteringStatus()
         self.params = FluxMeteringParams()
@@ -727,7 +738,10 @@ class FluxMeteringSession:
             step = self._measure_step(index, cell, ring, offset)
             self.steps.append(step)
 
-            if best_flux is None or step.flux > best_flux:
+            # `step.flux is not None` first: a step the photometry could not measure is
+            # skipped, never compared. Comparing would raise, and defaulting it to zero
+            # would quietly make a dark cell the worst cell rather than an unknown one.
+            if step.flux is not None and (best_flux is None or step.flux > best_flux):
                 best_flux, best_ring = step.flux, ring if ring is not None else 0
                 self.state.best_flux = step.flux
                 self.state.best_index = index
@@ -879,11 +893,31 @@ class FluxMeteringSession:
         frame = captured["flux_frame"]
         self._write_fits(flux_name, frame, cards=self._flux_cards(captured, imager_name, step))
 
+        # The aperture is centred on the source it finds; when it finds none -- most of a
+        # spiral is far from the peak, where the fibre is dark -- it re-measures at the last
+        # position that did detect, so every step is compared through the same window.
+        measurement = measure_frame(frame, last_position=self._last_aperture_position)
+        if measurement.position_source == "detected":
+            self._last_aperture_position = (measurement.x, measurement.y)  # type: ignore[assignment]
+
         n_saturated = saturated_pixels(frame, self._meter.saturation_level)  # type: ignore[union-attr]
         return FluxMeteringExposure(
-            flux=frame_flux(frame, self.params.flux_black_level),
+            flux=measurement.net_counts,
+            position_source=measurement.position_source,
+            aperture_x=measurement.x,
+            aperture_y=measurement.y,
+            aperture_radius_px=measurement.radius_px,
+            counts_err=measurement.counts_err,
+            snr=measurement.snr,
+            bkg_level=measurement.bkg_level,
+            fwhm_px=measurement.fwhm_px,
+            saturated_in_aperture=measurement.saturated_in_aperture,
+            saturation_threshold=measurement.saturation_threshold,
             saturated_pixels=n_saturated,
-            saturated=n_saturated > SATURATED_PIXELS_ALLOWED,
+            # On the APERTURE count now, not the whole frame. A hot pixel in a corner is no
+            # longer evidence that the measurement is a lower limit; one inside the aperture
+            # is. `saturated_pixels` above keeps the whole-frame count as a diagnostic.
+            saturated=measurement.saturated_in_aperture > SATURATED_PIXELS_ALLOWED,
             imager_frame=imager_name,
             flux_frame=flux_name,
             imager_started_utc=imager_started,
@@ -893,8 +927,14 @@ class FluxMeteringSession:
         )
 
     @staticmethod
-    def representative_of(fluxes: list[float]) -> tuple[float, int]:
+    def representative_of(fluxes: list[float | None]) -> tuple[float | None, int]:
         """The median flux, and which exposure is nearest it.
+
+        Exposures the photometry could not measure are `None` and are EXCLUDED from the
+        median rather than counted as zero: a frame with nothing to detect is an absence of
+        a measurement, not a measurement of darkness, and averaging the two together would
+        pull a step's flux down for a reason that has nothing to do with coupling. When no
+        exposure could be measured the step's flux is None and the arg-max skips it.
 
         Median rather than mean because the arg-max is decided where the coupling curve is
         flattest, and that is exactly where a single outlier -- a cosmic ray, a gust, a
@@ -906,8 +946,13 @@ class FluxMeteringSession:
         even count the median is interpolated and this picks the nearer of the two middle
         ones, which is why an odd count is the better choice.
         """
-        median = float(statistics.median(fluxes))
-        nearest = min(range(len(fluxes)), key=lambda i: abs(fluxes[i] - median))
+        usable = [(i, f) for i, f in enumerate(fluxes) if f is not None]
+        if not usable:
+            # Index 0 so the caller still has a frame to name; its flux is None, which is
+            # what says the step cannot be compared.
+            return None, 0
+        median = float(statistics.median([f for _i, f in usable]))
+        nearest = min(usable, key=lambda pair: abs(pair[1] - median))[0]
         return median, nearest
 
     def _measure_step(self, index: int, cell, ring, offset) -> FluxMeteringStep:
@@ -938,8 +983,9 @@ class FluxMeteringSession:
         if chosen.saturated:
             self.state.saturated_frames += 1
 
+        shown = f"{flux:.0f}" if flux is not None else "unmeasurable"
         logger.info(
-            f"step {index}: cell={cell} ring={ring} flux={flux:.0f} (median of {len(exposures)}) "
+            f"step {index}: cell={cell} ring={ring} flux={shown} (median of {len(exposures)}) "
             f"representative={representative} saturated={saturated_count}/{len(exposures)}"
         )
         return FluxMeteringStep(
@@ -953,6 +999,11 @@ class FluxMeteringSession:
             saturated_exposures=saturated_count,
             saturated_pixels=chosen.saturated_pixels,
             saturated=chosen.saturated,
+            position_source=chosen.position_source,
+            snr=chosen.snr,
+            bkg_level=chosen.bkg_level,
+            saturated_in_aperture=chosen.saturated_in_aperture,
+            saturation_threshold=chosen.saturation_threshold,
             imager_frame=chosen.imager_frame,
             flux_frame=chosen.flux_frame,
             imager_started_utc=chosen.imager_started_utc,
@@ -966,7 +1017,11 @@ class FluxMeteringSession:
         if not self.steps:
             return None
 
-        best = max(self.steps, key=lambda s: s.flux)
+        measurable = [s for s in self.steps if s.flux is not None]
+        if not measurable:
+            logger.warning("flux metering: no step could be measured; there is no arg-max to correlate")
+            return None
+        best = max(measurable, key=lambda s: s.flux)
         shape = reference.shape
         center_x, center_y, center_source = resolve_center(None, None, shape)
 
@@ -1111,9 +1166,16 @@ class FluxMeteringSession:
         is a name that repeats in every run on the share. Everything here is already known
         at the moment of the exposure; it was simply never written down.
 
-        `BLKLEVEL` is the one that matters most. `frame_flux` subtracts it, so without it
-        the frame cannot be re-reduced: the number needed to recompute the flux was absent
-        from the data you would recompute it from.
+        `BLKLEVEL` no longer describes the reduction. It was the number software subtracted
+        from every pixel; the aperture photometry measures its own background from the data
+        instead, and better -- a commanded integer 3 over-subtracts against a frame whose
+        background is 2.63, which is most of what made the old whole-frame sum negative. It
+        stays because it is still what the camera was told, and it now describes the sensor.
+
+        `SATNAP` is the threshold the saturation counts were taken at, recorded rather than
+        implied: it is an observed rail for this sensor, not a value derived from the bit
+        depth, so a different camera shows up as a changed number here rather than as
+        silence.
 
         Deliberately NO WCS. The ThorCam sees only the light emerging from the fibre and
         has no field, so `CRVAL`/`CRPIX`/`CTYPE` would assert that these pixels map to sky.
@@ -1138,8 +1200,9 @@ class FluxMeteringSession:
             ("INSTRUME", meter.model if meter else None, "the flux meter"),
             ("CAMSN", meter.serial_number if meter else None, "flux meter serial number"),
             ("GAIN", self.params.flux_gain, "flux meter gain"),
-            ("BLKLEVEL", self.params.flux_black_level, "black level subtracted by frame_flux"),
-            ("SATURATE", meter.saturation_level if meter else None, "full scale ADU"),
+            ("BLKLEVEL", self.params.flux_black_level, "black level commanded on the camera"),
+            ("SATURATE", meter.saturation_level if meter else None, "camera full scale ADU"),
+            ("SATNAP", SATURATION_ADU, "ADU the saturation counts were taken at"),
             ("TELESCOP", self.unit.hostname, "the unit"),
             ("CREATOR", "MAST flux_metering", "what wrote this frame"),
             # The observing night is NOT derivable from DATE-OBS by a reader who does not

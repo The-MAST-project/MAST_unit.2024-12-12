@@ -1185,3 +1185,232 @@ def test_a_far_cell_gives_the_photometry_nothing_to_detect(session):
     with warnings.catch_warnings(), pytest.raises(RuntimeError):
         warnings.simplefilter("ignore")
         measure_single_image(np.asarray(meter.expose(), dtype=float), verbose=False)
+
+
+# ------------------------------------------------ the aperture measurement itself --
+
+
+def _dark_frame(shape=(256, 256), background=3.0):
+    return np.full(shape, background, dtype=np.uint16)
+
+
+def _spot_frame(x=100.0, y=140.0, peak=800.0, background=3.0, shape=(256, 256)):
+    yy, xx = np.mgrid[0 : shape[0], 0 : shape[1]]
+    data = background + peak * np.exp(-((xx - x) ** 2 + (yy - y) ** 2) / (2.0 * 5.4**2))
+    return np.clip(data, 0, 1023).astype(np.uint16)
+
+
+def test_a_detected_source_is_measured_where_it_actually_is():
+    from flux_metering.flux_meter import measure_frame
+
+    m = measure_frame(_spot_frame(x=100.0, y=140.0))
+
+    assert m.position_source == "detected"
+    assert m.x == pytest.approx(100.0, abs=1.0)
+    assert m.y == pytest.approx(140.0, abs=1.0)
+    assert m.net_counts > 0 and m.snr > 0
+
+
+def test_the_aperture_is_redetected_per_frame():
+    """Two frames with the source in different places must give two different centres --
+    the measurement follows the source rather than a position fixed once."""
+    from flux_metering.flux_meter import measure_frame
+
+    a = measure_frame(_spot_frame(x=80.0, y=80.0))
+    b = measure_frame(_spot_frame(x=170.0, y=120.0))
+
+    assert a.x == pytest.approx(80.0, abs=1.0)
+    assert b.x == pytest.approx(170.0, abs=1.0)
+
+
+def test_a_frame_with_nothing_to_detect_falls_back_to_the_last_position():
+    """Most of a spiral is far from the peak. The frame is still measured, through the same
+    aperture as every other step, so the curve stays continuous and comparable."""
+    from flux_metering.flux_meter import measure_frame
+
+    m = measure_frame(_dark_frame(), last_position=(100.0, 140.0))
+
+    assert m.position_source == "inherited"
+    assert m.measured
+    assert (m.x, m.y) == (100.0, 140.0)
+
+
+def test_nothing_to_detect_and_no_previous_position_is_not_a_flux_of_zero():
+    """The distinction the plain sum could not make. A frame that could not be measured and
+    a frame containing no light give the same number under a sum, and the arg-max cannot
+    tell them apart."""
+    from flux_metering.flux_meter import measure_frame
+
+    m = measure_frame(_dark_frame(), last_position=None)
+
+    assert m.net_counts is None
+    assert m.measured is False
+    assert m.position_source == "none"
+    assert m.error
+
+
+def test_the_measurement_never_raises_on_a_hopeless_frame():
+    from flux_metering.flux_meter import measure_frame
+
+    for frame in (_dark_frame(), np.zeros((256, 256), dtype=np.uint16), _dark_frame(shape=(16, 16))):
+        assert measure_frame(frame).measured in (True, False)  # the point is that it returns
+
+
+def test_a_hot_pixel_far_from_the_source_does_not_enter_the_measurement():
+    """It does under a whole-frame sum, at full weight."""
+    from flux_metering.flux_meter import measure_frame
+
+    clean = _spot_frame(x=100.0, y=140.0)
+    fouled = clean.copy()
+    fouled[20, 220] = 1023  # a corner, well outside a 36 px aperture on the source
+
+    a, b = measure_frame(clean), measure_frame(fouled)
+
+    assert b.net_counts == pytest.approx(a.net_counts, rel=1e-6)
+    assert b.saturated_in_aperture == 0
+    assert b.saturated_in_frame == 1, "but it is still visible as a whole-frame diagnostic"
+
+
+def test_the_saturation_threshold_is_recorded_not_implied():
+    from flux_metering.aperture_photometry_single import SATURATION_ADU
+    from flux_metering.flux_meter import measure_frame
+
+    assert measure_frame(_spot_frame()).saturation_threshold == SATURATION_ADU
+
+
+def test_a_clipped_core_is_reported():
+    """Fails against the old whole-frame count at 1023: this sensor rails at 1022, so
+    `saturated_pixels(frame, 1023)` could never be true and argmax_saturated was dead."""
+    from flux_metering.flux_meter import measure_frame
+
+    m = measure_frame(_spot_frame(peak=5000.0))  # clips well before full scale
+
+    assert m.saturated_in_aperture > 10, "a clipped core shows tens of pixels at the rail"
+
+
+def test_an_unmeasurable_exposure_is_excluded_from_the_step_median_not_counted_as_zero():
+    from flux_metering.session import FluxMeteringSession
+
+    flux, nearest = FluxMeteringSession.representative_of([100.0, None, 102.0])
+
+    assert flux == 101.0
+    assert nearest in (0, 2)
+
+
+def test_a_step_whose_exposures_all_failed_has_no_flux():
+    from flux_metering.session import FluxMeteringSession
+
+    flux, nearest = FluxMeteringSession.representative_of([None, None])
+
+    assert flux is None
+    assert nearest == 0
+
+
+def _spike_frame(x=220, y=20, shape=(256, 256), background=3.0):
+    """A hot pixel in an otherwise empty frame -- what run 0006's step 22 contained."""
+    frame = np.full(shape, background, dtype=np.uint16)
+    frame[y, x] = 1023
+    return frame
+
+
+def test_a_narrow_spike_is_not_accepted_as_the_fibre():
+    """The defect real data found, and the reason the fallback cannot key on the backend
+    raising. When segmentation finds nothing, `measure_single_image` falls back internally
+    to a smoothed peak search and returns successfully -- with `detect_method` still reading
+    'segment'. On run 0006 it locked onto a hot pixel at (943, 162), FWHM 1.1 px, and
+    reported 1338 counts as though they were the fibre.
+    """
+    from flux_metering.flux_meter import measure_frame
+
+    m = measure_frame(_spike_frame(), last_position=(100.0, 140.0))
+
+    assert m.position_source == "inherited", "the spike must not be taken for the source"
+    assert (m.x, m.y) == (100.0, 140.0)
+    # Rejected on CONCENTRATION here, not width. On a noiseless frame `measure_fwhm` finds
+    # no positive peak above the background and returns the configured guess of 11 px, which
+    # clears any width floor -- so the width test alone would let this through. The real
+    # 0006 frame, which has noise, is caught by width instead. Each covers the other's blind
+    # spot, which is why both exist.
+    assert m.error and "one pixel" in m.error
+
+
+def test_a_rejected_spike_with_no_previous_position_is_unmeasurable():
+    from flux_metering.flux_meter import measure_frame
+
+    m = measure_frame(_spike_frame(), last_position=None)
+
+    assert m.net_counts is None
+    assert m.position_source == "none"
+    assert "rejected a detection" in m.error
+
+
+def test_a_real_source_is_well_clear_of_the_width_floor():
+    """Guards the test above from passing by rejecting everything: the floor is 3 px and the
+    fibre measures 12.4-13.3 on the real camera."""
+    from flux_metering.flux_meter import MIN_PLAUSIBLE_FWHM_PX, measure_frame
+
+    m = measure_frame(_spot_frame())
+
+    assert m.position_source == "detected"
+    assert m.fwhm_px > 2 * MIN_PLAUSIBLE_FWHM_PX
+
+
+def test_the_width_floor_rejects_on_its_own():
+    """The other discriminator, exercised directly.
+
+    The concentration test above catches a spike on a clean frame; this one catches what
+    real data produced. On run 0006's step 22 the backend's internal peak search found a hot
+    pixel and reported FWHM 1.1 px -- noise there let `measure_fwhm` actually work, so the
+    width is real and damning. Without this, removing the width check would leave every test
+    passing.
+    """
+    from flux_metering.aperture_photometry_single import SPIKE_PEAK_FRACTION
+    from flux_metering.flux_meter import _why_not_the_fibre
+
+    data = np.full((256, 256), 3.0)
+    found = {"fwhm_pix": 1.1, "x": 943.0, "y": 162.0, "net_counts": 1338.0, "radius_pix": 36.0, "bkg_level": 3.0}
+
+    verdict = _why_not_the_fibre(data, found, SPIKE_PEAK_FRACTION)
+
+    assert verdict and "too narrow" in verdict
+
+
+def test_a_plausible_detection_is_not_rejected_by_either_test():
+    """Guards both discriminators from passing by rejecting everything."""
+    from flux_metering.aperture_photometry_single import SPIKE_PEAK_FRACTION
+    from flux_metering.flux_meter import _why_not_the_fibre
+
+    data = _spot_frame().astype(float)
+    found = {"fwhm_pix": 12.7, "x": 100.0, "y": 140.0, "net_counts": 145000.0, "radius_pix": 36.0, "bkg_level": 3.0}
+
+    assert _why_not_the_fibre(data, found, SPIKE_PEAK_FRACTION) is None
+
+
+def test_the_exposure_model_carries_the_aperture_fields():
+    """A paired-repo guard, not a formality.
+
+    pydantic IGNORES unknown keyword arguments rather than raising, so if `common` lacks
+    these fields the session would construct exposures that silently drop them and every
+    other test here would still pass. That is exactly how the CD-matrix fields went onto the
+    wrong SolvingSolution and took down every successful plate solve (MAST_common#113).
+    """
+    from common.models.statuses import FluxMeteringExposure
+
+    e = FluxMeteringExposure(
+        flux=None,
+        position_source="detected",
+        aperture_x=1.5,
+        aperture_y=2.5,
+        aperture_radius_px=36.0,
+        counts_err=1.0,
+        snr=2.0,
+        bkg_level=2.6,
+        fwhm_px=12.7,
+        saturated_in_aperture=3,
+        saturation_threshold=1022,
+    )
+
+    assert e.flux is None, "flux must accept None -- unmeasurable is not zero"
+    assert e.position_source == "detected"
+    assert e.aperture_x == 1.5
+    assert e.saturation_threshold == 1022
