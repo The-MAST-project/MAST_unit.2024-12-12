@@ -2,13 +2,23 @@
 #
 # Pinned from the live unit environment: mast01, the interpreter NSSM actually
 # runs for the 'mast-unit' service:
-#   C:\MAST\repos\MAST_unit.2024-12-12\.venv\Scripts\python.exe
+#   C:\MAST\src\.venv\Scripts\python.exe
+#
+# (Was C:\MAST\repos\MAST_unit.2024-12-12\.venv until the flat layout landed.
+# That path does not exist on mast01 today -- checked 2026-09-14.)
 #
 # UTF-8, no BOM. When editing from PowerShell pass -Encoding utf8 to
 # Out-File / Set-Content (see DECISIONS.md [2026-05-14]).
 #
 # pywin32 carries a "win32" environment marker so this file also resolves on a
 # Linux dev box; it still installs normally on the units.
+#
+# It is a declared-dependency list, not a freeze. Eight packages were removed on
+# 2026-09-14 because nothing imported them and nothing needed them; a freeze would
+# have kept them. Before adding a pin, check it is something the code imports, or
+# something a pinned package actually needs -- and prefer proving it by making the
+# package unimportable and running the suite, since metadata can be wrong (see the
+# sniffio note below).
 #
 # Removed deliberately:
 #   black, isort, flake8 - dev-only formatters/linters that had leaked into this
@@ -37,17 +47,17 @@
 #
 
 anyio==4.14.1
+# anyio IMPORTS sniffio at runtime (anyio/_core/_eventloop.py) but does not declare
+# it, so no dependency graph shows the link -- it was removed in this commit's first
+# draft and every test that touches httpx failed. httpx -> anyio -> sniffio is real.
+sniffio==1.3.1
 astropy==8.0.1
-beautifulsoup4==4.15.0
 certifi==2026.6.17
-charset-normalizer==3.4.7
 click==8.4.2
 colorama==0.4.6
-docstring-parser==0.18.0
 exceptiongroup==1.3.1
 fastapi==0.139.0
 gitdb==4.0.12
-GitPython==3.1.50
 h11==0.16.0
 idna==3.18
 numpy==2.5.1
@@ -56,14 +66,9 @@ photutils==3.0.0
 psutil==7.2.2
 pydantic==2.13.4
 pyerfa==2.0.1.5
-pythonping==1.1.4
 pywin32==312; sys_platform == "win32"
-requests==2.34.2
-semaphore-win-ctypes==0.1.2
 setuptools==83.0.0
 smmap==5.0.3
-sniffio==1.3.1
-soupsieve==2.8.4
 starlette==1.3.1
 tomlkit==0.15.0
 typing_extensions==4.16.0
