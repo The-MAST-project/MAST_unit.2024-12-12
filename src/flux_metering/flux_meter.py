@@ -115,14 +115,29 @@ class SimulatedFluxMeter:
         self,
         peak_cell: tuple[int, int] = (0, 0),
         sigma_cells: float = 2.0,
-        # Comfortably under 12-bit full scale, so the DEFAULT simulator does not saturate.
+        # Comfortably under 10-bit full scale, so the DEFAULT simulator does not saturate.
         # Saturation is a case a test opts into by raising this, not one it has to work
         # around: a default that clips would make every arg-max assertion a coin toss among
         # the clipped cells, which is precisely the failure `argmax_saturated` reports.
-        peak_counts: float = 3000.0,
+        peak_counts: float = 800.0,
         background: float = 3.0,
-        shape: tuple[int, int] = (64, 64),
-        bit_depth: int = 12,
+        # 256x256, not the ThorCam's 1440x1080: large enough to hold the 36 px extraction
+        # aperture and a background region around it, small enough that a spiral test
+        # exposing several hundred frames stays fast. 64x64 -- what this was -- cannot hold
+        # that aperture at all; it was sized for a whole-frame sum, which needs no geometry.
+        shape: tuple[int, int] = (256, 256),
+        # The spot's Gaussian sigma. 5.4 px is FWHM 12.7, which is what the real fibre
+        # output measures: 12.4-13.3 px across every frame of run 0006. It matters because
+        # the aperture radius is a fixed 36 px, so this sets the enclosed-flux fraction the
+        # photometry sees -- a spot half the true width would make the simulator agree with
+        # the aperture for the wrong reason.
+        spot_sigma_px: float = 5.4,
+        # 10-bit, like the CS165MU Zelux this stands in for. It was 12, and that made the
+        # simulator disagree with the photometry about what saturation IS: the aperture code
+        # counts pixels at or above 1022, the rail observed on the real sensor, so a 12-bit
+        # simulated frame peaking at 3000 was reported as hundreds of saturated pixels while
+        # being nowhere near its own full scale.
+        bit_depth: int = 10,
         noise: float = 0.0,
         seed: int = 0,
     ):
@@ -131,6 +146,7 @@ class SimulatedFluxMeter:
         self.peak_counts = peak_counts
         self.background = background
         self.shape = shape
+        self.spot_sigma_px = spot_sigma_px
         self._saturation = (1 << bit_depth) - 1
         self.noise = noise
         self._rng = np.random.default_rng(seed)
@@ -153,7 +169,7 @@ class SimulatedFluxMeter:
         ny, nx = self.shape
         yy, xx = np.mgrid[0:ny, 0:nx]
         cy, cx = (ny - 1) / 2.0, (nx - 1) / 2.0
-        spot = np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2.0 * 3.0**2))
+        spot = np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2.0 * self.spot_sigma_px**2))
 
         frame = self.background + self.peak_counts * coupling * spot
         if self.noise:
