@@ -13,9 +13,14 @@ desk.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 import numpy as np
+
+from common.mast_logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class FluxMeterError(Exception):
@@ -78,15 +83,194 @@ class FluxMeter(Protocol):
     def close(self) -> None: ...
 
 
-def frame_flux(frame: np.ndarray, black_level: int) -> float:
-    """Total light in the frame, above the black-level pedestal.
+#: Below this FWHM a "detection" is not the fibre. The fibre output measures 12.4-13.3 px on
+#: the real camera; a hot pixel or a cosmic ray measures about 1.1.
+#:
+#: This exists because the backend's result cannot be trusted to say how it found the source.
+#: When segmentation finds nothing it falls back internally to a smoothed peak search, and
+#: `detect_method` STILL reports `segment` -- the only trace is a line printed to stdout. On
+#: run 0006 that fallback locked onto a hot pixel at (943, 162) in two of step 22's three
+#: exposures and returned ~1338 counts as though it were the fibre, while the third exposure
+#: of the same step measured the real thing at 92666.
+#:
+#: 3.0 px is the backend's own figure for "too concentrated to be real": SPIKE_PEAK_FRACTION
+#: is set, in its words, "tight enough to also reject a source as narrow as 3 px FWHM". That
+#: rejection only guards the segmentation path, so it is applied here to every path.
+MIN_PLAUSIBLE_FWHM_PX = 3.0
 
-    A plain sum is the right estimator here and would not be on a star field: the ThorCam
-    sees ONLY the target's light through the fibre, with black all around it, so there is
-    no neighbour to exclude and no aperture to choose. Choosing one would only add a
-    parameter that could be set wrong.
+
+@dataclass
+class FluxMeasurement:
+    """One frame, reduced. `net_counts` is None when there was nothing to measure.
+
+    None rather than 0.0, and the distinction is the point: a frame the photometry could
+    not measure and a frame that genuinely contains no light produce the same number under
+    a plain sum, and the spiral's arg-max cannot tell them apart.
     """
-    return float(np.sum(np.asarray(frame, dtype=float) - black_level))
+
+    net_counts: float | None
+    position_source: str
+    counts_err: float | None = None
+    snr: float | None = None
+    x: float | None = None
+    y: float | None = None
+    radius_px: float | None = None
+    bkg_level: float | None = None
+    fwhm_px: float | None = None
+    #: Inside the aperture, at `saturation_threshold`. This is the one that means the
+    #: measurement is a lower limit.
+    saturated_in_aperture: int = 0
+    #: Anywhere in the frame, same threshold. A diagnostic: it is what shows a frame is
+    #: clipped somewhere OTHER than the fibre, which is how a hot pixel announces itself.
+    saturated_in_frame: int = 0
+    saturation_threshold: int | None = None
+    error: str | None = None
+
+    @property
+    def measured(self) -> bool:
+        return self.net_counts is not None
+
+
+def _why_not_the_fibre(data: np.ndarray, found: dict, spike_peak_fraction: float) -> str | None:
+    """Why this detection is not the fibre output, or None if it plausibly is.
+
+    Two tests, because neither alone is enough.
+
+    **Width.** The fibre measures 12.4-13.3 px FWHM on the real camera; a hot pixel measures
+    about 1.1. That is what caught run 0006's step 22.
+
+    **Concentration.** The width test fails on a clean frame: `measure_fwhm` gives up when it
+    finds no positive peak above the background and returns the CONFIGURED GUESS -- 11 px,
+    comfortably above any width floor -- so a spike on a flat field passes as a plausible
+    source. Asking how much of the light sits in one pixel does not degrade that way.
+
+    The fraction is the backend's own `SPIKE_PEAK_FRACTION` and its own reasoning: a Gaussian
+    of FWHM f puts about 0.88/f^2 of its counts in the peak pixel, ~0.007 for this fibre,
+    while an isolated spike puts all of them there. The backend applies it only to
+    segmentation detections; its internal peak-search fallback bypasses it entirely, which is
+    exactly the path that produced the bad measurement.
+    """
+    fwhm = float(found["fwhm_pix"])
+    x, y = float(found["x"]), float(found["y"])
+    if fwhm < MIN_PLAUSIBLE_FWHM_PX:
+        return (
+            f"rejected a detection at ({x:.0f}, {y:.0f}) with FWHM {fwhm:.1f} px, below the "
+            f"{MIN_PLAUSIBLE_FWHM_PX:g} px floor: too narrow to be the fibre"
+        )
+
+    net = float(found["net_counts"])
+    if net <= 0:
+        return None  # nothing to be concentrated; the caller reads net_counts itself
+
+    radius = float(found["radius_pix"])
+    ny, nx = data.shape
+    yy, xx = np.ogrid[0:ny, 0:nx]
+    inside = (xx - x) ** 2 + (yy - y) ** 2 <= radius**2
+    if not inside.any():
+        return None
+    peak = float(data[inside].max()) - float(found["bkg_level"])
+    fraction = peak / net
+    if fraction > spike_peak_fraction:
+        return (
+            f"rejected a detection at ({x:.0f}, {y:.0f}): {100 * fraction:.0f}% of its light is "
+            f"in one pixel (limit {100 * spike_peak_fraction:.0f}%), so it is a spike, not the fibre"
+        )
+    return None
+
+
+def measure_frame(frame: np.ndarray, last_position: tuple[float, float] | None = None) -> FluxMeasurement:
+    """Aperture photometry on one ThorCam frame.
+
+    Replaces a plain sum over the whole frame. That sum was defensible in principle -- the
+    ThorCam sees only the fibre output against black -- but on run 0006 it measured the sky
+    brightening rather than the fibre: its curve rose monotonically across all 23 steps,
+    tracking a background that drifted 2.518 -> 2.596 counts/px, which over 1,555,200 pixels
+    is more counts than the entire range it reported. It picked a different arg-max cell
+    from the aperture. See section 18.2 of flux_metering_design.md.
+
+    **Never raises.** `measure_single_image` raises when it detects nothing, and on a spiral
+    that is the common case rather than an error: most of a walk is far from the peak, where
+    the fibre is dark. Three outcomes instead:
+
+    - `detected` -- the source was found in this frame.
+    - `inherited` -- nothing was found, so the frame was re-measured at `last_position`,
+      through the same aperture as every other step. The flux curve stays continuous and
+      comparable rather than gaining a hole.
+    - `none` -- nothing found and no previous position, so there is no measurement.
+      `net_counts` is None.
+
+    The fallback is ours and takes precedence over the backend's own smoothed-peak search,
+    which cannot tell a hot pixel from a faint fibre: on step 22 of run 0006 it locked onto
+    one at (943, 162), FWHM 1.1 px, and reported 1338 counts that were not the fibre.
+    """
+    import warnings
+
+    from photutils.utils.exceptions import NoDetectionsWarning
+
+    from flux_metering.aperture_photometry_single import (
+        SATURATION_ADU,
+        SPIKE_PEAK_FRACTION,
+        measure_single_image,
+    )
+
+    data = np.asarray(frame, dtype=float)
+    in_frame = int(np.count_nonzero(data >= SATURATION_ADU))
+
+    def reduced(result: dict, source: str) -> FluxMeasurement:
+        return FluxMeasurement(
+            net_counts=float(result["net_counts"]),
+            position_source=source,
+            counts_err=float(result["counts_err"]),
+            snr=float(result["snr"]),
+            x=float(result["x"]),
+            y=float(result["y"]),
+            radius_px=float(result["radius_pix"]),
+            bkg_level=float(result["bkg_level"]),
+            fwhm_px=float(result["fwhm_pix"]),
+            saturated_in_aperture=int(result["n_saturated"]),
+            saturated_in_frame=in_frame,
+            saturation_threshold=SATURATION_ADU,
+        )
+
+    # photutils warns when it finds nothing. That is not news here -- it is the condition
+    # this function exists to handle, and most of a spiral meets it -- so it is silenced
+    # rather than emitted once per dark frame into the night's log.
+    rejection: str | None = None
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", NoDetectionsWarning)
+            found = measure_single_image(data, verbose=False)
+        rejection = _why_not_the_fibre(data, found, SPIKE_PEAK_FRACTION)
+        if rejection is None:
+            return reduced(found, "detected")
+        # Found something, but not the fibre. Fall through to the same path as finding
+        # nothing: this is the backend's internal peak search having locked onto a spike.
+        logger.warning(f"flux metering: {rejection}")
+    except Exception as detection_failed:  # noqa: BLE001 -- a dark cell is not a run failure
+        rejection = str(detection_failed)
+
+    def unmeasured() -> FluxMeasurement:
+        return FluxMeasurement(
+            net_counts=None,
+            position_source="none",
+            saturated_in_frame=in_frame,
+            saturation_threshold=SATURATION_ADU,
+            error=rejection,
+        )
+
+    if last_position is None:
+        return unmeasured()
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", NoDetectionsWarning)
+            inherited = reduced(measure_single_image(data, position=last_position, verbose=False), "inherited")
+        inherited.error = rejection  # why the frame's own detection was not used
+        return inherited
+    except Exception as ex:  # noqa: BLE001
+        logger.warning(f"flux metering: could not measure at the inherited position {last_position}: {ex}")
+        rejection = str(ex)
+        return unmeasured()
 
 
 def saturated_pixels(frame: np.ndarray, saturation_level: int) -> int:
