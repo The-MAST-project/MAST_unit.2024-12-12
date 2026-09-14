@@ -45,6 +45,14 @@ group is read from where the route is mounted (#207).
 
 A **new component** needs one entry in `OPERATOR_AREAS` in `src/app.py` for its group to be
 described and ordered; `test_every_component_has_an_operator_group` fails until it is there.
+If the component's path segment is not a word a reader would recognise capitalised, give it a
+display name in `AREA_LABELS` (`MAST_common/endpoints.py`) rather than at the composition site,
+so the group a service declares cannot disagree with the tag the route is filed under. No unit
+area needs one; `MAST_spec` labels its `/fw` routes *Filter wheels* that way.
+
+A route with a **path parameter** files under the same area as its plain siblings: a `{param}`
+is an argument to the verb, so it is not a segment for this purpose (MAST_spec#102). This tree
+has no parameterised path today.
 
 **Do not pass `tags=`** — it is ignored with a warning, and a check keeps this tree free of them.
 
