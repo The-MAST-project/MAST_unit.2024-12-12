@@ -1122,3 +1122,66 @@ def test_a_low_confidence_measurement_says_so_in_the_header(session, tmp_path):
     s.do_record_sky_offset(_result(low_confidence=True, confidence=0.01))
 
     assert fits.getheader(str(artifact))["FMLOWCNF"] is True
+
+
+# ------------------------------- the simulator must model what it stands in for --
+#
+# These pin geometry, not behaviour. The simulator was built for a whole-frame sum, which
+# needs no geometry at all: any frame size and any spot width give a usable number. Aperture
+# photometry does not, and each of these was wrong before 2026-09-14.
+
+
+def test_the_simulator_frame_can_hold_the_extraction_aperture():
+    """A 64x64 frame -- what this was -- cannot hold a 36 px aperture at all."""
+    from flux_metering.aperture_photometry_single import DEFAULT_RADIUS
+    from flux_metering.flux_meter import SimulatedFluxMeter
+
+    ny, nx = SimulatedFluxMeter().expose().shape
+
+    assert min(ny, nx) / 2 > DEFAULT_RADIUS, (
+        f"a {DEFAULT_RADIUS:g} px aperture centred in a {nx}x{ny} frame falls off the edge"
+    )
+
+
+def test_the_simulator_models_the_real_fibre_width():
+    """FWHM 12.7 px, which is what the fibre output measures on the real camera: 12.4-13.3 px
+    across every frame of run 0006. The aperture radius is a fixed 36 px, so the spot width
+    sets the enclosed-flux fraction -- a spot half the true width would make the simulator
+    agree with the photometry for the wrong reason."""
+    from flux_metering.flux_meter import SimulatedFluxMeter
+
+    fwhm = 2.355 * SimulatedFluxMeter().spot_sigma_px
+
+    assert 12.0 <= fwhm <= 13.5, f"simulated FWHM {fwhm:.1f} px is not the measured 12.4-13.3"
+
+
+def test_the_simulator_does_not_report_false_saturation():
+    """The aperture code counts pixels at or above 1022 -- the rail observed on the 10-bit
+    Zelux. A 12-bit simulator peaking at 3000, which is what this was, reported hundreds of
+    saturated pixels while sitting nowhere near its own full scale."""
+    from flux_metering.aperture_photometry_single import SATURATION_ADU
+    from flux_metering.flux_meter import SimulatedFluxMeter
+
+    meter = SimulatedFluxMeter()
+    frame = meter.expose()
+
+    assert meter.saturation_level < 2 * SATURATION_ADU, "simulator full scale disagrees with the photometry's"
+    assert int((frame >= SATURATION_ADU).sum()) == 0, "the default simulator must not look saturated"
+
+
+def test_a_far_cell_gives_the_photometry_nothing_to_detect(session):
+    """Not a defect -- the case the fallback exists for. Most of a spiral is far from the
+    peak, where the fibre is dark, and the aperture code raises rather than returning zero."""
+    import warnings
+
+    import numpy as np
+
+    from flux_metering.aperture_photometry_single import measure_single_image
+    from flux_metering.flux_meter import SimulatedFluxMeter
+
+    meter = SimulatedFluxMeter(peak_cell=(0, 0))
+    meter.at_cell = (8, 0)
+
+    with warnings.catch_warnings(), pytest.raises(RuntimeError):
+        warnings.simplefilter("ignore")
+        measure_single_image(np.asarray(meter.expose(), dtype=float), verbose=False)
