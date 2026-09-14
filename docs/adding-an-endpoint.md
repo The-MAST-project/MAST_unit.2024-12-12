@@ -45,6 +45,12 @@ group is read from where the route is mounted (#207).
 
 A **new component** needs one entry in `OPERATOR_AREAS` in `src/app.py` for its group to be
 described and ordered; `test_every_component_has_an_operator_group` fails until it is there.
+The group name is the segment, capitalised, and there is no way to display it differently —
+a segment worth reading differently is worth renaming on the wire.
+
+A route with a **path parameter** files under the same area as its plain siblings: a `{param}`
+is an argument to the verb, so it is not a segment for this purpose (MAST_spec#102). This tree
+has no parameterised path today.
 
 **Do not pass `tags=`** — it is ignored with a warning, and a check keeps this tree free of them.
 
