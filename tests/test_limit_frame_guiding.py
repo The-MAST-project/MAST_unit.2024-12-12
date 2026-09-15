@@ -109,6 +109,22 @@ def limit_frame_rois(p: PHD2Connector) -> list[list[int] | None]:
     return [c.kwargs["params"]["roi"] for c in p.call.call_args_list if (c.args and c.args[0] == "set_limit_frame")]
 
 
+def capture_limit_frames(p: PHD2Connector) -> list[list[int] | None]:
+    """The limit frame each `capture_single_frame` carried inline.
+
+    `start_exposure` no longer reaches the ROI through `set_limit_frame`: PHD2 refuses
+    that call whenever a guide session exists, paused included, so the limit travels as a
+    parameter of the capture instead (MAST_unit#225). The *decision* these tests pin --
+    `use_set_limit_frame` alone, config plays no part -- is unchanged; only the wire form
+    is.
+    """
+    return [
+        c.kwargs["params"].get("limit_frame")
+        for c in p.call.call_args_list
+        if (c.args and c.args[0] == "capture_single_frame")
+    ]
+
+
 def guiding_settings_of(p: PHD2Connector) -> ImagerSettings:
     return p.parent.unit.guider.make_guiding_settings.return_value
 
@@ -211,12 +227,29 @@ class TestAcquisitionPathUntouched:
         p.start_exposure(settings)
 
     def test_exposure_respects_settings_flag_despite_config_rect(self):
+        """use_set_limit_frame=False means the whole sensor, not the configured rect.
+
+        The full frame goes through the same `ImagerRoi` conditioning as any other rect --
+        the ZWO backend wants width % 8 and height % 2 -- so the wire value is the
+        conditioned form, not a bare 0,0,w,h.
+        """
         p = make_connector(LimitFrameConfig(mode=LimitFrameMode.FIXED, **EXPLICIT_RECT))
         self._expose(p, use_set_limit_frame=False)
-        assert limit_frame_rois(p) == [None]
+        full_sensor = {"x": 0, "y": 0, "width": p.camera_x_size, "height": p.camera_y_size}
+        assert capture_limit_frames(p) == [wire_form(full_sensor)]
         assert "capture_single_frame" in rpc_methods(p)
 
     def test_exposure_uses_settings_roi_not_config_rect(self):
         p = make_connector(LimitFrameConfig(mode=LimitFrameMode.FIXED, **EXPLICIT_RECT))
         self._expose(p, use_set_limit_frame=True)
-        assert limit_frame_rois(p) == [wire_form(DERIVED_ROI)]
+        assert capture_limit_frames(p) == [wire_form(DERIVED_ROI)]
+
+    def test_the_exposure_path_no_longer_touches_set_limit_frame(self):
+        """The refusal that hung the night was PHD2 rejecting `set_limit_frame`.
+
+        Not calling it at all is what makes an exposure possible during a paused session,
+        and it removes the ROI mutation that had to be undone afterwards.
+        """
+        p = make_connector(LimitFrameConfig(mode=LimitFrameMode.FIXED, **EXPLICIT_RECT))
+        self._expose(p, use_set_limit_frame=True)
+        assert "set_limit_frame" not in rpc_methods(p)

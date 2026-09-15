@@ -2,6 +2,64 @@
 
 ---
 
+## [2026-09-15] An exposure that never started releases its waiter, and the limit frame travels with the capture
+
+**Why:** #225, met on mast01 on 2026-09-08. An exposure requested while PHD2 was guiding never
+completed and the frame it did take was lost; one requested while PHD2 was paused never started
+at all. Both ended in the same place -- the caller blocked for ever in `wait_for_image_saved`,
+so `do_expose`'s `finally` never ran, `UnitActivities.Exposing` stayed raised, and #219's
+one-run guard then refused every later frame in the run. One frame that could not start cost
+all of them.
+
+Three faults, independent of one another:
+
+- **`save_image` ignores its `path`.** While guiding, PHD2 will not take a separate exposure, so
+  `start_exposure` asked for `save_image` instead -- which writes a temp file of its own choosing
+  and returns the name in the reply. Nothing on that path emits `SingleFrameComplete`, which is
+  the only thing that ever set `image_saved_event`. Every exposure taken while guiding on this
+  fleet had been going to a temp file unnoticed, because the caller hung before it could look and
+  a hang reads as a slow exposure.
+- **`set_limit_frame` is refused whenever a guide session exists at all**, paused included:
+  *"Cannot set the frame limit ROI while calibrating or guiding."* `_is_guiding` accepts only
+  `Guiding` and `LostLock`, so a paused unit took the capture branch, which opened with
+  `set_limit_frame`; the refusal was caught and logged, and the method fell through without ever
+  calling `capture_single_frame`.
+- **The wait was unbounded.** Every hang traced that night ended on an event that nothing left
+  alive would set.
+
+**What was decided:** three changes, one per fault.
+
+The `save_image` reply is read rather than discarded: the file PHD2 chose is moved where the
+caller asked for it, `image_was_saved` is set, the waiter released and both imager flags ended.
+That is the guiding branch's equivalent of `SingleFrameComplete`, which it never had.
+
+The limit frame travels as a parameter of `capture_single_frame` -- which this connector already
+did at one call site and not the other. There is then no ROI to mutate, nothing for PHD2 to
+refuse, and nothing to restore afterwards, which is what makes the paused case work at all.
+
+`wait_for_image_saved` takes a timeout (`IMAGE_SAVE_TIMEOUT`, 300 s), and a capture that never
+started releases its waiter and drops `Exposing`/`Saving` through `_release_unstarted_exposure`
+rather than leaving them for whoever notices. This is the lesson #212 drew for abort, applied to
+the verb that starts rather than the one that stops: **a caught exception that strands a waiter
+is worse than an uncaught one.**
+
+**Implications:** the bounded wait means a fault on this path now surfaces as an error on one
+frame instead of a stalled run, and `do_expose`'s `finally` always gets to run -- so #219's
+one-run guard stops being a second, delayed symptom of any imager fault. The two acquisition-path
+tests in `test_limit_frame_guiding.py` pinned the mechanism rather than the outcome; their stated
+intent -- `use_set_limit_frame` alone decides, the `phd2.limit_frame` config plays no part -- is
+unchanged and still asserted, and only the wire form moved.
+
+**What this deliberately does not do:** it does not correct `_is_guiding`, which still reads a
+narrower set of states than "a session exists" (#224 owns that). It removes the dependency on
+that predicate for the exposure path rather than fixing the predicate.
+
+**Not yet validated against real PHD2.** Whether `capture_single_frame` succeeds during a full
+pause has never been observed, on any night, because the `set_limit_frame` refusal always aborted
+first. The change is pinned by unit tests; the on-sky confirmation is still owed.
+
+---
+
 ## [2026-09-08] `status` reports what it could not read, instead of failing whole
 
 **Why:** #222. `Unit.status()` built `FullUnitStatus` from nine live reads inline, so any one
