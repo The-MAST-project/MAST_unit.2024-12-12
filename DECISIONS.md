@@ -12,12 +12,17 @@ focus to find, so the retries could not recover what the first try missed -- the
 make the fit worse, and nothing recorded that the instrument had been left defocused.
 
 The same loop carried two further defects. The exposure series was opened **once for the run**
-and closed **per try**, so every try after the first exposed with no series live; the PHD2
-backend resumes guiding in that close hook, which would send a retry's frames down `save_image`
-at the guide profile's exposure and gain rather than `capture_single_frame` at the autofocus
-settings. And the give-up message was keyed on `try_number == max_tries - 1`, which is equally
-true of a run that *solved* on its final try -- with `max_tries = 1`, of every run that solved
-at all.
+and closed **per try**, so every try after the first exposed against a series that had already
+been ended, and the backend's end hook re-ran once per try. That one is **latent, not live**:
+`Imager.start_exposure_series` never calls the backend's *start* hook, so phd2's
+`_needs_to_resume_guiding` is never set and all three backends' end hooks are no-ops (#240).
+It is worth fixing here anyway, because the hook it depends on is documented behaviour the
+wrapper promises -- *"the phd2 backend needs to stop/restart guiding if it was guiding when the
+series started"* -- and the day that start hook is connected, a one-start/N-ends loop resumes
+guiding after try 0 and sends the retries' frames down `save_image` at the guide profile's
+exposure and gain. And the give-up message was keyed on `try_number == max_tries - 1`, which is
+equally true of a run that *solved* on its final try -- with `max_tries = 1`, of every run that
+solved at all.
 
 **What was decided:** each try re-derives `focuser_position` from `start_position`, drives the
 focuser there and waits for it to settle before exposing; each try opens and closes its own

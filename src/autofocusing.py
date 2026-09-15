@@ -267,11 +267,12 @@ class Autofocuser:
             #
             files: list[str] = []
             stopped: bool = False
-            # Opened and closed per try. Opened once for the whole run, the close at the end of
-            # try 0 left every later try exposing with no series live -- and the PHD2 backend
-            # resumes guiding in that close hook, so a retry's frames would go down
-            # `save_image` at the guide profile's exposure and gain rather than
-            # `capture_single_frame` at the autofocus settings.
+            # Opened and closed per try. Opened once for the whole run, the close at the end
+            # of try 0 left every later try exposing against a series that had already been
+            # ended, and re-ran the backend's end hook once per try. Inert today only because
+            # `Imager.start_exposure_series` never calls the backend's *start* hook, so every
+            # backend's end hook is a no-op (see #240); the phd2 one is written to resume
+            # guiding there, and wiring the start hook up is what makes this bite.
             autofocus_exposure_series = self.unit.imager.start_exposure_series(purpose="autofocus")
             try:
                 for image_no in range(number_of_images):

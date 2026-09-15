@@ -9,9 +9,12 @@ focus with nothing recording that it had:
   re-centering. By try 2 the sweep sampled nothing but defocus, which is a fit that
   cannot succeed however good the optics are.
 - the exposure series was **opened once and closed per try**, so tries after the
-  first ran with no series open. The PHD2 backend resumes guiding in that close
-  hook, so a retry could take its frames down `save_image` -- the guide profile's
-  exposure and gain -- instead of `capture_single_frame`.
+  first ran against a series already ended, and the backend's end hook re-ran once
+  per try. That is inert today, because `Imager.start_exposure_series` never calls
+  the backend's *start* hook at all and every end hook is therefore a no-op (#240).
+  It is the phd2 end hook that would resume guiding, so wiring up the start hook --
+  the obvious fix for that dead code -- is what turns this into a retry exposing
+  down `save_image` at the guide profile's settings.
 - the give-up message was keyed on ``try_number == max_tries - 1``, which is also
   true of a run that *solved* on its final try.
 
@@ -254,8 +257,9 @@ class TestTheExposureSeriesIsPairedWithTheTry:
         assert not unit.imager.open
 
     def test_no_frame_is_taken_outside_a_series(self, harness):
-        """The PHD2 backend resumes guiding when a series ends, so a frame taken after
-        that goes down `save_image` with the guide profile's exposure and gain."""
+        """Structural today, load-bearing the moment the backend start hook is wired up
+        (#240): the phd2 end hook resumes guiding, and a frame taken after it would go
+        down `save_image` at the guide profile's exposure and gain."""
         unit = Unit(max_tries=3)
 
         _run(harness, unit, [_unsolved(), _unsolved(), _unsolved()])
