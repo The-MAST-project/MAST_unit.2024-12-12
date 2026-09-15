@@ -155,7 +155,9 @@ class TestWhilePaused:
         # `set_limit_frame`, so this is not a change in what PHD2 is told.
         roi = settings.roi
         assert params["limit_frame"] == [roi.x, roi.y, roi.width, roi.height]
-        assert params["path"] == str(tmp_path / "out.fits")
+        # `.as_posix()`, not `str()`: ImagerSettings.model_post_init normalizes
+        # image_path to forward slashes, so on Windows the two do not match.
+        assert params["path"] == (tmp_path / "out.fits").as_posix()
 
     def test_a_refused_capture_does_not_strand_the_waiter(self, tmp_path):
         p = make_connector("Paused")
