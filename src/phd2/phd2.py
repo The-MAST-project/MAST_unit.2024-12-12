@@ -1714,7 +1714,12 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         try:
             reply = self.call("get_cooler_status")
             if reply and "result" in reply and "coolerOn" in reply["result"]:
-                self._setpoint = reply["result"]["setpoint"]
+                # PHD2 sends `setpoint` and `power` only inside `if (on)`
+                # (`event_server.cpp`, `get_cooler_status`), so this reply carries neither
+                # whenever the cooler is off -- which is exactly when the guard above passes.
+                # Guarded like the sibling `cooler_power` below rather than assumed.
+                if "setpoint" in reply["result"]:
+                    self._setpoint = reply["result"]["setpoint"]
                 return reply["result"]["coolerOn"]
         except Exception:
             logger.exception(f"{function_name()}: could not get coolerOn")
