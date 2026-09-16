@@ -2,6 +2,53 @@
 
 ---
 
+## [2026-09-15] A retry is a fresh attempt, not a continuation of one marching sweep
+
+**Why:** #233. `do_start_autofocus` computed the sweep's start position **once, before** the
+retry loop and thereafter only incremented it, so try N began wherever try N-1 stopped.
+Measured on mast01, 2026-09-14/15: try 0 sampled 24975-25175, try 1 ran 25225-25425 and try 2
+25475-25675, ending 750 ticks from the last known-good focus. By the third the sweep held no
+focus to find, so the retries could not recover what the first try missed -- they could only
+make the fit worse, and nothing recorded that the instrument had been left defocused.
+
+The same loop carried two further defects. The exposure series was opened **once for the run**
+and closed **per try**, so every try after the first exposed against a series that had already
+been ended, and the backend's end hook re-ran once per try. That one is **latent, not live**:
+`Imager.start_exposure_series` never calls the backend's *start* hook, so phd2's
+`_needs_to_resume_guiding` is never set and all three backends' end hooks are no-ops (#240).
+It is worth fixing here anyway, because the hook it depends on is documented behaviour the
+wrapper promises -- *"the phd2 backend needs to stop/restart guiding if it was guiding when the
+series started"* -- and the day that start hook is connected, a one-start/N-ends loop resumes
+guiding after try 0 and sends the retries' frames down `save_image` at the guide profile's
+exposure and gain. And the give-up message was keyed on `try_number == max_tries - 1`, which is
+equally true of a run that *solved* on its final try -- with `max_tries = 1`, of every run that
+solved at all.
+
+**What was decided:** each try re-derives `focuser_position` from `start_position`, drives the
+focuser there and waits for it to settle before exposing; each try opens and closes its own
+exposure series, in a `try/finally` so a stop or an exception cannot leave one open for the
+next consumer of the imager; success is carried by an explicit `solved` flag; and a run that
+does not solve returns the focuser to `entry_position`, where it found it.
+
+**The invariant is that what try N does must not depend on what try N-1 did.** That is what
+makes a retry worth attempting -- three draws from the same distribution rather than one sweep
+walking away from focus -- and it is the property the tests assert directly, by recording the
+focuser position at each frame and comparing the first of every try.
+
+**Restoring the entry position rather than `known_as_good_position`.** The entry position is
+what this run actually found, and leaving no trace is the weaker, more honest claim: the run
+learned nothing, so it changes nothing. It is only safe *because* of the re-centering above --
+previously a failed run's end position became the next run's start, so restoring anything at
+all would have been papering over a loop that poisoned its successor.
+
+**Implications.** A retry now costs a slew back to the sweep start, which is the intended
+trade against a retry that cannot succeed. No configuration changes and no new fields: the
+acceptance criterion that rejected good solutions on the same night is #237, deliberately
+separate because replacing it touches a required field in `AutofocusConfig`, and the
+unconditional `stop_tracking()` on the exit path is #232.
+
+---
+
 ## [2026-09-08] `status` reports what it could not read, instead of failing whole
 
 **Why:** #222. `Unit.status()` built `FullUnitStatus` from nine live reads inline, so any one

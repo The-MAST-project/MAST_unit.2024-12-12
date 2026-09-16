@@ -212,8 +212,6 @@ class Autofocuser:
             self.unit.mount.goto_ra_dec_j2000(target_ra, target_dec)
 
         start_position = start_position or self.unit.unit_conf.focuser.known_as_good_position
-        focuser_position: int = int(start_position - ((number_of_images / 2) * ticks_per_step))
-        self.unit.focuser.position = focuser_position
 
         logger.debug(f"{op}: Waiting for components (stage, mount, focuser) to stop moving ...")
         while (
@@ -224,6 +222,13 @@ class Autofocuser:
         if not self.unit.is_active(UnitActivities.Autofocusing):
             logger.info("activity 'Autofocusing' was stopped")
             return
+
+        # Where the run found the focuser. A run that does not solve puts it back here, so a
+        # failure costs nothing and cannot seed the next run from a position no measurement
+        # endorsed -- which is how one night walked the focuser 750 ticks off (#233).
+        # Read after the settle above, so a focuser still moving on entry is not captured
+        # mid-flight and restored to somewhere it was only passing through.
+        entry_position: int = self.unit.focuser.position
 
         acquisition_conf = self.unit.unit_conf.acquisition
         roi_conf = acquisition_conf.rois[self.unit.fcu_version]
@@ -239,57 +244,82 @@ class Autofocuser:
 
         max_tries: int = self.unit.unit_conf.autofocus.max_tries
         max_tolerance: float = self.unit.unit_conf.autofocus.max_tolerance
-        try_number: int = 0
-
-        autofocus_exposure_series = self.unit.imager.start_exposure_series(purpose="autofocus")
+        solved: bool = False
 
         for try_number in range(max_tries):
+            # Every try re-derives its sweep from `start_position`. Computed once before the
+            # loop, this made try N a continuation of try N-1 -- `focuser_position` was only
+            # ever incremented -- so a try that began away from focus left the next one
+            # further away still, sampling nothing but defocus by the third.
+            focuser_position: int = int(start_position - ((number_of_images / 2) * ticks_per_step))
+            logger.info(f"{op}: try #{try_number} centers on {start_position}, sweeping from {focuser_position}")
+            self.unit.focuser.position = focuser_position
+            while self.unit.focuser.is_active(FocuserActivities.Moving):
+                time.sleep(0.5)
+            if not self.unit.is_active(UnitActivities.Autofocusing):  # have we been stopped?
+                logger.info(f"{op}: activity 'Autofocusing' was stopped")
+                return
+
             autofocus_folder = PathMaker().make_autofocus_folder()
             logger.info(f"{op}: starting autofocus try #{try_number} (of {max_tries}) in '{autofocus_folder}' ...")
             #
             # Acquire images
             #
             files: list[str] = []
-            for image_no in range(number_of_images):
-                autofocus_settings = ImagerSettings(
-                    seconds=exposure,
-                    binning=_binning,
-                    roi=ImagerRoi.from_other(roi=unit_roi),
-                    gain=acquisition_conf.gain,
-                    image_path=os.path.join(autofocus_folder, f"FOCUS{int(focuser_position):05}.fits"),
-                    save=True,
-                )
+            stopped: bool = False
+            # Opened and closed per try. Opened once for the whole run, the close at the end
+            # of try 0 left every later try exposing against a series that had already been
+            # ended, and re-ran the backend's end hook once per try. Inert today only because
+            # `Imager.start_exposure_series` never calls the backend's *start* hook, so every
+            # backend's end hook is a no-op (see #240); the phd2 one is written to resume
+            # guiding there, and wiring the start hook up is what makes this bite.
+            autofocus_exposure_series = self.unit.imager.start_exposure_series(purpose="autofocus")
+            try:
+                for image_no in range(number_of_images):
+                    autofocus_settings = ImagerSettings(
+                        seconds=exposure,
+                        binning=_binning,
+                        roi=ImagerRoi.from_other(roi=unit_roi),
+                        gain=acquisition_conf.gain,
+                        image_path=os.path.join(autofocus_folder, f"FOCUS{int(focuser_position):05}.fits"),
+                        save=True,
+                    )
 
-                logger.info(
-                    f"{op}: starting exposure #{image_no} of {number_of_images} "
-                    f"at {focuser_position=} {autofocus_settings.roi=}..."
-                )
-                self.unit.imager.start_exposure(autofocus_settings)
-                logger.info(f"{op}: waiting for exposure #{image_no} of {number_of_images} ...")
-                self.unit.imager.wait_for_image_saved()
-                assert autofocus_settings.image_path
-                files.append(autofocus_settings.image_path)
+                    logger.info(
+                        f"{op}: starting exposure #{image_no} of {number_of_images} "
+                        f"at {focuser_position=} {autofocus_settings.roi=}..."
+                    )
+                    self.unit.imager.start_exposure(autofocus_settings)
+                    logger.info(f"{op}: waiting for exposure #{image_no} of {number_of_images} ...")
+                    self.unit.imager.wait_for_image_saved()
+                    assert autofocus_settings.image_path
+                    files.append(autofocus_settings.image_path)
 
-                if not self.unit.is_active(UnitActivities.Autofocusing):  # have we been stopped?
-                    logger.info(f"{op}: activity 'Autofocusing' was stopped")
-                    self.unit.imager.end_exposure_series(autofocus_exposure_series)
-                    return
+                    if not self.unit.is_active(UnitActivities.Autofocusing):  # have we been stopped?
+                        logger.info(f"{op}: activity 'Autofocusing' was stopped")
+                        stopped = True
+                        break
 
-                focuser_position += ticks_per_step
-                logger.info(f"{op}: moving focuser by {ticks_per_step} ticks (to {focuser_position}) ...")
-                self.unit.focuser.position = focuser_position
-                while self.unit.focuser.is_active(FocuserActivities.Moving):
-                    time.sleep(0.5)
-                logger.info(f"{op}: focuser stopped moving")
+                    focuser_position += ticks_per_step
+                    logger.info(f"{op}: moving focuser by {ticks_per_step} ticks (to {focuser_position}) ...")
+                    self.unit.focuser.position = focuser_position
+                    while self.unit.focuser.is_active(FocuserActivities.Moving):
+                        time.sleep(0.5)
+                    logger.info(f"{op}: focuser stopped moving")
 
-                if not self.unit.is_active(UnitActivities.Autofocusing):  # have we been stopped?
-                    logger.info(f"{op}: activity 'Autofocusing' was stopped")
-                    self.unit.imager.end_exposure_series(autofocus_exposure_series)
-                    return
+                    if not self.unit.is_active(UnitActivities.Autofocusing):  # have we been stopped?
+                        logger.info(f"{op}: activity 'Autofocusing' was stopped")
+                        stopped = True
+                        break
+            finally:
+                # In a `finally` so a stop, or anything raised by the sweep, cannot leave the
+                # series open for the next consumer of the imager to collide with.
+                self.unit.imager.end_exposure_series(autofocus_exposure_series)
+
+            if stopped:
+                return
 
             # The files are now in the autofocus_folder
-
-            self.unit.imager.end_exposure_series(autofocus_exposure_series)
 
             self.unit.start_activity(UnitActivities.AutofocusAnalysis)
             try:
@@ -382,12 +412,19 @@ class Autofocuser:
                 args=[self.latest_result, autofocus_folder, pixel_scale],
             ).start()
 
+            solved = True
             break  # the tries loop
 
-        if try_number == max_tries - 1:
+        # `try_number == max_tries - 1` was also true of a run that SOLVED on its last try,
+        # and with max_tries=1 of every run that solved at all.
+        if not solved:
             msg = f"{op}: could not achieve {max_tolerance=} within {max_tries=}"
             self.log_and_store_error(msg)
             boxed_log(logger=logger, lines=[msg], level=logging.ERROR)
+            logger.info(f"{op}: returning the focuser to {entry_position}, where the run found it")
+            self.unit.focuser.position = entry_position
+            while self.unit.focuser.is_active(FocuserActivities.Moving):
+                time.sleep(0.5)
 
         self.unit.mount.stop_tracking()
         self.unit.end_activity(UnitActivities.Autofocusing)
