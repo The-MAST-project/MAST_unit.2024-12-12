@@ -1386,6 +1386,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 self.connect_equipment()
             except PHD2ConnectorError as ex:
                 return CanonicalResponse(errors=[f"cannot connect {ex=}"])
+            finally:
+                # Ended on both paths. It was ended on neither, so a single handover --
+                # successful or not -- left the flag raised for the life of the process.
+                self.end_activity(PHD2Activities.EquipmentHandover)
 
         assert self.parent and self.parent.unit, (
             "phd2.start_guiding(): self.parent or self.unit is None. " + "cannot make_guiding_settings"
@@ -1645,9 +1649,17 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
     def stop_exposure(self) -> CanonicalResponse:
         logger.info(f"{function_name()}: stopping exposure")
-        self.call("stop_capture")
-        if self.parent is not None:
-            self.parent.end_activity(ImagerActivities.Exposing)
+        try:
+            self.call("stop_capture")
+        finally:
+            # The same unwind as `abort_exposure` below, and for the same reasons: the
+            # RPC that stops the capture may be the thing that is broken, `Saving` is
+            # raised alongside `Exposing` and was never ended here at all, and a caller
+            # already in `wait_for_image_saved` has nothing else to release it.
+            if self.parent is not None:
+                self.parent.end_activity(ImagerActivities.Exposing)
+                self.parent.end_activity(ImagerActivities.Saving)
+            self.image_saved_event.set()
         return CanonicalResponse_Ok
 
     def abort_exposure(self) -> CanonicalResponse:
