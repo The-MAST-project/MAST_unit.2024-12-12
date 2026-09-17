@@ -90,9 +90,9 @@ kept there rather than duplicated here — and that guide is the entry point for
 not just an index of the checks.
 
 **It is maintained by hand, and nothing checks it.** The test that asserted the guide named
-every check module and every `Tier` was withdrawn (MAST_unit#178 W1), so adding, removing or
-re-scoping a check — or adding a tier or a completion form — means editing the guide in the same
-change. MAST_unit#178's revisit compares the check modules on that branch against that table.
+every check module and every `Tier` was withdrawn — a test over prose fails for the wrong
+reasons — so adding, removing or re-scoping a check, or adding a tier or a completion form,
+means editing the guide in the same change. Nothing compares the two.
 
 Each carries a `KNOWN_*` dict of the violations present today, keyed to the issue that owns
 fixing them. Only a **new** finding fails; an entry that has stopped being true is reported in
@@ -100,5 +100,5 @@ pytest's warnings summary, so landing a fix means reading that summary and remov
 just made stale. Every detector also runs over a synthetic source with a known answer, so a
 broken detector cannot pass by finding nothing.
 
-What this suite deliberately does *not* enforce, and the audit that revisits the decision, is
-the register on MAST_unit#178.
+What this suite deliberately does *not* enforce, and when the CI gate is worth dropping, is in
+[docs/adding-an-endpoint.md](docs/adding-an-endpoint.md).
