@@ -1,15 +1,23 @@
-"""Stand-ins that let the unit's component modules import and run off a unit (#52).
+"""Stand-ins that let the unit's component modules import off a unit (#52).
 
-Two separate jobs, deliberately kept apart:
+`install_hardware_stubs()` makes the *imports* succeed, and that is the whole of it. `mount`,
+`focuser`, `stage` and the imager backends bind `win32com`, `pyximc` or `pyzwoasi` at module
+scope, so without those modules the unit's own modules cannot be imported at all and every
+test touching them skips. A stub is installed **only when the real module is absent**, so
+Windows CI keeps importing the real thing and nothing here can mask a genuine Windows
+behaviour.
 
-- `install_hardware_stubs()` makes the *imports* succeed. `mount`, `focuser`, `stage` and the
-  imager backends bind `win32com`, `pyximc` or `pyzwoasi` at module scope, so on any machine
-  without them the module cannot be imported at all -- which is why six test modules skip on a
-  dev machine and the behavioural half of the suite has only ever run on Windows.
-- The `pwi4` and `ximc` fakes are *devices*: small state machines a test drives explicitly.
+**Nothing in this package models a device.** There are no `pwi4` or `ximc` fakes. A test that
+needs device behaviour builds it inline, which is why `MagicMock` and `monkeypatch` are spread
+through the behavioural modules rather than collected here.
 
-A stub is installed **only when the real module is absent**, so Windows CI keeps importing the
-real thing and nothing here can mask a genuine Windows behaviour.
+#52's Phase 1 designed a shared device layer -- fake ASCOM `Dispatch` objects per prog-id, a
+scriptable `pwi4_client` with slew / move / exposure state machines -- and it was never built.
+Read that issue before building one. Most of what such a layer would stand in for is a
+constructor reaching for hardware, so making construction inert is the cheaper fix and removes
+the need rather than meeting it (#91, #111, #197). Where a real dependency is easier to stand
+up than to imitate, prefer it: `pwi4_client` speaks HTTP, so a real `http.server` on an
+ephemeral port is a better test double than a fake client.
 """
 
 from __future__ import annotations
@@ -18,8 +26,8 @@ import importlib.util
 import sys
 import types
 
-#: Module-scope imports that do not exist off a unit. Each maps to the attributes the unit's
-#: modules reach for at import time -- nothing here models behaviour; the device fakes do that.
+#: Module-scope imports that do not exist off a unit. Stubbing one gets the unit's modules
+#: past their import-time name binding; nothing here models behaviour.
 _HARDWARE_MODULES = (
     "win32com",
     "win32com.client",
@@ -50,7 +58,8 @@ class _Stub(types.ModuleType):
     """Answers any attribute with another stub, so an import-time lookup cannot fail.
 
     Deliberately permissive: the point is to get past `import` and the module-scope name
-    binding, not to emulate an API. Anything a test actually exercises is given a real fake.
+    binding, not to emulate an API. A test that exercises the thing itself supplies its own
+    stand-in at the call site.
     """
 
     def __getattr__(self, name: str):
