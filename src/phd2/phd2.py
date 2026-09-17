@@ -285,14 +285,6 @@ class SingleFrameResult:
 class PHD2Connector(GuiderInterface, ImagerInterface):
     """The main class for interacting with PHD2 both as a guider and as an imager."""
 
-    #: The limit frame PHD2 is currently holding, and the one to put back after an
-    #: exposure that overrode it. Class-level defaults because a connector is
-    #: routinely built with `object.__new__` -- by the test suite, and by any caller
-    #: that wants the protocol without the hardware -- and the reset path must not
-    #: depend on `__init__` having run.
-    limit_frame_in_force: ImagerRoi | None = None
-    limit_frame_to_restore: ImagerRoi | None = None
-
     DEFAULT_STOP_CAPTURE_TIMEOUT = 10
     _instance = None
     _initialized = False
@@ -397,7 +389,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.dec_accumulator = PHD2Accumulator()
         self.stats = PHD2GuideStats()
         self.settle = None
-        self._setpoint: float | None = None
 
         assert self.parent is not None and self.parent.unit is not None, (
             "PHD2Connector: no parent imager, so no way to reach the unit configuration"
@@ -451,9 +442,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         time.sleep(secs)
 
         self._needs_to_resume_guiding = False
-        self.need_to_reset_limit_frame = False
-        self.limit_frame_in_force: ImagerRoi | None = None
-        self.limit_frame_to_restore: ImagerRoi | None = None
 
         self._connected = False
         try:
@@ -1157,22 +1145,26 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             raise PHD2ConnectorError("PHD2 Server not connected")
 
     def _send_limit_frame(self, roi: ImagerRoi | None):
-        """Put a limit frame on PHD2 and remember what is now in force."""
+        """Put a limit frame on PHD2. What is in force afterwards is PHD2's to answer."""
         if roi is not None:
             logger.debug(f"{function_name()}: setting {roi=}")
             self.call("set_limit_frame", params={"roi": [roi.x, roi.y, roi.width, roi.height]})
         else:
             logger.debug(f"{function_name()}: resetting ROI")
             self.call("set_limit_frame", params={"roi": None})
-        self.limit_frame_in_force = roi
 
     def set_limit_frame(self, roi: ImagerRoi | None = None):
+        """Set the limit frame. What is in force afterwards is PHD2's to answer.
+
+        Deliberately not returning the previous frame: no caller wants one, and
+        reading it here would put an RPC on every set to serve nobody. A caller that
+        does need to put something back reads :meth:`get_limit_frame` first, which
+        is the whole point of the getter existing (#245).
+        """
         if not self.connected:
             logger.error(f"{function_name()}: not connected")
 
-        self.limit_frame_to_restore = self.limit_frame_in_force
         self._send_limit_frame(roi)
-        self.need_to_reset_limit_frame = roi is not None
 
     def set_exclude_region(self, roi: ImagerRoi | None = None):
         """Set (or reset, with roi=None) the PHD2 guide-star exclusion region.
@@ -1195,6 +1187,43 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 self.call("set_exclude_region", params={"roi": None})
             except PHD2ConnectorError as ex:
                 logger.debug(f"{function_name()}: reset not supported by this PHD2 build (nothing to reset): {ex=}")
+
+    def get_limit_frame(self) -> ImagerRoi | None:
+        """The limit frame PHD2 is holding, or None when it holds none.
+
+        A read, not a recollection. The connector used to keep what it last sent
+        in `limit_frame_in_force` and answer from that, which is a different
+        question: a request can be accepted and not yet applied, an operator can
+        change it by hand, and a restart drops it entirely. Every one of those
+        happened on mast00 and mast01 (#245).
+        """
+        result = self.call("get_limit_frame")["result"]
+        if not result:
+            return None
+        # verbatim: this rectangle is what PHD2 already holds. Conditioning it would
+        # move it, and the value would no longer describe the instrument (MAST_common#17).
+        return ImagerRoi.verbatim(x=result[0], y=result[1], width=result[2], height=result[3])
+
+    def get_exclude_region(self) -> ImagerRoi | None:
+        """The exclusion region PHD2 is holding, or None when it holds none."""
+        result = self.call("get_exclude_region")["result"]
+        if not result:
+            return None
+        return ImagerRoi.verbatim(x=result[0], y=result[1], width=result[2], height=result[3])
+
+    def get_lock_position(self) -> tuple[float, float] | None:
+        """PHD2's lock position, in the coordinates of the image it is delivering.
+
+        That frame is the limit frame when one is in force, while
+        :meth:`get_limit_frame` and :meth:`get_exclude_region` are in unbinned
+        full-sensor pixels. Anything comparing the two must add the crop origin
+        first -- 520 px on the derived frame, 6363 on the strip -- and the
+        comparison does not look wrong when it is (#234, #245).
+        """
+        result = self.call("get_lock_position")["result"]
+        if not result:
+            return None
+        return float(result[0]), float(result[1])
 
     def _apply_configured_exclude_region(self):
         """Set-or-reset the exclusion region from phd2.exclude_region before every
@@ -1564,6 +1593,19 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         )
 
         lock = self.lock_supervisor.state
+
+        # Read, every time. These are the values #245 is about: answering them from
+        # anything the connector remembers is what let the limit frame, the exclusion
+        # region and the cooler set point each describe the instrument only until
+        # something else touched it. A failed read reports None rather than the last
+        # good answer -- "I do not know" is a true statement and a stale number is not.
+        try:
+            limit_frame = self.get_limit_frame()
+            exclude_region = self.get_exclude_region()
+            lock_position = self.get_lock_position()
+        except Exception:
+            logger.exception(f"{function_name()}: could not read PHD2's frame state")
+            limit_frame = exclude_region = lock_position = None
         return PHD2GuiderStatus(
             identifier=self.identifier,
             is_guiding=self.is_guiding,
@@ -1571,6 +1613,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             app_state=self.app_state,
             avg_dist=self.avg_dist,
             sky_quality=sky_quality,
+            limit_frame=limit_frame,
+            exclude_region=exclude_region,
+            lock_position=lock_position,
             lock_validity=LockValidityStatus(
                 validity=str(lock.validity),
                 frame_verdict=str(lock.frame_verdict),
@@ -2031,39 +2076,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     self.parent.end_activity(ImagerActivities.Saving)
                     self.parent.end_activity(ImagerActivities.Exposing)
             self.image_saved_event.clear()
-        self.reset_limit_frame_if_needed()
-
-    def reset_limit_frame_if_needed(self):
-        """Put PHD2's limit frame back to whatever it was before the exposure.
-
-        `need_to_reset_limit_frame` was set in `set_limit_frame` and read nowhere, so a
-        limit frame set for one MAST exposure stayed on PHD2 indefinitely -- including for
-        an operator driving PHD2 by hand afterwards. Found on mast00 on 2026-08-17: PHD2
-        was still holding `[7, 1, 8272, 5640]` from an earlier exposure, and reported its
-        camera frame size as 8272x5640 rather than the sensor's 8288x5644.
-
-        Restoring the *previous* frame rather than clearing to `None`: clearing is right
-        only when nothing was in force before, which is the standalone-exposure case this
-        was written for. An exposure taken while a guide loop holds its limit frame -- a
-        paused loop mid-handover, say -- was having that frame silently dropped. PHD2 then
-        reports star positions in full-sensor coordinates instead of the crop, and the
-        exclusion rectangle it is still holding was translated for a crop origin that no
-        longer applies, so a re-selection can land inside the fold mirror's shadow. With
-        nothing in force beforehand `limit_frame_to_restore` is `None` and this clears, as
-        it always did. Observed on mast01 2026-09-08.
-
-        Here rather than in `stop_exposure`: the non-guiding path a single frame takes never
-        calls that, so the reset would never run.
-        """
-        if not self.need_to_reset_limit_frame:
-            return
-        try:
-            self._send_limit_frame(self.limit_frame_to_restore)
-        except Exception as e:  # noqa: BLE001 -- tidying up must not fail the exposure
-            logger.error(f"{function_name()}: could not restore the limit frame ({e})")
-        finally:
-            self.need_to_reset_limit_frame = False
-            self.limit_frame_to_restore = None
 
     @property
     def temperature(self) -> float | None:
@@ -2076,20 +2088,31 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             return None
 
     @property
-    def set_point(self):
-        return self._setpoint
+    def set_point(self) -> float | None:
+        """The cooler set point PHD2 reports, or None when the cooler is off.
+
+        PHD2 sends `setpoint` only inside `if (on)` (`event_server.cpp`,
+        `get_cooler_status`), so *off* has no set point to report and None is the
+        truthful answer. This used to answer from a value cached off the last reply
+        that happened to carry one -- so on the night of 2026-09-08 it kept reading
+        5.0 through eighty minutes of guiding at 16.5 degrees with the cooler off,
+        and the alarm built for exactly that episode fired on a stale number that
+        happened to be right. On a unit that had never had the cooler on it would
+        have been None and nothing would have fired at all (#109, #245).
+        """
+        try:
+            reply = self.call("get_cooler_status")
+        except Exception:
+            logger.exception(f"{function_name()}: could not get the cooler set point")
+            return None
+        result = (reply or {}).get("result") or {}
+        return result.get("setpoint")
 
     @property
     def cooler_on(self) -> bool | None:
         try:
             reply = self.call("get_cooler_status")
             if reply and "result" in reply and "coolerOn" in reply["result"]:
-                # PHD2 sends `setpoint` and `power` only inside `if (on)`
-                # (`event_server.cpp`, `get_cooler_status`), so this reply carries neither
-                # whenever the cooler is off -- which is exactly when the guard above passes.
-                # Guarded like the sibling `cooler_power` below rather than assumed.
-                if "setpoint" in reply["result"]:
-                    self._setpoint = reply["result"]["setpoint"]
                 return reply["result"]["coolerOn"]
         except Exception:
             logger.exception(f"{function_name()}: could not get coolerOn")
