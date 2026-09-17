@@ -15,9 +15,18 @@
 #     common/   <- MAST_common master; the repo root IS the `common` package
 #     unit/     <- this repo
 #
-# Consequence worth knowing: this builds against MAST_common's master, not against a
-# pinned commit. A breaking change there turns this red without anything in this repo
-# having moved -- which is the point, since that is exactly how the units are deployed.
+# Which MAST_common it builds against: the branch of the SAME NAME if one exists there,
+# otherwise master (#208). A change spanning both repos is developed on same-named
+# branches -- `eli/exclude-region` in each -- and CI then builds the pair as a pair,
+# rather than testing the unit half against a master that does not carry the other half
+# yet. Before this, such a PR could not go green without a hand-written commit pinning
+# `ref:` to the paired branch, which then had to be remembered and deleted before the
+# merge. That was paid three times.
+#
+# Off a pairing branch -- and on every push to main, which asks for a branch MAST_common
+# does not have -- this still builds against master. So a breaking change there turns
+# this red without anything in this repo having moved, which is the point: that is
+# exactly how the units are deployed.
 #
 # Lint is BLOCKING, and green as of 2026-08-30 (#172). It was red from the day CI
 # landed -- 269 findings and 44 unformatted files on 2026-08-09, still 75 findings on
@@ -54,11 +63,29 @@ jobs:
         with:
           path: unit
 
+      - name: Resolve the paired MAST_common branch
+        id: common-ref
+        shell: bash
+        env:
+          # head_ref on a pull_request, ref_name on a push. `git ls-remote` rather than
+          # the API: both repos are public, so it needs no token, and it is the same
+          # question asked of the same server.
+          PAIRED: ${{ github.head_ref || github.ref_name }}
+        run: |
+          remote=https://github.com/The-MAST-project/MAST_common.git
+          if [ -n "$PAIRED" ] && [ -n "$(git ls-remote --heads "$remote" "$PAIRED")" ]; then
+            echo "ref=$PAIRED" >> "$GITHUB_OUTPUT"
+            echo "MAST_common: building against the paired branch '$PAIRED'"
+          else
+            echo "ref=master" >> "$GITHUB_OUTPUT"
+            echo "MAST_common: no branch named '$PAIRED'; building against master"
+          fi
+
       - name: Check out MAST_common as a sibling
         uses: actions/checkout@v7
         with:
           repository: The-MAST-project/MAST_common
-          ref: master
+          ref: ${{ steps.common-ref.outputs.ref }}
           path: common
 
       - uses: actions/setup-python@v7

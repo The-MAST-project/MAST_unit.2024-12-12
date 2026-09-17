@@ -2,6 +2,38 @@
 
 ---
 
+## [2026-09-17] CI builds against the MAST_common branch of the same name
+
+**Why:** #208. The workflow checked out MAST_common at a literal `ref: master`, so a change
+spanning both repos could not go green: the unit half was tested against a master that did
+not carry the other half yet, and every importing module died at collection. The workaround
+was a commit editing `ref:` to name the paired branch, carried on the PR and deleted before
+the merge -- paid on #77, again on `eli/exclude-region` on 2026-09-08, and still live on #30
+today as a commit whose own message is *"Drop this commit before merging"*. A workaround that
+must be remembered three times is a defect in the workflow, not a discipline.
+
+**What was decided:** the `ref` is resolved from the branch under test. If MAST_common has a
+branch of the same name, CI builds against it; otherwise against master. Resolution is
+`git ls-remote --heads` -- both repos are public, so it needs no token -- in a step whose log
+line states which branch it chose, because a build against an unexpected MAST_common is
+otherwise invisible.
+
+The pairing convention already existed and was simply not automated: a cross-repo change is
+developed on same-named branches (`eli/exclude-region` in each). This makes the convention
+load-bearing rather than decorative, which is the trade -- a typo in a branch name now yields
+a silent master build rather than an error. The chosen ref is printed for exactly that reason.
+
+**Implications.** A push to main asks for a branch named `main`, which MAST_common does not
+have (its trunk is master), so trunk builds are unchanged: still master, still red when a
+breaking change lands there without anything in this repo moving. That property was the
+original argument for the literal pin and is deliberately preserved.
+
+`26a13b4` on `eli/exclude-region` becomes unnecessary and should be dropped on that branch's
+next rebase. The lint job is untouched -- it never checks out MAST_common, since ruff does not
+import the code.
+
+---
+
 ## [2026-09-15] A retry is a fresh attempt, not a continuation of one marching sweep
 
 **Why:** #233. `do_start_autofocus` computed the sweep's start position **once, before** the
