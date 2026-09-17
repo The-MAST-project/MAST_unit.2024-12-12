@@ -188,23 +188,37 @@ Open this table when one goes red.
 | `test_route_parameter_names.py` | two components serving one path leaf with differently *named* parameters |
 | `test_abstract_declarations.py` | an `@abstractmethod` with no declared return type — the drift that let `/imager/status` 500 |
 
+### When the gate costs more than it catches
+
+The checks run in CI by decision, not by accident, and they stay until they cost more than they
+catch. What that looks like, written down so the call is a judgment against a test rather than a
+mood: a red build produced by **bookkeeping rather than a defect** — a stale `KNOWN_*` entry, a
+rename that moved a key, a check reporting on code the author never touched — or a check blocking
+a change nobody disputes is correct. Only new findings failing is what should keep that rare.
+
+If it stops being rare, drop `tests/contract/` from the `pytest` invocation in `ci.yml` and leave
+the modules in the tree. That reverts the gate without reverting the checks or orphaning this file.
+
 ## What is not enforced
 
-Three gaps, so nobody mistakes review for machinery. What the softening pass withdrew or
-relaxed, and the audit that revisits it, is `#178`.
+Three gaps, so nobody mistakes review for machinery. Each is a check that was withdrawn or
+relaxed deliberately, because it policed a convention rather than a defect.
 
 - **The verb.** No check reads `methods=`; the `GET`→`PUT` sweep was a scripted pass whose
-  residue is enumerated on `#48`. The generated verbs are safe by provenance, the rest rest on
+  residue was enumerated on `#48`. The generated verbs are safe by provenance, the rest rest on
   the reviewer. `/unit/abort` answers both deliberately — the shared plan client aborts the
   fleet with `GET` (`MAST_common#51`, removal on `#113`).
 - **The preflight ordering.** Section 3 is a discipline: nothing stops a handler slewing first
   and validating second. `#179` would make it structural, by running declared preconditions at
   registration.
 - **A CONTRACT-tier route name.** Rename one on one side of the wire and nothing fails at
-  import — it is a 404 in the field. Grep the client (`#178` W3, `#35`).
+  import — it is a 404 in the field. Grep the client. The shared endpoint-name enums that
+  would have caught it were removed rather than left as a list nothing enforced (`#35`,
+  declined as posed).
 
 ## Keeping this current
 
 By hand: adding a check, a tier or a completion form means editing this file in the same change.
-The test that asserted this file named every check and every `Tier` was withdrawn as `#178` W1,
-whose revisit compares the modules in `tests/contract/` against the table above.
+Nothing asserts that this file is complete — the test that did was withdrawn, because a test over
+prose fails for the wrong reasons — so a module added to `tests/contract/` without a row in the
+table above stays invisible until someone trips over it. Compare the two whenever you touch either.
