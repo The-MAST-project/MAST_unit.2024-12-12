@@ -1532,46 +1532,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.start_guiding()
             self._needs_to_resume_guiding = False
 
-    def new_start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:
-        op = function_name()
-
-        self.errors = []
-        if not self.connected:
-            err = f"{op}: not connected"
-            self.log_and_append_error(err)
-            return CanonicalResponse(errors=[err])
-
-        logger.info(f"{function_name()}: starting {settings.seconds}s exposure")
-        self.image_was_saved = False
-        if self.parent is not None:
-            self.parent.start_activity(ImagerActivities.Exposing, details=[f"{settings.seconds} seconds"])
-            self.parent.start_activity(
-                ImagerActivities.Saving,
-                # details=f"{Path(settings.image_path).as_posix() if settings.image_path else None}",
-            )
-
-        try:
-            assert settings.roi
-            roi = settings.roi.binned(settings.binning)
-            self.call(
-                "capture_single_frame",
-                params={
-                    "exposure": int(
-                        settings.seconds * 1000  # convert to milliseconds
-                    ),
-                    "gain": int(asi.gain_absolute_to_percent(settings.gain)),
-                    "binning": settings.binning,
-                    "save": True,
-                    "path": settings.image_path,
-                    "limit_frame": [roi.x, roi.y, roi.width, roi.height],
-                },
-            )
-
-        except PHD2ConnectorError as ex:
-            self.log_and_append_error(f"{ex=}")
-
-        return CanonicalResponse(errors=self.errors) if self.errors else CanonicalResponse_Ok
-
     def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:
         """
         The main entry point for starting an exposure with PHD2.
@@ -1876,23 +1836,9 @@ if __name__ == "__main__":
             new_interface=True,
         )
 
-    def test_new_single_frame():
-        PHD2Connector().new_start_exposure(
-            settings=ImagerSettings(
-                seconds=3.4,
-                save=False,
-                binning=2,
-                gain=200,
-                image_path="c:/dummy.fits",
-                roi=ImagerRoi(x=200, y=150, width=2000, height=1000),
-            )
-        )
-
     test_exposures(nexposures=1, binning=2, x=1000, y=2000, width=4000, height=3000)
     # test_guiding()
 
     # test_new_guiding()
-
-    # test_new_single_frame()
 
     exit(0)
