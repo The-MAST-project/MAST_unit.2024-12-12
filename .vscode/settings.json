@@ -31,7 +31,7 @@
   "python.languageServer": "Pylance",
   "python.analysis.typeCheckingMode": "basic",
   // "./src" is the real runtime sys.path root: app.py is launched with
-  // cwd=src and PYTHONPATH=src (see launch.json and service/mast-service.ps1),
+  // cwd=src and PYTHONPATH=src (see launch.json),
   // so its siblings are imported absolutely -- "from unit import Unit".
   // It must come BEFORE "..", because ".." exposes the repo's own root folder
   // (top/unit/, which has no __init__.py) as a namespace package also called
