@@ -102,6 +102,24 @@ class GuideDirections(Enum):
     guide_west = 3
 
 
+def _start_exposure_or_raise(imager, settings: ImagerSettings) -> None:
+    """Start one exposure, raising if the backend refused it.
+
+    The response was discarded in `_expose_repeatedly` while every other caller checked
+    it (`solving.py`, `spiral_search.py`, `flux_metering/session.py`). A refused start
+    then walked the loop into `wait_for_image_saved` and on to `move_ram_to_shared` for
+    a file that was never written -- the `move: path does not exist, ignoring` line in
+    the logs. `do_expose` already wraps the loop in try/except/finally, so raising here
+    needs no new machinery.
+
+    Module-level rather than a method: it needs no `self`, and `_expose_repeatedly` is
+    borrowed by a duck-typed stand-in in tests/test_expose_cancellation.py.
+    """
+    response = imager.start_exposure(settings)
+    if response is not None and response.failed:
+        raise RuntimeError(f"{function_name()}: the imager refused the exposure: {response.errors}")
+
+
 class Unit(Component):
     MAX_UNITS = 20
     MAX_AUTOFOCUS_TRIES = 3
@@ -818,6 +836,31 @@ class Unit(Component):
                 ),
             ),
         ] = None,
+        start_tracking: Annotated[
+            bool,
+            Query(
+                description=(
+                    "#### Start the mount tracking before exposing.\n"
+                    "Default `true`, which is the historical behavior. Pass `false` when the "
+                    "caller has already established tracking and does not want it re-commanded: "
+                    "`start_tracking` has no *already tracking?* guard, so it re-issues "
+                    "`mount_tracking_on` (resetting any non-sidereal rate) and then waits at "
+                    "least a second for PWI4 to confirm."
+                ),
+            ),
+        ] = True,
+        stop_tracking: Annotated[
+            bool,
+            Query(
+                description=(
+                    "#### Stop the mount tracking after the last exposure.\n"
+                    "Default `true`, which is the historical behavior. Pass `false` to expose "
+                    "without ending the pointing -- two exposures that must share a field, or "
+                    "a frame taken while guiding is paused, where stopping the mount would let "
+                    "the field walk away before guiding resumes."
+                ),
+            ),
+        ] = True,
     ) -> CanonicalResponse:
 
         if seconds_between_exposures is not None:
@@ -913,6 +956,8 @@ class Unit(Component):
                 height,
                 binning,
                 gain,
+                start_tracking,
+                stop_tracking,
             ],
         ).start()
         return CanonicalResponse_Ok
@@ -931,6 +976,8 @@ class Unit(Component):
         height: int = 1300,
         binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
         gain: int = asi.ASI_294MM_DEFAULT_GAIN,
+        start_tracking: bool = True,
+        stop_tracking: bool = True,
     ) -> CanonicalResponse:
 
         assert self.mount is not None
@@ -940,7 +987,8 @@ class Unit(Component):
         seconds = exposure_seconds
 
         try:
-            self.mount.start_tracking()
+            if start_tracking:
+                self.mount.start_tracking()
             exposure_series = self.imager.start_exposure_series(purpose="unit.do_exposure")
             try:
                 self._expose_repeatedly(
@@ -960,13 +1008,14 @@ class Unit(Component):
             except Exception:
                 # This runs in `expose-thread`, where an exception would otherwise vanish
                 # entirely -- the endpoint has already returned "ok" to the caller. Logging
-                # is the only trace there is; the finally below is what stops the mount
-                # tracking forever and the exposure series dangling.
+                # is the only trace there is; the finally below is what keeps the exposure
+                # series from dangling and, unless the caller asked otherwise, stops the mount.
                 logger.exception(f"{op}: exposure run failed")
                 return CanonicalResponse(errors=[f"{op}: exposure run failed, see the log"])
             finally:
                 self.imager.end_exposure_series(exposure_series)
-                self.mount.stop_tracking()
+                if stop_tracking:
+                    self.mount.stop_tracking()
             return CanonicalResponse_Ok
         finally:
             # Outside the inner try, because start_tracking() and start_exposure_series()
@@ -1024,10 +1073,10 @@ class Unit(Component):
             # the containing folder cannot discard it.
             image_path = imager_settings.image_path
             if image_path is None:
-                self.imager.start_exposure(imager_settings)
+                _start_exposure_or_raise(self.imager, imager_settings)
             else:
                 with MoveGuardian().protect(image_path):
-                    self.imager.start_exposure(imager_settings)
+                    _start_exposure_or_raise(self.imager, imager_settings)
                     self.imager.wait_for_image_saved()
                 # An aborted exposure is released without a readout, so there is no file
                 # here to move and `move_ram_to_shared` would be the next exception.
@@ -1721,6 +1770,24 @@ class Unit(Component):
                 router,
                 base_path + "/start_guiding",
                 endpoint=self.guider.endpoint_start_guiding,
+                methods=["PUT"],
+            )
+            add_api_route(
+                router,
+                base_path + "/stop_guiding",
+                endpoint=self.guider.endpoint_stop_guiding,
+                methods=["PUT"],
+            )
+            add_api_route(
+                router,
+                base_path + "/pause_guiding",
+                endpoint=self.guider.endpoint_pause_guiding,
+                methods=["PUT"],
+            )
+            add_api_route(
+                router,
+                base_path + "/resume_guiding",
+                endpoint=self.guider.endpoint_resume_guiding,
                 methods=["PUT"],
             )
             add_api_route(

@@ -31,6 +31,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 _SRC = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
@@ -160,3 +162,32 @@ install_hardware_stubs()
 
 
 _block_external_processes()
+
+
+class ActivitySpy:
+    """The activity bookkeeping half of a component, over a set.
+
+    A `MagicMock` parent absorbs `start_activity` / `end_activity` silently, so a test
+    using one cannot assert that what was raised was also ended -- which is the whole
+    question for the leaks in MAST_unit#236.
+    """
+
+    def __init__(self) -> None:
+        self.activities: set = set()
+        #: Components reach the unit through their parent. Left None so a caller that
+        #: needs one fails its own assertion rather than an AttributeError here.
+        self.unit = None
+
+    def start_activity(self, activity, **kwargs) -> None:
+        self.activities.add(activity)
+
+    def end_activity(self, activity, **kwargs) -> None:
+        self.activities.discard(activity)
+
+    def is_active(self, activity) -> bool:
+        return activity in self.activities
+
+
+@pytest.fixture
+def activity_spy() -> ActivitySpy:
+    return ActivitySpy()

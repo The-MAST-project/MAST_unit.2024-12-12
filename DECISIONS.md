@@ -34,6 +34,62 @@ import the code.
 
 ---
 
+## [2026-09-15] An exposure that never started releases its waiter, and the limit frame travels with the capture
+
+**Why:** #225, met on mast01 on 2026-09-08. An exposure requested while PHD2 was guiding never
+completed and the frame it did take was lost; one requested while PHD2 was paused never started
+at all. Both ended in the same place -- the caller blocked for ever in `wait_for_image_saved`,
+so `do_expose`'s `finally` never ran, `UnitActivities.Exposing` stayed raised, and #219's
+one-run guard then refused every later frame in the run. One frame that could not start cost
+all of them.
+
+Three faults, independent of one another:
+
+- **`save_image` ignores its `path`.** While guiding, PHD2 will not take a separate exposure, so
+  `start_exposure` asked for `save_image` instead -- which writes a temp file of its own choosing
+  and returns the name in the reply. Nothing on that path emits `SingleFrameComplete`, which is
+  the only thing that ever set `image_saved_event`. Every exposure taken while guiding on this
+  fleet had been going to a temp file unnoticed, because the caller hung before it could look and
+  a hang reads as a slow exposure.
+- **`set_limit_frame` is refused whenever a guide session exists at all**, paused included:
+  *"Cannot set the frame limit ROI while calibrating or guiding."* `_is_guiding` accepts only
+  `Guiding` and `LostLock`, so a paused unit took the capture branch, which opened with
+  `set_limit_frame`; the refusal was caught and logged, and the method fell through without ever
+  calling `capture_single_frame`.
+- **The wait was unbounded.** Every hang traced that night ended on an event that nothing left
+  alive would set.
+
+**What was decided:** three changes, one per fault.
+
+The `save_image` reply is read rather than discarded: the file PHD2 chose is moved where the
+caller asked for it, `image_was_saved` is set, the waiter released and both imager flags ended.
+That is the guiding branch's equivalent of `SingleFrameComplete`, which it never had.
+
+The limit frame travels as a parameter of `capture_single_frame` -- which this connector already
+did at one call site and not the other. There is then no ROI to mutate, nothing for PHD2 to
+refuse, and nothing to restore afterwards, which is what makes the paused case work at all.
+
+`wait_for_image_saved` takes a timeout (`IMAGE_SAVE_TIMEOUT`, 300 s), and a capture that never
+started releases its waiter and drops `Exposing`/`Saving` through `_release_unstarted_exposure`
+rather than leaving them for whoever notices. This is the lesson #212 drew for abort, applied to
+the verb that starts rather than the one that stops: **a caught exception that strands a waiter
+is worse than an uncaught one.**
+
+**Implications:** the bounded wait means a fault on this path now surfaces as an error on one
+frame instead of a stalled run, and `do_expose`'s `finally` always gets to run -- so #219's
+one-run guard stops being a second, delayed symptom of any imager fault. The two acquisition-path
+tests in `test_limit_frame_guiding.py` pinned the mechanism rather than the outcome; their stated
+intent -- `use_set_limit_frame` alone decides, the `phd2.limit_frame` config plays no part -- is
+unchanged and still asserted, and only the wire form moved.
+
+**What this deliberately does not do:** it does not correct `_is_guiding`, which still reads a
+narrower set of states than "a session exists" (#224 owns that). It removes the dependency on
+that predicate for the exposure path rather than fixing the predicate.
+
+**Not yet validated against real PHD2.** Whether `capture_single_frame` succeeds during a full
+pause has never been observed, on any night, because the `set_limit_frame` refusal always aborted
+first. The change is pinned by unit tests; the on-sky confirmation is still owed.
+
 ## [2026-09-15] A retry is a fresh attempt, not a continuation of one marching sweep
 
 **Why:** #233. `do_start_autofocus` computed the sweep's start position **once, before** the
@@ -1029,6 +1085,82 @@ venv and skips cleanly elsewhere. `requirements-dev.txt` declares pytest.
 add bench one-offs; the labcomp2 bench remains for what needs a live PHD2 or a
 real camera. This executes the unit-side half of the 2026-07-07 bench's
 TEST-MIGRATION plan; the common-side half lives in `src/common/tests/`.
+
+---
+
+## [2026-07-06] The fold mirror is inserted under a full PHD2 pause, after guiding settles
+
+**Why:** The exclusion region keeps guiding off stars the parked mirror covers, but
+not off the corridor it sweeps on the way in: for the ~30 s of stage travel the
+selected star can be transiently occulted. The two pre-existing orderings each cost
+something — mirror first leaves an unguided gap in which tracking slip is *frozen
+into* the lock position, while guide-first-then-insert risks losing the star mid
+travel. PHD2's stock `set_paused(full)` inverts that cost: the star, calibration and
+lock position all survive a pause (verified in `myframe.cpp` / `guider.cpp`), so the
+open-loop travel drift is pulled *back* to the lock on resume rather than frozen in.
+
+**What:** `_wait_for_fcu_v2_at_spec` (a passive wait) became
+`_fcu_v2_spec_handover`, which drives the sequence: wait for settle → `set_paused(true,
+"full")` → command the stage to SPEC → wait for at-SPEC → `set_paused(false)` → flip
+PreGuiding to Guiding. Ready-for-exposure now means *stage at SPEC ∧ guiding resumed*,
+with **no settle gate after resume** — the few-pixel pull-back decays into the science
+integration, and stage-at-SPEC is the earliest physically meaningful shutter time
+anyway. On stage fault or timeout guiding **stays paused** and the handover fails
+loudly: resuming with the mirror mid-field would guide on a half-occulted field. The
+`Resumed` event is handled, and `guide()` refuses outright when the exclusion
+rectangle is stale relative to its `depth`/`pad_px` knobs.
+
+**Implications:** Acquisition serializes where it used to overlap, costing ≈ the stage
+move (~30 s) per mirror-inserting acquisition — accepted, because the concurrency it
+replaces was a selection-timing race. **Operator-facing semantic change:** the handover
+thread now commands the stage itself, so a *manual* `start_guiding` on an fcu_v2 unit
+also inserts the mirror via the bracketed sequence (previously it waited passively and
+stranded PreGuiding on a 60 s timeout). Short exposures keep one noted cost: a larger
+fraction of their light is collected during the pull-back. Both fault paths and the
+happy path are covered by the labcomp2 bench suite (6/6); on-sky validation of the
+1–2 px/30 s drift assumption and the re-lock decay is still pending.
+
+---
+
+## [2026-07-03] Guiding excludes the fold-mirror region via `phd2.exclude_region` (guide-first, then insert mirror)
+
+**Why:** Guiding must lock *before* the FCU fold mirror is inserted: in the gap
+between mirror insertion and guiding lock, tracking can slip enough to move the
+fiber off its calibrated pixel, and with the mirror out the viable guide-star
+candidates (those passing PHD2's selection gates — unsaturated, SNR/mass minimums,
+HFD window — which MAST's strong coma confines to the low-coma center of the frame)
+sit exactly in the zone the mirror covers. The custom PHD2 `set_exclude_region` API
+(build `2.6.14dev1mastbuild4`, branch `eli/exclude-region` off upstream master)
+excludes a configured rectangle from guide-star auto-selection, so stars are
+selected as if the mirror were already in.
+
+**What:** `guide()` now applies the DB-persisted `phd2.exclude_region` section
+(`ExcludeRegionConfig` in common, `mode: off | fixed`, default **`off`** — the
+rectangle is per-unit measured geometry) before every guide RPC, mirroring the
+limit-frame set-or-reset discipline, via `set_exclude_region()` /
+`_apply_configured_exclude_region()`, dispatching on `mode` exactly as
+`start_guiding()` does for `phd2.limit_frame`:
+
+- `fixed` → `set_exclude_region(rect)` **then `deselect_star`** — the exclusion only
+  filters *auto-selection*, and a star already selected (left over from a previous
+  session) survives it; verified live against the mastbuild4 build (guide locked
+  inside the region without the deselect, outside it with). The rectangle is sent
+  through `ImagerRoi.verbatim()`: it is a measured shadow band plus a deliberate pad,
+  and the exclusion is a *selection* filter rather than a sensor readout crop, so no
+  camera alignment constraint applies and conditioning would only shift the placement
+  (the MAST_common#17 reasoning that put the limit frame on `verbatim`).
+- `off` → explicit reset (`roi: null`), tolerating "method not found" from older PHD2
+  builds (nothing to reset there); a *set* on an older build fails loudly. A stored
+  rectangle does not override the mode: "measured but not yet enabled" is the normal
+  per-unit state, so `mode` alone decides.
+
+**Implications:** No behavior change until ops measures the mirror shadow and sets
+the section to `fixed` in Mongo. The exclusion protects against the mirror's
+*destination*, not its ~30 s journey across the field — stars in the swept corridor
+are still transiently occulted — which is what the bracketed SPEC handover
+(2026-07-06 entry above) closes; the two ship together. Validated on the PHD2 camera
+simulator end-to-end (select → calibrate → guide → settle with the region honored);
+real-sky validation on a provisioned unit rig is still pending.
 
 ---
 
