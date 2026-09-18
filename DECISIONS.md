@@ -19,9 +19,19 @@ its commits applying to `main` cleanly.
 The rejected alternative, minting a same-named branch in MAST_common for each stacked PR, fails on
 the same ground as the hand-written `ref:` pin #208 removed: manual bookkeeping in a second repo.
 
+**Two shapes, and only one of them should be retargeted.** #246's content turned out not to depend
+on the exclusion work, so it moved to `main` and went green -- that is the preferred answer whenever
+it is available, since the fix then benefits every branch. But some in-flight work targets the
+exclusion region *itself* and cannot exist on `main` at all: it builds on code that is only on the
+integration branch. Such a PR is red for a structural reason no retarget can remove, and **merging
+it into the integration branch while red is correct**. That branch's validation is the on-sky run,
+not CI; a red check there reports "this needs unlanded common", which is already known and is the
+premise of the branch.
+
 **Implications.** A red check on a stacked PR is expected rather than diagnostic, which is the cost
 -- the reasoning #178 recorded about a permanently-red lint job applies, and is accepted here only
-because the condition is rare and named. Read the `Resolve the paired MAST_common branch` step's
+because the condition is rare and named. Because CI is not the gate for the integration branch,
+what goes into it has to be tracked deliberately rather than inferred from green checks. Read the `Resolve the paired MAST_common branch` step's
 log line before treating such a failure as real: it says which branch it chose and why. The real
 signal arrives when the base merges. If stacking becomes common, #248's approach is the fix and is
 recoverable from its closed branch.
