@@ -1386,6 +1386,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 self.connect_equipment()
             except PHD2ConnectorError as ex:
                 return CanonicalResponse(errors=[f"cannot connect {ex=}"])
+            finally:
+                # Ended on both paths. It was ended on neither, so a single handover --
+                # successful or not -- left the flag raised for the life of the process.
+                self.end_activity(PHD2Activities.EquipmentHandover)
 
         assert self.parent and self.parent.unit, (
             "phd2.start_guiding(): self.parent or self.unit is None. " + "cannot make_guiding_settings"
@@ -1528,46 +1532,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.start_guiding()
             self._needs_to_resume_guiding = False
 
-    def new_start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:
-        op = function_name()
-
-        self.errors = []
-        if not self.connected:
-            err = f"{op}: not connected"
-            self.log_and_append_error(err)
-            return CanonicalResponse(errors=[err])
-
-        logger.info(f"{function_name()}: starting {settings.seconds}s exposure")
-        self.image_was_saved = False
-        if self.parent is not None:
-            self.parent.start_activity(ImagerActivities.Exposing, details=[f"{settings.seconds} seconds"])
-            self.parent.start_activity(
-                ImagerActivities.Saving,
-                # details=f"{Path(settings.image_path).as_posix() if settings.image_path else None}",
-            )
-
-        try:
-            assert settings.roi
-            roi = settings.roi.binned(settings.binning)
-            self.call(
-                "capture_single_frame",
-                params={
-                    "exposure": int(
-                        settings.seconds * 1000  # convert to milliseconds
-                    ),
-                    "gain": int(asi.gain_absolute_to_percent(settings.gain)),
-                    "binning": settings.binning,
-                    "save": True,
-                    "path": settings.image_path,
-                    "limit_frame": [roi.x, roi.y, roi.width, roi.height],
-                },
-            )
-
-        except PHD2ConnectorError as ex:
-            self.log_and_append_error(f"{ex=}")
-
-        return CanonicalResponse(errors=self.errors) if self.errors else CanonicalResponse_Ok
-
     def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:
         """
         The main entry point for starting an exposure with PHD2.
@@ -1645,9 +1609,17 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
     def stop_exposure(self) -> CanonicalResponse:
         logger.info(f"{function_name()}: stopping exposure")
-        self.call("stop_capture")
-        if self.parent is not None:
-            self.parent.end_activity(ImagerActivities.Exposing)
+        try:
+            self.call("stop_capture")
+        finally:
+            # The same unwind as `abort_exposure` below, and for the same reasons: the
+            # RPC that stops the capture may be the thing that is broken, `Saving` is
+            # raised alongside `Exposing` and was never ended here at all, and a caller
+            # already in `wait_for_image_saved` has nothing else to release it.
+            if self.parent is not None:
+                self.parent.end_activity(ImagerActivities.Exposing)
+                self.parent.end_activity(ImagerActivities.Saving)
+            self.image_saved_event.set()
         return CanonicalResponse_Ok
 
     def abort_exposure(self) -> CanonicalResponse:
@@ -1864,23 +1836,9 @@ if __name__ == "__main__":
             new_interface=True,
         )
 
-    def test_new_single_frame():
-        PHD2Connector().new_start_exposure(
-            settings=ImagerSettings(
-                seconds=3.4,
-                save=False,
-                binning=2,
-                gain=200,
-                image_path="c:/dummy.fits",
-                roi=ImagerRoi(x=200, y=150, width=2000, height=1000),
-            )
-        )
-
     test_exposures(nexposures=1, binning=2, x=1000, y=2000, width=4000, height=3000)
     # test_guiding()
 
     # test_new_guiding()
-
-    # test_new_single_frame()
 
     exit(0)
