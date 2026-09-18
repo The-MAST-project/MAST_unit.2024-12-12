@@ -16,10 +16,12 @@
 #     unit/     <- this repo
 #
 # Which MAST_common it builds against: the branch of the SAME NAME if one exists there,
-# otherwise master (#208). A change spanning both repos is developed on same-named
-# branches -- `eli/exclude-region` in each -- and CI then builds the pair as a pair,
-# rather than testing the unit half against a master that does not carry the other half
-# yet. Before this, such a PR could not go green without a hand-written commit pinning
+# else the branch this PR is STACKED ON if that has a counterpart, else master (#208).
+# A change spanning both repos is developed on same-named branches -- `eli/exclude-region`
+# in each -- and CI then builds the pair as a pair, rather than testing the unit half
+# against a master that does not carry the other half yet. The base-branch step is what
+# lets a PR stacked on such a branch inherit the pairing: its own name has no counterpart,
+# but it needs the same MAST_common its base does. Before this, such a PR could not go green without a hand-written commit pinning
 # `ref:` to the paired branch, which then had to be remembered and deleted before the
 # merge. That was paid three times.
 #
@@ -70,16 +72,27 @@ jobs:
           # head_ref on a pull_request, ref_name on a push. `git ls-remote` rather than
           # the API: both repos are public, so it needs no token, and it is the same
           # question asked of the same server.
-          PAIRED: ${{ github.head_ref || github.ref_name }}
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
+          # Empty on a push. On a pull_request it is what this branch targets, which is
+          # how a STACKED PR inherits its base's pairing: its own name has no counterpart
+          # in MAST_common, but the branch it is stacked on does.
+          BASE_REF: ${{ github.base_ref }}
         run: |
           remote=https://github.com/The-MAST-project/MAST_common.git
-          if [ -n "$PAIRED" ] && [ -n "$(git ls-remote --heads "$remote" "$PAIRED")" ]; then
-            echo "ref=$PAIRED" >> "$GITHUB_OUTPUT"
-            echo "MAST_common: building against the paired branch '$PAIRED'"
+          exists() { [ -n "$1" ] && [ -n "$(git ls-remote --heads "$remote" "$1")" ]; }
+
+          if exists "$HEAD_REF"; then
+            ref=$HEAD_REF
+            why="the branch of the same name"
+          elif exists "$BASE_REF"; then
+            ref=$BASE_REF
+            why="the base branch's pair -- this PR is stacked on '$BASE_REF'"
           else
-            echo "ref=master" >> "$GITHUB_OUTPUT"
-            echo "MAST_common: no branch named '$PAIRED'; building against master"
+            ref=master
+            why="no pair for '$HEAD_REF'${BASE_REF:+ or '$BASE_REF'}"
           fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "MAST_common: building against $why -> '$ref'"
 
       - name: Check out MAST_common as a sibling
         uses: actions/checkout@v7

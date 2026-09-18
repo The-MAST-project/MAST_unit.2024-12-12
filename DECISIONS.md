@@ -2,6 +2,34 @@
 
 ---
 
+## [2026-09-18] A stacked PR inherits its base branch's MAST_common pairing
+
+**Why:** #208's resolution, landed the day before, asked only whether MAST_common had a branch
+named like the PR's **head**. That is right for a flat cross-repo change and wrong for a stacked
+one. `eli/activity-flag-leaks` (#246) is stacked on `eli/exclude-region` and needs exactly the
+MAST_common that branch needs -- but its own name has no counterpart, so the lookup missed, fell
+back to `master`, and every importing module died on
+`cannot import name 'ExcludeRegionMode' from 'common.config.phd2'`. The hazard was named when
+the original landed (*"a typo in a branch name now yields a silent master build"*); this is the
+same failure arriving for a reason that is not a typo and cannot be spelled correctly, because
+the dependency belongs to the base rather than to the head.
+
+**What was decided:** resolve in two steps -- the head branch's name, then the base branch's, then
+`master`. `github.base_ref` is set on `pull_request` and empty on `push`, so a trunk build still
+resolves to `master` by the same path it did before. The step logs which of the three it took and
+why, since "built against the wrong library" is otherwise invisible until an import fails.
+
+**Implications.** One level of stacking is covered, not arbitrary depth: a PR stacked on a PR
+stacked on a paired branch still misses. That is deliberate -- the recursive version would have to
+walk PR bases through the API, and no such stack exists. If one appears, the failure is loud and
+this entry is the place to start.
+
+The alternative -- minting a same-named branch in MAST_common for every stacked PR -- was rejected
+on the same grounds as the hand-written `ref:` pin #208 removed: it is manual bookkeeping that has
+to be remembered, in a second repo, by whoever stacks a branch.
+
+---
+
 ## [2026-09-17] CI builds against the MAST_common branch of the same name
 
 **Why:** #208. The workflow checked out MAST_common at a literal `ref: master`, so a change
