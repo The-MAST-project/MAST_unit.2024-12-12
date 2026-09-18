@@ -2,6 +2,32 @@
 
 ---
 
+## [2026-09-18] A stacked PR may be red against master, and that is accepted
+
+**Why:** #208's pairing resolves MAST_common by the PR's **head** branch name. A PR stacked on a
+paired branch has no counterpart under its own name, so it builds against `master` -- and if its
+base needs unlanded MAST_common, it fails at collection. Met on #246, stacked on
+`eli/exclude-region`: `cannot import name 'ExcludeRegionMode' from 'common.config.phd2'`.
+
+**What was decided:** accept it. A fix that also tried the base branch was written, verified
+against the live remote in all four cases, and **closed unmerged** (#248). Two reasons. The red is
+honest -- a change that needs its base's unlanded library is not independently landable, and a
+green build would assert something untrue about a library state nobody has merged. And the case is
+rare: #246 is the first stacked PR in this repo, and it turned out not to need stacking at all,
+its commits applying to `main` cleanly.
+
+The rejected alternative, minting a same-named branch in MAST_common for each stacked PR, fails on
+the same ground as the hand-written `ref:` pin #208 removed: manual bookkeeping in a second repo.
+
+**Implications.** A red check on a stacked PR is expected rather than diagnostic, which is the cost
+-- the reasoning #178 recorded about a permanently-red lint job applies, and is accepted here only
+because the condition is rare and named. Read the `Resolve the paired MAST_common branch` step's
+log line before treating such a failure as real: it says which branch it chose and why. The real
+signal arrives when the base merges. If stacking becomes common, #248's approach is the fix and is
+recoverable from its closed branch.
+
+---
+
 ## [2026-09-17] CI builds against the MAST_common branch of the same name
 
 **Why:** #208. The workflow checked out MAST_common at a literal `ref: master`, so a change
