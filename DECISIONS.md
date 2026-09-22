@@ -2,6 +2,56 @@
 
 ---
 
+## [2026-09-22] A shutdown waits for what depends on a timer before cancelling it
+
+**Why:** `Unit.do_shutdown()` raised component activities and then cancelled the timers that
+would clear them -- the unit's own, and every component's through `unit_shutdown_event`, whose
+`is_set()` is the first line of `ontimer` in `covers.py`, `focuser.py`, `stage.py` and `mount.py`.
+An activity a component leaves to its own `ontimer` therefore could never be ended.
+
+Measured on mast03, 2026-09-22, on a single `PUT /unit/shutdown` (#259): the covers held
+`["Closing", "ShuttingDown"]` across three sweeps at 25 s, 37 s and 48 s, and after a following
+`/unit/startup` -- which does not revive the timers, because `unit_shutdown_event` is never
+cleared (#145) -- accumulated `["Opening", "Closing", "StartingUp", "ShuttingDown"]`. Four
+activities reported, none in progress. The hardware was correct throughout; PWI4 reported the
+covers `Open` at the end, so they really had closed and reopened. Only the reporting was wrong.
+
+The mount came out clean on the same event, because [2026-09-22] made it end its flags inline.
+That contrast is what exposed this: one component clean, one stranded, one shutdown.
+
+`UnitActivities.ShuttingDown` had the same fault a level up -- ended only in `Unit.ontimer()`,
+which `do_shutdown()` cancels.
+
+**What:** the invariant is one line -- **do not cancel a timer while an activity depends on it.**
+`do_shutdown()` now waits for the components to come to rest before it cancels anything, using
+`Activities.await_activity_clear`, which already existed for exactly this; ends
+`UnitActivities.ShuttingDown` itself rather than leaving it to the timer it is about to cancel;
+and only then cancels and sets the event.
+
+A **bounded sweep** backs the wait: at `SHUTDOWN_SETTLE_TIMEOUT_SECONDS` (70, just above the
+covers' own 60), whatever is still raised on any component is ended and the component is named in
+an error. `await_activity_clear` deliberately leaves a flag set on timeout so the component keeps
+reporting it -- the right default everywhere else, the wrong one here, where the timers are about
+to stop. The sweep reads the component's own enum rather than matching names against a list, so a
+new component is handled without this method knowing about it.
+
+The rejected alternative was making every component end its own flags in `shutdown()`, the way the
+mount and focuser do. It is cheaper, but it forces `covers.shutdown()` to either block on its close
+or abandon its flags while the mirror is still moving -- and abandoning them is how this class of
+bug starts. Waiting also fixes a second, quieter lie in the same method: `do_shutdown()` used to
+return while the covers were still physically closing, so the unit declared itself shut down with a
+cover mid-travel.
+
+**Implications.** `PUT /unit/shutdown` now takes as long as its slowest component rather than
+returning early, up to the 70 s cap; its declared completion is `UnitActivities.ShuttingDown`, which
+now actually clears. `Unit.powerdown()`'s `while self.is_shutting_down` loop terminates for the
+first time as a side effect -- it is still unbounded, and still uncalled, so it is left alone.
+Clearing `unit_shutdown_event` on startup is deliberately **not** done here: that is #145, it is a
+separate decision about what `/startup` means after a shutdown, and the zombification is unchanged
+by this entry. One concrete case of #253.
+
+---
+
 ## [2026-09-22] The mount does not park on the way down, and its shutdown is synchronous
 
 **Why:** `Mount.shutdown()` left `MountActivities.ShuttingDown` raised with no path to clear it.

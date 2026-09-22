@@ -74,6 +74,11 @@ filer = Filer(logger)
 
 AUTOFOCUS_STOP_TIMEOUT_SECONDS = 30.0
 
+#: How long `do_shutdown` waits for the components to come to rest before it cancels the
+#: timers they depend on. Above the slowest of them: the covers close asynchronously against
+#: their own `MOVE_TIMEOUT_SECONDS` of 60 (MAST_unit#259).
+SHUTDOWN_SETTLE_TIMEOUT_SECONDS = 70.0
+
 
 def configured_imager() -> ImagerTypes | None:
     unit_conf = Config().get_unit()
@@ -278,9 +283,61 @@ class Unit(Component):
         if self.guider:
             self.guider.abort()
 
+        # Before cancelling anything. A component that leaves its flags to its own `ontimer`
+        # -- the covers, whose `shutdown()` starts an asynchronous close -- can clear them
+        # only while that timer still runs, and the last two lines of this method stop every
+        # component timer via the event, plus this unit's own (MAST_unit#259, #253).
+        self._await_components_at_rest()
+
         self._was_shut_down = True
+        # Here rather than in `ontimer`, which is the only other place that ends it and which
+        # is cancelled on the next line -- the same trap #193 fixed on the mount.
+        self.end_activity(UnitActivities.ShuttingDown)
         self.timer.cancel()
         self.unit_shutdown_event.set()
+
+    def _await_components_at_rest(self) -> None:
+        """Wait, bounded, for every component to finish shutting down; end whatever does not.
+
+        `await_activity_clear` leaves a flag set when it times out, deliberately, so that the
+        component still reports it. That is the right default everywhere else and the wrong
+        one here: the timers are about to be cancelled, so a flag left set is a flag nothing
+        can ever take down. The sweep is what keeps the unit from reporting work that will
+        never finish, and it names the component so the cause is not silent.
+        """
+        deadline = time.monotonic() + SHUTDOWN_SETTLE_TIMEOUT_SECONDS
+
+        for comp in self.components:
+            shutting_down = self._shutting_down_flag(comp)
+            if shutting_down is None:
+                continue
+            comp.await_activity_clear(shutting_down, timeout=max(0.0, deadline - time.monotonic()))
+
+        for comp in self.components:
+            activities = getattr(comp, "activities", None)
+            if activities is None:
+                continue
+            stuck = [activity for activity in type(activities) if comp.is_active(activity)]
+            if not stuck:
+                continue
+            logger.error(
+                f"{comp.name}: still reporting {[a.name for a in stuck]} at the end of shutdown; "
+                f"ending them here, because the timer that would is about to be cancelled"
+            )
+            for activity in stuck:
+                comp.end_activity(activity)
+
+    @staticmethod
+    def _shutting_down_flag(comp):
+        """A component's own `ShuttingDown` member, or None if it has no activities at all.
+
+        Read off the component's enum rather than matched by name against a list here, so a
+        new component is waited for without this method knowing about it.
+        """
+        activities = getattr(comp, "activities", None)
+        if activities is None:
+            return None
+        return getattr(type(activities), "ShuttingDown", None)
 
     @property
     def is_shutting_down(self) -> bool:
