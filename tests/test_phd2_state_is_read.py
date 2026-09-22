@@ -52,7 +52,15 @@ class FakePhd2:
     def __call__(self, method, params=None, **kwargs):
         self.calls.append(method)
         if method in self.applied:
-            return {"result": self.applied[method]}
+            value = self.applied[method]
+            # PHD2's own shapes, verbatim from event_server.cpp: the two rectangle
+            # getters answer {"roi": [x, y, w, h]} or {"roi": null}; get_lock_position
+            # answers a bare [x, y] or null. A fake that answers one shape for all three
+            # agrees with the code instead of with PHD2, which is how a KeyError reached
+            # mast01 on 2026-09-22 with this suite green.
+            if method in ("get_limit_frame", "get_exclude_region"):
+                return {"result": {"roi": value}}
+            return {"result": value}
         if method == "set_limit_frame":
             roi = params["roi"] if isinstance(params, dict) else params
             self.pending["get_limit_frame"] = roi
@@ -150,3 +158,30 @@ class TestAcceptedIsNotApplied:
         second = c.get_limit_frame()
         assert first.x == 520 and second.x == 6363
         assert fake.calls.count("get_limit_frame") == 2
+
+
+class TestTheReplyShapes:
+    """PHD2 does not answer these three the same way, and the difference is silent.
+
+    A wrapper is truthy even when the roi inside it is null, so code that treats
+    {"roi": null} as a bare array does not read None -- it reads a KeyError, which
+    `guider_status` then turns into a reported null. The status says "PHD2 holds no
+    rectangle" and means "the read failed".
+    """
+
+    def test_an_empty_rectangle_reads_as_none_not_an_error(self):
+        c = connector(FakePhd2(limit_frame=None))
+        assert c.get_limit_frame() is None
+
+    def test_an_empty_exclusion_region_reads_as_none_not_an_error(self):
+        c = connector(FakePhd2(exclude_region=None))
+        assert c.get_exclude_region() is None
+
+    def test_a_rectangle_comes_out_of_its_wrapper(self):
+        c = connector(FakePhd2(limit_frame=DERIVED))
+        roi = c.get_limit_frame()
+        assert (roi.x, roi.y, roi.width, roi.height) == (520, 0, 7760, 4812)
+
+    def test_the_lock_position_is_not_wrapped(self):
+        """The asymmetry, pinned so nobody makes the three consistent by guessing."""
+        assert connector(FakePhd2(lock_position=[6067.6, 2560.5])).get_lock_position() == (6067.6, 2560.5)
