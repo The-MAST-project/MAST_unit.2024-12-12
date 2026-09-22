@@ -13,7 +13,7 @@ from common.config import Config
 from common.const import Const
 from common.corrections import Correction, Corrections
 from common.filer import Filer, MoveGuardian
-from common.interfaces.solving import SolverId, SolverInterface, SolvingResult, SolvingTolerance
+from common.interfaces.solving import SolverId, SolverInterface, SolvingResult, SolvingTolerance, target_offset_arcsec
 from common.mast_logging import get_logger
 from common.models.statuses import ImagerSettings
 from common.safety import safety_get_sensor
@@ -352,11 +352,12 @@ class Solver(SolverInterface):
                 filer.move_ram_to_shared(imager_settings.image_path)
 
                 assert result.solution is not None, f"{op}: result.solution is None"
-                delta_ra_arcsec, delta_dec_arcsec = target_offset_plain_arcsec(
-                    target,
-                    result.solution.ra_hours,
-                    Angle(result.solution.dec_rads * u.radian).deg,  # type: ignore
-                )
+                # Oren's wrap-safe RA delta, now shared: the lock nudge re-references
+                # guiding to the same target just before the fold mirror hides it, and
+                # two copies of this arithmetic could let the two disagree about what
+                # "off target" means.
+                delta_ra_arcsec, _ = target_offset_arcsec(target, result.solution)
+                _, delta_dec_arcsec = target_offset_arcsec(target, result.solution)
 
                 abs_delta_ra_arcsec = abs(delta_ra_arcsec)
                 abs_delta_dec_arcsec = abs(delta_dec_arcsec)
