@@ -347,7 +347,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.dec_accumulator = PHD2Accumulator()
         self.stats = PHD2GuideStats()
         self.settle = None
-        self._setpoint: float | None = None
 
         assert self.parent is not None and self.parent.unit is not None, (
             "PHD2Connector: no parent imager, so no way to reach the unit configuration"
@@ -400,7 +399,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         time.sleep(secs)
 
         self._needs_to_resume_guiding = False
-        self.need_to_reset_limit_frame = False
 
         self._connected = False
         try:
@@ -1010,11 +1008,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if roi is not None:
             logger.debug(f"{function_name()}: setting {roi=}")
             self.call("set_limit_frame", params={"roi": [roi.x, roi.y, roi.width, roi.height]})
-            self.need_to_reset_limit_frame = True
         else:
             logger.debug(f"{function_name()}: resetting ROI")
             self.call("set_limit_frame", params={"roi": None})
-            self.need_to_reset_limit_frame = False
 
     def guide(
         self,
@@ -1674,26 +1670,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.image_saved_event.wait()
             # logger.info(f"{op}: got image_saved_event")
             self.image_saved_event.clear()
-        self.reset_limit_frame_if_needed()
-
-    def reset_limit_frame_if_needed(self):
-        """Put PHD2's limit frame back once the exposure that needed it has been saved.
-
-        `need_to_reset_limit_frame` was set in `set_limit_frame` and read nowhere, so a
-        limit frame set for one MAST exposure stayed on PHD2 indefinitely -- including for
-        an operator driving PHD2 by hand afterwards. Found on mast00 on 2026-08-17: PHD2
-        was still holding `[7, 1, 8272, 5640]` from an earlier exposure, and reported its
-        camera frame size as 8272x5640 rather than the sensor's 8288x5644.
-
-        Here rather than in `stop_exposure`: the non-guiding path a single frame takes never
-        calls that, so the reset would never run.
-        """
-        if not self.need_to_reset_limit_frame:
-            return
-        try:
-            self.set_limit_frame(roi=None)
-        except Exception as e:  # noqa: BLE001 -- tidying up must not fail the exposure
-            logger.error(f"{function_name()}: could not reset the limit frame ({e})")
 
     @property
     def temperature(self) -> float | None:
@@ -1706,20 +1682,33 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             return None
 
     @property
-    def set_point(self):
-        return self._setpoint
+    def set_point(self) -> float | None:
+        """The cooler set point PHD2 reports, or None when the cooler is off.
+
+        PHD2 sends `setpoint` only inside `if (on)` (`event_server.cpp`,
+        `get_cooler_status`), so *off* has no set point to report and None is the
+        truthful answer. This used to answer from a value cached off the last reply
+        that happened to carry one, which is right until the cooler goes off and
+        then indistinguishable from right: on 2026-09-08 it kept reading 5.0
+        through eighty minutes of guiding at 16.5 degC after a camera reconnect
+        silently dropped the cooler, so the off-setpoint alarm built for exactly
+        that episode fired on a stale number that happened to be correct. On a unit
+        whose cooler had never been on it would have been None and the alarm would
+        have stayed silent throughout (#109, #245).
+        """
+        try:
+            reply = self.call("get_cooler_status")
+        except Exception:
+            logger.exception(f"{function_name()}: could not get the cooler set point")
+            return None
+        result = (reply or {}).get("result") or {}
+        return result.get("setpoint")
 
     @property
     def cooler_on(self) -> bool | None:
         try:
             reply = self.call("get_cooler_status")
             if reply and "result" in reply and "coolerOn" in reply["result"]:
-                # PHD2 sends `setpoint` and `power` only inside `if (on)`
-                # (`event_server.cpp`, `get_cooler_status`), so this reply carries neither
-                # whenever the cooler is off -- which is exactly when the guard above passes.
-                # Guarded like the sibling `cooler_power` below rather than assumed.
-                if "setpoint" in reply["result"]:
-                    self._setpoint = reply["result"]["setpoint"]
                 return reply["result"]["coolerOn"]
         except Exception:
             logger.exception(f"{function_name()}: could not get coolerOn")

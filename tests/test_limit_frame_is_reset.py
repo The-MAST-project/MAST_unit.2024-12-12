@@ -1,17 +1,38 @@
-"""PHD2 must not be left holding a limit frame after a MAST exposure.
+"""An exposure must leave PHD2's limit frame exactly as it found it (#245).
 
-`set_limit_frame` sets `need_to_reset_limit_frame`, and nothing read it -- so a limit frame
-set for one exposure stayed on PHD2 indefinitely, including for an operator driving PHD2 by
-hand afterwards. Found on mast00 on 2026-08-17: PHD2 was still holding `[7, 1, 8272, 5640]`
-from an earlier exposure and reported its camera frame size as 8272x5640 rather than the
-sensor's 8288x5644.
+`set_limit_frame` armed `need_to_reset_limit_frame` on the guiding path and the
+exposure path consumed it: a value written by one caller and read by a different
+one. Two incidents came out of that.
 
-That mattered for the sequence that broke: acquisition, stop guiding by hand, then a spiral.
-Each stage left its constraint behind for the next.
+- **mast00, 2026-08-17.** Nothing read the flag at all, so a limit frame set for
+  one exposure stayed on PHD2 indefinitely -- including for an operator driving
+  PHD2 by hand afterwards. PHD2 was found holding `[7, 1, 8272, 5640]` and
+  reporting its camera frame size as 8272x5640 rather than the sensor's
+  8288x5644. The sequence that broke was acquisition, stop guiding by hand, then
+  a spiral: each stage left its constraint behind for the next. The fix made the
+  exposure path clear the frame.
+- **mast01, 2026-09-08.** Clearing then took a frame the exposure had never set
+  -- the guide loop's own. PHD2 went on reporting star positions in full-sensor
+  coordinates while the exclusion rectangle it still held had been translated for
+  a crop origin that no longer applied, so a re-selection could land inside the
+  fold mirror's shadow.
+
+The second incident is still live here: this branch clears to `None`, so any
+exposure taken while a guide loop holds a limit frame drops it.
+
+The fix is not a better memory. An exposure never had to touch the limit frame:
+`capture_single_frame` carries its own `limit_frame` parameter and the guiding
+path uses `save_image`, so nothing on the exposure path needs to mutate PHD2's
+state and there is nothing to put back because nothing was disturbed.
+
+These tests therefore assert an absence -- across a MAST exposure, no
+limit-frame traffic reaches PHD2 and whatever it held before it still holds
+after.
 """
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -22,56 +43,61 @@ except Exception as ex:  # noqa: BLE001 -- the import chain is Windows-and-hardw
     pytest.skip(f"unit import chain unavailable here ({ex!r})", allow_module_level=True)
 
 
-def _connector(need_reset: bool, raises: bool = False):
-    calls: list = []
-
-    def set_limit_frame(roi=None):
-        calls.append(roi)
-        if raises:
-            raise RuntimeError("PHD2 went away")
-
-    stub = SimpleNamespace(
-        need_to_reset_limit_frame=need_reset,
-        set_limit_frame=set_limit_frame,
-        image_was_saved=True,
-    )
-    stub.reset_limit_frame_if_needed = lambda: PHD2Connector.reset_limit_frame_if_needed(stub)
-    return stub, calls
+GUIDING_CROP = [520, 0, 7760, 4812]
 
 
-def test_the_limit_frame_is_cleared_after_a_frame_is_saved():
-    stub, calls = _connector(need_reset=True)
+class RecordingPhd2:
+    """Records every method reaching PHD2 and holds a limit frame nothing may change."""
 
-    PHD2Connector.reset_limit_frame_if_needed(stub)
+    def __init__(self, limit_frame=None):
+        self.limit_frame = limit_frame
+        self.methods: list[str] = []
 
-    assert calls == [None], "PHD2 must be told to drop the limit frame"
-
-
-def test_nothing_is_sent_when_no_limit_frame_was_set():
-    stub, calls = _connector(need_reset=False)
-
-    PHD2Connector.reset_limit_frame_if_needed(stub)
-
-    assert calls == [], "an exposure that set no limit frame must not send a reset"
+    def __call__(self, method, params=None, **kwargs):
+        self.methods.append(method)
+        if method == "set_limit_frame":
+            self.limit_frame = params["roi"] if isinstance(params, dict) else params
+        return {"result": 0}
 
 
-def test_a_failure_to_reset_does_not_break_the_exposure():
-    """Tidying up must never be the thing that fails a frame that was already saved."""
-    stub, calls = _connector(need_reset=True, raises=True)
+def _connector(phd2: RecordingPhd2) -> PHD2Connector:
+    """`image_was_saved=True` so the wait returns at once.
 
-    PHD2Connector.reset_limit_frame_if_needed(stub)
-
-    assert calls == [None]
-
-
-def test_waiting_for_the_image_performs_the_reset():
-    """Wired into `wait_for_image_saved`, not `stop_exposure`.
-
-    The non-guiding path a single frame takes never calls `stop_exposure`, so a reset
-    hung there would never run.
+    `wait_for_image_saved` is unbounded on this branch -- a lost event blocks for
+    ever -- which is its own defect and not this one's to fix.
     """
-    stub, calls = _connector(need_reset=True)
+    c = object.__new__(PHD2Connector)
+    c.call = phd2
+    c._connected = True
+    c.image_was_saved = True
+    c.image_saved_event = threading.Event()
+    c.image_saved_event.set()
+    c.parent = SimpleNamespace(is_active=lambda _a: False, end_activity=lambda _a: None)
+    return c
 
-    PHD2Connector.wait_for_image_saved(stub)
 
-    assert calls == [None]
+def test_waiting_for_the_image_sends_no_limit_frame_traffic():
+    """The whole class of bug: an exposure path that reaches for the limit frame."""
+    phd2 = RecordingPhd2(limit_frame=GUIDING_CROP)
+    _connector(phd2).wait_for_image_saved()
+    assert "set_limit_frame" not in phd2.methods
+
+
+def test_a_guide_loops_crop_survives_an_exposure():
+    """mast01 2026-09-08, and the regression this branch still carries."""
+    phd2 = RecordingPhd2(limit_frame=GUIDING_CROP)
+    _connector(phd2).wait_for_image_saved()
+    assert phd2.limit_frame == GUIDING_CROP
+
+
+def test_nothing_is_left_behind_when_nothing_was_in_force():
+    """mast00 2026-08-17, the other direction: no frame in, no frame out."""
+    phd2 = RecordingPhd2(limit_frame=None)
+    _connector(phd2).wait_for_image_saved()
+    assert phd2.limit_frame is None
+    assert "set_limit_frame" not in phd2.methods
+
+
+def test_the_flag_is_gone():
+    """A value written on one code path and read on another is the defect itself."""
+    assert not hasattr(PHD2Connector, "need_to_reset_limit_frame")
