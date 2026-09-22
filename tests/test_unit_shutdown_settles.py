@@ -192,3 +192,51 @@ def test_any_stuck_activity_is_swept_not_just_shuttingdown(stuck):
     unit.do_shutdown()
 
     assert covers.activities == CoverActivities(0)
+
+
+def test_ontimer_does_not_end_unit_shuttingdown():
+    """The race measured on mast03, 2026-09-22.
+
+    `do_shutdown` shuts components down one after another. Between one finishing and the next
+    starting, no component reports `ShuttingDown` -- and the old `ontimer` branch read that
+    window as "the unit is down". The flag cleared 0.75 s into a shutdown whose covers took
+    27.5 s more to close, so the declared completion of `PUT /unit/shutdown` went clear while
+    the mirror was still moving.
+
+    `do_shutdown` ends it once the components have settled, so `ontimer` must not race it.
+    """
+    import inspect
+
+    from unit import Unit
+
+    source = inspect.getsource(Unit.ontimer)
+    assert "end_activity(UnitActivities.ShuttingDown)" not in source
+
+
+def test_do_shutdown_ends_unit_shuttingdown_after_the_components_settle():
+    """The positive half: removing the ontimer branch must not leave the flag stranded -- the
+    trap #193 and #259 are both about."""
+    covers = FakeComponent("covers", CoverActivities, clears_on_shutdown=True)
+    order: list[str] = []
+
+    unit = _unit([covers])
+    original_end = unit.end_activity
+
+    def record_end(activity, **kwargs):
+        if activity == UnitActivities.ShuttingDown:
+            order.append("unit_flag_ended")
+        original_end(activity, **kwargs)
+
+    unit.end_activity = record_end
+    original_await = unit._await_components_at_rest
+
+    def record_await():
+        order.append("components_settled")
+        original_await()
+
+    unit._await_components_at_rest = record_await
+
+    unit.do_shutdown()
+
+    assert order == ["components_settled", "unit_flag_ended"]
+    assert not unit._recorder.is_active(UnitActivities.ShuttingDown)

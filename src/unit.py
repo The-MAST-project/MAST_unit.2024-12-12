@@ -626,16 +626,13 @@ class Unit(Component):
         ):
             self.end_activity(UnitActivities.StartingUp)
 
-        # UnitActivities.ShuttingDown
-        if self.is_active(UnitActivities.ShuttingDown) and not (
-            (self.mount and self.mount.is_active(MountActivities.ShuttingDown))
-            or (self.imager and self.imager.is_active(ImagerActivities.ShuttingDown))
-            or (self.stage and self.stage.is_active(StageActivities.ShuttingDown))
-            or (self.focuser and self.focuser.is_active(FocuserActivities.ShuttingDown))
-            or (self.covers and self.covers.is_active(CoverActivities.ShuttingDown))
-        ):
-            self.end_activity(UnitActivities.ShuttingDown)
-            self._was_shut_down = True
+        # UnitActivities.ShuttingDown is deliberately NOT ended here. `do_shutdown` shuts the
+        # components down one after another, so between one finishing and the next starting
+        # there is a window in which no component reports `ShuttingDown` -- and a 2 s tick
+        # landing in it read that as "the unit is down". Measured on mast03 2026-09-22: the
+        # flag cleared 0.75 s into a shutdown whose covers took 27.5 s more to close, so
+        # `/unit/shutdown`'s declared completion went clear while the mirror was still moving.
+        # `do_shutdown` ends it once the components have actually settled (MAST_unit#259).
 
         # UnitActivities.AutofocusingPWI4
         if self.pw is not None and self.autofocuser is not None and self.is_active(UnitActivities.AutofocusingPWI4):

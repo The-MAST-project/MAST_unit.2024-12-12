@@ -2,6 +2,45 @@
 
 ---
 
+## [2026-09-22] `ontimer` does not end `UnitActivities.ShuttingDown`; `do_shutdown` does
+
+**Why:** `Unit.ontimer()` ended the flag whenever **no component** reported `ShuttingDown`.
+`do_shutdown` shuts the components down one after another, so between one finishing and the next
+starting there is a window in which that is trivially true, and a 2 s tick landing in it read the
+window as "the unit is down".
+
+Measured on mast03, 2026-09-22, immediately after the [2026-09-22] `do_shutdown` fix was verified:
+
+    15:02:50.524  started <UnitActivities.ShuttingDown>            shutdown-thread
+    15:02:50.862  ended   <MountActivities.ShuttingDown>
+    15:02:51.275  ended   <UnitActivities.ShuttingDown>  0.75 s    unit-timer-thread   <-- the race
+    15:02:51.418  started <CoverActivities.ShuttingDown>
+    15:03:18.933  ended   <CoverActivities.ShuttingDown> 27.52 s
+
+The unit declared shutdown complete **27 seconds before it was**, in the 0.55 s gap between the
+mount's flag coming down and the covers' going up. `PUT /unit/shutdown`'s declared completion went
+clear while the mirror covers were still moving.
+
+The window is not a race in the threading sense that a lock would fix -- the condition was
+genuinely true when it was read. The predicate is simply wrong: "no component is shutting down
+right now" does not mean "every component has shut down", and during a serial loop it means almost
+the opposite.
+
+**What:** the branch is deleted. `do_shutdown` ends the flag itself, after
+`_await_components_at_rest()` has confirmed the components really are done. Same principle as the
+two entries above it: the thing that raises an activity ends it, and a periodic poll is not a
+substitute for knowing when the work finished. `_was_shut_down`, which that branch also set, is
+already set by `do_shutdown`.
+
+**Implications.** `UnitActivities.ShuttingDown` now stays raised for the whole shutdown -- on the
+measured run that is ~28 s rather than 0.75 s -- which is the truthful reading and what a consumer
+polling the declared completion should have been seeing all along. A regression test asserts the
+branch has not come back, because it is the kind of code that looks like a helpful tidy-up to
+re-add. Nothing else read the flag on the way down; `Unit.powerdown()` waits on it and now waits
+the real duration instead of returning early.
+
+---
+
 ## [2026-09-22] A shutdown waits for what depends on a timer before cancelling it
 
 **Why:** `Unit.do_shutdown()` raised component activities and then cancelled the timers that
