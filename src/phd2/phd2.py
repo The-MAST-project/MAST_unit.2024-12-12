@@ -283,6 +283,16 @@ class SingleFrameResult:
         )
 
 
+#: How long to keep trying to reach a just-launched PHD2 before giving up, and how
+#: often to try. A deadline rather than a sleep: the old flat 3 s encoded the warm
+#: case and turned a slow start into a permanently dead component (#254). Thirty
+#: seconds covers a cold start on the units measured so far while still failing in
+#: a bounded time; it is a constant rather than config because it is needed before
+#: any configuration has been read.
+PHD2_STARTUP_TIMEOUT: float = 30.0
+PHD2_STARTUP_POLL: float = 0.5
+
+
 class PHD2Connector(GuiderInterface, ImagerInterface):
     """The main class for interacting with PHD2 both as a guider and as an imager."""
 
@@ -438,15 +448,12 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             no_restart=True,
         )
         self.watched_process.start()
-        secs = 3
-        logger.info(f"{function_name()}: sleeping {secs} seconds to allow PHD2 to start")
-        time.sleep(secs)
 
         self._needs_to_resume_guiding = False
 
         self._connected = False
         try:
-            self.connect()
+            self._await_phd2()
             self.connect_equipment()
             # Inside the guard: its setter is a bare `call()`, so on a torn-down
             # connection it raises the cleanup's own error over the real one.
@@ -464,6 +471,45 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self._initialized = True
 
         # threading.Thread(name="phd2-reconnector", target=self.reconnect).start()
+
+    def _await_phd2(self, timeout: float = PHD2_STARTUP_TIMEOUT) -> None:
+        """Connect to PHD2, retrying until it answers or `timeout` elapses.
+
+        This replaces a flat three-second sleep followed by a single attempt. Three
+        seconds is the warm case: a machine that has just booted, or whose PHD2
+        profile cache is cold, takes longer, and when it did the component was left
+        permanently non-operational while PHD2 came up healthy moments later. On
+        mast01 on 2026-09-22 the imager and guider both failed that way, and twelve
+        minutes on PHD2 was running and listening on 4400 with the unit unable to
+        talk to it until someone restarted the service (#254).
+
+        The failure carries the elapsed time and the attempt count, because "PHD2 is
+        broken" and "PHD2 was slower than we waited" are different problems and the
+        old message distinguished them not at all.
+        """
+        op = function_name()
+        started = time.monotonic()
+        attempts = 0
+        last: Exception | None = None
+
+        while True:
+            attempts += 1
+            try:
+                self.connect()
+            except Exception as ex:  # noqa: BLE001 -- retried below, re-raised on timeout
+                last = ex
+            else:
+                waited = time.monotonic() - started
+                logger.info(f"{op}: PHD2 answered after {waited:.1f}s on attempt {attempts}")
+                return
+
+            waited = time.monotonic() - started
+            if waited + PHD2_STARTUP_POLL >= timeout:
+                raise PHD2ConnectorError(
+                    f"{op}: PHD2 did not answer within {timeout:.0f}s "
+                    f"({attempts} attempts over {waited:.1f}s); last error: {last!r}"
+                ) from last
+            time.sleep(PHD2_STARTUP_POLL)
 
     def can_expose_at(self, binning: int, bpp: int) -> bool | None:
         if self.profile_binning is None:
