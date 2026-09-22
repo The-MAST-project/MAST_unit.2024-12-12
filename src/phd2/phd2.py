@@ -36,6 +36,7 @@ from common.models.statuses import (
 )
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, Timeout, boxed_debug, function_name
+from lock_nudge import nudge_lock_to_target
 from phd2.phd2_locate import locate_phd2_exe
 from science.lock_validity import GuideLockSupervisor, LockMetrics
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
@@ -652,6 +653,38 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         while not stage.at_preset(StagePresetPosition.Spec):
             time.sleep(1)
 
+    def _nudge_lock_before_insertion(self) -> None:
+        """Re-reference the lock to the acquisition target, if configured to.
+
+        Failure is never fatal to the handover: guiding is settled and the mirror
+        still has to go in. A nudge that cannot be computed leaves the lock exactly
+        where PHD2 put it, which is today's behavior.
+        """
+        op = function_name()
+        conf = self.conf.lock_nudge
+        if not conf.enabled:
+            return
+
+        assert self.parent is not None and self.parent.unit is not None
+        unit = self.parent.unit
+
+        acquisition = unit.acquirer.latest_acquisition if unit.acquirer else None
+        if acquisition is None:
+            logger.info(f"{op}: no acquisition on record, leaving the lock where PHD2 put it")
+            return
+
+        try:
+            target = Coord(
+                ra=Angle(acquisition.target_ra, unit="hour"),
+                dec=Angle(acquisition.target_dec, unit="deg"),
+            )
+            outcome = nudge_lock_to_target(unit, self, target, conf)
+        except Exception as ex:
+            logger.error(f"{op}: lock nudge failed, continuing with the handover: {ex!r}")
+            return
+
+        logger.info(f"{op}: {outcome}")
+
     def do_fcu_v2_spec_handover(self, stage_timeout: int = 60):
         """Insert the fold mirror only after guiding has locked and settled,
         bracketing the stage travel with a full pause: the lock position
@@ -673,6 +706,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             logger.error(f"{op}: {settle}, not inserting the fold mirror")
             unit.end_activity(UnitActivities.PreGuiding)
             return
+
+        # The last moment the target is observable: from here the stage travels and the
+        # target goes into the fiber. Correct the lock onto it now or not at all.
+        self._nudge_lock_before_insertion()
 
         self.pause(full=True)
         try:
@@ -1227,6 +1264,17 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if not result:
             return None
         return float(result[0]), float(result[1])
+
+    def set_lock_position(self, x: float, y: float, exact: bool = True):
+        """Move the lock position, in the coordinates of the image PHD2 is delivering.
+
+        `exact=True` places it at the pixel given; `exact=False` asks PHD2 to snap to
+        a star near it. While guiding, PHD2 reports this to the guide algorithms as a
+        dither, so they treat the step as a commanded move rather than error to smooth
+        away -- the same path as its own Nudge Lock tool. It triggers no settling, so
+        the caller counts its own frames.
+        """
+        self.call("set_lock_position", params={"x": x, "y": y, "exact": exact})
 
     def _apply_configured_exclude_region(self):
         """Set-or-reset the exclusion region from phd2.exclude_region before every
