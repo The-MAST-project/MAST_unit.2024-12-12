@@ -23,6 +23,13 @@
 # `ref:` to the paired branch, which then had to be remembered and deleted before the
 # merge. That was paid three times.
 #
+# A PR STACKED on a pairing branch is a known gap, and an accepted one: it is resolved by
+# its OWN name, which has no counterpart, so it builds against master and goes red if its
+# base needs unlanded MAST_common. That red is honest -- such a change is not independently
+# landable -- and the real signal comes once the base merges. Resolving the base branch too
+# was written and rejected as machinery for a rare case (2026-09-18); if stacking becomes
+# common, revisit.
+#
 # Off a pairing branch -- and on every push to main, which asks for a branch MAST_common
 # does not have -- this still builds against master. So a breaking change there turns
 # this red without anything in this repo having moved, which is the point: that is
