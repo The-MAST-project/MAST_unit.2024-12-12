@@ -255,7 +255,7 @@ class PHD2Connection:
         because what it protects is this socket.
         """
         if not self.sock:
-            raise RuntimeError("{function_name()}: socket not connected")
+            raise RuntimeError(f"{function_name()}: socket not connected")
         b = s.encode()
         with self._write_lock:
             totsent = 0
@@ -1123,9 +1123,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self._connected = True
             # print("DBG: connect done")
         except Exception:
+            # Raised, not merely logged. A `connect` that only logs cannot be retried by
+            # its caller, because the caller cannot tell it failed: `__init__` went on to
+            # `connect_equipment()`, which wrote to a socket that was never opened, and the
+            # error the operator finally saw came from two calls downstream of the one that
+            # actually broke. That is how a PHD2 three seconds slow to start presented as
+            # "socket not connected" with no mention of connecting (#254, #255).
             logger.exception(f"{function_name()}: connect:")
-            # self.disconnect()
-            # raise
+            raise
 
     def disconnect(self):
         """disconnect from PHD2"""
