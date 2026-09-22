@@ -303,14 +303,6 @@ PHD2_STARTUP_POLL: float = 0.5
 class PHD2Connector(GuiderInterface, ImagerInterface):
     """The main class for interacting with PHD2 both as a guider and as an imager."""
 
-    #: The limit frame PHD2 is currently holding, and the one to put back after an
-    #: exposure that overrode it. Class-level defaults because a connector is
-    #: routinely built with `object.__new__` -- by the test suite, and by any caller
-    #: that wants the protocol without the hardware -- and the reset path must not
-    #: depend on `__init__` having run.
-    limit_frame_in_force: ImagerRoi | None = None
-    limit_frame_to_restore: ImagerRoi | None = None
-
     DEFAULT_STOP_CAPTURE_TIMEOUT = 10
     _instance = None
     _initialized = False
@@ -475,9 +467,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.watched_process.start()
 
         self._needs_to_resume_guiding = False
-        self.need_to_reset_limit_frame = False
-        self.limit_frame_in_force: ImagerRoi | None = None
-        self.limit_frame_to_restore: ImagerRoi | None = None
 
         self._connected = False
         try:
@@ -1258,23 +1247,26 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         return roi
 
     def _send_limit_frame(self, roi: ImagerRoi | None):
-        """Put a limit frame on PHD2 and remember what is now in force."""
+        """Put a limit frame on PHD2. What is in force afterwards is PHD2's to answer."""
         if roi is not None:
             logger.debug(f"{function_name()}: setting {roi=}")
             self.call("set_limit_frame", params={"roi": [roi.x, roi.y, roi.width, roi.height]})
         else:
             logger.debug(f"{function_name()}: resetting ROI")
             self.call("set_limit_frame", params={"roi": None})
-        self.limit_frame_in_force = roi
 
     def set_limit_frame(self, roi: ImagerRoi | None = None):
+        """Set the limit frame. What is in force afterwards is PHD2's to answer.
+
+        A caller that means to put something back reads :meth:`get_limit_frame`
+        first rather than relying on a copy kept here, which is what went stale
+        (#245).
+        """
         if not self.connected:
             logger.error(f"{function_name()}: not connected")
 
         roi = self.limit_frame_for_phd2(roi)
-        self.limit_frame_to_restore = self.limit_frame_in_force
         self._send_limit_frame(roi)
-        self.need_to_reset_limit_frame = roi is not None
 
     def set_exclude_region(self, roi: ImagerRoi | None = None):
         """Set (or reset, with roi=None) the PHD2 guide-star exclusion region.
@@ -2180,7 +2172,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     self.parent.end_activity(ImagerActivities.Saving)
                     self.parent.end_activity(ImagerActivities.Exposing)
             self.image_saved_event.clear()
-        self.reset_limit_frame_if_needed()
 
         # The frame is on disk now.  Sample the cooler again -- still on the
         # CALLER's thread, camera idle -- and stamp both readings into the
@@ -2189,38 +2180,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         stamp_cooling(self._exposure_image_path, self._cooler_before, self.cooler_status)
         self._cooler_before = None
         self._exposure_image_path = None
-
-    def reset_limit_frame_if_needed(self):
-        """Put PHD2's limit frame back to whatever it was before the exposure.
-
-        `need_to_reset_limit_frame` was set in `set_limit_frame` and read nowhere, so a
-        limit frame set for one MAST exposure stayed on PHD2 indefinitely -- including for
-        an operator driving PHD2 by hand afterwards. Found on mast00 on 2026-08-17: PHD2
-        was still holding `[7, 1, 8272, 5640]` from an earlier exposure, and reported its
-        camera frame size as 8272x5640 rather than the sensor's 8288x5644.
-
-        Restoring the *previous* frame rather than clearing to `None`: clearing is right
-        only when nothing was in force before, which is the standalone-exposure case this
-        was written for. An exposure taken while a guide loop holds its limit frame -- a
-        paused loop mid-handover, say -- was having that frame silently dropped. PHD2 then
-        reports star positions in full-sensor coordinates instead of the crop, and the
-        exclusion rectangle it is still holding was translated for a crop origin that no
-        longer applies, so a re-selection can land inside the fold mirror's shadow. With
-        nothing in force beforehand `limit_frame_to_restore` is `None` and this clears, as
-        it always did. Observed on mast01 2026-09-08.
-
-        Here rather than in `stop_exposure`: the non-guiding path a single frame takes never
-        calls that, so the reset would never run.
-        """
-        if not self.need_to_reset_limit_frame:
-            return
-        try:
-            self._send_limit_frame(self.limit_frame_to_restore)
-        except Exception as e:  # noqa: BLE001 -- tidying up must not fail the exposure
-            logger.error(f"{function_name()}: could not restore the limit frame ({e})")
-        finally:
-            self.need_to_reset_limit_frame = False
-            self.limit_frame_to_restore = None
 
     @property
     def cooler_status(self) -> dict | None:
