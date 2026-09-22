@@ -173,6 +173,51 @@ def test_shutdown_of_an_already_disconnected_mount_still_completes():
     assert mount.disconnected is False
 
 
+@pytest.mark.parametrize(
+    "stranded",
+    [
+        MountActivities.Slewing,
+        MountActivities.FindingHome,
+        MountActivities.StartingUp,
+        MountActivities.Moving,
+        MountActivities.Parking,
+        MountActivities.Aborting,
+    ],
+)
+def test_shutdown_ends_an_activity_it_interrupts(stranded):
+    """Every one of these is ended only by `ontimer`, below its `if not self.connected`
+    guard. A shutdown that interrupts a slew, a find_home or an abort would otherwise leave
+    the mount reporting work in progress that stopped when it was powered off -- for the
+    rest of the process lifetime, because disconnecting is the last moment anything can take
+    the flag down (#253)."""
+    recorder = RecordingActivities(active={stranded})
+    mount = _mount(recorder, connected=True)
+    try:
+        mount.shutdown()
+    finally:
+        _release(mount)
+
+    assert recorder.active == set(), f"{stranded.name} survived the shutdown"
+
+
+def test_shutdown_ends_everything_even_when_the_sequence_fails():
+    """The `finally` covers the interrupted activities too, not just `ShuttingDown`."""
+    recorder = RecordingActivities(active={MountActivities.Slewing, MountActivities.Moving})
+    mount = _mount(recorder, connected=True)
+
+    def explode():
+        raise RuntimeError("PDU unreachable")
+
+    mount.power_off = explode
+    try:
+        with pytest.raises(RuntimeError):
+            mount.shutdown()
+    finally:
+        _release(mount)
+
+    assert recorder.active == set()
+
+
 # ------------------------------------------------------------------------------ powerdown
 
 

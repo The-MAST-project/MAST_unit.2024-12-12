@@ -315,10 +315,26 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.power_off()
             self._was_shut_down = True
         finally:
-            # Unconditionally, so a failure part-way down surfaces as an error rather than
-            # as a flag nobody can clear and a `powerdown()` that never returns.
-            self.end_activity(MountActivities.ShuttingDown)
+            self._end_every_activity()
         return CanonicalResponse_Ok
+
+    def _end_every_activity(self) -> None:
+        """End every mount activity still raised. Disconnecting is the last moment any of
+        them can come down.
+
+        `ontimer` ends `Moving`, `FindingHome`, `StartingUp`, `Parking`, `ShuttingDown`,
+        `Slewing` and `Aborting` -- and every one of those sits below its
+        `if not self.connected: return`. So a shutdown that interrupts a slew, a find_home
+        or an abort strands that flag for the rest of the process lifetime, and the mount
+        reports work in progress that stopped when it was powered off (MAST_unit#193, #253).
+
+        Ending `ShuttingDown` alone was not enough, and enumerating the others would rot the
+        first time one is added: everything raised goes down, because after this nothing can
+        take it down.
+        """
+        for activity in MountActivities:
+            if self.is_active(activity):
+                self.end_activity(activity)
 
     @property
     def is_shutting_down(self) -> bool:

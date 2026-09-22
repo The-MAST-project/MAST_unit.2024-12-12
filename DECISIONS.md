@@ -4,10 +4,21 @@
 
 ## [2026-09-22] The mount does not park on the way down, and its shutdown is synchronous
 
-**Why:** `Mount.shutdown()` left `MountActivities.ShuttingDown` raised with no path to clear it,
-and `Mount.powerdown()` waited on that flag with **no deadline at all**. Because
-`Unit.power_all_off()` walks the components in series and the mount is second of six, a unit
-power-down hung at the mount and the imager, covers, focuser and stage never powered down.
+**Why:** `Mount.shutdown()` left `MountActivities.ShuttingDown` raised with no path to clear it.
+
+**What that costs today**, on the reachable path: `PUT /unit/shutdown` -> `do_shutdown()` -> each
+component's `shutdown()`. Nothing there waits, so nothing hangs -- but the mount then reports
+`ShuttingDown` in `activities_verbal` for the rest of the process lifetime. A component
+permanently stuck "shutting down" in every status an operator or `MAST_control` reads.
+
+**What it costs the moment one more caller appears**, which is worse and is why this is worth
+removing now: `Mount.powerdown()` waits on that flag with **no deadline at all**, and
+`Unit.power_all_off()` walks the components in series with the mount second of six, so it hangs at
+the mount and never reaches the imager, covers, focuser or stage. That path is **dormant**:
+`power_all_off()` has exactly one caller, `Unit.powerdown()`, which is neither routed nor called
+from anywhere in the tree. Dormant is not the same as harmless -- the code is in the tree and one
+route away from live -- but it is not something failing in the field, and an earlier draft of this
+entry wrongly described it as though it were.
 
 Two independent faults produced the unclearable flag, and fixing either alone would have left the
 other standing:
@@ -36,7 +47,16 @@ round-trips of real hardware work, and a concurrent reader of `/unit/status` sho
 which component is going down. The defect was never that the flag existed; it was that no path could
 clear it. Deleting a signal to fix an unreachable clearing path would have been the wrong repair.
 
-The flag is ended in a `finally`, so a failure part-way down surfaces as an error rather than as a
+**And not only that flag.** `ontimer` ends `Moving`, `FindingHome`, `StartingUp`, `Parking`,
+`Slewing` and `Aborting` as well as `ShuttingDown`, and every one of those sits below the same
+`if not self.connected: return`. So a shutdown that interrupts a slew, a find_home or an abort
+stranded *that* flag too, and the mount went on reporting work in progress that had stopped when it
+was powered off. Ending `ShuttingDown` alone was a fix for the instance rather than the rule.
+`shutdown()` therefore ends **every** activity still raised, by iterating the enum rather than
+listing members -- a list would rot the first time one is added, and the invariant is simply that
+disconnecting is the last moment any mount flag can come down.
+
+The flags are ended in a `finally`, so a failure part-way down surfaces as an error rather than as a
 raised flag nobody can clear. That is what makes it safe for `powerdown()` to drop its wait entirely
 instead of merely bounding it. `park()` refuses when disconnected rather than answering `Ok` having
 done nothing, which is the same honesty #156 asks of `execute_assignment`.
