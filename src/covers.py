@@ -36,21 +36,51 @@ MOVE_TIMEOUT_SECONDS = 60
 
 #: PWI4's `mirrorcover.overall_state_name` -> our `CoversState`.
 #:
-#: Keyed on the NAME, never the integer. The two enumerations overlap numerically and
-#: disagree: PWI4's 0 is `Open` where `CoversState(0)` is `NotPresent`, and PWI4's 3 is
-#: `Closing` where `CoversState(3)` is `Open`. Only 1 (`Closed`) coincides. A `CoversState(int)`
-#: cast on a PWI4 value therefore returns a wrong answer rather than raising -- and reports a
-#: closing cover as open, which is the reading that matters most.
+#: **Keyed on the NAME. NEVER on the integer.** The two enumerations overlap numerically and
+#: disagree, so `CoversState(pwi4_int)` returns a WRONG ANSWER rather than raising. The full
+#: PWI4 4.1.6 map was measured on mast03, 2026-09-22 (`data/2026-09-22-mast03-mirrorcover-state-names`
+#: in the vault); `CoversState` is beside it, and the last column is what a by-value cast
+#: would produce:
 #:
-#: `PartlyOpen` is a normal transitional state in BOTH directions, not a fault; it maps to
-#: `Moving` alongside `Opening`/`Closing`.
+#: ===  ==================  ==================  ======================================
+#: int  PWI4                CoversState         a by-value cast would say
+#: ===  ==================  ==================  ======================================
+#: 0    Open                NotPresent          "there are no covers"          -- WRONG
+#: 1    Closed              Closed              closed                         -- agrees
+#: 2    Opening             Moving              moving                         -- agrees
+#: 3    Closing             Open                "open", while it is closing    -- WRONG
+#: 4    (not observed)      Unknown             --
+#: 5    PartlyOpen          Error               "faulted", while it is at rest -- WRONG
+#: 6    --                  PartlyOpen          (no PWI4 counterpart)
+#: ===  ==================  ==================  ======================================
+#:
+#: Two of the five agree, which is the trap: a by-value cast survives a casual test on covers
+#: that are closed or opening, and then lies on exactly the states that matter -- reporting a
+#: CLOSING cover as OPEN, and a HALTED one as FAULTED. The agreements are coincidence, and
+#: nothing keeps them: `CoversState` gained member 6 in 2026-09 and PWI4 may renumber at any
+#: release. Map by name, and let an unmapped name fail loudly through `CoversState.Error`.
+#:
+#: `PartlyOpen` is what PWI4 reports for covers STOPPED between the two end states -- observed
+#: held for 20 s after halting a close mid-travel (MAST_unit#164). It is a resting state, not a
+#: fault and not motion, so it maps to `CoversState.PartlyOpen` rather than joining
+#: `Opening`/`Closing` under `Moving`. Only `Opening` and `Closing` mean the covers are moving.
 _PWI4_STATE_NAMES: dict[str, CoversState] = {
     "Open": CoversState.Open,
     "Closed": CoversState.Closed,
     "Opening": CoversState.Moving,
     "Closing": CoversState.Moving,
-    "PartlyOpen": CoversState.Moving,
+    "PartlyOpen": CoversState.PartlyOpen,
 }
+
+
+def _at_rest(state: CoversState) -> bool:
+    """Whether the covers are not in motion.
+
+    `Moving` is the only state that means motion. Everything else is at rest, including
+    `PartlyOpen` (halted between the ends), `Error` and `Unknown` -- a fault or an unreadable
+    device is the covers' own problem to report, and is not something to keep waiting on.
+    """
+    return state is not CoversState.Moving
 
 
 class Covers(Component, SwitchedOutlet):
@@ -383,11 +413,48 @@ class Covers(Component, SwitchedOutlet):
                 self._was_shut_down = True
                 self.power_off()
 
-        self._end_abort_when_at_rest()
+        self._end_motion_stopped_short(state)
+        self._end_abort_when_at_rest(state)
 
-    def _end_abort_when_at_rest(self) -> None:
-        """End `Aborting` once the covers leave `Moving`. `Error` and `Unknown` are at rest too."""
-        if self.is_active(CoverActivities.Aborting) and self.state != CoversState.Moving:
+    def _end_motion_stopped_short(self, state: CoversState) -> None:
+        """End a motion activity whose covers stopped between the two end states.
+
+        `PartlyOpen` is the only state that means this. Measured on mast03, 2026-09-22:
+        PWI4 reports `Opening` / `Closing` for the whole of a travel -- 97 samples, none
+        of them `PartlyOpen` -- and switches to `PartlyOpen` only once motion has stopped,
+        holding it until commanded again. Covers that have not begun moving yet still
+        report the end state they are sitting at, so this cannot fire in the gap between
+        issuing a command and PWI4 acting on it, which was measured at ~0.3 s against a
+        2 s timer.
+
+        Without this, `ShuttingDown` is ended only by reaching `Closed`, so a cover that
+        stopped short keeps the flag raised and `powerdown()` waits out the whole of
+        `MOVE_TIMEOUT_SECONDS` (MAST_unit#164).
+
+        `_was_shut_down` is deliberately not set and the outlet deliberately not powered
+        off: the covers are not shut, and `powerdown()` owns the power-off.
+        """
+        if state is not CoversState.PartlyOpen:
+            return
+
+        for motion, lifecycle in (
+            (CoverActivities.Opening, CoverActivities.StartingUp),
+            (CoverActivities.Closing, CoverActivities.ShuttingDown),
+        ):
+            if not self.is_active(motion):
+                continue
+            logger.warning(f"covers: {motion.name} stopped short; covers are {state.name}")
+            self.end_activity(motion)
+            if self.is_active(lifecycle):
+                self.end_activity(lifecycle)
+
+    def _end_abort_when_at_rest(self, state: CoversState) -> None:
+        """End `Aborting` once the covers are no longer moving.
+
+        Takes the state rather than re-reading it: `self.state` is an HTTP round-trip to PWI4,
+        and one timer tick should act on one reading of the hardware.
+        """
+        if self.is_active(CoverActivities.Aborting) and _at_rest(state):
             self.end_activity(CoverActivities.Aborting)
 
     # ----------------------------------------------------------------- component contract
