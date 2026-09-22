@@ -2,6 +2,57 @@
 
 ---
 
+## [2026-09-22] The mount does not park on the way down, and its shutdown is synchronous
+
+**Why:** `Mount.shutdown()` left `MountActivities.ShuttingDown` raised with no path to clear it,
+and `Mount.powerdown()` waited on that flag with **no deadline at all**. Because
+`Unit.power_all_off()` walks the components in series and the mount is second of six, a unit
+power-down hung at the mount and the imager, covers, focuser and stage never powered down.
+
+Two independent faults produced the unclearable flag, and fixing either alone would have left the
+other standing:
+
+1. `shutdown()` called `disconnect()` before `park()`. `park()`'s own `if self.connected:` was then
+   false, so it returned `Ok` having done nothing and `Parking` never started.
+2. `ontimer()` returns early on `if not self.connected`, and the block that ends `Parking` **and**
+   `ShuttingDown` lives below that guard. So even with `Parking` started, nothing could end it once
+   the mount was disconnected -- which shutting down necessarily makes it.
+
+**What was decided:** drop the park from the shutdown flow, and make the flow synchronous.
+
+Dropping it is not a compromise. **MAST has no defined park position.** Disconnecting disables both
+axes, the OTA settles on its own balance because the units are well balanced, and `startup()`
+re-homes on the way back up -- so the resting position never has to be remembered or reproduced.
+Parking on the way down was buying nothing and was the no-op sitting between the disconnect and the
+flag that needed clearing. `park()` stays as a deliberate operator route at `PUT /mount/park`.
+
+**`ShuttingDown` stays, and stays declared.** An earlier draft of this fix demoted the completion to
+`Completion.IMMEDIATE` on the reasoning that nothing is in flight once the park is gone. That was
+wrong, and `Focuser.shutdown()` already shows why: it keeps `completion=FocuserActivities.ShuttingDown`,
+raises the flag, does the work, and **ends the flag itself** rather than leaving it for `ontimer`.
+That is the house idiom for a disconnect-side shutdown, and the mount now matches it. The flag earns
+its place -- `is_shutting_down` is part of the `Component` contract, the sequence is several
+round-trips of real hardware work, and a concurrent reader of `/unit/status` should be able to see
+which component is going down. The defect was never that the flag existed; it was that no path could
+clear it. Deleting a signal to fix an unreachable clearing path would have been the wrong repair.
+
+The flag is ended in a `finally`, so a failure part-way down surfaces as an error rather than as a
+raised flag nobody can clear. That is what makes it safe for `powerdown()` to drop its wait entirely
+instead of merely bounding it. `park()` refuses when disconnected rather than answering `Ok` having
+done nothing, which is the same honesty #156 asks of `execute_assignment`.
+
+**Implications.** The declared contract is unchanged, which is the point: a consumer polling
+`MountActivities.ShuttingDown` after `PUT /mount/shutdown` keeps reading the same field, and it now
+actually clears. Anyone adding a future operation on the disconnect side must end its own flags the
+same way; `ontimer`'s guard now carries a comment saying so, because that is the trap that produced
+this. `Focuser.powerdown()` still carries the same unbounded `while self.is_shutting_down` this
+removes from the mount -- harmless today because its `shutdown()` is synchronous, latent if that ever
+changes, and not fixed here. The wider class -- activity flags whose end condition is unreachable at
+runtime, which #44's static balance check passes because the `end_activity` call does exist -- is
+tracked on #253, with this as one of six concrete cases.
+
+---
+
 ## [2026-09-18] A stacked PR may be red against master, and that is accepted
 
 **Why:** #208's pairing resolves MAST_common by the PR's **head** branch name. A PR stacked on a

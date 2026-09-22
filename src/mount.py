@@ -285,14 +285,39 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     @endpoint(tier=Tier.INTERFACE, completion=MountActivities.ShuttingDown)
     def shutdown(self):
         """
-        Performs the MAST shutdown routine (fans off, park, power OFF)
+        Performs the **MAST** mount shutdown routine: fans off, disconnect, power OFF.
+
+        `ShuttingDown` is raised for the duration and **ended here**, not from `ontimer`.
+        That is the same shape `Focuser.shutdown()` uses, and for the same reason: this is
+        the disconnect side, and `ontimer` returns early while disconnected, so a flag left
+        for it to finish can never be cleared (MAST_unit#193, #253). The flag matters --
+        `is_shutting_down` is part of the `Component` contract, and the sequence below is
+        several round-trips of real hardware work, so a concurrent reader of `/unit/status`
+        sees which component is going down.
+
+        **No park.** MAST has no defined park position: disconnecting disables both axes and
+        the OTA settles on its own balance, and `startup()` re-homes on the way back up, so
+        the resting position never has to be remembered. `park()` remains as a deliberate
+        operator route, but it is not part of this flow.
+
+        The previous order made `ShuttingDown` impossible to clear, in two independent ways.
+        It disconnected first, so `park()`'s own `if self.connected:` no-oped and `Parking`
+        never started; and `ontimer`'s early return made the block that ends `Parking` and
+        `ShuttingDown` unreachable regardless. `Mount.powerdown()` then spun on an unbounded
+        wait, and because `Unit.power_all_off()` walks the components serially with the mount
+        second of six, the imager, covers, focuser and stage never powered down at all.
         """
-        if self.connected:
-            self.disconnect()
         self.start_activity(MountActivities.ShuttingDown)
-        self.pw.request("/fans/off")
-        self.park()
-        self.power_off()
+        try:
+            self.pw.request("/fans/off")
+            if self.connected:
+                self.disconnect()
+            self.power_off()
+            self._was_shut_down = True
+        finally:
+            # Unconditionally, so a failure part-way down surfaces as an error rather than
+            # as a flag nobody can clear and a `powerdown()` that never returns.
+            self.end_activity(MountActivities.ShuttingDown)
         return CanonicalResponse_Ok
 
     @property
@@ -300,21 +325,35 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         return self.is_active(MountActivities.ShuttingDown)
 
     def powerdown(self):
+        """Shut the mount down if it has not been, then make sure the outlet is off.
+
+        No wait: `shutdown()` ends `ShuttingDown` in a `finally`, so by the time it returns
+        the flag is down whether it succeeded or raised. The
+        `while self.is_shutting_down: time.sleep(1)` this replaces had no deadline at all, so
+        a flag that could never clear hung this call for ever -- and with it
+        `Unit.power_all_off()`, which walks the components in series (MAST_unit#193).
+        """
         if not self._was_shut_down:
             self.shutdown()
-        while self.is_shutting_down:
-            time.sleep(1)
-
         self.power_off()
 
     @endpoint(tier=Tier.OPERATION, completion=MountActivities.Parking)
     def park(self):
         """
-        Parks the MAST mount
+        Parks the **MAST** mount.
+
+        A deliberate operator route, not part of `shutdown()` -- see there for why MAST
+        does not park on the way down.
+
+        Refuses when disconnected rather than answering Ok having done nothing: a park
+        needs a connected mount, `Parking` is only ended from `ontimer`, and `ontimer`
+        itself returns early while disconnected, so the caller would otherwise be told a
+        move had started and then wait on a flag that cannot clear (MAST_unit#193, #253).
         """
-        if self.connected:
-            self.start_activity(MountActivities.Parking)
-            self.pw.mount_park()
+        if not self.connected:
+            return CanonicalResponse(errors=[f"{function_name()}: mount not connected"])
+        self.start_activity(MountActivities.Parking)
+        self.pw.mount_park()
         return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION, completion=MountActivities.FindingHome)
@@ -336,6 +375,11 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             return
 
         if not self.connected:
+            # NOTHING BELOW RUNS WHILE DISCONNECTED, so no mount activity can be ended
+            # here once the mount is down. An operation that disconnects must therefore
+            # clear its own flags before returning rather than declaring an activity for
+            # `ontimer` to finish -- which is what `shutdown()` was doing wrong, and what
+            # made `ShuttingDown` unclearable (MAST_unit#193, #253).
             return
 
         status = self.pw.status()
