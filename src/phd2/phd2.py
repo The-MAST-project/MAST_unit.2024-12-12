@@ -1187,6 +1187,47 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             except PHD2ConnectorError as ex:
                 logger.debug(f"{function_name()}: reset not supported by this PHD2 build (nothing to reset): {ex=}")
 
+    def get_limit_frame(self) -> ImagerRoi | None:
+        """The limit frame PHD2 is holding, or None when it holds none.
+
+        A read, not a recollection. The connector used to answer from what it last
+        sent, which is a different question: a request can be accepted and not yet
+        applied, an operator can change it by hand, and a restart drops it
+        entirely. That copy is gone as of #250; this is what replaces it (#245).
+        """
+        result = self.call("get_limit_frame")["result"]
+        if not result:
+            return None
+        # verbatim: this rectangle is what PHD2 already holds. Conditioning it would
+        # move it, and the value would no longer describe the instrument (MAST_common#17).
+        return ImagerRoi.verbatim(x=result[0], y=result[1], width=result[2], height=result[3])
+
+    def get_exclude_region(self) -> ImagerRoi | None:
+        """The exclusion region PHD2 is holding, or None when it holds none.
+
+        The gate that blocked six cycles on 2026-09-15/16 had no way to ask this,
+        so it read PHD2's `AutoFind` echo instead -- truthful but incidental, and
+        with no counterpart for the limit frame (#245).
+        """
+        result = self.call("get_exclude_region")["result"]
+        if not result:
+            return None
+        return ImagerRoi.verbatim(x=result[0], y=result[1], width=result[2], height=result[3])
+
+    def get_lock_position(self) -> tuple[float, float] | None:
+        """PHD2's lock position, in the coordinates of the image it is delivering.
+
+        That frame is the limit frame when one is in force, while
+        :meth:`get_limit_frame` and :meth:`get_exclude_region` are in unbinned
+        full-sensor pixels. Anything comparing the two must add the crop origin
+        first -- 520 px on the derived frame, 6363 on the strip -- and the
+        comparison does not look wrong when it is (#234, #245).
+        """
+        result = self.call("get_lock_position")["result"]
+        if not result:
+            return None
+        return float(result[0]), float(result[1])
+
     def _apply_configured_exclude_region(self):
         """Set-or-reset the exclusion region from phd2.exclude_region before every
         guide, like the limit frame: the region is runtime-only in PHD2 but survives
@@ -1555,6 +1596,19 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         )
 
         lock = self.lock_supervisor.state
+
+        # Read, every time. Answering these from anything the connector remembers is
+        # what let the limit frame and the exclusion region describe the instrument
+        # only until something else touched it (#245). A failed read reports None
+        # rather than the last good answer -- "I do not know" is a true statement and
+        # a stale rectangle is not.
+        try:
+            limit_frame = self.get_limit_frame()
+            exclude_region = self.get_exclude_region()
+            lock_position = self.get_lock_position()
+        except Exception:
+            logger.exception(f"{function_name()}: could not read PHD2's frame state")
+            limit_frame = exclude_region = lock_position = None
         return PHD2GuiderStatus(
             identifier=self.identifier,
             is_guiding=self.is_guiding,
@@ -1562,6 +1616,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             app_state=self.app_state,
             avg_dist=self.avg_dist,
             sky_quality=sky_quality,
+            limit_frame=limit_frame,
+            exclude_region=exclude_region,
+            lock_position=lock_position,
             lock_validity=LockValidityStatus(
                 validity=str(lock.validity),
                 frame_verdict=str(lock.frame_verdict),
