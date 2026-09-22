@@ -1252,12 +1252,17 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         applied, an operator can change it by hand, and a restart drops it
         entirely. That copy is gone as of #250; this is what replaces it (#245).
         """
-        result = self.call("get_limit_frame")["result"]
-        if not result:
+        # PHD2 answers {"roi": [x, y, width, height]} or {"roi": null} -- a WRAPPER,
+        # not a bare array, and the wrapper is truthy even when the roi inside it is null.
+        # Reading result[0] off it raised KeyError on mast01 on 2026-09-22; `guider_status`
+        # caught that and reported the field as null, so the status read as "PHD2 holds no
+        # rectangle" when it meant "the read failed" -- the two are not the same answer.
+        roi = (self.call("get_limit_frame")["result"] or {}).get("roi")
+        if not roi:
             return None
         # verbatim: this rectangle is what PHD2 already holds. Conditioning it would
         # move it, and the value would no longer describe the instrument (MAST_common#17).
-        return ImagerRoi.verbatim(x=result[0], y=result[1], width=result[2], height=result[3])
+        return ImagerRoi.verbatim(x=roi[0], y=roi[1], width=roi[2], height=roi[3])
 
     def get_exclude_region(self) -> ImagerRoi | None:
         """The exclusion region PHD2 is holding, or None when it holds none.
@@ -1266,10 +1271,15 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         so it read PHD2's `AutoFind` echo instead -- truthful but incidental, and
         with no counterpart for the limit frame (#245).
         """
-        result = self.call("get_exclude_region")["result"]
-        if not result:
+        # PHD2 answers {"roi": [x, y, width, height]} or {"roi": null} -- a WRAPPER,
+        # not a bare array, and the wrapper is truthy even when the roi inside it is null.
+        # Reading result[0] off it raised KeyError on mast01 on 2026-09-22; `guider_status`
+        # caught that and reported the field as null, so the status read as "PHD2 holds no
+        # rectangle" when it meant "the read failed" -- the two are not the same answer.
+        roi = (self.call("get_exclude_region")["result"] or {}).get("roi")
+        if not roi:
             return None
-        return ImagerRoi.verbatim(x=result[0], y=result[1], width=result[2], height=result[3])
+        return ImagerRoi.verbatim(x=roi[0], y=roi[1], width=roi[2], height=roi[3])
 
     def get_lock_position(self) -> tuple[float, float] | None:
         """PHD2's lock position, in the coordinates of the image it is delivering.
@@ -1280,6 +1290,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         first -- 520 px on the derived frame, 6363 on the strip -- and the
         comparison does not look wrong when it is (#234, #245).
         """
+        # Deliberately NOT unwrapped like its two siblings: PHD2 serialises a PHD_Point
+        # as a bare [x, y] array here, while the two rectangle getters wrap theirs in
+        # {"roi": ...}. Three getters, two shapes.
         result = self.call("get_lock_position")["result"]
         if not result:
             return None
