@@ -408,7 +408,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.watched_process.start()
 
         self._needs_to_resume_guiding = False
-        self.need_to_reset_limit_frame = False
 
         self._connected = False
         try:
@@ -1062,11 +1061,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if roi is not None:
             logger.debug(f"{function_name()}: setting {roi=}")
             self.call("set_limit_frame", params={"roi": [roi.x, roi.y, roi.width, roi.height]})
-            self.need_to_reset_limit_frame = True
         else:
             logger.debug(f"{function_name()}: resetting ROI")
             self.call("set_limit_frame", params={"roi": None})
-            self.need_to_reset_limit_frame = False
 
     def guide(
         self,
@@ -1698,26 +1695,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.image_saved_event.wait()
             # logger.info(f"{op}: got image_saved_event")
             self.image_saved_event.clear()
-        self.reset_limit_frame_if_needed()
-
-    def reset_limit_frame_if_needed(self):
-        """Put PHD2's limit frame back once the exposure that needed it has been saved.
-
-        `need_to_reset_limit_frame` was set in `set_limit_frame` and read nowhere, so a
-        limit frame set for one MAST exposure stayed on PHD2 indefinitely -- including for
-        an operator driving PHD2 by hand afterwards. Found on mast00 on 2026-08-17: PHD2
-        was still holding `[7, 1, 8272, 5640]` from an earlier exposure, and reported its
-        camera frame size as 8272x5640 rather than the sensor's 8288x5644.
-
-        Here rather than in `stop_exposure`: the non-guiding path a single frame takes never
-        calls that, so the reset would never run.
-        """
-        if not self.need_to_reset_limit_frame:
-            return
-        try:
-            self.set_limit_frame(roi=None)
-        except Exception as e:  # noqa: BLE001 -- tidying up must not fail the exposure
-            logger.error(f"{function_name()}: could not reset the limit frame ({e})")
 
     def _read(self, method: str) -> dict:
         """The `result` of a status read, or `{}` when it fails.
