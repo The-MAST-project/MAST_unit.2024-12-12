@@ -728,6 +728,35 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         unit.start_activity(UnitActivities.Guiding)
         boxed_debug(logger, ["stage at SPEC, guiding resumed", "ready for exposure"])
 
+    def start_handover_if_configured(self) -> bool:
+        """Insert the fold mirror now that guiding has locked, unless told not to.
+
+        Returns whether the handover was launched, which is what a test can assert
+        on without standing up the rest of the `StartGuiding` event.
+
+        Only FCU v2 has a fold mirror to insert; v1 is already at SPEC from the
+        solve phase. Beyond that the decision is `phd2.handover.auto_insert`, which
+        defaults to true -- a unit with no entry behaves as it always has.
+        """
+        if self.parent is None or self.parent.unit is None:
+            return False
+        if self.parent.unit.fcu_version != FcuVersion.v2:
+            return False
+        if not self.conf.handover.auto_insert:
+            # The caller owns the insertion. `PreGuiding` is deliberately NOT raised:
+            # the handover is what ends it, so raising it with no handover running
+            # would leave the unit reporting work that is not happening, permanently
+            # not ready for exposure.
+            logger.info(f"{function_name()}: phd2.handover.auto_insert is off; not inserting the fold mirror")
+            return False
+
+        boxed_debug(lines=[f"{function_name()}: settle, then insert the fold mirror"], logger=logger)
+        # guiding has locked but the fold mirror is not in yet: not ready for
+        # exposure until do_fcu_v2_spec_handover ends this and starts Guiding
+        self.parent.unit.start_activity(UnitActivities.PreGuiding)
+        threading.Thread(target=self.do_fcu_v2_spec_handover).start()
+        return True
+
     def _handle_event(self, ev):  # noqa: C901
         e = ev["Event"]
 
@@ -747,16 +776,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 boxed_debug(lines=[f"{function_name()}: {e}, {self.version=}, {self.sub_version=}"], logger=logger)
 
             case "StartGuiding":
-                if (
-                    self.parent is not None
-                    and self.parent.unit is not None
-                    and self.parent.unit.fcu_version == FcuVersion.v2
-                ):
-                    boxed_debug(lines=[f"{function_name()}: {e}, settle, then insert the fold mirror"], logger=logger)
-                    # guiding has locked but the fold mirror is not in yet: not ready for
-                    # exposure until do_fcu_v2_spec_handover ends this and starts Guiding
-                    self.parent.unit.start_activity(UnitActivities.PreGuiding)
-                    threading.Thread(target=self.do_fcu_v2_spec_handover).start()
+                self.start_handover_if_configured()
 
                 # A new session is a new field and a new brightness scale. Carrying
                 # the old one across a re-guide would judge a faint field against a
