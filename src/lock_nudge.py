@@ -41,14 +41,17 @@ import os
 import time
 from dataclasses import dataclass, field
 
-from astropy.coordinates import Angle
-
 from common.config.phd2 import LockNudgeConfig
-from common.interfaces.solving import SolvingSolution
+from common.interfaces.solving import ARCSEC_PER_DEGREE, SolvingSolution, target_offset_arcsec
 from common.mast_logging import get_logger
 from common.utils import Coord, function_name
 
 logger = get_logger(__name__)
+
+#: How often the confirmation loop looks at the guide distance. A guide frame arrives
+#: every 4.6-9.1 s depending on the limit frame, so this only decides how promptly a
+#: settled reading is noticed, not how long it takes to arrive.
+CONFIRM_POLL_SECONDS: float = 1.0
 
 
 @dataclass
@@ -107,8 +110,8 @@ def sky_offset_to_detector_pixels(
         return None
 
     # standard coordinates, degrees
-    xi = (d_ra_arcsec / 3600.0) * math.cos(math.radians(dec_deg))
-    eta = d_dec_arcsec / 3600.0
+    xi = (d_ra_arcsec / ARCSEC_PER_DEGREE) * math.cos(math.radians(dec_deg))
+    eta = d_dec_arcsec / ARCSEC_PER_DEGREE
 
     dx_ds = (cd2_2 * xi - cd1_2 * eta) / det
     dy_ds = (-cd2_1 * xi + cd1_1 * eta) / det
@@ -130,7 +133,7 @@ def _await_confirmation(connector, conf: LockNudgeConfig) -> float | None:
     seen = 0
     last = None
     while time.time() < deadline:
-        time.sleep(1)
+        time.sleep(CONFIRM_POLL_SECONDS)
         distance = connector.avg_dist
         if distance is None:
             continue
@@ -179,12 +182,9 @@ def nudge_lock_to_target(unit, connector, target: Coord, conf: LockNudgeConfig) 
 
     solution = result.solution
 
-    # Same wrap-safe form solve_and_correct uses, so the two agree on what "off target" means.
-    d_ra_deg = (target.ra.deg - solution.ra_hours * 15) % 360
-    if d_ra_deg > 180:
-        d_ra_deg -= 360
-    d_ra_arcsec = d_ra_deg * 3600
-    d_dec_arcsec = target.dec.arcsecond - Angle(solution.dec_rads, unit="rad").arcsecond
+    # The same helper solve_and_correct uses, so the two cannot disagree about what
+    # "off target" means.
+    d_ra_arcsec, d_dec_arcsec = target_offset_arcsec(target, solution)
 
     from solvers.mastrometry import DOWNSAMPLE_FACTOR
 
