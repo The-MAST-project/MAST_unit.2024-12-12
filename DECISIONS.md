@@ -162,6 +162,53 @@ tracked on #253, with this as one of six concrete cases.
 
 ---
 
+## [2026-09-22] `Moving` is the only cover state that means motion
+
+**Why:** `covers.py`'s PWI4 mapping sent `Opening`, `Closing` **and** `PartlyOpen` to
+`CoversState.Moving`, with a comment asserting that `PartlyOpen` is "a normal transitional state in
+BOTH directions". It is not. PWI4 reports it for covers **stopped** between the two ends, held for
+the full 20 s observation window after a close was halted mid-travel on mast02 (#164). The comment
+was the bug, written as intent.
+
+**What:** `PartlyOpen` maps to the new `CoversState.PartlyOpen` (MAST_common, same date), and
+"at rest" gets one definition -- `_at_rest(state)`, `state is not CoversState.Moving` -- instead of
+an inequality repeated per caller. `_end_abort_when_at_rest` now takes the state rather than
+re-reading it, so one timer tick acts on one reading of the hardware; `self.state` is an HTTP
+round-trip to PWI4, and two reads in a tick can disagree.
+
+**Never map these enums by value.** `CoversState(pwi4_int)` returns a wrong answer rather than
+raising, and two of the five values agree by coincidence, so the mistake survives a casual test and
+then lies on the states that matter. The measured PWI4 4.1.6 numbering and the full comparison live
+in one place, on `CoversState` in MAST_common; `tests/test_abort_holds_until_at_rest.py` pins the
+three disagreements so the rule cannot rot quietly.
+
+**Implications:** `Aborting` clears within one 2 s tick of the covers stopping, which is what #80's
+invariant always meant. `why_not_operational` reports `state='PartlyOpen'` rather than the untrue
+`'Moving'`. `operational`, `startup` and `shutdown` are untouched -- they compare against `Open` /
+`Closed` and were already right. The exact-match rule in `ontimer` is untouched and still
+load-bearing: `PartlyOpen` contains `Open` as a substring, so an unanchored check reports
+completion ~0.8 s early (#134).
+
+**`powerdown()` is fixed here too, and it needed the measurement first.** It burned the full
+`MOVE_TIMEOUT_SECONDS` against a cover that stopped short, and that was **not** caused by the
+mapping: `ontimer` ended `ShuttingDown` only at `state == Closed`, so a cover halted anywhere else
+kept the flag raised whatever `PartlyOpen` mapped to. `_end_motion_stopped_short` ends the motion
+activity and its lifecycle activity when the covers report `PartlyOpen`, releasing the waiter.
+
+The condition is `PartlyOpen` specifically rather than the more general "at rest but not at the
+commanded end state", and the mast03 trace is why. For ~0.3 s after a command PWI4 still reports
+the end state the covers are sitting at -- the first sample of both open phases read `Closed` and
+`PartlyOpen` respectively, before `Opening` appeared -- while the covers timer ticks every 2 s. A
+general at-rest test would therefore have a real chance of reading "not at the target yet" as
+"stopped short" and abandoning a move about to begin. `PartlyOpen` cannot be confused that way: 97
+samples taken during travel produced none of it, and covers that have not started moving report an
+end state instead. A regression test pins the race.
+
+`_was_shut_down` is deliberately not set and the outlet not powered off on this path: the covers
+are not shut, and `powerdown()` owns the power-off.
+
+---
+
 ## [2026-09-18] A stacked PR may be red against master, and that is accepted
 
 **Why:** #208's pairing resolves MAST_common by the PR's **head** branch name. A PR stacked on a
