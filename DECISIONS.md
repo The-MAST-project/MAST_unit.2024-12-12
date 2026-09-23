@@ -2,6 +2,166 @@
 
 ---
 
+## [2026-09-22] `ontimer` does not end `UnitActivities.ShuttingDown`; `do_shutdown` does
+
+**Why:** `Unit.ontimer()` ended the flag whenever **no component** reported `ShuttingDown`.
+`do_shutdown` shuts the components down one after another, so between one finishing and the next
+starting there is a window in which that is trivially true, and a 2 s tick landing in it read the
+window as "the unit is down".
+
+Measured on mast03, 2026-09-22, immediately after the [2026-09-22] `do_shutdown` fix was verified:
+
+    15:02:50.524  started <UnitActivities.ShuttingDown>            shutdown-thread
+    15:02:50.862  ended   <MountActivities.ShuttingDown>
+    15:02:51.275  ended   <UnitActivities.ShuttingDown>  0.75 s    unit-timer-thread   <-- the race
+    15:02:51.418  started <CoverActivities.ShuttingDown>
+    15:03:18.933  ended   <CoverActivities.ShuttingDown> 27.52 s
+
+The unit declared shutdown complete **27 seconds before it was**, in the 0.55 s gap between the
+mount's flag coming down and the covers' going up. `PUT /unit/shutdown`'s declared completion went
+clear while the mirror covers were still moving.
+
+The window is not a race in the threading sense that a lock would fix -- the condition was
+genuinely true when it was read. The predicate is simply wrong: "no component is shutting down
+right now" does not mean "every component has shut down", and during a serial loop it means almost
+the opposite.
+
+**What:** the branch is deleted. `do_shutdown` ends the flag itself, after
+`_await_components_at_rest()` has confirmed the components really are done. Same principle as the
+two entries above it: the thing that raises an activity ends it, and a periodic poll is not a
+substitute for knowing when the work finished. `_was_shut_down`, which that branch also set, is
+already set by `do_shutdown`.
+
+**Implications.** `UnitActivities.ShuttingDown` now stays raised for the whole shutdown -- on the
+measured run that is ~28 s rather than 0.75 s -- which is the truthful reading and what a consumer
+polling the declared completion should have been seeing all along. A regression test asserts the
+branch has not come back, because it is the kind of code that looks like a helpful tidy-up to
+re-add. Nothing else read the flag on the way down; `Unit.powerdown()` waits on it and now waits
+the real duration instead of returning early.
+
+---
+
+## [2026-09-22] A shutdown waits for what depends on a timer before cancelling it
+
+**Why:** `Unit.do_shutdown()` raised component activities and then cancelled the timers that
+would clear them -- the unit's own, and every component's through `unit_shutdown_event`, whose
+`is_set()` is the first line of `ontimer` in `covers.py`, `focuser.py`, `stage.py` and `mount.py`.
+An activity a component leaves to its own `ontimer` therefore could never be ended.
+
+Measured on mast03, 2026-09-22, on a single `PUT /unit/shutdown` (#259): the covers held
+`["Closing", "ShuttingDown"]` across three sweeps at 25 s, 37 s and 48 s, and after a following
+`/unit/startup` -- which does not revive the timers, because `unit_shutdown_event` is never
+cleared (#145) -- accumulated `["Opening", "Closing", "StartingUp", "ShuttingDown"]`. Four
+activities reported, none in progress. The hardware was correct throughout; PWI4 reported the
+covers `Open` at the end, so they really had closed and reopened. Only the reporting was wrong.
+
+The mount came out clean on the same event, because [2026-09-22] made it end its flags inline.
+That contrast is what exposed this: one component clean, one stranded, one shutdown.
+
+`UnitActivities.ShuttingDown` had the same fault a level up -- ended only in `Unit.ontimer()`,
+which `do_shutdown()` cancels.
+
+**What:** the invariant is one line -- **do not cancel a timer while an activity depends on it.**
+`do_shutdown()` now waits for the components to come to rest before it cancels anything, using
+`Activities.await_activity_clear`, which already existed for exactly this; ends
+`UnitActivities.ShuttingDown` itself rather than leaving it to the timer it is about to cancel;
+and only then cancels and sets the event.
+
+A **bounded sweep** backs the wait: at `SHUTDOWN_SETTLE_TIMEOUT_SECONDS` (70, just above the
+covers' own 60), whatever is still raised on any component is ended and the component is named in
+an error. `await_activity_clear` deliberately leaves a flag set on timeout so the component keeps
+reporting it -- the right default everywhere else, the wrong one here, where the timers are about
+to stop. The sweep reads the component's own enum rather than matching names against a list, so a
+new component is handled without this method knowing about it.
+
+The rejected alternative was making every component end its own flags in `shutdown()`, the way the
+mount and focuser do. It is cheaper, but it forces `covers.shutdown()` to either block on its close
+or abandon its flags while the mirror is still moving -- and abandoning them is how this class of
+bug starts. Waiting also fixes a second, quieter lie in the same method: `do_shutdown()` used to
+return while the covers were still physically closing, so the unit declared itself shut down with a
+cover mid-travel.
+
+**Implications.** `PUT /unit/shutdown` now takes as long as its slowest component rather than
+returning early, up to the 70 s cap; its declared completion is `UnitActivities.ShuttingDown`, which
+now actually clears. `Unit.powerdown()`'s `while self.is_shutting_down` loop terminates for the
+first time as a side effect -- it is still unbounded, and still uncalled, so it is left alone.
+Clearing `unit_shutdown_event` on startup is deliberately **not** done here: that is #145, it is a
+separate decision about what `/startup` means after a shutdown, and the zombification is unchanged
+by this entry. One concrete case of #253.
+
+---
+
+## [2026-09-22] The mount does not park on the way down, and its shutdown is synchronous
+
+**Why:** `Mount.shutdown()` left `MountActivities.ShuttingDown` raised with no path to clear it.
+
+**What that costs today**, on the reachable path: `PUT /unit/shutdown` -> `do_shutdown()` -> each
+component's `shutdown()`. Nothing there waits, so nothing hangs -- but the mount then reports
+`ShuttingDown` in `activities_verbal` for the rest of the process lifetime. A component
+permanently stuck "shutting down" in every status an operator or `MAST_control` reads.
+
+**What it costs the moment one more caller appears**, which is worse and is why this is worth
+removing now: `Mount.powerdown()` waits on that flag with **no deadline at all**, and
+`Unit.power_all_off()` walks the components in series with the mount second of six, so it hangs at
+the mount and never reaches the imager, covers, focuser or stage. That path is **dormant**:
+`power_all_off()` has exactly one caller, `Unit.powerdown()`, which is neither routed nor called
+from anywhere in the tree. Dormant is not the same as harmless -- the code is in the tree and one
+route away from live -- but it is not something failing in the field, and an earlier draft of this
+entry wrongly described it as though it were.
+
+Two independent faults produced the unclearable flag, and fixing either alone would have left the
+other standing:
+
+1. `shutdown()` called `disconnect()` before `park()`. `park()`'s own `if self.connected:` was then
+   false, so it returned `Ok` having done nothing and `Parking` never started.
+2. `ontimer()` returns early on `if not self.connected`, and the block that ends `Parking` **and**
+   `ShuttingDown` lives below that guard. So even with `Parking` started, nothing could end it once
+   the mount was disconnected -- which shutting down necessarily makes it.
+
+**What was decided:** drop the park from the shutdown flow, and make the flow synchronous.
+
+Dropping it is not a compromise. **MAST has no defined park position.** Disconnecting disables both
+axes, the OTA settles on its own balance because the units are well balanced, and `startup()`
+re-homes on the way back up -- so the resting position never has to be remembered or reproduced.
+Parking on the way down was buying nothing and was the no-op sitting between the disconnect and the
+flag that needed clearing. `park()` stays as a deliberate operator route at `PUT /mount/park`.
+
+**`ShuttingDown` stays, and stays declared.** An earlier draft of this fix demoted the completion to
+`Completion.IMMEDIATE` on the reasoning that nothing is in flight once the park is gone. That was
+wrong, and `Focuser.shutdown()` already shows why: it keeps `completion=FocuserActivities.ShuttingDown`,
+raises the flag, does the work, and **ends the flag itself** rather than leaving it for `ontimer`.
+That is the house idiom for a disconnect-side shutdown, and the mount now matches it. The flag earns
+its place -- `is_shutting_down` is part of the `Component` contract, the sequence is several
+round-trips of real hardware work, and a concurrent reader of `/unit/status` should be able to see
+which component is going down. The defect was never that the flag existed; it was that no path could
+clear it. Deleting a signal to fix an unreachable clearing path would have been the wrong repair.
+
+**And not only that flag.** `ontimer` ends `Moving`, `FindingHome`, `StartingUp`, `Parking`,
+`Slewing` and `Aborting` as well as `ShuttingDown`, and every one of those sits below the same
+`if not self.connected: return`. So a shutdown that interrupts a slew, a find_home or an abort
+stranded *that* flag too, and the mount went on reporting work in progress that had stopped when it
+was powered off. Ending `ShuttingDown` alone was a fix for the instance rather than the rule.
+`shutdown()` therefore ends **every** activity still raised, by iterating the enum rather than
+listing members -- a list would rot the first time one is added, and the invariant is simply that
+disconnecting is the last moment any mount flag can come down.
+
+The flags are ended in a `finally`, so a failure part-way down surfaces as an error rather than as a
+raised flag nobody can clear. That is what makes it safe for `powerdown()` to drop its wait entirely
+instead of merely bounding it. `park()` refuses when disconnected rather than answering `Ok` having
+done nothing, which is the same honesty #156 asks of `execute_assignment`.
+
+**Implications.** The declared contract is unchanged, which is the point: a consumer polling
+`MountActivities.ShuttingDown` after `PUT /mount/shutdown` keeps reading the same field, and it now
+actually clears. Anyone adding a future operation on the disconnect side must end its own flags the
+same way; `ontimer`'s guard now carries a comment saying so, because that is the trap that produced
+this. `Focuser.powerdown()` still carries the same unbounded `while self.is_shutting_down` this
+removes from the mount -- harmless today because its `shutdown()` is synchronous, latent if that ever
+changes, and not fixed here. The wider class -- activity flags whose end condition is unreachable at
+runtime, which #44's static balance check passes because the `end_activity` call does exist -- is
+tracked on #253, with this as one of six concrete cases.
+
+---
+
 ## [2026-09-22] `Moving` is the only cover state that means motion
 
 **Why:** `covers.py`'s PWI4 mapping sent `Opening`, `Closing` **and** `PartlyOpen` to
