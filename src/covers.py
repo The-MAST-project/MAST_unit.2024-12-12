@@ -36,34 +36,12 @@ MOVE_TIMEOUT_SECONDS = 60
 
 #: PWI4's `mirrorcover.overall_state_name` -> our `CoversState`.
 #:
-#: **Keyed on the NAME. NEVER on the integer.** The two enumerations overlap numerically and
-#: disagree, so `CoversState(pwi4_int)` returns a WRONG ANSWER rather than raising. The full
-#: PWI4 4.1.6 map was measured on mast03, 2026-09-22 (`data/2026-09-22-mast03-mirrorcover-state-names`
-#: in the vault); `CoversState` is beside it, and the last column is what a by-value cast
-#: would produce:
+#: Keyed on the NAME. **Never cast PWI4's integer into `CoversState`**: the two enumerations
+#: overlap and disagree, so the cast returns a wrong answer rather than raising. The measured
+#: numbering and what a by-value cast produces are on `CoversState` in MAST_common.
 #:
-#: ===  ==================  ==================  ======================================
-#: int  PWI4                CoversState         a by-value cast would say
-#: ===  ==================  ==================  ======================================
-#: 0    Open                NotPresent          "there are no covers"          -- WRONG
-#: 1    Closed              Closed              closed                         -- agrees
-#: 2    Opening             Moving              moving                         -- agrees
-#: 3    Closing             Open                "open", while it is closing    -- WRONG
-#: 4    (not observed)      Unknown             --
-#: 5    PartlyOpen          Error               "faulted", while it is at rest -- WRONG
-#: 6    --                  PartlyOpen          (no PWI4 counterpart)
-#: ===  ==================  ==================  ======================================
-#:
-#: Two of the five agree, which is the trap: a by-value cast survives a casual test on covers
-#: that are closed or opening, and then lies on exactly the states that matter -- reporting a
-#: CLOSING cover as OPEN, and a HALTED one as FAULTED. The agreements are coincidence, and
-#: nothing keeps them: `CoversState` gained member 6 in 2026-09 and PWI4 may renumber at any
-#: release. Map by name, and let an unmapped name fail loudly through `CoversState.Error`.
-#:
-#: `PartlyOpen` is what PWI4 reports for covers STOPPED between the two end states -- observed
-#: held for 20 s after halting a close mid-travel (MAST_unit#164). It is a resting state, not a
-#: fault and not motion, so it maps to `CoversState.PartlyOpen` rather than joining
-#: `Opening`/`Closing` under `Moving`. Only `Opening` and `Closing` mean the covers are moving.
+#: `PartlyOpen` is what PWI4 reports for covers STOPPED between the two end states, so only
+#: `Opening` and `Closing` mean motion.
 _PWI4_STATE_NAMES: dict[str, CoversState] = {
     "Open": CoversState.Open,
     "Closed": CoversState.Closed,

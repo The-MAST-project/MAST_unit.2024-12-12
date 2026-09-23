@@ -16,26 +16,11 @@ an inequality repeated per caller. `_end_abort_when_at_rest` now takes the state
 re-reading it, so one timer tick acts on one reading of the hardware; `self.state` is an HTTP
 round-trip to PWI4, and two reads in a tick can disagree.
 
-**The measured numbering, and the rule that follows.** PWI4 4.1.6's `mirrorcover.overall_state`
-was read directly on mast03 on 2026-09-22 (vault: `data/2026-09-22-mast03-mirrorcover-state-names`):
-
-| int | PWI4 | `CoversState` | what a by-value cast would say |
-| --- | --- | --- | --- |
-| 0 | Open | NotPresent | "there are no covers" — **wrong** |
-| 1 | Closed | Closed | closed — agrees |
-| 2 | Opening | Moving | moving — agrees |
-| 3 | Closing | Open | "open", while it is closing — **wrong** |
-| 4 | (not observed) | Unknown | — |
-| 5 | PartlyOpen | Error | "faulted", while it is at rest — **wrong** |
-| 6 | — | PartlyOpen | no PWI4 counterpart |
-
 **Never map these enums by value.** `CoversState(pwi4_int)` returns a wrong answer rather than
-raising. Two of the five agree, and that is the trap rather than a comfort: a by-value cast
-survives a casual test on covers that are closed or opening, then lies on exactly the states that
-matter. The agreements are coincidence and nothing preserves them — this enum gained member 6
-today, and PWI4 may renumber at any release. Map by NAME, and let an unmapped name fail loudly
-through `CoversState.Error`. `tests/test_abort_holds_until_at_rest.py` pins the three
-disagreements so the rule cannot rot quietly.
+raising, and two of the five values agree by coincidence, so the mistake survives a casual test and
+then lies on the states that matter. The measured PWI4 4.1.6 numbering and the full comparison live
+in one place, on `CoversState` in MAST_common; `tests/test_abort_holds_until_at_rest.py` pins the
+three disagreements so the rule cannot rot quietly.
 
 **Implications:** `Aborting` clears within one 2 s tick of the covers stopping, which is what #80's
 invariant always meant. `why_not_operational` reports `state='PartlyOpen'` rather than the untrue
