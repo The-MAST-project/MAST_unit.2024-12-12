@@ -202,13 +202,15 @@ def test_zwo_startup_returns_an_envelope():
     assert_ok(backend.startup())
 
 
-def test_phd2_startup_returns_ok_because_init_already_started_it():
+def test_phd2_startup_returns_ok_because_init_already_started_it(monkeypatch):
     """Not a stub reporting false success: `PHD2Connector.__init__` launches phd2.exe
     and connects the equipment, so by the time this runs there is nothing left to do
     and `Ok` is the honest answer. It must not repeat that work -- doing so launches a
-    second phd2.exe (#84)."""
+    second phd2.exe (#84). The USB link walk is its one job, covered in test_usb_link."""
+    import phd2.phd2 as phd2_module
     from phd2.phd2 import PHD2Connector
 
+    monkeypatch.setattr(phd2_module, "read_parent_chain", lambda: None)
     assert_ok(object.__new__(PHD2Connector).startup())
 
 
