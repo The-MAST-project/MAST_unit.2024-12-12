@@ -22,13 +22,21 @@ STANDING_ERROR = "a standing unit error"
 class Part:
     """A component whose `status()` either answers or fails."""
 
-    def __init__(self, failure: str | None = None):
+    def __init__(self, failure: str | None = None, caveats: list[str] | None = None, caveats_failure: str | None = None):
         self.failure = failure
+        self._caveats = caveats or []
+        self.caveats_failure = caveats_failure
 
     def status(self):
         if self.failure:
             raise RuntimeError(self.failure)
         return None
+
+    @property
+    def caveats(self) -> list[str]:
+        if self.caveats_failure:
+            raise RuntimeError(self.caveats_failure)
+        return self._caveats
 
 
 class Guider(Part):
@@ -73,6 +81,7 @@ class Stub:
         self.guider = parts.pop("guider", Guider())
         for name in ("power_switch", "mount", "imager", "covers", "focuser", "stage"):
             setattr(self, name, parts.pop(name, Part()))
+        self.components = [self.power_switch, self.mount, self.imager, self.covers, self.focuser, self.stage]
         # Not in the loop above: it is not a component and is never None on a real Unit --
         # `Unit.__init__` always builds a FluxMeteringSession -- but `status` reads it, so a
         # Stub without one raises where the real thing cannot.
@@ -184,3 +193,23 @@ def test_every_component_is_guarded(part: str):
 
     assert status.errors is not None
     assert any(e.startswith(f"{part}.status") for e in status.errors)
+
+
+class TestCaveats:
+    """A degradation that is not a fault is named in `caveats`, never in `errors` (#264)."""
+
+    def test_none_when_no_component_has_one(self):
+        assert status_of(Stub()).caveats is None
+
+    def test_gathered_from_every_component(self):
+        status = status_of(Stub(imager=Part(caveats=["slow link"]), stage=Part(caveats=["stiff axis"])))
+
+        assert status.caveats == ["slow link", "stiff axis"]
+        assert status.errors == [STANDING_ERROR], "a caveat is not an error"
+
+    def test_a_failing_read_is_named_and_the_rest_still_report(self):
+        status = status_of(Stub(mount=Part(caveats_failure="boom"), imager=Part(caveats=["slow link"])))
+
+        assert status.caveats == ["slow link"]
+        assert status.errors is not None
+        assert any("caveats" in e and "boom" in e for e in status.errors)

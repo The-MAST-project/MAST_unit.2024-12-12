@@ -23,10 +23,18 @@ from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface
 from common.mast_logging import get_logger
-from common.models.statuses import ImagerRoi, ImagerSettings, PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
+from common.models.statuses import (
+    ImagerRoi,
+    ImagerSettings,
+    PHD2GuiderStatus,
+    PHD2ImagerStatus,
+    SkyQualityStatus,
+    UsbLink,
+)
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_debug, function_name
 from phd2.phd2_locate import locate_phd2_exe
+from phd2.usb_link import classify, read_parent_chain
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 
 logger = get_logger(__name__)
@@ -251,6 +259,27 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     #: half-built object -- either re-running the whole body (launching a second phd2.exe)
     #: or, once `_initialized` is set unconditionally, silently accepting a broken one.
     _init_error: BaseException | None = None
+    #: Found by `startup()`, once a session; `Unknown` until then.
+    _usb_link: UsbLink = UsbLink.Unknown
+    _usb_chain: tuple[str, ...] = ()
+
+    @property
+    def usb_link(self) -> UsbLink:
+        return self._usb_link
+
+    @property
+    def usb_chain(self) -> tuple[str, ...]:
+        """The camera's USB ancestors as `startup()` found them, nearest first."""
+        return self._usb_chain
+
+    @property
+    def caveats(self) -> list[str]:
+        if self._usb_link is not UsbLink.HighSpeed:
+            return []
+        return [
+            f"guide camera is on a USB 2.0 path ({' -> '.join(self._usb_chain)}), "
+            f"so frames read out several times slower than over SuperSpeed"
+        ]
 
     @property
     def conf(self):
@@ -1301,6 +1330,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             connected=self.connected,
             operational=self.operational,
             why_not_operational=self.why_not_operational,
+            usb_link=self.usb_link,
         )
 
     def guider_status(self) -> PHD2GuiderStatus:
@@ -1470,7 +1500,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         # return 0
 
     def startup(self) -> CanonicalResponse:
-        """Nothing to do, and `Ok` is the truthful answer.
+        """Check the camera's USB link; everything else is already done, so `Ok`.
 
         Unlike the ASCOM backend -- which powers on, connects and enables the cooler
         *in* `startup()` -- this connector does all of that in `__init__`: it locates
@@ -1487,7 +1517,15 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         than a contract one -- `Component.startup` is documented as running at the
         start of every observing session, which a constructor cannot do. Tracked
         under `epic:unit-lifecycle`.
+
+        The one per-session job it does have is finding the camera's USB link (#264). A
+        High-Speed link is a slower night, not a broken one, so it warns and never fails.
         """
+        chain = read_parent_chain()
+        self._usb_chain = tuple(chain or ())
+        self._usb_link = classify(chain)
+        for caveat in self.caveats:
+            logger.warning(f"{function_name()}: {caveat}")
         return CanonicalResponse_Ok
 
     def abort(self) -> CanonicalResponse:

@@ -39,6 +39,14 @@ There is no module-level `app` object: an app needs a `Unit`, and building one n
 Windows, the device drivers and Mongo. `uvicorn app:app` therefore does not work —
 use `python app.py`, or `create_app()` if you are constructing one yourself.
 
+`/unit/status` reports faults in `errors` and degradations in `caveats`, which lists ways a
+component works but worse than it should and is absent when there are none. Any component
+can add one by overriding `Component.caveats`. The first is the guide camera's USB link:
+`PHD2Connector.startup()` walks the camera's PnP parent chain once a session and reports
+`usb_link` (`SuperSpeed` / `HighSpeed` / `unknown`) under `imager.backend`. A USB 2.0 path
+logs one WARNING naming the hub chain and adds a caveat. It never fails startup
+(`DECISIONS.md` 2026-09-24).
+
 ## Tests
 
 `tests/` holds a pytest suite that drives the real connector code with mocked

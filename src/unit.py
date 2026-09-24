@@ -484,6 +484,13 @@ class Unit(Component):
         #             else:
         #                 all_corrections.append(correction)
 
+        # Per component, like the reads below: one that raises must not cost the others'.
+        caveats = [
+            caveat
+            for comp in self.components
+            for caveat in report(f"{type(comp).__name__}.caveats", lambda comp=comp: comp.caveats, default=[])
+        ]
+
         ret = FullUnitStatus(
             **self.component_status().model_dump(),
             id=id(self),
@@ -517,6 +524,7 @@ class Unit(Component):
             # A new list: `self.errors` is the unit's own standing errors, and a read that
             # failed on this request must not be appended to it.
             errors=self.errors + failures,
+            caveats=caveats or None,
             autofocus=autofocus,
             corrections=all_corrections,
             date=time_stamp(),

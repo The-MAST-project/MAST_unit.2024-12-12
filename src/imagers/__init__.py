@@ -142,6 +142,10 @@ class Imager(ImagerInterface, SwitchedOutlet):
     def is_shutting_down(self) -> bool:
         return self._backend.is_shutting_down
 
+    @property
+    def caveats(self) -> list[str]:
+        return self._backend.caveats
+
     def powerdown(self):
         if not self._backend.was_shut_down:
             self._backend.shutdown()
