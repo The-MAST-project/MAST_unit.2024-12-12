@@ -1,40 +1,39 @@
-"""The guide camera's USB link is found once a session and reported, never enforced (#264).
+"""The guide camera's USB link is found once a session and logged, never enforced (#264).
 
 On mast01 and mast04 the camera enumerates behind two cascaded USB 2.0 hubs and reads a
 full frame out in 5.7 s; on mast02, on a SuperSpeed hub, it takes 0.87 s. The camera works
-either way, so nothing in the log or in status told the slow unit apart. PHD2 holds the
-camera, so the SDK's `IsUSB3Host` cannot be asked; the PnP parent chain can, without
-touching the device.
+either way, so nothing in the log told the slow unit apart. PHD2 holds the camera, so the
+SDK's `IsUSB3Host` cannot be asked; the PnP parent chain can, without touching the device.
 
-The chains below are the ones measured on 2026-09-23.
+The verdict line is a contract with whatever scrapes the logs for it, so its shape is pinned
+here. The chains below are the ones the production walk returned on 2026-09-24.
 """
 
 from __future__ import annotations
 
-import ast
 import logging
+import re
 import subprocess
-from pathlib import Path
 
 import pytest
 
 from common.canonical import CanonicalResponse_Ok
-from common.models.statuses import UsbLink
 from phd2 import usb_link
 from phd2.phd2 import PHD2Connector
-from phd2.usb_link import classify, read_parent_chain
-
-SRC = Path(__file__).resolve().parent.parent / "src"
+from phd2.usb_link import UsbLink, classify, log_usb_link, read_parent_chain
 
 MAST01_CHAIN = [
     "Generic USB Hub | USB2.0 Hub",
     "Generic USB Hub | USB2.0 Hub",
-    "USB Root Hub (USB 3.0) | ",
+    "USB Root Hub (USB 3.0) |",
 ]
-MAST02_CHAIN = [
+MAST03_CHAIN = [
     "Generic SuperSpeed USB Hub | USB3.0 Hub",
-    "USB Root Hub (USB 3.0) | ",
+    "USB Root Hub (USB 3.0) |",
 ]
+
+#: What a scraper keys on. Changing the line means changing this, which is the point.
+VERDICT = re.compile(r'^(?:DEGRADED )?usb-link=(SuperSpeed|HighSpeed|unknown) chain="([^"]*)"')
 
 
 # --- classify ---------------------------------------------------------------------------
@@ -44,12 +43,12 @@ MAST02_CHAIN = [
     ("chain", "expected"),
     [
         (MAST01_CHAIN, UsbLink.HighSpeed),
-        (MAST02_CHAIN, UsbLink.SuperSpeed),
+        (MAST03_CHAIN, UsbLink.SuperSpeed),
         (None, UsbLink.Unknown),
         ([], UsbLink.Unknown),
-        (["USB Root Hub (USB 3.0) | "], UsbLink.Unknown),
+        (["USB Root Hub (USB 3.0) |"], UsbLink.Unknown),
     ],
-    ids=["mast01", "mast02", "no-camera", "empty", "root-port-only"],
+    ids=["mast01", "mast03", "no-camera", "empty", "root-port-only"],
 )
 def test_classify(chain, expected):
     assert classify(chain) is expected
@@ -74,9 +73,11 @@ def test_off_windows_nothing_is_run(monkeypatch):
 
 
 def test_the_walk_output_becomes_the_chain(monkeypatch):
+    """Trailing padding is PowerShell's, and real: the bus description comes back space-filled."""
     monkeypatch.setattr(usb_link.sys, "platform", "win32")
-    monkeypatch.setattr(usb_link.subprocess, "run", lambda *a, **k: _completed("\r\n".join(MAST01_CHAIN) + "\r\n"))
-    assert read_parent_chain() == [hop.strip() for hop in MAST01_CHAIN]
+    padded = "\r\n".join(hop + "             " for hop in MAST01_CHAIN) + "\r\n"
+    monkeypatch.setattr(usb_link.subprocess, "run", lambda *a, **k: _completed(padded))
+    assert read_parent_chain() == MAST01_CHAIN
 
 
 def test_no_camera_is_none(monkeypatch):
@@ -107,91 +108,54 @@ def test_a_failed_walk_is_logged_and_none(monkeypatch, caplog, failure):
     assert any("USB" in r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
 
 
+# --- log_usb_link: the line a scraper reads ---------------------------------------------
+
+
+def _verdicts(caplog) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if VERDICT.match(r.getMessage())]
+
+
+def _log_with(monkeypatch, caplog, chain) -> UsbLink:
+    monkeypatch.setattr(usb_link, "read_parent_chain", lambda: chain)
+    with caplog.at_level(logging.INFO):
+        return log_usb_link()
+
+
+def test_a_usb2_path_is_one_degraded_warning_naming_the_chain(monkeypatch, caplog):
+    assert _log_with(monkeypatch, caplog, MAST01_CHAIN) is UsbLink.HighSpeed
+
+    (record,) = _verdicts(caplog)
+    message = record.getMessage()
+    assert record.levelno == logging.WARNING
+    assert message.startswith("DEGRADED usb-link=HighSpeed ")
+    match = VERDICT.match(message)
+    assert match is not None
+    assert match.group(2) == " > ".join(MAST01_CHAIN)
+
+
+@pytest.mark.parametrize(
+    ("chain", "link"),
+    [(MAST03_CHAIN, UsbLink.SuperSpeed), (None, UsbLink.Unknown)],
+    ids=["superspeed", "unknown"],
+)
+def test_otherwise_one_info_verdict_and_nothing_degraded(monkeypatch, caplog, chain, link):
+    """Logged every session, not only when degraded: the latest line per unit is its state."""
+    assert _log_with(monkeypatch, caplog, chain) is link
+
+    (record,) = _verdicts(caplog)
+    assert record.levelno == logging.INFO
+    assert record.getMessage().startswith(f"usb-link={link} ")
+    assert not [r for r in caplog.records if "DEGRADED" in r.getMessage()]
+
+
 # --- PHD2Connector.startup --------------------------------------------------------------
 
 
-@pytest.fixture
-def connector():
+def test_startup_logs_the_link_and_is_ok(monkeypatch, caplog):
     """Only what `startup()` touches; the rest of `__init__` needs a live PHD2."""
-    return object.__new__(PHD2Connector)
+    monkeypatch.setattr(usb_link, "read_parent_chain", lambda: MAST01_CHAIN)
+    with caplog.at_level(logging.INFO):
+        response = object.__new__(PHD2Connector).startup()
 
-
-def _startup_with(monkeypatch, inst: PHD2Connector, chain):
-    import phd2.phd2 as phd2_module
-
-    monkeypatch.setattr(phd2_module, "read_parent_chain", lambda: chain)
-    return inst.startup()
-
-
-def test_a_usb2_path_warns_once_and_starts(monkeypatch, caplog, connector):
-    with caplog.at_level(logging.WARNING):
-        response = _startup_with(monkeypatch, connector, MAST01_CHAIN)
-
-    assert response is CanonicalResponse_Ok
-    assert connector.usb_link is UsbLink.HighSpeed
-    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(warnings) == 1
-    assert "USB2.0 Hub" in warnings[0]
-
-
-def test_a_superspeed_path_is_silent(monkeypatch, caplog, connector):
-    with caplog.at_level(logging.WARNING):
-        response = _startup_with(monkeypatch, connector, MAST02_CHAIN)
-
-    assert response is CanonicalResponse_Ok
-    assert connector.usb_link is UsbLink.SuperSpeed
-    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
-
-
-def test_no_chain_is_unknown_and_starts(monkeypatch, connector):
-    assert _startup_with(monkeypatch, connector, None) is CanonicalResponse_Ok
-    assert connector.usb_link is UsbLink.Unknown
-
-
-def test_before_startup_the_link_is_unknown(connector):
-    assert connector.usb_link is UsbLink.Unknown
-
-
-# --- PHD2Connector.status ---------------------------------------------------------------
-
-
-def test_status_passes_the_found_link():
-    """Static, like test_status_fields_are_populated: `status()` needs a live PHD2."""
-    tree = ast.parse((SRC / "phd2" / "phd2.py").read_text(encoding="utf-8"))
-    status = next(
-        node
-        for cls in ast.walk(tree)
-        if isinstance(cls, ast.ClassDef) and cls.name == "PHD2Connector"
-        for node in cls.body
-        if isinstance(node, ast.FunctionDef) and node.name == "status"
-    )
-    call = next(c for c in ast.walk(status) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "PHD2ImagerStatus")
-    passed = {kw.arg: ast.unparse(kw.value) for kw in call.keywords}
-    assert passed.get("usb_link") == "self.usb_link"
-
-
-# --- caveats ----------------------------------------------------------------------------
-
-
-def test_a_usb2_path_is_a_caveat_naming_the_chain(monkeypatch, connector):
-    _startup_with(monkeypatch, connector, MAST01_CHAIN)
-
-    (caveat,) = connector.caveats
-    assert "USB 2.0" in caveat
-    assert "USB2.0 Hub" in caveat
-
-
-@pytest.mark.parametrize("chain", [MAST02_CHAIN, None], ids=["superspeed", "unknown"])
-def test_otherwise_no_caveat(monkeypatch, connector, chain):
-    _startup_with(monkeypatch, connector, chain)
-    assert connector.caveats == []
-
-
-def test_the_imager_forwards_its_backend_s_caveats():
-    from types import SimpleNamespace
-
-    from imagers import Imager
-
-    imager = object.__new__(Imager)
-    imager._backend = SimpleNamespace(caveats=["slow link"])
-    assert imager.caveats == ["slow link"]
+    assert response is CanonicalResponse_Ok, "a slow link is a slower night, not a failed start"
+    assert len(_verdicts(caplog)) == 1

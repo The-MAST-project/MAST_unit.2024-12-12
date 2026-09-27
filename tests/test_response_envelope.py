@@ -210,7 +210,7 @@ def test_phd2_startup_returns_ok_because_init_already_started_it(monkeypatch):
     import phd2.phd2 as phd2_module
     from phd2.phd2 import PHD2Connector
 
-    monkeypatch.setattr(phd2_module, "read_parent_chain", lambda: None)
+    monkeypatch.setattr(phd2_module, "log_usb_link", lambda: None)
     assert_ok(object.__new__(PHD2Connector).startup())
 
 

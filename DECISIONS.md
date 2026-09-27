@@ -2,23 +2,32 @@
 
 ---
 
-## [2026-09-24] The guide camera's USB link is checked once a session and reported, never enforced
+## [2026-09-27] The guide camera's USB link is checked once a session and logged, never enforced
 
 **Why:** on mast01 and mast04 the guide camera sits behind two cascaded USB 2.0 hubs and reads a
 full frame out in 5.7 s, against 0.87 s on mast02's SuperSpeed hub: 15.7 against 102.4 MiB/s,
 through the same driver with the same settings (#264). The camera works and every frame is
-correct, so neither the log nor `/unit/status` told the slow unit apart, and the campaign spent
-weeks treating that readout as a physical floor. The provisioning-time check
-(MAST_provisioning#221) catches a unit built wrong, but not one re-cabled during maintenance.
+correct, so nothing in the log told the slow unit apart, and the campaign spent weeks treating
+that readout as a physical floor. The provisioning-time check (MAST_provisioning#221) catches a
+unit built wrong, but not one re-cabled during maintenance.
 
 **What:** `PHD2Connector.startup()` walks the camera's PnP parent chain with a short PowerShell
 query, stopping at the root hub, and classifies it: a `USB2.0 Hub` anywhere in the chain is
 `HighSpeed`, because such a hub cannot pass SuperSpeed. Otherwise a `USB3.0 Hub` is `SuperSpeed`,
 and anything else, including no camera, a failed query, a non-Windows host or a camera straight
-on a root port, is `unknown`. The result goes into `PHD2ImagerStatus.usb_link`. On `HighSpeed`
-the connector's `caveats` names the chain, `startup()` logs it once as a WARNING, and
-`Unit.status()` gathers it into `FullUnitStatus.caveats` together with every other component's.
+on a root port, is `unknown`. The verdict is **logged, not reported in status**, on one line:
 
+    DEGRADED usb-link=HighSpeed chain="<hop> > <hop> > ..." <what it costs>   WARNING
+    usb-link=SuperSpeed chain="<hop> > ..."                                   INFO
+
+- **Log only.** Status fields, a `usb_link` on the PHD2 imager status and a `caveats` list on
+  the unit status, were proposed in the same PR and dropped at review. The unit log is the
+  surface, and tracking across the fleet comes from scraping it.
+- **Every session, not only when degraded.** The latest `usb-link=` line per unit is its
+  current state, so a fixed unit shows as fixed rather than as silent.
+- **`DEGRADED` is a reusable tag** for any degradation that is not a fault, so a scraper that
+  collects `DEGRADED` lines picks up future ones without changes. The line's shape is a contract
+  with that scraper and is pinned in `tests/test_usb_link.py`.
 - **PnP rather than the SDK's `IsUSB3Host`.** The SDK needs the camera open, and PHD2 holds it.
   The device tree gives the same verdict without touching the camera. Checked against the SDK
   on mast01 and mast02, and against the production query on mast01 and mast03, 2026-09-24.
@@ -26,18 +35,15 @@ the connector's `caveats` names the chain, `startup()` logs it once as a WARNING
   is the right frequency for a wiring check. It is also the first real job `startup()` has, and
   it does not repeat the constructor's work (#84, #111).
 - **A warning, not a fault.** A night on a slow link is still usable. Refusing to start would be
-  worse than the problem, and the fix is physical anyway.
-- **Gathered per component under `report`.** One component whose `caveats` raises is named in
-  `errors`, and the other components' caveats are still reported, as with `status` (#222).
+  worse than the problem, and the fix is physical anyway (#266).
 - **Not done:** a cadence-based backstop, which would compare observed frame intervals with
   exposure plus expected readout. It catches any cause of slow readout but cannot say why, so
   it stays a possible follow-up.
 
 **Implications:** a camera plugged straight into a root port reports `unknown`, because there is
-no hub to read. The remedy the issue suggests therefore shows up as `unknown`, not `SuperSpeed`.
-Telling those apart needs the port's negotiated speed, which PnP properties do not expose.
-`startup()` now starts a PowerShell process, about 1 s, so tests that call it must stub
-`read_parent_chain`; the conftest process guard enforces this.
+no hub to read. Telling that apart from SuperSpeed needs the port's negotiated speed, which PnP
+properties do not expose. `startup()` now starts a PowerShell process, about 1 s, so tests that
+call it must stub `log_usb_link`; the conftest process guard enforces this.
 
 ---
 
