@@ -46,7 +46,7 @@ class HFDAutofocusResult(ExtendedBaseModel):
 
     ``n_consistent_stars`` has no ps3cli counterpart: the HFD sweep is measured
     jointly over a star set cross-matched across all frames
-    (:func:`calibration.analysis.hfd.measure_sweep_hfd`), and how many stars
+    (:func:`imaging.hfd.measure_sweep_hfd`), and how many stars
     survived that matching is the primary confidence figure behind the fit.
     """
 

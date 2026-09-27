@@ -12,7 +12,7 @@ and the ps3cli result interchangeably, with no cast.
 
 For each ``FOCUSnnnnn.fits`` image (the focuser position is encoded in the file
 name) it measures the median Half-Flux Diameter of the near-axis stars
-(``calibration.analysis.hfd.frame_hfd``), then fits the V-curve as
+(``imaging.hfd.frame_hfd``), then fits the V-curve as
 
     D^2 = a*x^2 + b*x + c      (linear least-squares, error-weighted)
 
@@ -24,14 +24,15 @@ Design reference: docs/autofocus_design.md.
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 
 import numpy as np
 from astropy.io import fits
 
-from calibration.analysis.donut import DonutJump, frame_donut_metric, plan_donut_jump
-from calibration.analysis.hfd import measure_sweep_hfd
+from imaging.donut import DonutJump, frame_donut_metric, plan_donut_jump
+from imaging.hfd import measure_sweep_hfd
 from calibration.analysis.models import (
     HFDAutofocusResult,
     HFDAutofocusStatus,
@@ -42,7 +43,6 @@ from calibration.logging_context import init_calibration_log
 logger = logging.getLogger("mast.unit." + __name__)
 init_calibration_log(logger)
 
-logger = get_logger(__name__)
 _POS_RE = re.compile(r"FOCUS(-?\d+)", re.IGNORECASE)
 
 
@@ -131,7 +131,7 @@ def analyze_focus_samples(
     This is the array-native core behind :func:`analyze_focus_files_hfd`, so the
     Calibrator can feed frames straight from memory with no ``FOCUSnnnnn``
     round-trip through disk.
-    ``hfd_kw`` is forwarded to :func:`calibration.analysis.hfd.measure_sweep_hfd` (e.g.
+    ``hfd_kw`` is forwarded to :func:`imaging.hfd.measure_sweep_hfd` (e.g.
     ``nsigma``, ``r_factor``, ``near_axis_frac``).  Autofocus runs on FULL frames,
     which include the coma-heavy margins, so restrict the metric to the calibrated
     low-coma zone by forwarding ``center`` + ``radius``: the stored
@@ -239,13 +239,13 @@ def analyze_donut_samples(
 
     Array-native core behind :func:`analyze_donut_files`; ``image`` is a 2D array
     (``imager.image_array``) or a FITS path.  For each frame it measures the median
-    donut outer diameter (:func:`calibration.analysis.donut.frame_donut_metric`) and fits
+    donut outer diameter (:func:`imaging.donut.frame_donut_metric`) and fits
     diameter-vs-position, weighting by donut *count* so richer frames pull harder.
-    ``detect_kw`` is forwarded to :func:`calibration.analysis.donut.detect_donuts` (e.g.
+    ``detect_kw`` is forwarded to :func:`imaging.donut.detect_donuts` (e.g.
     ``nsigma``, ``min_diameter``).  Only frames with a position and at least
-    ``min_donuts`` donuts feed the fit.  Returns a :class:`calibration.analysis.donut.DonutJump`;
+    ``min_donuts`` donuts feed the fit.  Returns a :class:`imaging.donut.DonutJump`;
     check ``has_solution``.  Position ordering is handled by
-    :func:`calibration.analysis.donut.plan_donut_jump`, so ``samples`` need not be sorted.
+    :func:`imaging.donut.plan_donut_jump`, so ``samples`` need not be sorted.
     """
     positions, diameters, weights = [], [], []
     for pos, img in samples:

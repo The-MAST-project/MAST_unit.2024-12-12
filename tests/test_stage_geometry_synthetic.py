@@ -16,7 +16,7 @@ and noise for the prominence score to beat.
 import numpy as np
 import pytest
 
-from calibration.analysis.mirror_shadow import detect_mirror_shadow
+from imaging.mirror_shadow import detect_mirror_shadow
 from calibration.analysis.stage_geometry import find_spec_stage_position
 
 NY, NX = 1200, 1600
