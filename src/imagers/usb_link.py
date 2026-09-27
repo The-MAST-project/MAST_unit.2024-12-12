@@ -8,6 +8,8 @@ controller caps the link at High-Speed, since such a hub cannot pass SuperSpeed.
 
 A camera plugged straight into a root port has no hub to read, and reports ``Unknown``.
 
+``Imager.startup()`` calls ``log_usb_link()`` once a session, before delegating to its backend.
+
 The verdict is logged, once a session, on one line that a scraper can key on::
 
     DEGRADED usb-link=HighSpeed chain="<hop> > <hop> > ..." <what it costs>   (WARNING)

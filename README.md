@@ -39,7 +39,7 @@ There is no module-level `app` object: an app needs a `Unit`, and building one n
 Windows, the device drivers and Mongo. `uvicorn app:app` therefore does not work —
 use `python app.py`, or `create_app()` if you are constructing one yourself.
 
-`PHD2Connector.startup()` walks the guide camera's PnP parent chain once a session and logs
+`Imager.startup()` walks the guide camera's PnP parent chain once a session and logs
 the verdict on one line in the unit log: `usb-link=SuperSpeed|HighSpeed|unknown
 chain="…"` at INFO, and `DEGRADED usb-link=HighSpeed …` at WARNING when a USB 2.0 hub caps
 the link. `DEGRADED` is the tag for any degradation that is not a fault; the line format

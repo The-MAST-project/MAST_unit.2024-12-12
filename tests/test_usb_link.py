@@ -17,10 +17,9 @@ import subprocess
 
 import pytest
 
-from common.canonical import CanonicalResponse_Ok
-from phd2 import usb_link
-from phd2.phd2 import PHD2Connector
-from phd2.usb_link import UsbLink, classify, log_usb_link, read_parent_chain
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from imagers import Imager, usb_link
+from imagers.usb_link import UsbLink, classify, log_usb_link, read_parent_chain
 
 MAST01_CHAIN = [
     "Generic USB Hub | USB2.0 Hub",
@@ -148,14 +147,35 @@ def test_otherwise_one_info_verdict_and_nothing_degraded(monkeypatch, caplog, ch
     assert not [r for r in caplog.records if "DEGRADED" in r.getMessage()]
 
 
-# --- PHD2Connector.startup --------------------------------------------------------------
+# --- Imager.startup ---------------------------------------------------------------------
 
 
-def test_startup_logs_the_link_and_is_ok(monkeypatch, caplog):
-    """Only what `startup()` touches; the rest of `__init__` needs a live PHD2."""
+class _Backend:
+    """Records when it was started, so the test can see the walk ran first."""
+
+    def __init__(self, response, caplog):
+        self.response = response
+        self.caplog = caplog
+        self.verdicts_before_startup: int | None = None
+
+    def startup(self):
+        self.verdicts_before_startup = len(_verdicts(self.caplog))
+        return self.response
+
+
+@pytest.mark.parametrize(
+    "response", [CanonicalResponse_Ok, CanonicalResponse(errors=["backend refused"])], ids=["ok", "refused"]
+)
+def test_the_imager_logs_the_link_then_answers_as_its_backend(monkeypatch, caplog, response):
+    """Whatever backend holds the camera: the walk reads the PnP tree, not the device."""
+    backend = _Backend(response, caplog)
+    imager = object.__new__(Imager)
+    imager._backend = backend
     monkeypatch.setattr(usb_link, "read_parent_chain", lambda: MAST01_CHAIN)
-    with caplog.at_level(logging.INFO):
-        response = object.__new__(PHD2Connector).startup()
 
-    assert response is CanonicalResponse_Ok, "a slow link is a slower night, not a failed start"
+    with caplog.at_level(logging.INFO):
+        answer = imager.startup()
+
+    assert answer is response, "a slow link is a slower night, not a failed start"
+    assert backend.verdicts_before_startup == 1
     assert len(_verdicts(caplog)) == 1

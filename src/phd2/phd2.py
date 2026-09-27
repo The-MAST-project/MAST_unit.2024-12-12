@@ -27,7 +27,6 @@ from common.models.statuses import ImagerRoi, ImagerSettings, PHD2GuiderStatus, 
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_debug, function_name
 from phd2.phd2_locate import locate_phd2_exe
-from phd2.usb_link import log_usb_link
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 
 logger = get_logger(__name__)
@@ -1471,7 +1470,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         # return 0
 
     def startup(self) -> CanonicalResponse:
-        """Check the camera's USB link; everything else is already done, so `Ok`.
+        """Nothing to do, and `Ok` is the truthful answer.
 
         Unlike the ASCOM backend -- which powers on, connects and enables the cooler
         *in* `startup()` -- this connector does all of that in `__init__`: it locates
@@ -1488,11 +1487,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         than a contract one -- `Component.startup` is documented as running at the
         start of every observing session, which a constructor cannot do. Tracked
         under `epic:unit-lifecycle`.
-
-        The one per-session job it does have is logging the camera's USB link (#264). A
-        High-Speed link is a slower night, not a broken one, so it is logged and never fails.
         """
-        log_usb_link()
         return CanonicalResponse_Ok
 
     def abort(self) -> CanonicalResponse:

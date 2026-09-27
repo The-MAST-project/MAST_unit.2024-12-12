@@ -11,7 +11,7 @@ correct, so nothing in the log told the slow unit apart, and the campaign spent 
 that readout as a physical floor. The provisioning-time check (MAST_provisioning#221) catches a
 unit built wrong, but not one re-cabled during maintenance.
 
-**What:** `PHD2Connector.startup()` walks the camera's PnP parent chain with a short PowerShell
+**What:** `Imager.startup()` walks the camera's PnP parent chain with a short PowerShell
 query, stopping at the root hub, and classifies it: a `USB2.0 Hub` anywhere in the chain is
 `HighSpeed`, because such a hub cannot pass SuperSpeed. Otherwise a `USB3.0 Hub` is `SuperSpeed`,
 and anything else, including no camera, a failed query, a non-Windows host or a camera straight
@@ -31,9 +31,11 @@ on a root port, is `unknown`. The verdict is **logged, not reported in status**,
 - **PnP rather than the SDK's `IsUSB3Host`.** The SDK needs the camera open, and PHD2 holds it.
   The device tree gives the same verdict without touching the camera. Checked against the SDK
   on mast01 and mast02, and against the production query on mast01 and mast03, 2026-09-24.
-- **In `startup()`, not `__init__`.** `Component.startup` runs once per observing session, which
-  is the right frequency for a wiring check. It is also the first real job `startup()` has, and
-  it does not repeat the constructor's work (#84, #111).
+- **In `Imager.startup()`, not in a backend.** `Component.startup` runs once per observing
+  session, which is the right frequency for a wiring check. The walk reads the PnP tree, not the
+  camera, so it answers the same whichever backend holds the camera, and it runs before the call
+  is delegated to that backend. It was first placed in `PHD2Connector.startup()`. That tied it
+  to one backend for no reason, and added work to the method that #111 has to restructure.
 - **A warning, not a fault.** A night on a slow link is still usable. Refusing to start would be
   worse than the problem, and the fix is physical anyway (#266).
 - **Not done:** a cadence-based backstop, which would compare observed frame intervals with
@@ -43,7 +45,7 @@ on a root port, is `unknown`. The verdict is **logged, not reported in status**,
 **Implications:** a camera plugged straight into a root port reports `unknown`, because there is
 no hub to read. Telling that apart from SuperSpeed needs the port's negotiated speed, which PnP
 properties do not expose. `startup()` now starts a PowerShell process, about 1 s, so tests that
-call it must stub `log_usb_link`; the conftest process guard enforces this.
+call `Imager.startup()` must stub `read_parent_chain`; the conftest process guard enforces this.
 
 ---
 

@@ -11,6 +11,7 @@ from common.endpoints import Completion, Tier, add_api_route, endpoint, register
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerTypes
 from common.mast_logging import get_logger
 from common.models.statuses import ImagerSettings, ImagerStatus
+from imagers.usb_link import log_usb_link
 
 logger = get_logger(__name__)
 __all__ = ["Imager"]
@@ -132,6 +133,9 @@ class Imager(ImagerInterface, SwitchedOutlet):
 
     @endpoint(tier=Tier.INTERFACE, completion=Completion.IMMEDIATE)
     def startup(self) -> CanonicalResponse:
+        # Here rather than in a backend: the walk reads the PnP tree, not the camera, so it
+        # answers the same whichever backend holds the camera (#264).
+        log_usb_link()
         return self._backend.startup()
 
     @endpoint(tier=Tier.INTERFACE, completion=ImagerActivities.ShuttingDown)
