@@ -100,6 +100,9 @@ class Imager:
 
 class Mount:
     is_moving = False
+    # The settle loop waits on is_slewing, not is_moving: the latter is axis rms
+    # following-error, which reads True in wind while the mount sits on target.
+    is_slewing = False
 
     def __init__(self):
         self.stopped_tracking = 0

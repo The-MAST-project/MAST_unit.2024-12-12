@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from calibration.analysis.mirror_shadow import ShadowModel, detect_mirror_shadow
+from imaging.mirror_shadow import ShadowModel, detect_mirror_shadow
 from calibration.analysis.stage_geometry import (
     StageGeometryResult,
     find_spec_stage_position,
@@ -25,7 +25,7 @@ from calibration.phases.slewing import slew_and_settle
 from common.activities import StageActivities, UnitActivities
 from common.config import Config
 from common.config.calibration import CalibrationConfig, StageCalibrationConfig
-from common.interfaces.imager import ImagerSettings
+from common.models.statuses import ImagerSettings
 from common.utils import time_stamp
 
 if TYPE_CHECKING:
@@ -48,7 +48,7 @@ class StageCalibrator:
     """Drives the pick-off stage calibration loop on a live unit.
 
     Sweeps the folding mirror across several inserted stage positions, detects the
-    shadow at each (:func:`calibration.analysis.mirror_shadow.detect_mirror_shadow`), and solves
+    shadow at each (:func:`imaging.mirror_shadow.detect_mirror_shadow`), and solves
     for the spec stage position (:func:`find_spec_stage_position`) -- the stage
     coordinate that places the shadow centerline on the unit's optical center.  On
     success it persists a :class:`common.config.calibration.StageCalibrationConfig`
@@ -283,11 +283,16 @@ class StageCalibrator:
             timestamp=time_stamp(),
             mechanical_epoch=mech_epoch,
         )
-        if conf.calibration is None:
-            conf.calibration = CalibrationConfig()
-        conf.calibration.products.stage = stage_cal
+
+        def _save_stage_calibration(conf) -> None:
+            if conf.calibration is None:
+                conf.calibration = CalibrationConfig()
+            conf.calibration.products.stage = stage_cal
+
         try:
-            Config().set_unit(unit_name=self.unit.hostname, unit_conf=conf)
+            # This site aliased the configuration (`conf = self.unit.unit_conf`) before
+            # editing it, which is the same mutation as the others and harder to grep for.
+            Config().update_unit(_save_stage_calibration, unit_name=self.unit.hostname)
             logger.info(f"saved stage calibration for '{self.unit.hostname}': spec_position={stage_cal.spec_position}")
         except Exception as e:
             self.errors.append(f"could not save stage calibration for '{self.unit.hostname}': {e}")

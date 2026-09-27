@@ -2,7 +2,7 @@
 
 The pick-off stage carries a 45-deg folding mirror on a linear (1-DOF) track in
 the converging beam.  Inserted, it occults a band of sky and casts a shadow whose
-centerline (:func:`calibration.analysis.mirror_shadow.detect_mirror_shadow`) translates across
+centerline (:func:`imaging.mirror_shadow.detect_mirror_shadow`) translates across
 the detector as the stage moves.  For spectroscopy we want the **"spec" stage
 position**: the one where that centerline passes through the unit's optical center
 (:func:`calibration.analysis.optical_center.find_optical_center`), so the mirror picks off the
@@ -29,7 +29,7 @@ center) is taken up later by a mount offset + a flux peak-up, an uncharacterized
 fiber offset this routine deliberately does not chase.
 
 Design reference: unit self-calibration design, section 10 (pick-off stage
-geometry).  Sits beside :mod:`calibration.analysis.mirror_shadow` and
+geometry).  Sits beside :mod:`imaging.mirror_shadow` and
 :mod:`calibration.analysis.optical_center`.
 """
 
@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from calibration.analysis.mirror_shadow import ShadowModel
+from imaging.mirror_shadow import ShadowModel
 from calibration.logging_context import init_calibration_log
 
 logger = logging.getLogger("mast.unit." + __name__)
@@ -120,7 +120,7 @@ def find_spec_stage_position(
 ) -> StageGeometryResult:
     """Solve for the spec stage position from shadow frames at known stage positions.
 
-    ``shadow_models`` are :class:`calibration.analysis.mirror_shadow.ShadowModel` (one per
+    ``shadow_models`` are :class:`imaging.mirror_shadow.ShadowModel` (one per
     stage position, aligned with ``stage_positions``); frames whose shadow is not
     ``present`` are dropped.  ``optical_center`` is an
     :class:`calibration.analysis.optical_center.OpticalCenterResult` (its ``.center``) or an

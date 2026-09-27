@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from astropy.io import fits
 
-from calibration.analysis.hfd import assess_focus_regime
+from imaging.hfd import assess_focus_regime
 from calibration.analysis.models import HFDAutofocusStatus
 from calibration.analysis.vcurve import analyze_donut_samples, analyze_focus_samples
 from calibration.logging_context import init_calibration_log
