@@ -150,6 +150,11 @@ OPERATOR_AREAS: tuple[tuple[str, str], ...] = (
     ("stage", "Linear stage position, relative moves, and the named presets."),
     ("imager", "Exposures on the acquisition camera, and cooler control."),
     ("covers", "Mirror covers, open and close."),
+    (
+        "calibrator",
+        "Unit self-calibration: the whole run, or one phase on its own -- focus, optical "
+        "center, or stage geometry.",
+    ),
 )
 
 #: `openapi_tags` in display order. Only the operator tier is split by area, so
