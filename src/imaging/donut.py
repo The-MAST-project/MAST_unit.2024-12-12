@@ -170,7 +170,7 @@ def detect_donuts(
     data = _load(image)
     ny, nx = data.shape
     data_sub = _bg_subtract(data, box_size)
-    mask = data_sub > detect_threshold(data_sub, nsigma=nsigma)
+    mask = data_sub > detect_threshold(data_sub, n_sigma=nsigma)
     if open_iter > 0:
         mask = ndi.binary_opening(mask, iterations=int(open_iter))
 
