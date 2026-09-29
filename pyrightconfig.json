@@ -1,0 +1,26 @@
+{
+  // CLI pyright does NOT read python.analysis.* out of .vscode/settings.json --
+  // those are Pylance-only. This file is what makes `pyright` on the command line
+  // agree with the editor, so keep extraPaths below in step with that file.
+  "include": ["src", "tests"],
+
+  // Vendored third-party trees. `ignore`, NOT `exclude`: ignored files are still
+  // read so our imports of them resolve, they just stop reporting their own
+  // diagnostics. Standa/ximc alone emits ~145k errors, nearly all
+  // reportUndefinedVariable out of generated wildcard-import wrappers.
+  "ignore": ["src/Standa", "src/PlaneWave", "**/__pycache__"],
+
+  // "./src" is the real runtime sys.path root (app.py runs with cwd=src) and ".."
+  // is the flat-layout top, where common/ sits as a sibling clone -- the same two
+  // entries .vscode/settings.json explains at length.
+  "extraPaths": [
+    "./src",
+    "..",
+    "./src/Standa/ximc-2.13.6/ximc/crossplatform/wrappers/python"
+  ],
+
+  "venvPath": "..",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic"
+}
