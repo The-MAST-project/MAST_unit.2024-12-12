@@ -7,7 +7,7 @@ import socket
 import threading
 import time
 from collections.abc import Callable
-from enum import Enum
+from enum import Enum, IntFlag
 from itertools import chain
 from pathlib import Path
 from threading import Thread
@@ -314,7 +314,7 @@ class Unit(Component):
             comp.await_activity_clear(shutting_down, timeout=max(0.0, deadline - time.monotonic()))
 
         for comp in self.components:
-            activities = getattr(comp, "activities", None)
+            activities: IntFlag | None = getattr(comp, "activities", None)
             if activities is None:
                 continue
             stuck = [activity for activity in type(activities) if comp.is_active(activity)]
@@ -491,9 +491,13 @@ class Unit(Component):
             # `is_guiding` reaches PHD2 over the RPC and `is_autofocusing` reads the unit's
             # connection state, so these two are live reads like the seven below them, not
             # attribute lookups.
-            guiding=report("guider.is_guiding", lambda: self.guider.is_guiding, default=False) if self.guider else False,
+            guiding=report("guider.is_guiding", lambda: self.guider.is_guiding if self.guider else False, default=False),
             autofocusing=(
-                report("autofocuser.is_autofocusing", lambda: self.autofocuser.is_autofocusing, default=False)
+                report(
+                    "autofocuser.is_autofocusing",
+                    lambda: self.autofocuser.is_autofocusing if self.autofocuser else False,
+                    default=False,
+                )
                 if self.autofocuser
                 else False
             ),
