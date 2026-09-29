@@ -45,6 +45,11 @@ OUT_OF_SCOPE = {
     # Post-solve file cleanup. #102 gave this one a deliberate comment about the excepthook,
     # so its Thread is a considered choice rather than an oversight.
     ("solvers/mastrometry.py", "self._run_logged"),
+    # The calibrator's generic launcher. `run` is a closure that only wraps the call in
+    # try/except; the operation is `_start`'s `target` parameter, and all four call sites
+    # pass a do_-named method (do_calibrate, do_calibrate_{focuser,optical_center,stage}).
+    # The dispatch stays auditable -- the thread is named f"mast-{target.__name__}".
+    ("calibration/calibrator.py", "run"),
 }
 
 # Dispatch sites whose target is not `do_`-named, keyed to the issue that owns the rename.

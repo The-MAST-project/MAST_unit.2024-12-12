@@ -126,7 +126,7 @@ async def websocket_disconnect_handler(websocket: WebSocket, exc: WebSocketDisco
 
 # The unit attributes that carry a component router, in mounting order. A component is
 # None when it failed to build, and a unit still serves the ones it has.
-COMPONENT_ATTRIBUTES = ("mount", "covers", "focuser", "stage", "imager")
+COMPONENT_ATTRIBUTES = ("mount", "covers", "focuser", "stage", "imager", "calibrator")
 
 #: The operator areas in display order, each with its Swagger group description (#207). An area
 #: is the path segment `common.endpoints.area_of` derives, so naming one no route produces
@@ -150,6 +150,11 @@ OPERATOR_AREAS: tuple[tuple[str, str], ...] = (
     ("stage", "Linear stage position, relative moves, and the named presets."),
     ("imager", "Exposures on the acquisition camera, and cooler control."),
     ("covers", "Mirror covers, open and close."),
+    (
+        "calibrator",
+        "Unit self-calibration: the whole run, or one phase on its own -- focus, optical "
+        "center, or stage geometry.",
+    ),
 )
 
 #: `openapi_tags` in display order. Only the operator tier is split by area, so
