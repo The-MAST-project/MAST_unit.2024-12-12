@@ -540,7 +540,7 @@ class Calibrator:
         finally:
             unit.end_activity(UnitActivities.Calibrating)
 
-    def do_calibrate_focuser(self, force=False, ra=None, dec=None, _umbrella=False):
+    def do_calibrate_focuser(self, force=False, ra=None, dec=None, seed=None, _umbrella=False):
         """HFD autofocus; writes ``calibration.products.focuser``.
 
         Always runnable -- it requires no other calibration product.  Without an
@@ -550,6 +550,12 @@ class Calibrator:
 
         Does **not** touch ``focuser.known_as_good_position``: the ps3cli path
         owns that, and promoting a calibrated focus into it is a later decision.
+
+        ``seed`` forces the Phase-0 probe to a given focuser position instead of
+        the stored product.  It exists for the convergence campaign
+        (:mod:`calibration.campaign`): with a product stored every run would
+        otherwise begin at the same place, so a deliberate offset could not be
+        tested at all.  Left out, behaviour is unchanged.
         """
         op = "do_calibrate_focuser"
         unit = self._require_unit()
@@ -580,6 +586,7 @@ class Calibrator:
                 calibrator = FocuserCalibrator(unit)
                 status = calibrator.calibrate(
                     settings=st, ra_j2000_hours=ra, dec_j2000_degs=dec, folder=folder,
+                    seed=None if seed is None else int(seed),
                 )
                 self.latest["focuser"] = status
                 self.errors.extend(calibrator.errors)
