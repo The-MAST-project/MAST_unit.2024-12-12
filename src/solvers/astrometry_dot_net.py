@@ -78,8 +78,8 @@ class AstrometryDotNet(SolverInterface):
         if index_file is None:
             assert self.unit is not None, f"{function_name()}: self.unit is None"
             assert self.unit.acquirer is not None, f"{function_name()}: self.unit.acquirer is None"
-            assert self.unit.acquirer.latest_acquisition is not None, (
-                f"{function_name()}: self.unit.acquirer.latest_acquisition is None"
+            assert self.unit.required_acquirer.latest_acquisition is not None, (
+                f"{function_name()}: self.unit.required_acquirer.latest_acquisition is None"
             )
 
             if (
@@ -89,15 +89,15 @@ class AstrometryDotNet(SolverInterface):
                         for x in [
                             self.unit,
                             self.unit.acquirer,
-                            self.unit.acquirer.latest_acquisition,
-                            self.unit.acquirer.latest_acquisition.solver_data,
+                            self.unit.required_acquirer.latest_acquisition,
+                            self.unit.required_acquirer.latest_acquisition.solver_data,
                         ]
                     ]
                 )
-                and isinstance(self.unit.acquirer.latest_acquisition.solver_data, dict)
-                and "index_file" in self.unit.acquirer.latest_acquisition.solver_data
+                and isinstance(self.unit.required_acquirer.latest_acquisition.solver_data, dict)
+                and "index_file" in self.unit.required_acquirer.latest_acquisition.solver_data
             ):
-                index_file = self.unit.acquirer.latest_acquisition.solver_data["index_file"]
+                index_file = self.unit.required_acquirer.latest_acquisition.solver_data["index_file"]
 
         if index_file is not None and not (index_file.startswith("index-") and index_file.endswith(".fits")):
             logger.error(f"bad '{index_file=}', should start with 'index-' and end with '.fits'")
@@ -247,8 +247,8 @@ class AstrometryDotNet(SolverInterface):
                     ],
                     center=True,
                 )
-                if ret.solution.index_file and self.unit.acquirer.latest_acquisition is not None:
-                    self.unit.acquirer.latest_acquisition.solver_data = {"index_file": ret.solution.index_file}
+                if ret.solution.index_file and self.unit.required_acquirer.latest_acquisition is not None:
+                    self.unit.required_acquirer.latest_acquisition.solver_data = {"index_file": ret.solution.index_file}
 
                 # override solved RA/Dec from FITS header
                 header = astropy.io.fits.getheader(new_fits_path, 0)  # type: ignore

@@ -115,7 +115,7 @@ class Acquirer:
 
     def _await_stage(self) -> bool:
         """Wait out a stage move, returning False if cancelled while it runs."""
-        while self.unit.stage.is_moving:  # type: ignore[union-attr]
+        while self.unit.required_stage.is_moving:
             if self._cancelled():
                 return False
             time.sleep(0.2)
@@ -135,9 +135,9 @@ class Acquirer:
             self.unit.end_activity(UnitActivities.Positioning)
         try:
             if self.unit.mount is not None:
-                self.unit.mount.stop_tracking()
+                self.unit.required_mount.stop_tracking()
             if acquisition_exposure_series is not None and self.unit.imager is not None:
-                self.unit.imager.end_exposure_series(acquisition_exposure_series)
+                self.unit.required_imager.end_exposure_series(acquisition_exposure_series)
         except Exception:  # the unwind must finish even if part of it fails
             logger.exception(f"{op}: error while unwinding a cancelled acquisition")
 
@@ -185,7 +185,7 @@ class Acquirer:
         # - pass them on to solve_and_correct() as a Coord
         #
         if not hasattr(acquisition, "target_ra") or not hasattr(acquisition, "target_dec"):
-            st = self.unit.mount.status()
+            st = self.unit.required_mount.status()
             if st.ra_j2000_hours is None or st.dec_j2000_degs is None:
                 self.unit.errors.append("cannot get coordinates from mount (mount not connected)")
                 self.unit.end_activity(UnitActivities.Acquiring)
@@ -209,17 +209,17 @@ class Acquirer:
 
         self.unit.start_activity(UnitActivities.Acquiring)
 
-        if not self.unit.imager.connected:
-            self.unit.imager.connected = True
+        if not self.unit.required_imager.connected:
+            self.unit.required_imager.connected = True
 
         tries: int = acquisition_conf.tries
 
-        self.unit.mount.start_tracking()
+        self.unit.required_mount.start_tracking()
         self.unit.start_activity(UnitActivities.Positioning)
         if self.latest_acquisition.slew_to_target:
-            self.unit.mount.goto_ra_dec_j2000(target_ra_j2000_hours, target_dec_j2000_degs)
+            self.unit.required_mount.goto_ra_dec_j2000(target_ra_j2000_hours, target_dec_j2000_degs)
 
-        acquisition_exposure_series = self.unit.imager.start_exposure_series(purpose="acquisition")
+        acquisition_exposure_series = self.unit.required_imager.start_exposure_series(purpose="acquisition")
 
         if self.unit.fcu_version == FcuVersion.v1 and not acquisition.skip_sky:
             phase = "sky"
@@ -228,12 +228,12 @@ class Acquirer:
             #
             # move the stage and mount (if needed) into position
             #
-            self.unit.stage.move_to_preset(StagePresetPosition.Sky)
+            self.unit.required_stage.move_to_preset(StagePresetPosition.Sky)
 
             if not self._await_stage():
                 self._abandon(op)
                 return
-            self.unit.mount.wait_until_settled(SettleMode.SLEW)
+            self.unit.required_mount.wait_until_settled(SettleMode.SLEW)
 
             self.unit.end_activity(UnitActivities.Positioning)
 
@@ -281,7 +281,7 @@ class Acquirer:
                 dec=Angle(target_dec_j2000_degs * u.deg),  # type: ignore
             )
 
-            achieved_tolerances = self.unit.solver.solve_and_correct(
+            achieved_tolerances = self.unit.required_solver.solve_and_correct(
                 target=target,
                 approach_mode=acquisition.approach_mode,
                 solver_id=acquisition.solver_id,
@@ -297,8 +297,8 @@ class Acquirer:
 
             if not achieved_tolerances:
                 self.unit.end_activity(UnitActivities.Acquiring)
-                self.unit.mount.stop_tracking()
-                self.unit.imager.end_exposure_series(acquisition_exposure_series)
+                self.unit.required_mount.stop_tracking()
+                self.unit.required_imager.end_exposure_series(acquisition_exposure_series)
                 return
 
         phase = "spec"
@@ -306,9 +306,9 @@ class Acquirer:
 
         match self.unit.fcu_version:
             case FcuVersion.v1:
-                self.unit.stage.move_to_preset(StagePresetPosition.Spec)
+                self.unit.required_stage.move_to_preset(StagePresetPosition.Spec)
             case FcuVersion.v2:
-                self.unit.stage.move_to_preset(StagePresetPosition.Sky)
+                self.unit.required_stage.move_to_preset(StagePresetPosition.Sky)
 
         if not self._await_stage():
             self._abandon(op, acquisition_exposure_series)
@@ -317,7 +317,7 @@ class Acquirer:
         if not self._cancellable_sleep(5):
             self._abandon(op, acquisition_exposure_series)
             return
-        logger.info(f"stage now at {self.unit.stage.position}")
+        logger.info(f"stage now at {self.unit.required_stage.position}")
 
         if self.unit.is_active(UnitActivities.Positioning):
             self.unit.end_activity(UnitActivities.Positioning)
@@ -328,7 +328,7 @@ class Acquirer:
         dec_tolerance = Angle(phase_conf.tolerance.dec_arcsec * u.arcsecond)  # type: ignore
 
         # make default guiding settings
-        spec_imager_settings = self.unit.guider.make_guiding_settings(
+        spec_imager_settings = self.unit.required_guider.make_guiding_settings(
             base_folder=os.path.join(self.latest_acquisition.folder, phase)
         )
         # override with acquisition settings
@@ -349,8 +349,8 @@ class Acquirer:
             spec_imager_settings.roi = ImagerRoi(
                 x=0,
                 y=0,
-                # width=self.unit.imager.full_frame.width,
-                # height=self.unit.imager.full_frame.height,
+                # width=self.unit.required_imager.full_frame.width,
+                # height=self.unit.required_imager.full_frame.height,
                 width=ASI_294MM_WIDTH,
                 height=ASI_294MM_HEIGHT,
             )
@@ -367,7 +367,7 @@ class Acquirer:
             spec_imager_settings.use_set_limit_frame = False
             spec_imager_settings.binning = 1
 
-        achieved_tolerances = self.unit.solver.solve_and_correct(
+        achieved_tolerances = self.unit.required_solver.solve_and_correct(
             target=target,
             approach_mode=acquisition.approach_mode,
             solver_id=acquisition.solver_id,
@@ -382,31 +382,32 @@ class Acquirer:
         logger.info(f"{op}: phase '{phase.upper()}' {achieved_tolerances=}")
         if not achieved_tolerances:
             self.unit.end_activity(UnitActivities.Acquiring)
-            self.unit.mount.stop_tracking()
-            self.unit.imager.end_exposure_series(acquisition_exposure_series)
+            self.unit.required_mount.stop_tracking()
+            self.unit.required_imager.end_exposure_series(acquisition_exposure_series)
             return
 
-        if self.unit.imager.can_image_to_memory:
-            self.unit.reference_image = self.unit.imager.image_array
+        if self.unit.required_imager.can_image_to_memory:
+            self.unit.reference_image = self.unit.required_imager.image_array
 
-        self.unit.imager.end_exposure_series(acquisition_exposure_series)
+        self.unit.required_imager.end_exposure_series(acquisition_exposure_series)
 
         lines = ["acquisition completed", "telescope is tracking"]
+        # Bound once: this block asks for both six times over, and the message below does
+        # not fit a line otherwise.
+        imager, guider = self.unit.required_imager, self.unit.required_guider
         if (
-            (not isinstance(self.unit.imager._backend, PHD2Connector))
-            and isinstance(self.unit.guider._backend, PHD2Connector)
-            and self.unit.imager.connected
+            (not isinstance(imager._backend, PHD2Connector))
+            and isinstance(guider._backend, PHD2Connector)
+            and imager.connected
         ):
-            lines.append(
-                f"camera disconnected imager={type(self.unit.imager._backend)}, guider={type(self.unit.guider._backend)}"
-            )
-            self.unit.imager.disconnect()
+            lines.append(f"camera disconnected imager={type(imager._backend)}, guider={type(guider._backend)}")
+            imager.disconnect()
 
         # Move the stage to SPEC (FCU v2 was left at Sky by the solve; v1 is already there)
         # and wait for it to settle -- needed by BOTH the auto-handover and the manual
         # acquisition-tuning paths, so guiding always starts with the stage at SPEC.
         if self.unit.fcu_version == FcuVersion.v2:
-            self.unit.stage.move_to_preset(StagePresetPosition.Spec)
+            self.unit.required_stage.move_to_preset(StagePresetPosition.Spec)
             lines.append("moving stage to SPEC")
         if not self._await_stage():
             self._abandon(op)
@@ -419,14 +420,14 @@ class Acquirer:
         if self.latest_acquisition.handover_automatically_to_guider:
             lines.append("starting PHD2 guiding")
             boxed_log(logger, lines)
-            self.unit.guider.start_guiding()
+            self.unit.required_guider.start_guiding()
 
             while self.unit.is_active(UnitActivities.Guiding):
                 time.sleep(1)
 
             # Guiding was stopped
             self.unit.end_activity(UnitActivities.Acquiring)
-            self.unit.mount.stop_tracking()
+            self.unit.required_mount.stop_tracking()
         else:
             lines.append("acquisition tuning: guiding must be started manually via /start_guiding")
             boxed_log(logger, lines)
@@ -434,8 +435,8 @@ class Acquirer:
             # pointing with external tools, then starts guiding via the /start_guiding endpoint.
             self.unit.end_activity(UnitActivities.Acquiring)
 
-        if self.unit.acquirer.latest_acquisition is not None:
-            self.unit.acquirer.latest_acquisition.post_process()
+        if self.unit.required_acquirer.latest_acquisition is not None:
+            self.unit.required_acquirer.latest_acquisition.post_process()
 
     def start_acquisition_and_guiding_for_assignment(self, assignment: UnitAssignment):
         """Acquire and hand over to guiding for a controller-issued assignment.
@@ -699,9 +700,9 @@ class Acquirer:
                 errors=[f"cannot start acquisition, these components did not initialize: {', '.join(missing)}"]
             )
 
-        assert self.unit.mount.pw is not None, f"{op}: unit.mount.pw is None"
+        assert self.unit.required_mount.pw is not None, f"{op}: unit.required_mount.pw is None"
 
-        pw_status = self.unit.mount.pw.status()
+        pw_status = self.unit.required_mount.pw.status()
 
         ra_j2000_hours, dec_j2000_degs, problem = self._target_coordinates(
             op, ra_j2000_hours, dec_j2000_degs, object_name, resolve_timeout, pw_status

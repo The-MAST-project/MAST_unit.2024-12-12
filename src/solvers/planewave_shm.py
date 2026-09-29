@@ -52,7 +52,7 @@ class PlaneWaveShm(SolverInterface):
     def solve(self, unit: "Unit", imager_settings: ImagerSettings, target: Coord) -> SolvingResult:
         op = function_name()
 
-        assert unit.imager.can_image_to_memory, f"{op}: unit.imager cannot image to memory"
+        assert unit.required_imager.can_image_to_memory, f"{op}: unit.imager cannot image to memory"
         assert imager_settings.roi and imager_settings.roi.width is not None and imager_settings.roi.height is not None, (
             f"{op}: imager_settings.roi is not set or has unset width or height"
         )
@@ -60,18 +60,18 @@ class PlaneWaveShm(SolverInterface):
             f"{op}: imager_settings.binning is not set or has unset x binning"
         )
 
-        unit.imager.wait_for_image_ready()
+        unit.required_imager.wait_for_image_ready()
 
         width = imager_settings.roi.width
         height = imager_settings.roi.height
-        pixel_scale = unit.unit_conf.imager.pixel_scale_at_bin1 * imager_settings.binning.x
+        pixel_scale = unit.required_unit_conf.imager.pixel_scale_at_bin1 * imager_settings.binning.x
 
         shm = SharedMemory(name=Const.PLATE_SOLVING_SHM_NAME, create=True, size=width * height * 2)
         shared_image = np.ndarray((width, height), dtype=np.uint16, buffer=shm.buf)
 
-        assert unit.imager.image_array is not None, "{op}: unit.imager.image_array is None"
+        assert unit.required_imager.image_array is not None, "{op}: unit.required_imager.image_array is None"
 
-        shared_image[:] = unit.imager.image_array[:]
+        shared_image[:] = unit.required_imager.image_array[:]
         ps3_shm_client: PS3CLIClient = PS3CLIClient()
 
         ps3_shm_client.connect("127.0.0.1", 8998)
@@ -117,20 +117,22 @@ class PlaneWaveShm(SolverInterface):
             else:
                 time.sleep(0.1)
 
-        unit.imager.wait_for_image_saved()
+        unit.required_imager.wait_for_image_saved()
         time.sleep(2)
 
-        assert unit.imager.latest_settings is not None, f"{op}: unit.imager.latest_settings is None"
-        assert unit.imager.latest_settings.image_path is not None, f"{op}: unit.imager.latest_settings.image_path is None"
+        assert unit.required_imager.latest_settings is not None, f"{op}: unit.required_imager.latest_settings is None"
+        assert unit.required_imager.latest_settings.image_path is not None, (
+            f"{op}: unit.required_imager.latest_settings.image_path is None"
+        )
         assert ps3_solver_status and ps3_solver_status.solution is not None, (
             f"{op}: ps3_solver_status or ps3_solver_status.solution is None"
         )
 
         # Update FITS headers
-        with fits.open(unit.imager.latest_settings.image_path, mode="update") as hdul:  # type: ignore[misc]
+        with fits.open(unit.required_imager.latest_settings.image_path, mode="update") as hdul:  # type: ignore[misc]
             header = fits.Header()
 
-            roi = unit.imager.latest_settings.roi
+            roi = unit.required_imager.latest_settings.roi
             assert roi is not None, f"{op}: roi is None"
 
             header["CRPIX1"] = roi.x + (roi.width / 2)
@@ -143,10 +145,10 @@ class PlaneWaveShm(SolverInterface):
             header["CRVAL2"] = Angle(ps3_solver_status.solution.center_dec_j2000_rads, unit="radian").degs
             header.comments["CRVAL2"] = "solved dec of reference pixel"
 
-            binning = unit.imager.latest_settings.binning
+            binning = unit.required_imager.latest_settings.binning
             assert binning is not None, f"{op}: binning is None"
 
-            pixel_scale_at_binning1 = unit.unit_conf.imager.pixel_scale_at_bin1
+            pixel_scale_at_binning1 = unit.required_unit_conf.imager.pixel_scale_at_bin1
             header["CDELT1"] = pixel_scale_at_binning1 * binning.x
             header.comments["CDELT1"] = "ra pixel scale"
             header["CDELT2"] = pixel_scale_at_binning1 * binning.y

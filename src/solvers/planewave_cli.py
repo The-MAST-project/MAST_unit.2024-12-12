@@ -46,13 +46,13 @@ class PlaneWaveCli(SolverInterface):
         # ps3_solver_status: PlaneWaveCliSolverResult
         ret = SolvingResult(succeeded=True)
 
-        unit.imager.wait_for_image_saved()
+        unit.required_imager.wait_for_image_saved()
 
         assert imager_settings.binning and imager_settings.binning.x is not None, (
             f"{op}: imager_settings.binning is not set or has unset x binning"
         )
 
-        pixel_scale = unit.unit_conf.imager.pixel_scale_at_bin1 * imager_settings.binning.x
+        pixel_scale = unit.required_unit_conf.imager.pixel_scale_at_bin1 * imager_settings.binning.x
 
         cmd = "C:\\Program Files (x86)\\PlaneWave Instruments\\ps3cli\\ps3cli"
         assert imager_settings.image_path, f"{op}: settings.image_path is not set"
@@ -153,16 +153,17 @@ class PlaneWaveCli(SolverInterface):
         solution.matched_stars = solver_output["matched_stars"]
         ret.solution = solution
 
-        assert unit.imager.latest_settings is not None, f"{op}: unit.imager.latest_settings is None"
-        assert unit.imager.latest_settings.image_path is not None and unit.imager.latest_settings.roi is not None, (
-            f"{op}: unit.imager.latest_settings.image_path or roi is None"
-        )
+        assert unit.required_imager.latest_settings is not None, f"{op}: unit.required_imager.latest_settings is None"
+        assert (
+            unit.required_imager.latest_settings.image_path is not None
+            and unit.required_imager.latest_settings.roi is not None
+        ), f"{op}: unit.required_imager.latest_settings.image_path or roi is None"
 
         # Update FITS headers
-        with fits.open(unit.imager.latest_settings.image_path, mode="update") as hdul:  # type: ignore[misc]
+        with fits.open(unit.required_imager.latest_settings.image_path, mode="update") as hdul:  # type: ignore[misc]
             header = fits.Header()
 
-            roi = unit.imager.latest_settings.roi
+            roi = unit.required_imager.latest_settings.roi
             header["CRPIX1"] = roi.x + (roi.width / 2)
             header.comments["CRPIX1"] = "RA reference pixel"
             header["CRPIX2"] = roi.y + (roi.height / 2)
@@ -173,8 +174,8 @@ class PlaneWaveCli(SolverInterface):
             header["CRVAL2"] = solution.dec_degs
             header.comments["CRVAL2"] = "solved dec of reference pixel"
 
-            binning = unit.imager.latest_settings.binning
-            pixel_scale_at_binning1 = unit.unit_conf.imager.pixel_scale_at_bin1
+            binning = unit.required_imager.latest_settings.binning
+            pixel_scale_at_binning1 = unit.required_unit_conf.imager.pixel_scale_at_bin1
             if binning:
                 header["CDELT1"] = pixel_scale_at_binning1 * binning.x
                 header.comments["CDELT1"] = "ra pixel scale"
