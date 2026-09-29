@@ -215,7 +215,9 @@ class Autofocuser:
 
         logger.debug(f"{op}: Waiting for components (stage, mount, focuser) to stop moving ...")
         while (
-            self.unit.required_stage.is_moving or self.unit.required_mount.is_moving or self.unit.required_focuser.is_active(FocuserActivities.Moving)
+            self.unit.required_stage.is_moving
+            or self.unit.required_mount.is_moving
+            or self.unit.required_focuser.is_active(FocuserActivities.Moving)
         ):
             time.sleep(0.5)
         logger.debug(f"{op}: Components (stage, mount, focuser) stopped moving ...")
@@ -462,9 +464,7 @@ class Autofocuser:
         #
 
         self.unit.required_pw.request("/autofocus/start")
-        while (
-            not self.unit.required_pw.status().autofocus.is_running
-        ):  # wait for it to actually start
+        while not self.unit.required_pw.status().autofocus.is_running:  # wait for it to actually start
             logger.debug("waiting for PlaneWave autofocus to start")
             time.sleep(1)
         if self.unit.autofocus_try == 0:

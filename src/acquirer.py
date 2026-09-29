@@ -392,15 +392,16 @@ class Acquirer:
         self.unit.required_imager.end_exposure_series(acquisition_exposure_series)
 
         lines = ["acquisition completed", "telescope is tracking"]
+        # Bound once: this block asks for both six times over, and the message below does
+        # not fit a line otherwise.
+        imager, guider = self.unit.required_imager, self.unit.required_guider
         if (
-            (not isinstance(self.unit.required_imager._backend, PHD2Connector))
-            and isinstance(self.unit.required_guider._backend, PHD2Connector)
-            and self.unit.required_imager.connected
+            (not isinstance(imager._backend, PHD2Connector))
+            and isinstance(guider._backend, PHD2Connector)
+            and imager.connected
         ):
-            lines.append(
-                f"camera disconnected imager={type(self.unit.required_imager._backend)}, guider={type(self.unit.required_guider._backend)}"
-            )
-            self.unit.required_imager.disconnect()
+            lines.append(f"camera disconnected imager={type(imager._backend)}, guider={type(guider._backend)}")
+            imager.disconnect()
 
         # Move the stage to SPEC (FCU v2 was left at Sky by the solve; v1 is already there)
         # and wait for it to settle -- needed by BOTH the auto-handover and the manual

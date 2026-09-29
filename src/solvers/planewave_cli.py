@@ -154,9 +154,10 @@ class PlaneWaveCli(SolverInterface):
         ret.solution = solution
 
         assert unit.required_imager.latest_settings is not None, f"{op}: unit.required_imager.latest_settings is None"
-        assert unit.required_imager.latest_settings.image_path is not None and unit.required_imager.latest_settings.roi is not None, (
-            f"{op}: unit.required_imager.latest_settings.image_path or roi is None"
-        )
+        assert (
+            unit.required_imager.latest_settings.image_path is not None
+            and unit.required_imager.latest_settings.roi is not None
+        ), f"{op}: unit.required_imager.latest_settings.image_path or roi is None"
 
         # Update FITS headers
         with fits.open(unit.required_imager.latest_settings.image_path, mode="update") as hdul:  # type: ignore[misc]

@@ -121,7 +121,9 @@ class PlaneWaveShm(SolverInterface):
         time.sleep(2)
 
         assert unit.required_imager.latest_settings is not None, f"{op}: unit.required_imager.latest_settings is None"
-        assert unit.required_imager.latest_settings.image_path is not None, f"{op}: unit.required_imager.latest_settings.image_path is None"
+        assert unit.required_imager.latest_settings.image_path is not None, (
+            f"{op}: unit.required_imager.latest_settings.image_path is None"
+        )
         assert ps3_solver_status and ps3_solver_status.solution is not None, (
             f"{op}: ps3_solver_status or ps3_solver_status.solution is None"
         )
