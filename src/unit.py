@@ -11,7 +11,7 @@ from enum import Enum, IntFlag
 from itertools import chain
 from pathlib import Path
 from threading import Thread
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, TypeVar
 
 import numpy as np
 from fastapi import Query
@@ -45,7 +45,8 @@ from common.interfaces.imager import ImagerTypes
 from common.mast_logging import DailyFileHandler, get_logger
 from common.models.assignments import AssignmentNotification, UnitAssignment
 
-# from guiding import Guider
+if TYPE_CHECKING:  # `guiding` imports `unit` back, so this stays type-only
+    from guiding import Guider
 from common.models.statuses import FullUnitStatus, ImagerRoi, ImagerSettings, StatusType
 from common.notifications import Notifier
 from common.parsers import (
@@ -105,6 +106,13 @@ class GuideDirections(Enum):
     guide_south = 1
     guide_east = 2
     guide_west = 3
+
+
+class ComponentUnavailableError(Exception):
+    """An operation asked for a component that did not build."""
+
+
+_T = TypeVar("_T")
 
 
 class Unit(Component):
@@ -735,6 +743,76 @@ class Unit(Component):
         # that error is only one reason among them -- returning it alone hides the others.
         reasons = list(self._init_errors)
         return reasons + list(chain.from_iterable(c.why_not_operational for c in self._operational_components))
+
+    def _required(self, name: str, component: _T | None) -> _T:
+        """`component`, or raise saying which one is missing and why.
+
+        `_try_init` leaves a component that failed to build as None, deliberately: a unit
+        still serves the components it does have. But an operation that cannot proceed
+        without one used to dereference it anyway, and the first symptom was
+        `AttributeError: 'NoneType' object has no attribute ...` several frames from the
+        cause, with nothing naming the component.
+
+        Asking through here names it, and carries `why_not_operational` so the answer to
+        "why is it missing" arrives with the failure instead of having to be looked up.
+        The `required_*` properties below are the typed front doors; they exist per
+        component so a caller gets `Mount` rather than `Mount | None` and the type checker
+        can follow it.
+        """
+        if component is None:
+            why = "; ".join(self.why_not_operational) or "no reason recorded"
+            raise ComponentUnavailableError(f"{name} is unavailable ({why})")
+        return component
+
+    @property
+    def required_unit_conf(self) -> UnitConfig:
+        """This unit's configuration, or raise rather than return None.
+
+        `unit_conf` is None when `Config` is degraded -- Mongo unreachable and no usable
+        boot cache. An operation that needs configuration cannot proceed then, and saying
+        so names the cause; dereferencing None reports a missing attribute instead.
+        """
+        return self._required("unit_conf (configuration)", self.unit_conf)
+
+    @property
+    def required_mount(self) -> Mount:
+        return self._required("mount", self.mount)
+
+    @property
+    def required_imager(self) -> Imager:
+        return self._required("imager", self.imager)
+
+    @property
+    def required_focuser(self) -> Focuser:
+        return self._required("focuser", self.focuser)
+
+    @property
+    def required_stage(self) -> Stage:
+        return self._required("stage", self.stage)
+
+    @property
+    def required_covers(self) -> Covers:
+        return self._required("covers", self.covers)
+
+    @property
+    def required_pw(self) -> pwi4_client.PWI4:
+        return self._required("pw (PWI4 client)", self.pw)
+
+    @property
+    def required_guider(self) -> "Guider":
+        return self._required("guider", self.guider)
+
+    @property
+    def required_acquirer(self) -> Acquirer:
+        return self._required("acquirer", self.acquirer)
+
+    @property
+    def required_solver(self) -> Solver:
+        return self._required("solver", self.solver)
+
+    @property
+    def required_autofocuser(self) -> Autofocuser:
+        return self._required("autofocuser", self.autofocuser)
 
     @property
     def name(self) -> str:

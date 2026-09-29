@@ -121,6 +121,20 @@ class Stage:
 class Unit:
     """Enough of a Unit for `do_start_autofocus` to run end to end."""
 
+    def __getattr__(self, name: str):
+        """Resolve `required_<component>` to the component itself.
+
+        Production code reaches components through `Unit.required_*`, which raises
+        ComponentUnavailableError rather than returning None. A double's components are
+        built unconditionally and are never None, so the check has nothing to do here --
+        only the name has to resolve. Without this a double fails with a bare
+        `AttributeError: 'Unit' object has no attribute 'required_stage'`, which says
+        nothing about what is actually missing.
+        """
+        if name.startswith("required_"):
+            return getattr(self, name.removeprefix("required_"))
+        raise AttributeError(name)
+
     hostname = "mast-test"
     fcu_version = "v2"
     connected = True

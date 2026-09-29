@@ -73,7 +73,7 @@ class Acquisition:
             self.target_dec: float = target_dec
             self.slew_to_target = True
         else:
-            st = self.unit.mount.status()
+            st = self.unit.required_mount.status()
             if st.ra_j2000_hours is not None:
                 self.target_ra = st.ra_j2000_hours
             else:
