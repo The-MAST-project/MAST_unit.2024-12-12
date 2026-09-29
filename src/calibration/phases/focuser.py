@@ -95,6 +95,7 @@ class FocuserCalibrator:
         ra_j2000_hours: float | None = None,
         dec_j2000_degs: float | None = None,
         folder: str | None = None,
+        seed: int | None = None,
     ) -> HFDAutofocusStatus | None:
         """Run the full triage -> sweep -> fit -> persist loop.
 
@@ -151,7 +152,7 @@ class FocuserCalibrator:
             if not self._goto(ra_j2000_hours, dec_j2000_degs):
                 return self._abort(f"{op}: aborted during slew")
 
-            seed = self._seed_position(conf)
+            seed = self._seed_position(conf) if seed is None else self._clamp(seed, st)
             if seed is None:
                 return self._fail(f"{op}: no seed position -- no calibration product and "
                                   f"the focuser reports no position")
@@ -564,6 +565,11 @@ class FocuserCalibrator:
         wherever the focuser currently sits -- which is exactly the cold-start
         case Phase 0 exists to handle, and the one to exercise on sky by parking
         the focuser well out of focus on purpose.
+
+        An explicit ``seed=`` on :meth:`calibrate` overrides all of this, and is
+        what makes convergence testing possible: once a product is stored every
+        run would otherwise start from the SAME position, so an offset asked for
+        by a caller would be silently ignored.
         """
         cal = getattr(conf, "calibration", None)
         products = getattr(cal, "products", None) if cal else None
