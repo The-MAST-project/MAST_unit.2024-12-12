@@ -11,6 +11,7 @@ from common.endpoints import Completion, Tier, add_api_route, endpoint, register
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerTypes
 from common.mast_logging import get_logger
 from common.models.statuses import ImagerSettings, ImagerStatus
+from failure_streaks import FailureStreaks
 from imagers.usb_link import log_usb_link
 
 logger = get_logger(__name__)
@@ -118,6 +119,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         self.imager_params = params
         self.latest_settings: ImagerSettings | None = None
         self.current_exposure_series: ImagerExposureSeries | None = None
+        self._streaks = FailureStreaks()
         self._initialized = True
 
     def __repr__(self):
@@ -231,6 +233,20 @@ class Imager(ImagerInterface, SwitchedOutlet):
         Returns the imager's current status.
         :return: ImagerStatus object containing the status information
         """
+        if not self.connected:
+            if self._streaks.begins("connected"):
+                logger.error(f"imager: {self.name} is not connected; status reads no hardware until it is")
+            return ImagerStatus(
+                connected=False,
+                powered=self.is_on(),
+                latest_settings=self.latest_settings,
+                activities=self.activities,
+                activities_verbal=self.activities_verbal,
+                backend=self._backend.status(),
+            )
+        if self._streaks.ends("connected"):
+            logger.info(f"imager: {self.name} is connected again")
+
         return ImagerStatus(
             # detected=self.detected,
             connected=self.connected,

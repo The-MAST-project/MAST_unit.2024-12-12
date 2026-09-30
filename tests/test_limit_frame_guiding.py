@@ -32,6 +32,7 @@ except (ImportError, NameError) as ex:  # NameError: stage.py off-Windows
 
 from common.config.phd2 import LimitFrameConfig, LimitFrameMode, PHD2Config
 from common.models.statuses import ImagerRoi, ImagerSettings
+from failure_streaks import FailureStreaks
 
 # The derived ROI is conditioned by ImagerRoi.model_post_init (mod-8 width /
 # mod-2 height at all supported binnings, center-preserving shrink), so its
@@ -63,6 +64,7 @@ def make_connector(limit_frame: LimitFrameConfig | None = None) -> PHD2Connector
     p.settle_px = 0
     p.lock = threading.Lock()
     p.errors = []
+    p._read_failures = FailureStreaks()
     p.app_state = ""
     p.image_saved_event = threading.Event()
     p.call = MagicMock(name="call", return_value={})

@@ -29,6 +29,7 @@ import logging
 
 import pytest
 
+from failure_streaks import FailureStreaks
 from phd2.phd2 import PHD2Connector
 
 SET_POINT = 5.0
@@ -38,6 +39,7 @@ def make_connector(reply: dict | None) -> PHD2Connector:
     """A PHD2Connector with nothing built but the one call the property makes."""
     p = object.__new__(PHD2Connector)
     p.call = lambda method, *a, **k: reply  # type: ignore[method-assign]
+    p._read_failures = FailureStreaks()
     return p
 
 

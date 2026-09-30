@@ -2,6 +2,35 @@
 
 ---
 
+## [2026-09-30] A polled read that fails is logged once per outage, not once per poll
+
+**Why:** nothing in the unit polls status on its own, but the GUI does, on a timer, through
+the controller. On mast01 on 2026-09-22 the PHD2 connector was down, and every poll logged
+four full tracebacks, one per hardware read in `Imager.status()` (#260). A condition that lasts
+the whole outage was reported as a fresh crash every few seconds, and it buried the acquisition
+and guiding lines the night depended on.
+
+**What:** a read that fails is logged at ERROR the first time, and at INFO the first time it
+succeeds again. The failures in between are not logged. `FailureStreaks` (`src/failure_streaks.py`)
+does the bookkeeping per key, and the caller does the logging. There are two users:
+
+- `Imager.status()` does not read hardware while its backend is disconnected. It reports the
+  local fields and leaves the hardware fields `None`. The disconnection and the reconnection
+  each get one line.
+- The PHD2 status reads go through `_read(method)`, keyed by RPC method, so the three
+  `get_cooler_status` readers share one streak. This covers PHD2 up with its camera unpowered,
+  where the connector stays connected and every RPC answers with an error.
+
+**Implications:**
+
+- A failure logs no traceback. These are expected conditions, and the exception text is on the
+  one line that is logged.
+- `errors` gains one entry per outage, not one per poll.
+- The value still reads as `None` on every failed poll, so status stays truthful between log
+  lines.
+
+---
+
 ## [2026-09-27] The guide camera's USB link is checked once a session and logged, never enforced
 
 **Why:** on mast01 and mast04 the guide camera sits behind two cascaded USB 2.0 hubs and reads a
