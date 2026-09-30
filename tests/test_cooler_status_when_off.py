@@ -15,7 +15,7 @@ Measured on mast01 over 2026-09-14/15: **75 tracebacks**, in the two windows the
 off (53 between 21:20:49Z and 21:42:07Z, 22 more between 00:33 and 00:34Z after a service
 restart), each ending the moment the cooler came on. Through both, `/imager/status` recorded
 `cooler_on` and `cooler_power` as null while the sensor climbed 16.5 -> 19.0 degC -- and the
-off-setpoint alarm reported correctly only because `self._setpoint` still held 5.0 from an
+off-setpoint alarm reported correctly only because a cached set point still held 5.0 from an
 earlier successful read. On a unit whose cooler had never been on it would have been `None`,
 and the alarm would have been silent through the episode it exists for.
 
@@ -37,7 +37,6 @@ SET_POINT = 5.0
 def make_connector(reply: dict | None) -> PHD2Connector:
     """A PHD2Connector with nothing built but the one call the property makes."""
     p = object.__new__(PHD2Connector)
-    p._setpoint = None
     p.call = lambda method, *a, **k: reply  # type: ignore[method-assign]
     return p
 
@@ -72,25 +71,36 @@ class TestTheCoolerCanBeReadWhileOff:
         assert connector.cooler_on is True
 
 
-class TestTheSetPointCacheIsOnlyFilledFromAReplyThatCarriesOne:
-    def test_a_reply_carrying_a_setpoint_fills_the_cache(self):
+class TestTheSetPointIsRead:
+    """`set_point` asks PHD2 on every read; an off cooler has no set point to report."""
+
+    def test_it_reads_the_set_point_while_the_cooler_is_on(self):
+        assert make_connector(cooler_on_reply()).set_point == SET_POINT
+
+    def test_a_cooler_that_is_off_reports_none(self):
+        assert make_connector(cooler_off_reply()).set_point is None
+
+    def test_a_set_point_does_not_survive_the_cooler_going_off(self, monkeypatch):
         connector = make_connector(cooler_on_reply())
-
-        _ = connector.cooler_on
-
         assert connector.set_point == SET_POINT
 
-    def test_a_reply_without_one_leaves_the_cache_alone(self):
-        """Pinned as the CURRENT behaviour, not as the wanted one: a set point held over from
-        when the cooler was last on is exactly the staleness #109 exists to remove. Asserted
-        here so that change is made deliberately rather than as a side effect of this fix."""
+        monkeypatch.setattr(connector, "call", lambda method, *a, **k: cooler_off_reply())
+
+        assert connector.set_point is None
+
+    def test_every_read_asks_phd2_again(self, monkeypatch):
+        calls: list[str] = []
+
+        def counting(method, *a, **k):
+            calls.append(method)
+            return cooler_on_reply()
+
         connector = make_connector(cooler_on_reply())
-        _ = connector.cooler_on
-        connector.call = lambda method, *a, **k: cooler_off_reply()  # type: ignore[method-assign]
+        monkeypatch.setattr(connector, "call", counting)
+        _ = connector.set_point
+        _ = connector.set_point
 
-        _ = connector.cooler_on
-
-        assert connector.set_point == SET_POINT
+        assert calls.count("get_cooler_status") == 2
 
 
 class TestAnUnreadableCoolerIsStillNone:

@@ -357,7 +357,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.dec_accumulator = PHD2Accumulator()
         self.stats = PHD2GuideStats()
         self.settle = None
-        self._setpoint: float | None = None
 
         assert self.parent is not None and self.parent.unit is not None, (
             "PHD2Connector: no parent imager, so no way to reach the unit configuration"
@@ -1729,20 +1728,26 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             return None
 
     @property
-    def set_point(self):
-        return self._setpoint
+    def set_point(self) -> float | None:
+        """The cooler set point PHD2 reports now, or None when the cooler is off.
+
+        PHD2 sends `setpoint` only while the cooler is on (`event_server.cpp`,
+        `get_cooler_status`), so an off cooler has no set point. Read on every call: a
+        remembered value outlives the cooler going off.
+        """
+        try:
+            reply = self.call("get_cooler_status")
+        except Exception:
+            logger.exception(f"{function_name()}: could not get the cooler set point")
+            return None
+        result = (reply or {}).get("result") or {}
+        return result.get("setpoint")
 
     @property
     def cooler_on(self) -> bool | None:
         try:
             reply = self.call("get_cooler_status")
             if reply and "result" in reply and "coolerOn" in reply["result"]:
-                # PHD2 sends `setpoint` and `power` only inside `if (on)`
-                # (`event_server.cpp`, `get_cooler_status`), so this reply carries neither
-                # whenever the cooler is off -- which is exactly when the guard above passes.
-                # Guarded like the sibling `cooler_power` below rather than assumed.
-                if "setpoint" in reply["result"]:
-                    self._setpoint = reply["result"]["setpoint"]
                 return reply["result"]["coolerOn"]
         except Exception:
             logger.exception(f"{function_name()}: could not get coolerOn")
