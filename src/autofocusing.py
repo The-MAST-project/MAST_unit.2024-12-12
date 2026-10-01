@@ -263,159 +263,168 @@ class Autofocuser:
                 return
 
             autofocus_folder = PathMaker().make_autofocus_folder()
-            logger.info(f"{op}: starting autofocus try #{try_number} (of {max_tries}) in '{autofocus_folder}' ...")
-            #
-            # Acquire images
-            #
-            files: list[str] = []
-            stopped: bool = False
-            # Opened and closed per try. Opened once for the whole run, the close at the end
-            # of try 0 left every later try exposing against a series that had already been
-            # ended, and re-ran the backend's end hook once per try. Inert today only because
-            # `Imager.start_exposure_series` never calls the backend's *start* hook, so every
-            # backend's end hook is a no-op (see #240); the phd2 one is written to resume
-            # guiding there, and wiring the start hook up is what makes this bite.
-            autofocus_exposure_series = self.unit.required_imager.start_exposure_series(purpose="autofocus")
+            plotter_moves_folder = False
             try:
-                for image_no in range(number_of_images):
-                    autofocus_settings = ImagerSettings(
-                        seconds=exposure,
-                        binning=_binning,
-                        roi=ImagerRoi.from_other(roi=unit_roi),
-                        gain=acquisition_conf.gain,
-                        image_path=os.path.join(autofocus_folder, f"FOCUS{int(focuser_position):05}.fits"),
-                        save=True,
-                    )
+                logger.info(f"{op}: starting autofocus try #{try_number} (of {max_tries}) in '{autofocus_folder}' ...")
+                #
+                # Acquire images
+                #
+                files: list[str] = []
+                stopped: bool = False
+                # Opened and closed per try. Opened once for the whole run, the close at the end
+                # of try 0 left every later try exposing against a series that had already been
+                # ended, and re-ran the backend's end hook once per try. Inert today only because
+                # `Imager.start_exposure_series` never calls the backend's *start* hook, so every
+                # backend's end hook is a no-op (see #240); the phd2 one is written to resume
+                # guiding there, and wiring the start hook up is what makes this bite.
+                autofocus_exposure_series = self.unit.required_imager.start_exposure_series(purpose="autofocus")
+                try:
+                    for image_no in range(number_of_images):
+                        autofocus_settings = ImagerSettings(
+                            seconds=exposure,
+                            binning=_binning,
+                            roi=ImagerRoi.from_other(roi=unit_roi),
+                            gain=acquisition_conf.gain,
+                            image_path=os.path.join(autofocus_folder, f"FOCUS{int(focuser_position):05}.fits"),
+                            save=True,
+                        )
 
-                    logger.info(
-                        f"{op}: starting exposure #{image_no} of {number_of_images} "
-                        f"at {focuser_position=} {autofocus_settings.roi=}..."
-                    )
-                    self.unit.required_imager.start_exposure(autofocus_settings)
-                    logger.info(f"{op}: waiting for exposure #{image_no} of {number_of_images} ...")
-                    self.unit.required_imager.wait_for_image_saved()
-                    assert autofocus_settings.image_path
-                    files.append(autofocus_settings.image_path)
+                        logger.info(
+                            f"{op}: starting exposure #{image_no} of {number_of_images} "
+                            f"at {focuser_position=} {autofocus_settings.roi=}..."
+                        )
+                        self.unit.required_imager.start_exposure(autofocus_settings)
+                        logger.info(f"{op}: waiting for exposure #{image_no} of {number_of_images} ...")
+                        self.unit.required_imager.wait_for_image_saved()
+                        assert autofocus_settings.image_path
+                        files.append(autofocus_settings.image_path)
 
-                    if not self.unit.is_active(UnitActivities.Autofocusing):  # have we been stopped?
-                        logger.info(f"{op}: activity 'Autofocusing' was stopped")
-                        stopped = True
-                        break
+                        if not self.unit.is_active(UnitActivities.Autofocusing):  # have we been stopped?
+                            logger.info(f"{op}: activity 'Autofocusing' was stopped")
+                            stopped = True
+                            break
 
-                    focuser_position += ticks_per_step
-                    logger.info(f"{op}: moving focuser by {ticks_per_step} ticks (to {focuser_position}) ...")
-                    self.unit.required_focuser.position = focuser_position
+                        focuser_position += ticks_per_step
+                        logger.info(f"{op}: moving focuser by {ticks_per_step} ticks (to {focuser_position}) ...")
+                        self.unit.required_focuser.position = focuser_position
+                        while self.unit.required_focuser.is_active(FocuserActivities.Moving):
+                            time.sleep(0.5)
+                        logger.info(f"{op}: focuser stopped moving")
+
+                        if not self.unit.is_active(UnitActivities.Autofocusing):  # have we been stopped?
+                            logger.info(f"{op}: activity 'Autofocusing' was stopped")
+                            stopped = True
+                            break
+                finally:
+                    # In a `finally` so a stop, or anything raised by the sweep, cannot leave the
+                    # series open for the next consumer of the imager to collide with.
+                    self.unit.required_imager.end_exposure_series(autofocus_exposure_series)
+
+                if stopped:
+                    return
+
+                # The files are now in the autofocus_folder
+
+                self.unit.start_activity(UnitActivities.AutofocusAnalysis)
+                try:
+                    status = analyze_focus_files(files, timeout=60)
+                except FocusAnalysisError as ex:
+                    self.log_and_store_error(f"{op}: {ex}")
+                    self.unit.end_activity(UnitActivities.AutofocusAnalysis)
+                    if ex.phase == "start":
+                        self.unit.end_activity(UnitActivities.Autofocusing)
+                        return
+                    continue  # next try_number
+
+                self.unit.end_activity(UnitActivities.AutofocusAnalysis)
+
+                if not status or not status.analysis_result:
+                    self.log_and_store_error(f"{op}: focus analyser stopped working but empty analysis_result")
+                    with MoveGuardian().protect(autofocus_folder):
+                        self.save_analysis(
+                            autofocus_folder,
+                            status=status,
+                            errors=["focus analyser stopped working but empty analysis_result"],
+                        )
+                    continue  # next try_number
+
+                if not status.analysis_result.has_solution:
+                    self.log_and_store_error(f"{op}: focus analyser did not find a solution")
+                    with MoveGuardian().protect(autofocus_folder):
+                        self.save_analysis(
+                            autofocus_folder, status=status, errors=["focus analyser did not find a solution"]
+                        )
+                    continue  # next try_number
+
+                #
+                # We have an analysis solution
+                #
+                self.latest_result = status.analysis_result
+
+                logger.info(
+                    f"{op}: analysis result: "
+                    + f"{self.latest_result.best_focus_position=}, {self.latest_result.best_focus_star_diameter=}, "
+                    + f"{self.latest_result.tolerance=}"
+                )
+
+                error = None
+                if self.latest_result.tolerance is None:
+                    error = "tolerance is None"
+                elif math.isnan(self.latest_result.tolerance):
+                    error = "tolerance is NaN"
+                elif self.latest_result.tolerance > max_tolerance:
+                    error = f"tolerance {self.latest_result.tolerance} is higher than {max_tolerance=}"
+                if error:
+                    self.log_and_store_error(f"{op}: {error=}, ignoring analysis result")
+
+                    self.save_analysis(autofocus_folder, status=status, errors=[error])
+                    continue  # next try_number
+
+                if self.latest_result.best_focus_position is not None:
+                    self.save_analysis(autofocus_folder, status=status)
+
+                    position: int = int(self.latest_result.best_focus_position)
+                    logger.info(f"{op}: moving focuser to best focus position {position} ...")
+                    self.unit.required_focuser.position = position
+
+                    logger.info(f"{op}: waiting for focuser to stop moving ...")
                     while self.unit.required_focuser.is_active(FocuserActivities.Moving):
                         time.sleep(0.5)
                     logger.info(f"{op}: focuser stopped moving")
 
-                    if not self.unit.is_active(UnitActivities.Autofocusing):  # have we been stopped?
-                        logger.info(f"{op}: activity 'Autofocusing' was stopped")
-                        stopped = True
-                        break
+                    # `position` bound as a default: this sits inside the retry loop, and
+                    # although update_unit calls the mutator synchronously, a closure over a
+                    # loop variable is the kind of thing that stops being true later.
+                    def _save_known_as_good_position(conf, position: int = position) -> None:
+                        conf.focuser.known_as_good_position = position
+
+                    try:
+                        Config().update_unit(_save_known_as_good_position, unit_name=self.unit.hostname)
+                        logger.info(
+                            f"saved unit '{self.unit.hostname}' configuration for "
+                            + f"focuser known-as-good-position {position}"
+                        )
+                    except Exception as e:  # noqa: BLE001 -- config write failure is reported to the caller, never fatal to an autofocus run
+                        self.log_and_store_error(
+                            f"could not save unit '{self.unit.hostname}' "
+                            + f"configuration for focuser known-as-good-position (exception: {e})"
+                        )
+
+                pixel_scale: float = self.unit.unit_conf.imager.pixel_scale_at_bin1
+                Thread(
+                    name="autofocus-analysis-plotter",
+                    target=plot_autofocus_analysis,
+                    args=[self.latest_result, autofocus_folder, pixel_scale],
+                ).start()
+                plotter_moves_folder = True
+
+                solved = True
+                break  # the tries loop
             finally:
-                # In a `finally` so a stop, or anything raised by the sweep, cannot leave the
-                # series open for the next consumer of the imager to collide with.
-                self.unit.required_imager.end_exposure_series(autofocus_exposure_series)
-
-            if stopped:
-                return
-
-            # The files are now in the autofocus_folder
-
-            self.unit.start_activity(UnitActivities.AutofocusAnalysis)
-            try:
-                status = analyze_focus_files(files, timeout=60)
-            except FocusAnalysisError as ex:
-                self.log_and_store_error(f"{op}: {ex}")
-                filer.move_ram_to_shared(autofocus_folder)
-                self.unit.end_activity(UnitActivities.AutofocusAnalysis)
-                if ex.phase == "start":
-                    self.unit.end_activity(UnitActivities.Autofocusing)
-                    return
-                continue  # next try_number
-
-            self.unit.end_activity(UnitActivities.AutofocusAnalysis)
-
-            if not status or not status.analysis_result:
-                self.log_and_store_error(f"{op}: focus analyser stopped working but empty analysis_result")
-                with MoveGuardian().protect(autofocus_folder):
-                    self.save_analysis(
-                        autofocus_folder, status=status, errors=["focus analyser stopped working but empty analysis_result"]
-                    )
+                # D: is a RAM disk: a folder never moved is lost on reboot (#272). A solve's is
+                # moved by the plotter instead, once vcurve.png is written.
+                if not plotter_moves_folder:
                     filer.move_ram_to_shared(autofocus_folder)
-                continue  # next try_number
-
-            if not status.analysis_result.has_solution:
-                self.log_and_store_error(f"{op}: focus analyser did not find a solution")
-                with MoveGuardian().protect(autofocus_folder):
-                    self.save_analysis(autofocus_folder, status=status, errors=["focus analyser did not find a solution"])
-                    filer.move_ram_to_shared(autofocus_folder)
-                continue  # next try_number
-
-            #
-            # We have an analysis solution
-            #
-            self.latest_result = status.analysis_result
-
-            logger.info(
-                f"{op}: analysis result: "
-                + f"{self.latest_result.best_focus_position=}, {self.latest_result.best_focus_star_diameter=}, "
-                + f"{self.latest_result.tolerance=}"
-            )
-
-            error = None
-            if self.latest_result.tolerance is None:
-                error = "tolerance is None"
-            elif math.isnan(self.latest_result.tolerance):
-                error = "tolerance is NaN"
-            elif self.latest_result.tolerance > max_tolerance:
-                error = f"tolerance {self.latest_result.tolerance} is higher than {max_tolerance=}"
-            if error:
-                self.log_and_store_error(f"{op}: {error=}, ignoring analysis result")
-
-                self.save_analysis(autofocus_folder, status=status, errors=[error])
-                continue  # next try_number
-
-            if self.latest_result.best_focus_position is not None:
-                self.save_analysis(autofocus_folder, status=status)
-
-                position: int = int(self.latest_result.best_focus_position)
-                logger.info(f"{op}: moving focuser to best focus position {position} ...")
-                self.unit.required_focuser.position = position
-
-                logger.info(f"{op}: waiting for focuser to stop moving ...")
-                while self.unit.required_focuser.is_active(FocuserActivities.Moving):
-                    time.sleep(0.5)
-                logger.info(f"{op}: focuser stopped moving")
-
-                # `position` bound as a default: this sits inside the retry loop, and
-                # although update_unit calls the mutator synchronously, a closure over a
-                # loop variable is the kind of thing that stops being true later.
-                def _save_known_as_good_position(conf, position: int = position) -> None:
-                    conf.focuser.known_as_good_position = position
-
-                try:
-                    Config().update_unit(_save_known_as_good_position, unit_name=self.unit.hostname)
-                    logger.info(
-                        f"saved unit '{self.unit.hostname}' configuration for "
-                        + f"focuser known-as-good-position {position}"
-                    )
-                except Exception as e:  # noqa: BLE001 -- config write failure is reported to the caller, never fatal to an autofocus run
-                    self.log_and_store_error(
-                        f"could not save unit '{self.unit.hostname}' "
-                        + f"configuration for focuser known-as-good-position (exception: {e})"
-                    )
-
-            pixel_scale: float = self.unit.unit_conf.imager.pixel_scale_at_bin1
-            Thread(
-                name="autofocus-analysis-plotter",
-                target=plot_autofocus_analysis,
-                args=[self.latest_result, autofocus_folder, pixel_scale],
-            ).start()
-
-            solved = True
-            break  # the tries loop
 
         # `try_number == max_tries - 1` was also true of a run that SOLVED on its last try,
         # and with max_tries=1 of every run that solved at all.
