@@ -80,12 +80,31 @@ class StabilityCampaignError(Exception):
 #: mesh definitions is the same failure that MIN_CONFIDENCE and max_best_hfd_px
 #: already produced twice in this repo -- a number calibrated on one population and
 #: applied to another, with nothing in the tests to catch it.
-MESH_VERSION = "v1"
+#: Bumped v1 -> v2 on 2026-10-01 when the altitude floor rose from 15 to 35. The bump is
+#: not bookkeeping: a descriptor stamped "v1-pilot" was already written to the share by
+#: that night's first start attempt, and `load_or_create_descriptor` adopts any descriptor
+#: whose version MATCHES. Leaving the string at v1 would have let the new 10-cell mesh
+#: silently adopt the old one's epoch and pool two different cell sets -- the precise
+#: failure the version check exists to catch.
+MESH_VERSION = "v2"
 
-#: alt 15 is the mount floor (Mount.MIN_ALTITUDE_DEGREES) and where the wind effect
-#: should be largest; alt 65 is the control, and without the contrast there is no way
-#: to show the effect is real.
-MESH_ALTITUDES_DEGS: tuple[float, ...] = (15.0, 30.0, 45.0, 65.0)
+#: alt 35 is the campaign floor and where the wind effect should be largest of the rows
+#: flown; alt 65 is the control, and without the contrast there is no way to show the
+#: effect is real.
+#:
+#: The floor was 15 (Mount.MIN_ALTITUDE_DEGREES) through the first start attempt on
+#: 2026-10-01 and was raised to 35 before any cell completed, so nothing was pooled under
+#: the old definition. Two consequences, both deliberate:
+#:
+#: - **Less wind contrast.** Exposure grows as the tube comes down, so 35-vs-65 is a
+#:   weaker lever than 15-vs-65 was. If the difference fails to show, a null result now
+#:   means "not detectable above 35 degrees", NOT "no effect" -- the 15 and 30 rows are no
+#:   longer there to say otherwise.
+#: - **The near-pole row is gone, for free.** Due north, dec = 90 - |alt - lat|, so at this
+#:   site (lat 30.053) the old alt 30 row sat 0.05 degrees off the celestial pole. Raising
+#:   the floor removes it outright, which is why MESH_AZIMUTH_OFFSET_DEGS below is now
+#:   belt-and-braces rather than the only thing keeping that row guidable.
+MESH_ALTITUDES_DEGS: tuple[float, ...] = (35.0, 45.0, 65.0)
 MESH_AZIMUTH_STEP_DEGS: float = 36.0  # 10 azimuths
 
 #: Half a step, so that NO cell points due north.
@@ -110,11 +129,13 @@ MESH_AZIMUTH_OFFSET_DEGS: float = 18.0
 #: dataset instead of being discarded. The design's original pilot (alt 20/40/65, az
 #: every 45 degrees) shared exactly one altitude and two azimuths with the full mesh,
 #: which would have thrown away all three pilot nights.
-PILOT_ALTITUDES_DEGS: tuple[float, ...] = (15.0, 65.0)
+PILOT_ALTITUDES_DEGS: tuple[float, ...] = (35.0, 65.0)
 PILOT_AZIMUTH_STEP_DEGS: float = 72.0  # 5 azimuths -> 10 cells
 
-#: Coprime with both mesh sizes (40 and 10), so the rotation visits every cell before
-#: repeating and each cell lands on a different hour on successive passes.
+#: Coprime with both mesh sizes (30 and 10), so the rotation visits every cell before
+#: repeating and each cell lands on a different hour on successive passes. `Mesh.build`
+#: asserts this, so a future altitude or azimuth change that breaks coprimality fails
+#: loudly at import rather than quietly revisiting a subset of the mesh all night.
 TRAVERSAL_STRIDE = 7
 
 # ------------------------------------------------------------------------- timing --
