@@ -26,6 +26,7 @@ from common.mast_logging import get_logger
 from common.models.statuses import ImagerRoi, ImagerSettings, PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_debug, function_name
+from failure_streaks import FailureStreaks
 from phd2.phd2_locate import locate_phd2_exe
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 
@@ -363,6 +364,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         )
 
         self.errors = []
+        self._read_failures = FailureStreaks()
 
         self.image_was_saved: bool = False
         self.image_saved_event: threading.Event = threading.Event()
@@ -1717,15 +1719,25 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         except Exception as e:  # noqa: BLE001 -- tidying up must not fail the exposure
             logger.error(f"{function_name()}: could not reset the limit frame ({e})")
 
+    def _read(self, method: str) -> dict:
+        """The `result` of a status read, or `{}` when it fails.
+
+        Status is polled, so a read that fails keeps failing on every poll for as long as
+        PHD2 or its camera is down. Its failure is logged once, and its recovery once (#260).
+        """
+        try:
+            reply = self.call(method)
+        except Exception as ex:  # noqa: BLE001 -- a failed read reports as None, logged once
+            if self._read_failures.begins(method):
+                self.log_and_append_error(f"{method} failed, not logged again until it succeeds: {ex}")
+            return {}
+        if self._read_failures.ends(method):
+            logger.info(f"{method} succeeds again")
+        return (reply or {}).get("result") or {}
+
     @property
     def temperature(self) -> float | None:
-        try:
-            reply = self.call("get_ccd_temperature")
-            if reply and "result" in reply and "temperature" in reply["result"]:
-                return reply["result"]["temperature"]
-        except Exception:
-            logger.exception(f"{function_name()}: could not get temperature")
-            return None
+        return self._read("get_ccd_temperature").get("temperature")
 
     @property
     def set_point(self) -> float | None:
@@ -1735,23 +1747,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         `get_cooler_status`), so an off cooler has no set point. Read on every call: a
         remembered value outlives the cooler going off.
         """
-        try:
-            reply = self.call("get_cooler_status")
-        except Exception:
-            logger.exception(f"{function_name()}: could not get the cooler set point")
-            return None
-        result = (reply or {}).get("result") or {}
-        return result.get("setpoint")
+        return self._read("get_cooler_status").get("setpoint")
 
     @property
     def cooler_on(self) -> bool | None:
-        try:
-            reply = self.call("get_cooler_status")
-            if reply and "result" in reply and "coolerOn" in reply["result"]:
-                return reply["result"]["coolerOn"]
-        except Exception:
-            logger.exception(f"{function_name()}: could not get coolerOn")
-            return None
+        return self._read("get_cooler_status").get("coolerOn")
 
     @cooler_on.setter
     def cooler_on(self, onoff: bool):
@@ -1764,13 +1764,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
     @property
     def cooler_power(self) -> float | None:
-        try:
-            reply = self.call("get_cooler_status")
-            if "result" in reply and "power" in reply["result"]:
-                return reply["result"]["power"]
-        except Exception:
-            logger.exception(f"{function_name()}: could not get power")
-            return None
+        return self._read("get_cooler_status").get("power")
 
     @property
     def name(self) -> str:
