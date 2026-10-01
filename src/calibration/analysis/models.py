@@ -74,3 +74,14 @@ class HFDAutofocusStatus(ExtendedBaseModel):
     message: str | None = None
     errors: list[str] | None = None
     analysis_result: HFDAutofocusResult | None = None
+
+    #: How the run reached its answer, rather than what the answer was.
+    #:
+    #: Both were attributes on FocuserCalibrator and reached nothing outside the
+    #: process, so a caller could see THAT a run converged and never how. For a
+    #: run started far from focus that is most of the information: whether it took
+    #: one sweep or exhausted max_tries, and whether Phase 0 sent it straight to
+    #: the V-curve or through donut acquisition first. The convergence campaign
+    #: asks exactly those two questions at large offsets.
+    regime: str | None = None  # Phase-0 triage: "near" | "far" | "empty"
+    tries_used: int | None = None  # re-centred sweeps actually spent

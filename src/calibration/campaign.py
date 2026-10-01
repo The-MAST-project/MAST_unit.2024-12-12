@@ -48,13 +48,13 @@ import argparse
 import json
 import logging
 import os
-import sys
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 from common.config import Config
+from common.const import Const
 from common.filer import Filer
 from common.mast_logging import get_logger
 
@@ -81,6 +81,7 @@ class RunRecord:
     tries_used: int | None = None
     regime: str | None = None
     n_consistent_stars: int | None = None
+    message: str | None = None  # the phase's own summary line
     errors: list[str] = field(default_factory=list)
     note: str | None = None
 
@@ -138,13 +139,18 @@ def summarise(records: list[dict]) -> str:
     """Capture range, accuracy and asymmetry -- the three questions, as text."""
     if not records:
         return "no runs yet"
-    lines = [f"{'offset':>8} {'seed':>8} {'converged':>10} {'best':>10} {'error':>8} {'tries':>6} {'regime':>7}"]
+    lines = [
+        f"{'offset':>8} {'seed':>8} {'converged':>10} {'best':>10} {'error':>8} "
+        f"{'Dmin':>6} {'stars':>6} {'tries':>6} {'regime':>7}"
+    ]
     for r in records:
         best = f"{r['best_position']:.1f}" if r.get("best_position") is not None else "-"
         err = f"{r['error_ticks']:+.1f}" if r.get("error_ticks") is not None else "-"
+        dmin = f"{r['star_diameter']:.1f}" if r.get("star_diameter") is not None else "-"
         lines.append(
             f"{r['offset']:+8d} {r['seed']:8d} {str(r['converged']):>10} {best:>10} "
-            f"{err:>8} {str(r.get('tries_used') or '-'):>6} {str(r.get('regime') or '-'):>7}"
+            f"{err:>8} {dmin:>6} {str(r.get('n_consistent_stars') or '-'):>6} "
+            f"{str(r.get('tries_used') or '-'):>6} {str(r.get('regime') or '-'):>7}"
         )
 
     solved = [r for r in records if r.get("converged") and r.get("error_ticks") is not None]
@@ -176,7 +182,52 @@ def summarise(records: list[dict]) -> str:
 DEFAULT_UNIT_PORT = 8000
 
 
-def _unit_api(host: str | None, port: int | None):
+class UnitClient:
+    """The unit's HTTP surface, synchronously and without the ambient proxy.
+
+    Deliberately NOT `common.api.UnitApi`. Two reasons, both found the hard way on
+    2026-10-01: its verbs are `async`, which a plain script cannot call; and it
+    takes no `port`, being a singleton pinned to the configured one.
+
+    `trust_env=False` is the important part. httpx otherwise honours `http_proxy`
+    from the environment FOR 127.0.0.1 TOO, and a request to the local unit comes
+    back as a 403 HTML page from the site proxy -- which then fails to parse as
+    JSON and looks exactly like a dead service. `unit/src/app.py` deletes those
+    variables from its own environment for the same reason.
+    """
+
+    def __init__(self, host: str, port: int, timeout: float = 30.0):
+        import httpx
+
+        self.base = f"http://{host}:{port}{Const.BASE_UNIT_PATH}"
+        self._client = httpx.Client(trust_env=False, timeout=timeout)
+
+    def _value(self, response):
+        """The `value` out of a CanonicalResponse, or raise with what came back.
+
+        The status check comes FIRST and is not optional. On 2026-10-01 a restore
+        went to the wrong verb, the unit answered 405, nothing raised, and the
+        campaign logged "focuser returned to the reference position" while the
+        focuser had not moved at all. A wrong answer announced as a right one is
+        worse than an exception.
+        """
+        response.raise_for_status()
+        body = response.json()
+        if body.get("errors"):
+            raise RuntimeError("; ".join(body["errors"]))
+        return body.get("value")
+
+    def post(self, method: str, params: dict | None = None):
+        return self._value(self._client.post(f"{self.base}/{method}", params=params or {}))
+
+    def put(self, method: str, params: dict | None = None):
+        return self._value(self._client.put(f"{self.base}/{method}", params=params or {}))
+
+    def get(self, method: str, params: dict | None = None):
+        return self._value(self._client.get(f"{self.base}/{method}", params=params or {}))
+
+
+def _unit_api(host: str | None, port: int | None) -> UnitClient:
     """Talk to the local unit, with or without a reachable configuration database.
 
     `Config()` is the usual source of the port, but it must not be REQUIRED here.
@@ -185,18 +236,18 @@ def _unit_api(host: str | None, port: int | None):
     is exactly the night `Config()` raises.  The unit app itself keeps serving
     from its boot cache, so the campaign should too.
     """
-    from common.api import UnitApi
-
     resolved = port
     if resolved is None:
         try:
             service = Config().get_service("unit")
             resolved = service.port if service else DEFAULT_UNIT_PORT
         except Exception as ex:  # noqa: BLE001 -- a missing DB must not stop a night's work
-            logger.warning(f"could not read the unit service port from the config DB ({ex}); "
-                           f"using {DEFAULT_UNIT_PORT}. Pass --port to override.")
+            logger.warning(
+                f"could not read the unit service port from the config DB ({ex}); "
+                f"using {DEFAULT_UNIT_PORT}. Pass --port to override."
+            )
             resolved = DEFAULT_UNIT_PORT
-    return UnitApi(ipaddr=host or "127.0.0.1", port=resolved, timeout=30)
+    return UnitClient(host or "127.0.0.1", resolved)
 
 
 def run_once(api, index: int, offset: int, reference: int, settings, ra, dec) -> RunRecord:
@@ -222,12 +273,7 @@ def run_once(api, index: int, offset: int, reference: int, settings, ra, dec) ->
 
     logger.info(f"run {index}: seed={seed} (reference {reference} {offset:+d})")
     try:
-        response = api.put(method="calibrate/focuser", params=params)
-        if response is None or getattr(response, "failed", False):
-            rec.errors = list(getattr(response, "errors", None) or ["no response"])
-            rec.note = "the phase refused to start"
-            rec.duration_seconds = time.monotonic() - t0
-            return rec
+        api.post("calibrate/focuser", params=params)
     except Exception as ex:  # noqa: BLE001 -- one failed run must not end the campaign
         rec.errors = [repr(ex)]
         rec.note = "exception starting the run"
@@ -240,11 +286,11 @@ def run_once(api, index: int, offset: int, reference: int, settings, ra, dec) ->
     while time.monotonic() < deadline:
         time.sleep(5.0)
         try:
-            status = api.get(method="calibrate/status")
+            status = api.get("calibrate/status")
         except Exception as ex:  # noqa: BLE001 -- a dropped poll is not a failed run
             logger.debug(f"run {index}: status poll failed ({ex}); retrying")
             continue
-        if status is not None and not getattr(status, "calibrating", False):
+        if status is not None and not status.get("calibrating", False):
             break
     else:
         rec.note = f"timed out after {settings.run_timeout_seconds:.0f}s"
@@ -253,18 +299,22 @@ def run_once(api, index: int, offset: int, reference: int, settings, ra, dec) ->
         return rec
 
     rec.duration_seconds = time.monotonic() - t0
-    latest = getattr(getattr(status, "latest", None), "focuser", None) if status else None
-    result = getattr(latest, "analysis_result", None) if latest else None
-    if result is not None and getattr(result, "has_solution", False):
+    latest = ((status or {}).get("latest") or {}).get("focuser") or {}
+    result = latest.get("analysis_result") or {}
+    if result.get("has_solution"):
         rec.converged = True
-        rec.best_position = float(result.best_focus_position)
+        rec.best_position = float(result["best_focus_position"])
         rec.error_ticks = rec.best_position - reference
-        rec.star_diameter = getattr(result, "best_focus_star_diameter", None)
-        rec.tolerance = getattr(result, "tolerance", None)
-        rec.n_consistent_stars = getattr(result, "n_consistent_stars", None)
-    rec.tries_used = getattr(latest, "tries_used", None) if latest else None
-    rec.regime = getattr(latest, "regime", None) if latest else None
-    rec.errors = list(getattr(status, "errors", None) or []) if status else []
+        rec.star_diameter = result.get("best_focus_star_diameter")
+        rec.tolerance = result.get("tolerance")
+        rec.n_consistent_stars = result.get("n_consistent_stars")
+    # How the run got there, not just where it landed: one sweep or max_tries,
+    # straight to the V-curve or through donut acquisition. At large offsets this
+    # is most of what the campaign is asking.
+    rec.regime = latest.get("regime")
+    rec.tries_used = latest.get("tries_used")
+    rec.message = latest.get("message")
+    rec.errors = list((status or {}).get("errors") or []) + list(latest.get("errors") or [])
     return rec
 
 
@@ -356,10 +406,11 @@ def main(argv=None) -> int:
 
     if settings.restore_focus_on_exit:
         try:
-            api.put(method="focuser/position", params={"position": a.reference})
-            logger.info(f"focuser returned to the reference position {a.reference}")
+            api.put("focuser/position", params={"position": a.reference})
         except Exception as ex:  # noqa: BLE001 -- best effort; the campaign is already recorded
-            logger.warning(f"could not return the focuser to {a.reference}: {ex}")
+            logger.error(f"could not return the focuser to {a.reference}: {ex} -- it is wherever the last run left it")
+        else:
+            logger.info(f"focuser returned to the reference position {a.reference}")
 
     print()
     print(summarise(done))
