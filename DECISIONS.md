@@ -2,6 +2,29 @@
 
 ---
 
+## [2026-10-04] The solver's pure-math tests join the CI suite; its integration test stays by hand
+
+**Why:** CI runs `pytest tests/`, and the solver drift tests lived in `src/solvers/tests/`, so
+none of them ever ran there (#282). That left `test_pixel_grid.py` uncovered, even though it is
+the primary guard on the binned/full-frame coordinate convention and needs no astrometry.net,
+no hardware and no MAST runtime. The solver docs still said the repo had no CI at all.
+
+**What:** `test_pixel_grid.py` moves to `tests/test_pixel_grid.py` and imports
+`from solvers import pixel_grid`. `test_equivalence_integration.py` stays in
+`src/solvers/tests/` with its own `conftest.py`. The CI command does not change.
+
+**Implications:**
+
+- `pytest tests/` remains the single full-suite command for CI and for local runs. Adding
+  `src/solvers/tests/test_pixel_grid.py` to the CI command instead would have left a local
+  `pytest tests/` short of what CI runs.
+- The integration test cannot join `tests/`. It runs `solve-field` and `gh` as subprocesses,
+  which `tests/conftest.py` blocks. On the runner it would also always skip, and CI runs with
+  `-ra` so that a skip stands out.
+- The two tiers now live in different places. `src/solvers/tests/README.md` names both.
+
+---
+
 ## [2026-09-30] A polled read that fails is logged once per outage, not once per poll
 
 **Why:** nothing in the unit polls status on its own, but the GUI does, on a timer, through

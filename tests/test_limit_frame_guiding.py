@@ -13,8 +13,8 @@ connector emits, per the ``phd2.limit_frame`` contract:
 Also pins that acquisition-time exposures still key off
 ``ImagerSettings.use_set_limit_frame`` alone (untouched by #51).
 
-Runs in the unit venv (Windows): the import chain is Windows-only today
-(``stage.py`` uses pyximc names at module level). Skips cleanly elsewhere.
+Runs on any platform: ``stage.py`` uses pyximc names at module level, and
+``tests/conftest.py`` stubs pyximc and the other hardware modules where they are absent.
 """
 
 from __future__ import annotations

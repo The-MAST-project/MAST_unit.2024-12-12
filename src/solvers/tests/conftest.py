@@ -1,9 +1,9 @@
-"""Shared pytest setup for the solver drift tests.
+"""Pytest setup for the solver integration test.
 
 ``pixel_grid`` is deliberately self-contained (no intra-package imports), so we
-put its directory on ``sys.path`` and import it directly. That keeps the
-pure-math tests importable on any machine, with no MAST runtime, no astrometry.net,
-and no heavy ``mastrometry`` dependencies.
+put its directory on ``sys.path`` and import it directly, with no MAST runtime
+and no heavy ``mastrometry`` dependencies. The pure-math tests live in
+``tests/test_pixel_grid.py`` and do not use this file.
 """
 
 from __future__ import annotations

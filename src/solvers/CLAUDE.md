@@ -19,9 +19,16 @@ integer-division ROI `refpix` that biased pointing by ~0.4").
    look plausible; the error surfaces only as a small constant pointing offset
    (worst on the spec/fiber path). Treat any change here as high-risk.
 3. After any change to `pixel_grid.py`, `mastrometry.py` downsample/crop/refpix
-   logic, or the solve-field flags, **run `solvers/tests/`** (see that dir's
-   README). The pure-math tests run anywhere; the integration tests run on a
-   machine with astrometry.net + indexes + a sample FITS.
+   logic, or the solve-field flags, **run `solvers/tests/` by hand** (see that
+   dir's README): its integration tests need astrometry.net + indexes + a
+   sample FITS, so CI never runs them. The pure-math tests
+   (`tests/test_pixel_grid.py`) run anywhere and in CI.
+   - Run them on a machine that has `solve-field` and the index set
+     (`D:\mast-indexes`): a unit, a dev unit, or labcomp2.
+   - **A skip is not a pass.** Elsewhere both tests skip, and a plain `pytest`
+     run still looks green. Run with `-ra` and confirm they ran.
+   - If they cannot be run, say so in the PR and ask for a run on a unit. Do
+     not report the change as verified.
 4. **Tweak (SIP) is intentionally ON** in `mastrometry.py` — do not re-add
    `--no-tweak` without reading the comment there; it breaks agreement with the
    reference solver and with full-frame pixel consistency.
