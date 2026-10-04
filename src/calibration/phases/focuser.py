@@ -141,6 +141,7 @@ class FocuserCalibrator:
         # paths inside (failed slew, aborted acquisition) return before the
         # sweep ever assigns a status, and the artifacts must still be written.
         status: HFDAutofocusStatus | None = None
+        solved = False  # a solution that also PASSED the plausibility gate
         series = imager.start_exposure_series(purpose="focus-calibration")
         try:
             # --- hardware the phase makes happen -----------------------------
@@ -163,7 +164,6 @@ class FocuserCalibrator:
 
             # --- Phase 1: V-curve, re-centring while tries remain ------------
             status = None
-            solved = False  # a solution that also PASSED the plausibility gate
             for attempt in range(st.max_tries):
                 self.tries_used = attempt + 1
                 if not self._still_calibrating():
@@ -182,6 +182,8 @@ class FocuserCalibrator:
                 status = analyze_focus_samples(
                     samples,
                     tolerance_frac=st.tolerance_frac,
+                    min_fit_r2=st.min_fit_r2,
+                    min_edge_rise=st.min_edge_rise,
                     center=center,
                     radius=radius,
                 )
@@ -279,6 +281,7 @@ class FocuserCalibrator:
             # of what a reader needs; they were process-local attributes until now.
             final.regime = self.regime
             final.tries_used = self.tries_used
+            final.solved = solved
             plot_vcurve(folder, final.analysis_result)
             save_status(folder, final)
             move_to_shared(folder)
@@ -297,7 +300,7 @@ class FocuserCalibrator:
             self._log_error(f"{op}: probe exposure failed")
             return None
 
-        self.regime = assess_focus_regime(image, near_hfd_max=st.near_hfd_max_px)
+        self.regime = self._triage(image, st)
         logger.info(f"{op}: Phase-0 verdict at {seed}: '{self.regime}'")
         if self.regime == "near":
             return seed
@@ -306,11 +309,24 @@ class FocuserCalibrator:
             seed = self._cold_start(seed, st, folder)
             if seed is None:
                 return None
+            if self.regime == "near":
+                # Cold start stepped straight into focus: stars, not donuts, so
+                # there is no donut slope to measure -- go to the V-curve.
+                return seed
 
         # "far": donuts.  One differential move calibrates the diameter-vs-defocus
         # slope AND resolves the sign (inside vs outside focus look identical in
         # size alone), so the jump lands near focus in one move.
         return self._donut_jump(seed, st, folder)
+
+    @staticmethod
+    def _triage(image, st) -> str:
+        return assess_focus_regime(
+            image,
+            near_hfd_max=st.near_hfd_max_px,
+            near_min_stars=st.near_min_stars,
+            near_min_peak_snr=st.near_min_peak_snr,
+        )
 
     def _cold_start(self, seed, st, folder) -> int | None:
         """Step coarsely until *something* extracts, then hand over to the donut path."""
@@ -324,7 +340,7 @@ class FocuserCalibrator:
             image = self._expose(st, folder, tag=f"FOCUS{probe:05d}_coarse")
             if image is None or not self._still_calibrating():
                 return None
-            regime = assess_focus_regime(image, near_hfd_max=st.near_hfd_max_px)
+            regime = self._triage(image, st)
             if regime != "empty":
                 logger.info(f"{op}: structure found at {probe} ('{regime}')")
                 self.regime = regime

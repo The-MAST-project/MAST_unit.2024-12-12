@@ -80,6 +80,7 @@ class RunRecord:
     tolerance: float | None = None
     tries_used: int | None = None
     regime: str | None = None
+    fit_r2: float | None = None  # V-curve shape: R^2 of the fit, even when rejected
     n_consistent_stars: int | None = None
     message: str | None = None  # the phase's own summary line
     errors: list[str] = field(default_factory=list)
@@ -301,13 +302,19 @@ def run_once(api, index: int, offset: int, reference: int, settings, ra, dec) ->
     rec.duration_seconds = time.monotonic() - t0
     latest = ((status or {}).get("latest") or {}).get("focuser") or {}
     result = latest.get("analysis_result") or {}
-    if result.get("has_solution"):
+    # `solved` is the phase's verdict -- the vertex passed every gate and was
+    # persisted.  `has_solution` only says a parabola was fitted; reading it is how
+    # a vertex the phase refused got counted as converged on 2026-10-01.  A unit
+    # too old to report `solved` falls back to it.
+    solved = latest.get("solved")
+    if result.get("has_solution") if solved is None else solved:
         rec.converged = True
         rec.best_position = float(result["best_focus_position"])
         rec.error_ticks = rec.best_position - reference
         rec.star_diameter = result.get("best_focus_star_diameter")
         rec.tolerance = result.get("tolerance")
         rec.n_consistent_stars = result.get("n_consistent_stars")
+    rec.fit_r2 = result.get("fit_r2")
     # How the run got there, not just where it landed: one sweep or max_tries,
     # straight to the V-curve or through donut acquisition. At large offsets this
     # is most of what the campaign is asking.

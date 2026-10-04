@@ -58,6 +58,9 @@ class HFDAutofocusResult(ExtendedBaseModel):
     vcurve_b: float | None = None
     vcurve_c: float | None = None
     n_consistent_stars: int = 0
+    #: R^2 of the D^2 parabola against the samples, whenever a fit was made --
+    #: including one the shape gate then rejected, so a reader can see by how much.
+    fit_r2: float | None = None
     focus_samples: list[HFDFocusSample] | None = []
     errors: list[str] | None = []
 
@@ -85,3 +88,8 @@ class HFDAutofocusStatus(ExtendedBaseModel):
     #: asks exactly those two questions at large offsets.
     regime: str | None = None  # Phase-0 triage: "near" | "far" | "empty"
     tries_used: int | None = None  # re-centred sweeps actually spent
+    #: Whether the PHASE accepted the answer and persisted it -- which is not
+    #: ``analysis_result.has_solution``: the phase applies its own plausibility
+    #: gate (``max_best_hfd_px``) after the analysis, and refuses a vertex that
+    #: fails it.  ``None`` when the status did not come from the phase.
+    solved: bool | None = None

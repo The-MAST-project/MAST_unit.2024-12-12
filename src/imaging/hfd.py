@@ -101,18 +101,66 @@ def _bg_subtract(data, box_size=64):
         return data - np.median(data)
 
 
+def _catalog(data_sub, nsigma, npixels):
+    """Segment ``data_sub`` and return its ``SourceCatalog``, or ``None``."""
+    segm = detect_sources(data_sub, detect_threshold(data_sub, n_sigma=nsigma), n_pixels=npixels)
+    return None if segm is None else SourceCatalog(data_sub, segm)
+
+
 def _detect(data_sub, nsigma, npixels, min_area, max_area=1e9):
     """Return (x, y, semimajor_axis) arrays of detected sources, or empty."""
-    segm = detect_sources(data_sub, detect_threshold(data_sub, n_sigma=nsigma), n_pixels=npixels)
-    if segm is None:
+    cat = _catalog(data_sub, nsigma, npixels)
+    if cat is None:
         return np.empty(0), np.empty(0), np.empty(0)
-    cat = SourceCatalog(data_sub, segm)
     x = np.asarray(cat.x_centroid, dtype=float)
     y = np.asarray(cat.y_centroid, dtype=float)
     s = np.asarray(cat.semimajor_axis.value, dtype=float)
     a = np.asarray(cat.area.value, dtype=float)
     ok = np.isfinite(x) & np.isfinite(y) & np.isfinite(s) & (a >= min_area) & (a <= max_area)
     return x[ok], y[ok], s[ok]
+
+
+def count_significant_sources(
+    image,
+    min_peak_snr=10.0,  # peak / background noise a source must reach to count
+    nsigma=3.0,
+    npixels=5,
+    box_size=64,
+    min_area=4,
+    max_area=1e5,
+) -> int:
+    """How many sources have a bright CORE: ``min_peak_snr`` x the noise AT their centroid.
+
+    The question HFD cannot answer: are these stars?  Far from focus a 3-sigma
+    detection pass still returns hundreds of sources -- faint lumps and the
+    fragments of large donuts -- and the median HFD of a frame full of them is
+    set by the minimum aperture, not by focus: on mast00 2026-10-01 it read
+    ~12.7 px from focus out to +10000 ticks.
+
+    The core is what separates them.  A point-like star is brightest where its
+    centroid is; a donut's centroid falls in its hole.  The segment MAXIMUM does
+    not work: a donut's ring, or one hot pixel, carries it well above 10 sigma
+    (14-27 such sources at 2000-5000 ticks out).  At the centroid, the same
+    night gave 78-83 cores within 500 ticks of focus and 0-2 from 2000 out.
+    The core is the median of the 3x3 pixels at the centroid, so a single hot
+    pixel cannot supply it.
+    """
+    data_sub = _bg_subtract(_load(image), box_size)
+    cat = _catalog(data_sub, nsigma, npixels)
+    if cat is None:
+        return 0
+    noise = 1.4826 * float(np.median(np.abs(data_sub - np.median(data_sub)))) or 1.0
+    x = np.asarray(cat.x_centroid, dtype=float)
+    y = np.asarray(cat.y_centroid, dtype=float)
+    area = np.asarray(cat.area.value, dtype=float)
+    ok = np.isfinite(x) & np.isfinite(y) & (area >= min_area) & (area <= max_area)
+    ny, nx = data_sub.shape
+    n = 0
+    for xc, yc in zip(np.round(x[ok]).astype(int), np.round(y[ok]).astype(int), strict=True):
+        core = data_sub[max(0, yc - 1) : min(ny, yc + 2), max(0, xc - 1) : min(nx, xc + 2)]
+        if core.size and float(np.median(core)) >= min_peak_snr * noise:
+            n += 1
+    return n
 
 
 def _measure_hfds_at(data, data_sub, stars, r_factor, r_min, r_max, stamp_pad, k_thresh, max_value):
@@ -325,18 +373,32 @@ def measure_sweep_hfd(
     return per_frame, len(stars)
 
 
-def assess_focus_regime(image, near_hfd_max=None, **frame_kw) -> str:
+def assess_focus_regime(image, near_hfd_max=None, near_min_stars=None, near_min_peak_snr=10.0, **frame_kw) -> str:
     """Phase-0 triage of a single frame: ``"near"`` | ``"far"`` | ``"empty"``.
 
     ``"near"`` = usable point-source HFD (and, if ``near_hfd_max`` is given, below
     it) -> go to the V-curve; ``"far"`` = structure present but no point-source
     HFD (large blobs / donuts) -> coarse acquisition; ``"empty"`` = nothing.
     Deliberately simple in v1; the donut/cold-start handling matures with Phase 2.
+
+    ``near_min_stars`` (with ``near_min_peak_snr``) is checked FIRST: a frame
+    with fewer significant sources than that is never "near", however small its
+    HFD -- see :func:`count_significant_sources` for why the HFD of such a frame
+    means nothing.  ``None`` skips the check.
     """
+    if near_min_stars is not None:
+        n_sig = count_significant_sources(image, min_peak_snr=near_min_peak_snr)
+        if n_sig < near_min_stars:
+            return _far_or_empty(image)
     valid = {k: v for k, v in frame_kw.items() if k in frame_hfd.__code__.co_varnames}
     hfd, n = frame_hfd(image, **valid)
     if n > 0 and np.isfinite(hfd):
         return "near" if (near_hfd_max is None or hfd <= near_hfd_max) else "far"
+    return _far_or_empty(image)
+
+
+def _far_or_empty(image) -> str:
+    """Structure present (donuts, blobs) -> ``"far"``; nothing at all -> ``"empty"``."""
     data = _load(image)
     bg = np.median(data)
     mad = np.median(np.abs(data - bg)) or 1.0

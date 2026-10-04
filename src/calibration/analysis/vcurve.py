@@ -82,7 +82,32 @@ def _fit_vcurve(positions, diameters, tolerance_frac):
     return float(a), float(b), float(c), float(xstar), dmin, tol
 
 
-def _result(samples, errors, fit=None, n_consistent: int = 0) -> HFDAutofocusStatus:
+def vcurve_shape(positions, diameters, fit) -> tuple[float, float]:
+    """``(r2, edge_rise)`` of a fitted V-curve: does it describe a real V at all?
+
+    ``r2`` is the coefficient of determination of the fitted ``D^2`` parabola
+    against the samples' ``D^2``.  ``edge_rise`` is the HIGHER of the two sweep
+    ends divided by the fitted ``Dmin`` -- the higher, because a real vertex near
+    one edge rises little on its short side.
+
+    Why this is needed on top of bracketing: a sweep far from focus, over faint
+    donuts, measures a near-constant HFD (the aperture, not a star), and noise puts the
+    smallest sample in the interior more often than not.  A parabola through that
+    is a vertex with nothing behind it.  On mast00 2026-10-01 three such sweeps,
+    2000-5000 ticks from focus, passed every other check and one was persisted.
+    """
+    x = np.asarray(positions, dtype=float)
+    d2 = np.asarray(diameters, dtype=float) ** 2
+    a, b, c, _, dmin, _ = fit
+    ss_tot = float(((d2 - d2.mean()) ** 2).sum())
+    ss_res = float(((d2 - (a * x * x + b * x + c)) ** 2).sum())
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    order = np.argsort(x)
+    d = np.sqrt(d2[order])
+    return r2, float(max(d[0], d[-1]) / dmin)
+
+
+def _result(samples, errors, fit=None, n_consistent: int = 0, fit_r2: float | None = None) -> HFDAutofocusStatus:
     if fit is None:
         ar = HFDAutofocusResult(
             has_solution=False,
@@ -93,6 +118,7 @@ def _result(samples, errors, fit=None, n_consistent: int = 0) -> HFDAutofocusSta
             vcurve_b=None,
             vcurve_c=None,
             n_consistent_stars=n_consistent,
+            fit_r2=fit_r2,
             focus_samples=samples,
             errors=errors,
         )
@@ -108,6 +134,7 @@ def _result(samples, errors, fit=None, n_consistent: int = 0) -> HFDAutofocusSta
             vcurve_b=b,
             vcurve_c=c,
             n_consistent_stars=n_consistent,
+            fit_r2=fit_r2,
             focus_samples=samples,
             errors=errors,
         )
@@ -121,6 +148,8 @@ def analyze_focus_samples(
     tolerance_frac: float = 0.025,
     min_valid: int = 3,
     require_bracketed: bool = True,  # only solve when the sweep straddles focus
+    min_fit_r2: float | None = 0.85,  # shape gate -- see vcurve_shape(); None skips
+    min_edge_rise: float | None = 1.25,
     **hfd_kw,
 ) -> HFDAutofocusStatus:
     """HFD V-curve analysis of an **in-memory** focus sweep.
@@ -196,7 +225,15 @@ def analyze_focus_samples(
         if not diam or int(np.argmin(diam)) in (0, len(diam) - 1):
             errors.append("focus not bracketed: minimum HFD at a sweep edge -- shift/extend the sweep")
             return _result(hfd_samples, errors, n_consistent=n_consistent)
-    return _result(hfd_samples, errors, fit, n_consistent=n_consistent)
+
+    r2, rise = vcurve_shape([s.focus_position for s in good], [s.hfd_pixels for s in good], fit)
+    if min_fit_r2 is not None and r2 < min_fit_r2:
+        errors.append(f"V-curve shape: fit R^2={r2:.2f} < {min_fit_r2} -- the samples are not a V (noise?)")
+        return _result(hfd_samples, errors, n_consistent=n_consistent, fit_r2=r2)
+    if min_edge_rise is not None and rise < min_edge_rise:
+        errors.append(f"V-curve shape: sweep ends rise only {rise:.2f}x Dmin (< {min_edge_rise}) -- flat, not a V")
+        return _result(hfd_samples, errors, n_consistent=n_consistent, fit_r2=r2)
+    return _result(hfd_samples, errors, fit, n_consistent=n_consistent, fit_r2=r2)
 
 
 def analyze_focus_files_hfd(
@@ -205,6 +242,8 @@ def analyze_focus_files_hfd(
     tolerance_frac: float = 0.025,
     min_valid: int = 3,
     require_bracketed: bool = True,
+    min_fit_r2: float | None = 0.85,
+    min_edge_rise: float | None = 1.25,
     host=None,
     port=None,
     timeout=None,  # host/port/timeout accepted (ignored) for signature parity
@@ -224,6 +263,8 @@ def analyze_focus_files_hfd(
         tolerance_frac=tolerance_frac,
         min_valid=min_valid,
         require_bracketed=require_bracketed,
+        min_fit_r2=min_fit_r2,
+        min_edge_rise=min_edge_rise,
         **hfd_kw,
     )
 
