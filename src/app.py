@@ -231,19 +231,6 @@ def create_app(unit=None) -> FastAPI:
         # unit, and the bare app is also what a test builds.
         Filer(logger).start_product_relocation_sweep(logger=logger)
 
-        # The Earth-orientation table, and the thread that keeps it current. Here rather than
-        # at module scope because loading parses ~20k rows (~510 ms) and the refresher is a
-        # network thread -- neither belongs in an import, which a test or a one-shot script
-        # also performs. The policy above is what prevents a raise; these two are what keep
-        # the pointing accurate, and they run before any HTTP request can ask for a slew.
-        #
-        # `start_iers_refresher` takes a machine-wide guard and returns False if another MAST
-        # service on this machine already holds it, so running it from every service is safe.
-        iers_cache = Config().local.iers_cache_dir
-        iers_policy.load_into_astropy(iers_cache)
-        iers_policy.log_lag(iers_cache)
-        iers_policy.start_iers_refresher(iers_cache)
-
         if unit is None:
             yield
         else:
@@ -338,6 +325,31 @@ def main():
     # and by one-shot scripts). Never fatal: a unit that cannot watch still runs on the
     # configuration it loaded, exactly as before.
     Config().start_watching()
+
+    # The Earth-orientation table, and the thread that keeps it current. Here for the reason
+    # given just above: loading parses ~20k rows (~510 ms) and the refresher is a thread
+    # wanting an owner with a lifetime, so both belong in the service entry point rather than
+    # in an import or in `Config()`.
+    #
+    # Deliberately NOT in the app lifespan either, even though `Filer`'s sweep lives there:
+    # the lifespan is also entered by the bare app a test builds, where there is no
+    # configuration file at all and `Config()` raises. Here it has already been validated
+    # above, so the cache directory can simply be read.
+    #
+    # The policy set at module scope is what keeps the mount pointing; these two are what keep
+    # it ACCURATE. `uvicorn.run` is called from this function below, so they land before
+    # anything is served. `start_iers_refresher` takes a machine-wide guard and returns False
+    # if another MAST service on this machine already holds it, so calling it from every
+    # service is safe.
+    #
+    # Served some other way -- `uvicorn app:app`, which nothing does today and no launch
+    # configuration offers -- this function does not run, and the process would point from
+    # whatever table astropy resolves for itself. Degraded accuracy, not a stopped mount: the
+    # module-scope policy is what guarantees that, which is why it is deliberately not here.
+    iers_cache = Config().local.iers_cache_dir
+    iers_policy.load_into_astropy(iers_cache)
+    iers_policy.log_lag(iers_cache)
+    iers_policy.start_iers_refresher(iers_cache)
 
     service_conf = Config().get_service(service_name="unit")
     if service_conf is None:
