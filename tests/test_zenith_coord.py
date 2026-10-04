@@ -96,7 +96,7 @@ def test_a_broken_mount_falls_back_rather_than_raising(monkeypatch):
     assert dec == pytest.approx(CONFIG_LATITUDE)
 
 
-def test_no_latitude_anywhere_yields_None_not_an_exception(monkeypatch):
+def test_no_latitude_anywhere_yields_none_not_an_exception(monkeypatch):
     """Every phase treats a missing coordinate as "calibrate at the current
     pointing" -- a better outcome than failing a run over a default."""
     config = MagicMock()

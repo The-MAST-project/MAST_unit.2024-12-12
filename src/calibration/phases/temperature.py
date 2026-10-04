@@ -65,7 +65,7 @@ def read_temperatures(pw) -> dict[str, float | None]:
             number = float(value.strip())
         except ValueError:
             continue
-        out[key[len("temperature."):]] = None if number <= NO_SENSOR else number
+        out[key[len("temperature.") :]] = None if number <= NO_SENSOR else number
     return out
 
 

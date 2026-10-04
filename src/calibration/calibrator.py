@@ -479,7 +479,10 @@ class Calibrator:
         refresh: Annotated[
             bool,
             Query(
-                description="Re-merge via Config (false: the copy bound at startup). Neither re-reads MongoDB -- restart to pick up DB edits."
+                description=(
+                    "Re-merge via Config (false: the copy bound at startup). "
+                    "Neither re-reads MongoDB -- restart to pick up DB edits."
+                )
             ),
         ] = True,
     ):
