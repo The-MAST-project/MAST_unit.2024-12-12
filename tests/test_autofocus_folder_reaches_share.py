@@ -49,7 +49,9 @@ def events(harness, monkeypatch):
         harness, "filer", types.SimpleNamespace(move_ram_to_shared=lambda path: recorded.append(("move", path)))
     )
     monkeypatch.setattr(
-        harness, "plot_autofocus_analysis", lambda result, folder, pixel_scale: recorded.append(("plot", folder))
+        harness,
+        "plot_autofocus_analysis",
+        lambda result, folder, pixel_scale, metric_label: recorded.append(("plot", folder)),
     )
     monkeypatch.setattr(harness, "Thread", lambda target, args=(), **kw: types.SimpleNamespace(start=lambda: target(*args)))
     return recorded
