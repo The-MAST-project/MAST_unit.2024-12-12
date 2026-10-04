@@ -2,6 +2,57 @@
 
 ---
 
+## [2026-10-04] Guiding is checked against the target by solving the guide frame, without pausing
+
+**Why:** PHD2 reports how well the star holds the lock position. Nothing reported whether the
+lock position was still on the target. A lock on the wrong star, drift between the guide camera
+and the fiber, or a handover that moved the field all read as clean guiding (#283). The previous
+attempt, `validate_guiding`, stopped guiding, took a cropped frame, restarted guiding and solved
+the frame. It was never enabled (`validation_interval` is 0 fleet-wide). It could not have worked
+if enabled: `solve()` was called without its `phase`, hour and degree differences were compared
+against arcsecond tolerances, and a second `StartGuiding` re-started the same timer thread.
+
+**What:** `src/pointing_check.py`'s `PointingMonitor` replaces it.
+
+- Each tick runs `save_image` (the frame PHD2 is already taking) and a SPEC-phase solve, which
+  reports the position at the fiber. It records target minus solved as a `PointingSample`.
+- Nothing pauses, and nothing moves the mount or the lock.
+- One sampling thread per guide session. It starts on PHD2's `StartGuiding` and ends on
+  `GuidingStopped`.
+- The cadence is `phd2.validation_interval`, read on every tick; 0 is off.
+- Samples are taken only while PHD2's state is `Guiding`, because a paused loop hands back its
+  last frame, which can be from before the mirror moved.
+- A frame that is not the full unbinned sensor is recorded **Unavailable** and never solved. The
+  SPEC reference pixel is in full-sensor coordinates, and a crop moves it by the crop origin
+  without the solve failing (#234). The check therefore needs `limit_frame.mode: full_frame`, with
+  the fold mirror kept out of star selection by the exclusion region.
+- A solve that finds no match, or that raises, is recorded as **NotSolved**.
+- The frame is deleted on every path, since it is 94 MB at full size.
+- The record is in `guider_status().pointing_check` (counts plus the last 20 samples) and in
+  `pointing-check.jsonl` under the acquisition's folder **on the share**. The acquisition's
+  RAM-disk folder is released before guiding settles, so it cannot hold the journal.
+- `stop_session` signals the thread and does not join it: it runs on PHD2's event reader, and a
+  solve can take tens of seconds. A sample that finishes after its session has ended is dropped
+  by session number, so it cannot enter the next session's record.
+
+The same change fixes the lock nudge's telemetry. It read `connector.limit_frame_in_force`,
+which #245 removed, so every nudge whose solve succeeded raised before moving the lock. It now
+reads `get_limit_frame()`. The nudge and the monitor share `offset_on_sky_arcsec` (MAST_common)
+for the on-sky angle.
+
+**Implications:**
+
+- Every unit runs `limit_frame.mode: derived` today, so a unit that enables the check reports
+  Unavailable until it is switched to `full_frame`. That is deliberate, and it is another cost of
+  the limit frame, alongside #234 and #245.
+- `PHD2Activities.Validating`, `ExposingForValidation` and `SolvingForValidation` are now
+  unused. They are left declared rather than renumbering the bit flags.
+- The `CONSTRUCTION_TIME` entry for `guiding_verification_timer` is removed with the timer. The
+  2026-09 entry above that counts it among five construction-time bindings is history and is not
+  edited.
+
+---
+
 ## [2026-09-30] A polled read that fails is logged once per outage, not once per poll
 
 **Why:** nothing in the unit polls status on its own, but the GUI does, on a timer, through

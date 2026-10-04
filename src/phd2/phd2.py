@@ -7,7 +7,6 @@ import shutil
 import socket
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import IntFlag, StrEnum, auto
 from pathlib import Path
@@ -35,10 +34,11 @@ from common.models.statuses import (
     SkyQualityStatus,
 )
 from common.process import WatchedProcess
-from common.utils import Coord, RepeatTimer, Timeout, boxed_debug, function_name
+from common.utils import Coord, Timeout, boxed_debug, function_name
 from failure_streaks import FailureStreaks
 from lock_nudge import nudge_lock_to_target
 from phd2.phd2_locate import locate_phd2_exe
+from pointing_check import PointingMonitor
 from science.lock_validity import GuideLockSupervisor, LockMetrics
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 from stage import StagePresetPosition
@@ -412,21 +412,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.image_was_saved: bool = False
         self.image_saved_event: threading.Event = threading.Event()
 
-        # Read once, deliberately: it fixes a RepeatTimer's period and decides whether the
-        # timer exists at all, so a later edit reaches guiding validation at the next
-        # restart however this is written. A property would advertise otherwise.
-        validation_interval = self.conf.validation_interval
-        self.guiding_verification_timer: RepeatTimer | None = None
-        if validation_interval != 0:
-            logger.info(f"{function_name()}: guiding validation every {validation_interval} seconds")
-            self.guiding_verification_timer = RepeatTimer(interval=validation_interval, function=self.validate_guiding)
-        else:
-            logger.info(f"{function_name()}: no guiding validation ({validation_interval=})")
-
         self.restart_event: threading.Event = threading.Event()
 
         self.sky_quality: SeeingQualityWhilePHD2Guiding = SeeingQualityWhilePHD2Guiding()
         self.lock_supervisor: GuideLockSupervisor = GuideLockSupervisor()
+        self.pointing_monitor: PointingMonitor = PointingMonitor(self)
 
         phd2_exe = locate_phd2_exe()
         if phd2_exe is None:
@@ -558,96 +548,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def equipment_is_connected(self) -> bool:
         response = self.call("get_connected")
         return response["result"]
-
-    def validate_guiding(self):
-        if not self.is_active(PHD2Activities.Guiding):
-            logger.warning(f"{function_name()}: not verifying guiding: not guiding")
-            return
-
-        assert self.parent is not None and self.parent.unit is not None
-        assert self.parent.unit.acquirer.latest_acquisition is not None
-
-        self.start_activity(PHD2Activities.Validating)
-        # self.call("stop_capture")  # stop guiding
-        self.stop_guiding()
-        guiding_settings = self.parent.unit.guider.make_guiding_settings(
-            base_folder=str(Path(self.parent.unit.acquirer.latest_acquisition.folder) / "guiding" / "validation")
-        )
-        assert guiding_settings.roi is not None
-        try:
-            self.start_activity(PHD2Activities.ExposingForValidation)
-            self.call(
-                "capture_single_frame",
-                params={
-                    "exposure": int(guiding_settings.seconds * 1000),  # convert to milliseconds
-                    "gain": int(asi.gain_absolute_to_percent(guiding_settings.gain)),
-                    "binning": (guiding_settings.binning.x if guiding_settings.binning else 1),
-                    "subframe": [
-                        guiding_settings.roi.x,
-                        guiding_settings.roi.y,
-                        guiding_settings.roi.width,
-                        guiding_settings.roi.height,
-                    ],
-                    "save": True,
-                    "path": guiding_settings.image_path,
-                },
-            )
-        except PHD2ConnectorError as ex:
-            self.log_and_append_error(f"{ex=}")
-            self.end_activity(PHD2Activities.ExposingForValidation)
-            self.end_activity(PHD2Activities.Validating)
-            self.start_guiding()
-            return
-
-        self.wait_for_image_saved()
-
-        logger.info(f"{function_name()}: resuming guiding ...")
-        self.start_guiding()
-
-        assert self.parent.unit is not None
-        assert self.parent.unit.acquirer.latest_acquisition is not None
-        assert guiding_settings.image_path is not None
-        target: Coord = Coord(
-            Angle(
-                self.parent.unit.acquirer.latest_acquisition.target_ra,
-                unit="hours",
-            ),
-            Angle(
-                self.parent.unit.acquirer.latest_acquisition.target_dec,
-                unit="degrees",
-            ),
-        )
-
-        tolerance = self.parent.unit.unit_conf.guiding.tolerance
-
-        self.start_activity(PHD2Activities.SolvingForValidation)
-        with ThreadPoolExecutor() as executor:
-            logger.info(f"{function_name()}: starting solving for {target=}")
-            self.parent.start_activity(UnitActivities.Solving)
-            future = executor.submit(self.parent.unit.solver.solve, guiding_settings, target)
-            solving_result = future.result()
-            self.parent.end_activity(UnitActivities.Solving)
-
-        logger.info(f"{function_name()}: solving result: {solving_result=}")
-        if solving_result and solving_result.succeeded and solving_result.solution:
-            delta_ra = solving_result.solution.ra_hours - target.ra.hours  # type: ignore
-            delta_dec = solving_result.solution.dec_degs - target.dec.degrees  # type: ignore
-            within_tolerance = abs(delta_ra) <= tolerance.ra_arcsec and abs(delta_dec) <= tolerance.dec_arcsec
-            boxed_debug(
-                logger=logger,
-                lines=[
-                    f"{delta_ra=}, {delta_dec=}",
-                    f"{tolerance=}",
-                    f"within tolerance: {within_tolerance}",
-                ],
-            )
-
-            if not within_tolerance:
-                # TBD: what to do if the target is not within tolerance?
-                logger.error(f"{function_name()}: OUT OF TOLERANCE!, WHAT TO DO?")
-
-        self.end_activity(PHD2Activities.SolvingForValidation)
-        self.end_activity(PHD2Activities.Validating)
 
     @staticmethod
     def _is_guiding(st):
@@ -831,8 +731,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 # bright field's median -- the error an absolute threshold makes.
                 self.lock_supervisor.reset()
                 self.start_activity(PHD2Activities.Guiding)
-                if self.guiding_verification_timer is not None:
-                    self.guiding_verification_timer.start()
+                self.pointing_monitor.start_session()
                 self.accumulators_active = True
                 self.ra_accumulator.reset()
                 self.dec_accumulator.reset()
@@ -1005,9 +904,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             case "LoopingExposuresStopped":
                 activity = PHD2Activities.Looping if e == "LoopingExposuresStopped" else PHD2Activities.Guiding
                 self.end_activity(activity)
-                if activity == PHD2Activities.Guiding and self.guiding_verification_timer is not None:
-                    logger.info(f"{function_name()}: stopping guiding verification timer")
-                    self.guiding_verification_timer.cancel()
+                if activity == PHD2Activities.Guiding:
+                    self.pointing_monitor.stop_session()
                 with self.lock:
                     self.app_state = "Stopped"
                 boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
@@ -1015,9 +913,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             case "GuidingStopped":
                 activity = PHD2Activities.Looping if e == "LoopingExposuresStopped" else PHD2Activities.Guiding
                 self.end_activity(activity)
-                if activity == PHD2Activities.Guiding and self.guiding_verification_timer is not None:
-                    logger.info(f"{function_name()}: stopping guiding verification timer")
-                    self.guiding_verification_timer.cancel()
+                if activity == PHD2Activities.Guiding:
+                    self.pointing_monitor.stop_session()
                 with self.lock:
                     self.app_state = "Stopped"
                 boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
@@ -1753,6 +1650,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             limit_frame=limit_frame,
             exclude_region=exclude_region,
             lock_position=lock_position,
+            pointing_check=self.pointing_monitor.status(),
             lock_validity=LockValidityStatus(
                 validity=str(lock.validity),
                 frame_verdict=str(lock.frame_verdict),
