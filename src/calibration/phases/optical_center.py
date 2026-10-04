@@ -111,7 +111,6 @@ class OpticalCenterCalibrator:
         st = settings or OpticalCenterCalibrationSettings()
         unit = self.unit
         conf, imager, focuser = unit.unit_conf, unit.imager, unit.focuser
-        pw, mount, stage = unit.pw, unit.mount, unit.stage
 
         if conf is None or imager is None or focuser is None:
             return self._fail(f"{op}: unit not fully initialised (conf/imager/focuser)")
@@ -132,21 +131,8 @@ class OpticalCenterCalibrator:
         if not self._wait_focuser_settled(op):
             return None
 
-        if stage is not None:
-            logger.debug(f"{op}: stage.home() -- retract the mirror, clean field")
-            stage.home()
-            self._wait_stage()
-        if mount is not None and ra_j2000_hours is not None and dec_j2000_degs is not None:
-            slew_and_settle(mount, ra_j2000_hours, dec_j2000_degs, op)
-            if not self._still_calibrating():
-                return self._abort(f"{op}: aborted during slew")
-        if pw is not None:
-            try:
-                if not pw.status().mount.is_tracking:
-                    logger.debug(f"{op}: starting mount tracking")
-                    pw.mount_tracking_on()
-            except Exception as ex:
-                logger.warning(f"{op}: could not verify/start tracking: {ex}")
+        if not self._clear_field_and_point(op, ra_j2000_hours, dec_j2000_degs):
+            return None
 
         # --- acquire + extract ------------------------------------------------
         extractions: list[dict] = []
@@ -165,8 +151,7 @@ class OpticalCenterCalibrator:
 
         if len(extractions) < need:
             return self._fail(
-                f"{op}: only {len(extractions)}/{st.number_of_frames} frames usable; "
-                f"need >= {need} (min_frames_passing)"
+                f"{op}: only {len(extractions)}/{st.number_of_frames} frames usable; need >= {need} (min_frames_passing)"
             )
 
         # --- pooled centre fit ------------------------------------------------
@@ -192,17 +177,47 @@ class OpticalCenterCalibrator:
             coma_tolerance=st.coma_tolerance,
         )
         if slope is None or slope.low_coma_radius is None:
-            logger.warning(f"{op}: no trustworthy coma slope -- persisting low_coma_radius=None "
-                           f"(autofocus falls back to its geometric disk)")
+            logger.warning(
+                f"{op}: no trustworthy coma slope -- persisting low_coma_radius=None "
+                f"(autofocus falls back to its geometric disk)"
+            )
         else:
-            logger.info(f"{op}: coma slope k={slope.slope:.3e}/px -> "
-                        f"low_coma_radius={slope.low_coma_radius:.0f}px "
-                        f"(tolerance={slope.coma_tolerance}, rms={slope.residual_rms:.4f})")
+            logger.info(
+                f"{op}: coma slope k={slope.slope:.3e}/px -> "
+                f"low_coma_radius={slope.low_coma_radius:.0f}px "
+                f"(tolerance={slope.coma_tolerance}, rms={slope.residual_rms:.4f})"
+            )
 
         self._persist(result, slope, st)
         return result
 
     # ----------------------------------------------------------------- helpers
+    def _clear_field_and_point(self, op: str, ra_j2000_hours, dec_j2000_degs) -> bool:
+        """Retract the stage, slew if a pointing was given, and make sure the mount tracks.
+
+        Returns ``False`` only when the operator aborted during the slew (recorded
+        through ``_abort``).  Each piece is skipped when its hardware is absent, and a
+        tracking check that fails is logged, not fatal -- as it was inline.
+        """
+        unit = self.unit
+        if unit.stage is not None:
+            logger.debug(f"{op}: stage.home() -- retract the mirror, clean field")
+            unit.stage.home()
+            self._wait_stage()
+        if unit.mount is not None and ra_j2000_hours is not None and dec_j2000_degs is not None:
+            slew_and_settle(unit.mount, ra_j2000_hours, dec_j2000_degs, op)
+            if not self._still_calibrating():
+                self._abort(f"{op}: aborted during slew")
+                return False
+        if unit.pw is not None:
+            try:
+                if not unit.pw.status().mount.is_tracking:
+                    logger.debug(f"{op}: starting mount tracking")
+                    unit.pw.mount_tracking_on()
+            except Exception as ex:
+                logger.warning(f"{op}: could not verify/start tracking: {ex}")
+        return True
+
     def _wait_focuser_settled(self, op: str) -> bool:
         deadline = time.monotonic() + FOCUSER_SETTLE_TIMEOUT_SECONDS
         while self.unit.focuser.is_active(FocuserActivities.Moving):
@@ -280,12 +295,13 @@ class OpticalCenterCalibrator:
         conf.calibration.products.optical_center = record
         try:
             Config().set_unit(unit_name=self.unit.hostname, unit_conf=conf)
-            logger.info(f"saved calibration.products.optical_center for '{self.unit.hostname}': "
-                        f"center=({record.center_x:.1f}, {record.center_y:.1f}) "
-                        f"low_coma_radius={record.low_coma_radius} epoch={epoch}")
+            logger.info(
+                f"saved calibration.products.optical_center for '{self.unit.hostname}': "
+                f"center=({record.center_x:.1f}, {record.center_y:.1f}) "
+                f"low_coma_radius={record.low_coma_radius} epoch={epoch}"
+            )
         except Exception as ex:
-            self._log_error(f"could not save calibration.products.optical_center "
-                            f"for '{self.unit.hostname}': {ex}")
+            self._log_error(f"could not save calibration.products.optical_center for '{self.unit.hostname}': {ex}")
 
     def _still_calibrating(self) -> bool:
         """Cooperative abort -- the operator clearing the flags stops the loop."""

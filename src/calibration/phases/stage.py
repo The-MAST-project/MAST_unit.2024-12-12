@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from imaging.mirror_shadow import ShadowModel, detect_mirror_shadow
 from calibration.analysis.stage_geometry import (
     StageGeometryResult,
     find_spec_stage_position,
@@ -27,6 +26,7 @@ from common.config import Config
 from common.config.calibration import CalibrationConfig, StageCalibrationConfig
 from common.models.statuses import ImagerSettings
 from common.utils import time_stamp
+from imaging.mirror_shadow import ShadowModel, detect_mirror_shadow
 
 if TYPE_CHECKING:
     from unit import Unit  # type: ignore[import-untyped]
@@ -41,7 +41,6 @@ STAGE_MOVE_TIMEOUT_SECONDS = 120.0
 
 class StageMoveError(Exception):
     """The stage did not reach a commanded position (refused, stalled, or aborted)."""
-
 
 
 class StageCalibrator:
@@ -114,11 +113,7 @@ class StageCalibrator:
             return self._fail(f"{op}: file-only imager needs a 'folder' for the frames")
 
         # Sweep positions centered on the current spec estimate, clipped to travel.
-        spec_center = (
-            cal.products.stage.spec_position
-            if cal and cal.products.stage
-            else conf.stage.presets.spec
-        )
+        spec_center = cal.products.stage.spec_position if cal and cal.products.stage else conf.stage.presets.spec
         if span_steps is None:
             span_steps = max(2000, int(0.05 * (max_travel - min_travel)))
         lo = max(min_travel, int(spec_center - span_steps))
@@ -176,7 +171,10 @@ class StageCalibrator:
                 )
 
             result = find_spec_stage_position(
-                models, used, optical_center, require_bracketed=require_bracketed,
+                models,
+                used,
+                optical_center,
+                require_bracketed=require_bracketed,
             )
             logger.info(f"{op}: {result.message}")
             if not result.has_solution:
@@ -225,8 +223,7 @@ class StageCalibrator:
                 raise StageMoveError(f"aborted while moving to {position}")
             if time.monotonic() >= deadline:
                 raise StageMoveError(
-                    f"stage did not reach {position} within "
-                    f"{STAGE_MOVE_TIMEOUT_SECONDS:.0f}s -- stuck at {stage.position}"
+                    f"stage did not reach {position} within {STAGE_MOVE_TIMEOUT_SECONDS:.0f}s -- stuck at {stage.position}"
                 )
             time.sleep(0.5)
 

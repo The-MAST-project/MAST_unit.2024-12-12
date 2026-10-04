@@ -54,8 +54,8 @@ import logging
 
 import numpy as np
 
-from imaging.hfd import _apply_crop, _disk_crop_box, _load
 from calibration.logging_context import init_calibration_log
+from imaging.hfd import _apply_crop, _disk_crop_box, _load
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_calibration_log(logger)

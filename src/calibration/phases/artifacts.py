@@ -87,9 +87,7 @@ def plot_vcurve(folder: str | None, result, best_position=None) -> None:
         import numpy as np
 
         pos = np.array([s.focus_position for s in samples], dtype=float)
-        hfd = np.array(
-            [s.hfd_pixels if s.hfd_pixels is not None else np.nan for s in samples], dtype=float
-        )
+        hfd = np.array([s.hfd_pixels if s.hfd_pixels is not None else np.nan for s in samples], dtype=float)
         valid = np.array([bool(s.is_valid) for s in samples])
 
         fig, ax = plt.subplots(figsize=(8, 5))
@@ -109,8 +107,7 @@ def plot_vcurve(folder: str | None, result, best_position=None) -> None:
             ax.axvline(best, color="tab:orange", lw=2, label=f"best = {best:.1f}")
             tol = getattr(result, "tolerance", None)
             if tol:
-                ax.axvspan(best - tol, best + tol, color="tab:orange", alpha=0.12,
-                           label=f"tolerance +/-{tol:.0f}")
+                ax.axvspan(best - tol, best + tol, color="tab:orange", alpha=0.12, label=f"tolerance +/-{tol:.0f}")
 
         dmin = getattr(result, "best_focus_star_diameter", None)
         stars = getattr(result, "n_consistent_stars", None)

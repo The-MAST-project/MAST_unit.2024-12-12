@@ -43,7 +43,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 from astropy.io import fits
 
-from imaging.hfd import assess_focus_regime
 from calibration.analysis.models import HFDAutofocusStatus
 from calibration.analysis.vcurve import analyze_donut_samples, analyze_focus_samples
 from calibration.logging_context import init_calibration_log
@@ -59,6 +58,7 @@ from common.config.calibration import (
 )
 from common.interfaces.imager import ImagerSettings
 from common.utils import time_stamp
+from imaging.hfd import assess_focus_regime
 
 if TYPE_CHECKING:
     from unit import Unit  # type: ignore[import-untyped]

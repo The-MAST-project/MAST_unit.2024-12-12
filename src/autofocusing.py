@@ -218,9 +218,7 @@ class Autofocuser:
 
         start_position = start_position or self.unit.unit_conf.focuser.known_as_good_position
 
-        logger.debug(
-            f"{op}: Waiting for components (stage, mount, focuser) to stop moving ..."
-        )
+        logger.debug(f"{op}: Waiting for components (stage, mount, focuser) to stop moving ...")
         # NOT `mount.is_moving`.  That is axis rms following-error (axis0>3.0",
         # axis1>1.0"), which mirrors PWI4's GUI tracking-quality colouring -- so
         # in wind it reads True while the mount sits ON target and this loop
