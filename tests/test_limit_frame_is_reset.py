@@ -34,6 +34,11 @@ def _connector(need_reset: bool, raises: bool = False):
         need_to_reset_limit_frame=need_reset,
         set_limit_frame=set_limit_frame,
         image_was_saved=True,
+        # wait_for_image_saved also stamps the bracketed cooler readings; with no
+        # path there is nothing to stamp, which is what stamp_cooling expects.
+        _exposure_image_path=None,
+        _cooler_before=None,
+        cooler_status=None,
     )
     stub.reset_limit_frame_if_needed = lambda: PHD2Connector.reset_limit_frame_if_needed(stub)
     return stub, calls
