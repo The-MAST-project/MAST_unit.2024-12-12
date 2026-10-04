@@ -50,5 +50,10 @@
     "./src",
     "..",
     "./src/Standa/ximc-2.13.6/ximc/crossplatform/wrappers/python"
-  ]
+  ],
+  "python.testing.pytestArgs": [
+    "tests"
+  ],
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestEnabled": true
 }

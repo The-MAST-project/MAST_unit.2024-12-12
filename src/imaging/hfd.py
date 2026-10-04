@@ -35,6 +35,58 @@ def _load(image) -> np.ndarray:
     return data
 
 
+def _disk_crop_box(shape, center, radius, pad, box_size):
+    """Pixel box enclosing the low-coma disk, or ``None`` to use the whole frame.
+
+    The HFD metric only ever uses stars inside the ``(center, radius)`` disk, but
+    background estimation and detection are the expensive steps and were running
+    over the ENTIRE frame first -- on a full 47 MP sweep frame the fallback disk
+    (``0.6 * min(nx,ny)/2``) covers about a fifth of the area, so roughly 80% of
+    that work was thrown away immediately afterwards.
+
+    Cropping first is purely a speed change: the pixel scale is untouched, so
+    every threshold in this module keeps its meaning (unlike downsampling, which
+    silently halves measured HFD and with it the ``near_hfd_max_px`` /
+    ``max_best_hfd_px`` gates).
+
+    ``pad`` must cover the measurement aperture, or stars just inside the disk
+    edge would have their stamps clipped by the crop and measure too small --
+    changing the result rather than just speeding it up.  Returns ``None`` when
+    the box would not be meaningfully smaller than the frame, or would be too
+    small for ``Background2D``'s box size.
+    """
+    if center is None or radius is None:
+        return None
+    ny, nx = shape
+    cx, cy = center
+    half = float(radius) + float(pad)
+    x0, x1 = int(np.floor(cx - half)), int(np.ceil(cx + half)) + 1
+    y0, y1 = int(np.floor(cy - half)), int(np.ceil(cy + half)) + 1
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(nx, x1), min(ny, y1)
+    if x1 - x0 < 2 * box_size or y1 - y0 < 2 * box_size:
+        return None  # too small to estimate a background on; not worth it
+    if (x1 - x0) * (y1 - y0) > 0.9 * nx * ny:
+        return None  # saves nothing; skip the bookkeeping
+    return x0, x1, y0, y1
+
+
+def _apply_crop(data, box):
+    """Crop ``data`` to ``box``; ``None`` box returns the array unchanged."""
+    if box is None:
+        return data
+    x0, x1, y0, y1 = box
+    return data[y0:y1, x0:x1]
+
+
+def _shift_center(center, box):
+    """Express ``center`` in the cropped frame's coordinates."""
+    if box is None or center is None:
+        return center
+    x0, _, y0, _ = box
+    return (center[0] - x0, center[1] - y0)
+
+
 def _bg_subtract(data, box_size=64):
     try:
         bkg = Background2D(
@@ -49,18 +101,66 @@ def _bg_subtract(data, box_size=64):
         return data - np.median(data)
 
 
-def _detect(data_sub, nsigma, npixels, min_area, max_area=1e9):
-    """Return (x, y, semimajor_sigma) arrays of detected sources, or empty."""
+def _catalog(data_sub, nsigma, npixels):
+    """Segment ``data_sub`` and return its ``SourceCatalog``, or ``None``."""
     segm = detect_sources(data_sub, detect_threshold(data_sub, n_sigma=nsigma), n_pixels=npixels)
-    if segm is None:
+    return None if segm is None else SourceCatalog(data_sub, segm)
+
+
+def _detect(data_sub, nsigma, npixels, min_area, max_area=1e9):
+    """Return (x, y, semimajor_axis) arrays of detected sources, or empty."""
+    cat = _catalog(data_sub, nsigma, npixels)
+    if cat is None:
         return np.empty(0), np.empty(0), np.empty(0)
-    cat = SourceCatalog(data_sub, segm)
     x = np.asarray(cat.x_centroid, dtype=float)
     y = np.asarray(cat.y_centroid, dtype=float)
     s = np.asarray(cat.semimajor_axis.value, dtype=float)
     a = np.asarray(cat.area.value, dtype=float)
     ok = np.isfinite(x) & np.isfinite(y) & np.isfinite(s) & (a >= min_area) & (a <= max_area)
     return x[ok], y[ok], s[ok]
+
+
+def count_significant_sources(
+    image,
+    min_peak_snr=10.0,  # peak / background noise a source must reach to count
+    nsigma=3.0,
+    npixels=5,
+    box_size=64,
+    min_area=4,
+    max_area=1e5,
+) -> int:
+    """How many sources have a bright CORE: ``min_peak_snr`` x the noise AT their centroid.
+
+    The question HFD cannot answer: are these stars?  Far from focus a 3-sigma
+    detection pass still returns hundreds of sources -- faint lumps and the
+    fragments of large donuts -- and the median HFD of a frame full of them is
+    set by the minimum aperture, not by focus: on mast00 2026-10-01 it read
+    ~12.7 px from focus out to +10000 ticks.
+
+    The core is what separates them.  A point-like star is brightest where its
+    centroid is; a donut's centroid falls in its hole.  The segment MAXIMUM does
+    not work: a donut's ring, or one hot pixel, carries it well above 10 sigma
+    (14-27 such sources at 2000-5000 ticks out).  At the centroid, the same
+    night gave 78-83 cores within 500 ticks of focus and 0-2 from 2000 out.
+    The core is the median of the 3x3 pixels at the centroid, so a single hot
+    pixel cannot supply it.
+    """
+    data_sub = _bg_subtract(_load(image), box_size)
+    cat = _catalog(data_sub, nsigma, npixels)
+    if cat is None:
+        return 0
+    noise = 1.4826 * float(np.median(np.abs(data_sub - np.median(data_sub)))) or 1.0
+    x = np.asarray(cat.x_centroid, dtype=float)
+    y = np.asarray(cat.y_centroid, dtype=float)
+    area = np.asarray(cat.area.value, dtype=float)
+    ok = np.isfinite(x) & np.isfinite(y) & (area >= min_area) & (area <= max_area)
+    ny, nx = data_sub.shape
+    n = 0
+    for xc, yc in zip(np.round(x[ok]).astype(int), np.round(y[ok]).astype(int), strict=True):
+        core = data_sub[max(0, yc - 1) : min(ny, yc + 2), max(0, xc - 1) : min(nx, xc + 2)]
+        if core.size and float(np.median(core)) >= min_peak_snr * noise:
+            n += 1
+    return n
 
 
 def _measure_hfds_at(data, data_sub, stars, r_factor, r_min, r_max, stamp_pad, k_thresh, max_value):
@@ -198,6 +298,13 @@ def frame_hfd(
     caller marks such a sample invalid rather than failing the run.
     """
     data = _load(image)
+    # Crop to the low-coma disk BEFORE background + detection -- they are the
+    # expensive steps and only stars inside the disk can contribute.  Everything
+    # below then works in the cropped frame; only aggregates are returned, so no
+    # coordinate has to be mapped back.
+    box = _disk_crop_box(data.shape, center, radius, r_max + stamp_pad, box_size)
+    data = _apply_crop(data, box)
+    center = _shift_center(center, box)
     ny, nx = data.shape
     data_sub = _bg_subtract(data, box_size)
     x, y, smaj = _detect(data_sub, nsigma, npixels, min_area, max_area)
@@ -244,6 +351,12 @@ def measure_sweep_hfd(
     aligned with ``images[i]``.
     """
     loaded = [_load(im) for im in images]
+    # One box for the whole sweep, computed from the first frame: the frames
+    # share pointing and shape, and cross-matching below relies on a star sitting
+    # at the SAME pixel in every frame -- a per-frame box could shift that.
+    box = _disk_crop_box(loaded[0].shape, center, radius, r_max + stamp_pad, box_size)
+    loaded = [_apply_crop(d, box) for d in loaded]
+    center = _shift_center(center, box)
     subs = [_bg_subtract(d, box_size) for d in loaded]
     detections = [list(zip(*_detect(ds, nsigma, npixels, min_area, max_area), strict=True)) for ds in subs]
     stars = _consistent_stars(detections, len(images), match_tol, min_frac)
@@ -260,18 +373,32 @@ def measure_sweep_hfd(
     return per_frame, len(stars)
 
 
-def assess_focus_regime(image, near_hfd_max=None, **frame_kw) -> str:
+def assess_focus_regime(image, near_hfd_max=None, near_min_stars=None, near_min_peak_snr=10.0, **frame_kw) -> str:
     """Phase-0 triage of a single frame: ``"near"`` | ``"far"`` | ``"empty"``.
 
     ``"near"`` = usable point-source HFD (and, if ``near_hfd_max`` is given, below
     it) -> go to the V-curve; ``"far"`` = structure present but no point-source
     HFD (large blobs / donuts) -> coarse acquisition; ``"empty"`` = nothing.
     Deliberately simple in v1; the donut/cold-start handling matures with Phase 2.
+
+    ``near_min_stars`` (with ``near_min_peak_snr``) is checked FIRST: a frame
+    with fewer significant sources than that is never "near", however small its
+    HFD -- see :func:`count_significant_sources` for why the HFD of such a frame
+    means nothing.  ``None`` skips the check.
     """
+    if near_min_stars is not None:
+        n_sig = count_significant_sources(image, min_peak_snr=near_min_peak_snr)
+        if n_sig < near_min_stars:
+            return _far_or_empty(image)
     valid = {k: v for k, v in frame_kw.items() if k in frame_hfd.__code__.co_varnames}
     hfd, n = frame_hfd(image, **valid)
     if n > 0 and np.isfinite(hfd):
         return "near" if (near_hfd_max is None or hfd <= near_hfd_max) else "far"
+    return _far_or_empty(image)
+
+
+def _far_or_empty(image) -> str:
+    """Structure present (donuts, blobs) -> ``"far"``; nothing at all -> ``"empty"``."""
     data = _load(image)
     bg = np.median(data)
     mad = np.median(np.abs(data - bg)) or 1.0
