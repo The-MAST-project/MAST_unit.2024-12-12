@@ -94,17 +94,18 @@ guards the invocation (exact CRPIX) with a deliberately loose CRVAL bound.
 
 ## Tests / drift detection
 
-We have no CI. The tests in `solvers/tests/` are split so that the most
-important guard needs nothing:
+The drift tests are split so that the most important guard needs nothing and
+runs in CI:
 
-- **`test_pixel_grid.py`** — pure math, **runs anywhere** (`pytest`), no
-  astrometry.net. This is the primary drift canary for the conversion: it pins
-  the convention, round-trips, and asserts the old integer-division bug stays
-  dead.
-- **`test_equivalence_integration.py`** — **skipped unless** astrometry.net, the
-  index directory, and a sample full-frame FITS are present. It re-runs the
-  equivalence study (numpy pre-downsample vs `--downsample`) and asserts the two
-  WCS still agree to sub-arcsecond after converting through `pixel_grid`.
+- **`tests/test_pixel_grid.py`** (repo root) — pure math, **runs anywhere**
+  and in CI with the rest of `pytest tests/`, no astrometry.net. This is the
+  primary drift canary for the conversion: it pins the convention,
+  round-trips, and asserts the old integer-division bug stays dead.
+- **`solvers/tests/test_equivalence_integration.py`** — run by hand, not in
+  CI; **skipped unless** astrometry.net, the index directory, and a sample
+  full-frame FITS are present. It re-runs the equivalence study (numpy
+  pre-downsample vs `--downsample`) and asserts the two WCS still agree to
+  sub-arcsecond after converting through `pixel_grid`.
 
 See `solvers/tests/README.md` for how to point the integration test at a solver,
 indexes, and a fixture image.

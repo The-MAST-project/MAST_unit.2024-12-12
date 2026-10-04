@@ -1,24 +1,29 @@
 # Solver drift tests
 
 These guard the fragile binned/full-frame coordinate surface
-(`solvers/pixel_grid.py`, `solvers/COORDINATE_SURFACE.md`). There is no CI, so
-run them by hand after touching `pixel_grid.py`, the `mastrometry.py`
-downsample/crop/refpix logic, or the solve-field flags.
+(`solvers/pixel_grid.py`, `solvers/COORDINATE_SURFACE.md`). The pure-math tier
+runs in CI with the rest of the suite. The integration tier needs astrometry.net,
+so CI cannot run it: run it by hand after touching `pixel_grid.py`, the
+`mastrometry.py` downsample/crop/refpix logic, or the solve-field flags.
 
 ## Two tiers
 
 | File | Needs astrometry.net? | What it catches |
 |---|---|---|
-| `test_pixel_grid.py` | **No** — runs anywhere | The convention itself: naive `orig/factor`, integer-division `refpix`, the off-by-(f-1)/2f error. This is the primary canary. |
+| `tests/test_pixel_grid.py` (repo root) | **No** — runs anywhere, and in CI | The convention itself: naive `orig/factor`, integer-division `refpix`, the off-by-(f-1)/2f error. This is the primary canary. |
 | `test_equivalence_integration.py` | **Yes** — skipped otherwise | Drift in the numpy kernel, the solve-field version/behavior, or the conversion end-to-end. Re-runs the equivalence study and asserts sub-arcsecond agreement. |
 
 ## Running
 
-Pure-math tests (always):
+Pure-math tests (always; CI runs them as part of `pytest tests/`):
 
 ```
-pytest src/solvers/tests/test_pixel_grid.py -v
+pytest tests/test_pixel_grid.py -v
 ```
+
+They live in the main suite, not here, because CI collects only `tests/`. The
+integration test stays here because it launches `solve-field` and `gh`, which the
+main suite's `tests/conftest.py` blocks.
 
 Integration test — only on a machine with astrometry.net. The ~90 MB sample
 frame is **not** in the repo (it would bloat every clone). It lives as a GitHub
