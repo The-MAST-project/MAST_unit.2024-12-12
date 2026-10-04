@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import ValidationError
 
+from common import iers_policy
 from common.config import Config, ConfigError
 from common.endpoints import TIER_GROUPS, Tier, operation_area_tag
 from common.filer import Filer
@@ -29,6 +30,20 @@ _parser.add_argument("--log-level", default=None, help="DEBUG, INFO, WARNING, ..
 configure_logging(_parser.parse_known_args()[0].log_level)
 
 logger = get_logger(__name__)
+
+# The IERS policy, at module scope and NOT in the lifespan, because the lifespan runs after
+# `create_app()` has already built the `Unit` -- and the policy has to be in force before the
+# first coordinate transform anywhere in the process, including any that `Config()` reaches
+# through `Site.observing_window()`.
+#
+# Without it, astropy raises once the Earth-orientation table's predictions are more than 30
+# days old, which is what stopped this unit's mount on 2026-10-01: every stability-campaign
+# visit died before its slew and the mount never moved. `common` guards its own transform, so
+# this call is what covers the unit's -- slewing, acquisition, plate solving.
+#
+# Cheap and in-memory. Loading the cached table costs ~510 ms and belongs in the lifespan
+# below, with the rest of the background machinery.
+iers_policy.configure_astropy()
 
 
 def app_quit(reason: str):
@@ -310,6 +325,31 @@ def main():
     # and by one-shot scripts). Never fatal: a unit that cannot watch still runs on the
     # configuration it loaded, exactly as before.
     Config().start_watching()
+
+    # The Earth-orientation table, and the thread that keeps it current. Here for the reason
+    # given just above: loading parses ~20k rows (~510 ms) and the refresher is a thread
+    # wanting an owner with a lifetime, so both belong in the service entry point rather than
+    # in an import or in `Config()`.
+    #
+    # Deliberately NOT in the app lifespan either, even though `Filer`'s sweep lives there:
+    # the lifespan is also entered by the bare app a test builds, where there is no
+    # configuration file at all and `Config()` raises. Here it has already been validated
+    # above, so the cache directory can simply be read.
+    #
+    # The policy set at module scope is what keeps the mount pointing; these two are what keep
+    # it ACCURATE. `uvicorn.run` is called from this function below, so they land before
+    # anything is served. `start_iers_refresher` takes a machine-wide guard and returns False
+    # if another MAST service on this machine already holds it, so calling it from every
+    # service is safe.
+    #
+    # Served some other way -- `uvicorn app:app`, which nothing does today and no launch
+    # configuration offers -- this function does not run, and the process would point from
+    # whatever table astropy resolves for itself. Degraded accuracy, not a stopped mount: the
+    # module-scope policy is what guarantees that, which is why it is deliberately not here.
+    iers_cache = Config().local.iers_cache_dir
+    iers_policy.load_into_astropy(iers_cache)
+    iers_policy.log_lag(iers_cache)
+    iers_policy.start_iers_refresher(iers_cache)
 
     service_conf = Config().get_service(service_name="unit")
     if service_conf is None:
