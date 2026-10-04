@@ -7,8 +7,9 @@ integer-division ``refpix``, these assertions fail immediately.
 See ``solvers/pixel_grid.py`` and ``solvers/COORDINATE_SURFACE.md``.
 """
 
-import pixel_grid as pg
 import pytest
+
+from solvers import pixel_grid as pg
 
 ARCSEC_PER_ORIG_PX = 0.2616  # for translating pixel errors to sky, documentation only
 
