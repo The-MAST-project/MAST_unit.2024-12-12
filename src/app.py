@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import ValidationError
 
+from common import iers_policy
 from common.config import Config, ConfigError
 from common.endpoints import TIER_GROUPS, Tier, operation_area_tag
 from common.filer import Filer
@@ -29,6 +30,20 @@ _parser.add_argument("--log-level", default=None, help="DEBUG, INFO, WARNING, ..
 configure_logging(_parser.parse_known_args()[0].log_level)
 
 logger = get_logger(__name__)
+
+# The IERS policy, at module scope and NOT in the lifespan, because the lifespan runs after
+# `create_app()` has already built the `Unit` -- and the policy has to be in force before the
+# first coordinate transform anywhere in the process, including any that `Config()` reaches
+# through `Site.observing_window()`.
+#
+# Without it, astropy raises once the Earth-orientation table's predictions are more than 30
+# days old, which is what stopped this unit's mount on 2026-10-01: every stability-campaign
+# visit died before its slew and the mount never moved. `common` guards its own transform, so
+# this call is what covers the unit's -- slewing, acquisition, plate solving.
+#
+# Cheap and in-memory. Loading the cached table costs ~510 ms and belongs in the lifespan
+# below, with the rest of the background machinery.
+iers_policy.configure_astropy()
 
 
 def app_quit(reason: str):
@@ -215,6 +230,19 @@ def create_app(unit=None) -> FastAPI:
         # Runs even when `unit` is None: a sweep of last night's leftovers does not need a
         # unit, and the bare app is also what a test builds.
         Filer(logger).start_product_relocation_sweep(logger=logger)
+
+        # The Earth-orientation table, and the thread that keeps it current. Here rather than
+        # at module scope because loading parses ~20k rows (~510 ms) and the refresher is a
+        # network thread -- neither belongs in an import, which a test or a one-shot script
+        # also performs. The policy above is what prevents a raise; these two are what keep
+        # the pointing accurate, and they run before any HTTP request can ask for a slew.
+        #
+        # `start_iers_refresher` takes a machine-wide guard and returns False if another MAST
+        # service on this machine already holds it, so running it from every service is safe.
+        iers_cache = Config().local.iers_cache_dir
+        iers_policy.load_into_astropy(iers_cache)
+        iers_policy.log_lag(iers_cache)
+        iers_policy.start_iers_refresher(iers_cache)
 
         if unit is None:
             yield
