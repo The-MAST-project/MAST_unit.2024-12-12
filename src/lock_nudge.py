@@ -42,7 +42,12 @@ import time
 from dataclasses import dataclass, field
 
 from common.config.phd2 import LockNudgeConfig
-from common.interfaces.solving import ARCSEC_PER_DEGREE, SolvingSolution, target_offset_arcsec
+from common.interfaces.solving import (
+    ARCSEC_PER_DEGREE,
+    SolvingSolution,
+    offset_on_sky_arcsec,
+    target_offset_arcsec,
+)
 from common.mast_logging import get_logger
 from common.utils import Coord, function_name
 
@@ -202,7 +207,7 @@ def nudge_lock_to_target(unit, connector, target: Coord, conf: LockNudgeConfig) 
     # sign doubles it instead, which the telemetry below makes obvious on the first run.
     dx, dy = -offset[0], -offset[1]
     magnitude_px = math.hypot(dx, dy)
-    magnitude_arcsec = math.hypot(d_ra_arcsec * math.cos(math.radians(solution.dec_degs)), d_dec_arcsec)
+    magnitude_arcsec = offset_on_sky_arcsec(d_ra_arcsec, d_dec_arcsec, solution.dec_degs)
 
     telemetry = {
         "offset_arcsec": magnitude_arcsec,
@@ -211,7 +216,7 @@ def nudge_lock_to_target(unit, connector, target: Coord, conf: LockNudgeConfig) 
         "offset_px": (dx, dy),
         "lock_before": lock_before,
         "matched_stars": solution.matched_stars,
-        "limit_frame_in_force": repr(connector.limit_frame_in_force),
+        "limit_frame": repr(connector.get_limit_frame()),
     }
 
     if magnitude_px > conf.max_offset_px:
