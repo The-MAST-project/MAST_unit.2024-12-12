@@ -23,6 +23,12 @@ integer-division ROI `refpix` that biased pointing by ~0.4").
    dir's README): its integration tests need astrometry.net + indexes + a
    sample FITS, so CI never runs them. The pure-math tests
    (`tests/test_pixel_grid.py`) run anywhere and in CI.
+   - Run them on a machine that has `solve-field` and the index set
+     (`D:\mast-indexes`): a unit, a dev unit, or labcomp2.
+   - **A skip is not a pass.** Elsewhere both tests skip, and a plain `pytest`
+     run still looks green. Run with `-ra` and confirm they ran.
+   - If they cannot be run, say so in the PR and ask for a run on a unit. Do
+     not report the change as verified.
 4. **Tweak (SIP) is intentionally ON** in `mastrometry.py` — do not re-add
    `--no-tweak` without reading the comment there; it breaks agreement with the
    reference solver and with full-frame pixel consistency.
