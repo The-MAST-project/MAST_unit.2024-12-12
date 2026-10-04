@@ -89,7 +89,7 @@ class TestImagerRoiConditioning:
     `ImagerRoi` conditions a rectangle to the camera's alignment constraints, so a
     configured 520,0 reaches PHD2 as 527,1. Any future version that forms an
     absolute lock position must take its crop origin from
-    `limit_frame_in_force` -- the connector's record of what it actually sent --
+    `get_limit_frame()` -- what PHD2 itself reports holding (#245) --
     and never from config, or it is wrong by 7 px in x and 1 in y: small enough to
     survive review, and a real pointing error on every nudge.
     """
@@ -110,3 +110,52 @@ class TestImagerRoiConditioning:
             b_image[0] - a_image[0],
             b_image[1] - a_image[1],
         )
+
+
+class TestASolvedNudgeIsApplied:
+    """The path past a successful solve, end to end with the PHD2 and solver faked.
+
+    The telemetry once read `connector.limit_frame_in_force`, an attribute #245
+    removed. The AttributeError came after the solve and before the lock moved, and
+    the handover catches everything around the nudge -- so a nudge that solved was
+    never applied, and the log said only "lock nudge failed".
+    """
+
+    def test_the_lock_moves(self):
+        from types import SimpleNamespace
+
+        from common.config.phd2 import LockNudgeConfig
+        from common.interfaces.solving import SolvingResult
+        from common.utils import Coord
+        from lock_nudge import nudge_lock_to_target
+
+        try:
+            import solvers.mastrometry  # noqa: F401 -- the nudge imports it for DOWNSAMPLE_FACTOR
+        except Exception as ex:  # noqa: BLE001 -- the import chain is Windows-and-hardware-only
+            pytest.skip(f"solver import chain unavailable here ({ex!r})")
+
+        from astropy.coordinates import Angle
+
+        moved: list[tuple[float, float]] = []
+        sol = solution(dec_degs=30.0)
+        sol.ra_hours = 15.0
+        sol.dec_rads = math.radians(30.0)
+        connector = SimpleNamespace(
+            get_lock_position=lambda: (100.0, 100.0),
+            get_limit_frame=lambda: None,
+            save_image=lambda: None,
+            set_lock_position=lambda x, y: moved.append((x, y)),
+            avg_dist=0.1,
+        )
+        unit = SimpleNamespace(
+            solver=SimpleNamespace(
+                _backend=SimpleNamespace(solve=lambda **kwargs: SolvingResult(succeeded=True, solution=sol))
+            )
+        )
+        # one arcsecond of dec off: a few pixels, well inside max_offset_px
+        target = Coord(ra=Angle(15.0, unit="hour"), dec=Angle(30.0 + 1.0 / 3600.0, unit="deg"))
+
+        outcome = nudge_lock_to_target(unit, connector, target, LockNudgeConfig(enabled=True, confirm_frames=0))
+
+        assert outcome.applied, outcome.reason
+        assert len(moved) == 1
