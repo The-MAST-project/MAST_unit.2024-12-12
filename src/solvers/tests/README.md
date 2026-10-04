@@ -22,17 +22,16 @@ pytest tests/test_pixel_grid.py -v
 ```
 
 They live in the main suite, not here, because CI collects only `tests/`. The
-integration test stays here because it launches `solve-field` and `gh`, which the
-main suite's `tests/conftest.py` blocks.
+integration test stays here because it launches `solve-field`, which the main
+suite's `tests/conftest.py` blocks.
 
 Integration test — only on a machine with astrometry.net. The ~90 MB sample
 frame is **not** in the repo (it would bloat every clone). It lives as a GitHub
-Release asset (tag `fixtures-v1`). The first time the test runs, `conftest.py`
-fetches it via the **`gh` CLI** (the repo is private, so the asset is not
-anonymously downloadable — `gh` must be installed and `gh auth login`'d),
-caching it under `fixtures/full-frame.fits` (git-ignored) and verifying its
-sha256. No `git lfs pull` needed. If you already have a frame on disk — or don't
-want to use `gh` — point `MAST_TEST_FITS` at it to skip the download. The index
+Release asset (tag `fixtures-v1`) on the public repo. The first time the test
+runs, `conftest.py` downloads it over plain HTTPS (no `gh`, no login), verifies
+its sha256, and caches it under `fixtures/full-frame.fits` (git-ignored). No
+`git lfs pull` needed. If you already have a frame on disk, or the machine has
+no route to GitHub, point `MAST_TEST_FITS` at it to skip the download. The index
 set on `D:\` is the only thing you must supply yourself (too large to host).
 Defaults target the dev unit; override via env vars if your paths differ:
 
