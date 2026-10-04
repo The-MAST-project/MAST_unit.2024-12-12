@@ -2,6 +2,36 @@
 
 ---
 
+## [2026-10-04] Download the solver test fixture over plain HTTPS, not through `gh`
+
+**Supersedes** the fetch mechanism in the 2026-06-23 entry "Host the solver test fixture as a
+GitHub Release asset, not in-repo git-lfs". The fixture stays a release asset; only the way it
+is downloaded changes.
+
+**Why:** the `gh` download existed only because the repo was private and the asset could not be
+fetched anonymously. The repo is public now. A plain GET of the asset URL returns the frame with
+the pinned sha256, and the units reach GitHub over HTTPS. Requiring `gh`, logged in, made the
+integration test skip on any machine without it (#286).
+
+**What:** `src/solvers/tests/conftest.py` downloads
+`https://github.com/The-MAST-project/MAST_unit.2024-12-12/releases/download/fixtures-v1/full-frame.fits`
+with `urllib.request`. It writes `full-frame.partial.fits` first and renames it into the cache
+only after the sha256 matches. The lookup order is unchanged: `MAST_TEST_FITS`, then the cache,
+then the download.
+
+**Implications:**
+
+- The integration test needs network access to GitHub, or `MAST_TEST_FITS`. It no longer needs
+  `gh` or a login.
+- An interrupted or corrupted download leaves no cached frame, so the next run downloads again
+  rather than failing the sha256 check on a half-written file.
+- If the repo goes private again, the download fails with a 404 and the test skips with that
+  reason. `MAST_TEST_FITS` still works.
+- The 2026-10-04 entry on the pure-math tests gives `gh` as one reason the integration test
+  cannot join `tests/`. That reason is gone, and `solve-field` alone still keeps it out.
+
+---
+
 ## [2026-10-04] The solver's pure-math tests join the CI suite; its integration test stays by hand
 
 **Why:** CI runs `pytest tests/`, and the solver drift tests lived in `src/solvers/tests/`, so
