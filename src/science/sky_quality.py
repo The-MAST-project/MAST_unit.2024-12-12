@@ -36,6 +36,13 @@ class QualityState(StrEnum):
 class FrameMetrics(BaseModel):
     snr: float = Field(..., gt=0)
     hfd_pixels: float = Field(..., gt=0)
+    #: Carried so this model is no longer blind to the one quantity that separates
+    #: an artifact lock from a faint real star. SNR and HFD do not: measured over
+    #: 2026-09-08 their ranges overlap completely between the two (median SNR 14.9
+    #: against 15.0), so no threshold on them can tell the cases apart. Scoring it
+    #: is `lock_validity`'s job, not this model's -- this only stops the value
+    #: being dropped at the one place it is in hand.
+    star_mass: float | None = Field(default=None, ge=0)
     saturated: bool = False
     guiding_paused: bool = False
 
