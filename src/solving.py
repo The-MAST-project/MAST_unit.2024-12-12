@@ -1,7 +1,6 @@
 import datetime
 import json
 import os.path
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import astropy.units as u
@@ -393,14 +392,6 @@ class Solver(SolverInterface):
                         ra_delta=delta_ra_arcsec,  # type: ignore
                         dec_delta=delta_dec_arcsec,  # type: ignore
                     )
-
-                    if not imager_settings.folder:
-                        raise SolverError(f"{function_name()}: empty imager_settings.folder")
-                    file_name = str(Path(imager_settings.folder) / "corrections.json")
-                    with MoveGuardian().protect(file_name):
-                        with open(file_name, "w") as f:
-                            f.write(latest_corrections.model_dump_json(indent=2))
-                        filer.move_ram_to_shared(file_name)
 
                     self.unit.end_activity(UnitActivities.Solving)
                     return True
