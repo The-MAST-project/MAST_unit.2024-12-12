@@ -257,6 +257,14 @@ def test_every_pwi4_state_name_we_map_is_one_pwi4_actually_emits():
     assert set(_PWI4_STATE_NAMES) == set(PWI4_OVERALL_STATE.values())
 
 
+def _hold_partly_open(covers, start: float = 100.0) -> None:
+    """Two readings of `PartlyOpen`, the settle time apart: a cover that really stopped."""
+    from covers import PARTLY_OPEN_SETTLE_SECONDS
+
+    covers._end_motion_stopped_short(CoversState.PartlyOpen, now=start)
+    covers._end_motion_stopped_short(CoversState.PartlyOpen, now=start + PARTLY_OPEN_SETTLE_SECONDS)
+
+
 @pytest.mark.parametrize(
     ("motion", "lifecycle"),
     [
@@ -271,9 +279,9 @@ def test_covers_stopped_short_end_their_motion_and_lifecycle_activities(motion, 
     from covers import Covers
 
     recorder = RecordingActivities(active={motion, lifecycle})
-    covers = _component(Covers, recorder)
+    covers = _component(Covers, recorder, _partly_open_since=None)
 
-    covers._end_motion_stopped_short(CoversState.PartlyOpen)
+    _hold_partly_open(covers)
 
     assert motion not in recorder.active
     assert lifecycle not in recorder.active
@@ -290,10 +298,11 @@ def test_covers_stopped_short_does_not_claim_the_covers_were_shut():
         Covers,
         recorder,
         _was_shut_down=False,
+        _partly_open_since=None,
         power_off=lambda: powered_off.append(True),
     )
 
-    covers._end_motion_stopped_short(CoversState.PartlyOpen)
+    _hold_partly_open(covers)
 
     assert covers._was_shut_down is False
     assert powered_off == []
@@ -308,12 +317,97 @@ def test_covers_not_yet_moving_keep_their_motion_activity(state):
     from covers import Covers
 
     recorder = RecordingActivities(active={CoverActivities.Opening, CoverActivities.StartingUp})
-    covers = _component(Covers, recorder)
+    covers = _component(Covers, recorder, _partly_open_since=None)
 
-    covers._end_motion_stopped_short(state)
+    covers._end_motion_stopped_short(state, now=0.0)
 
     assert CoverActivities.Opening in recorder.active
     assert CoverActivities.StartingUp in recorder.active
+
+
+#: One full close as PWI4 reported it on mast01, 2026-10-05, sampled by the 2 s covers timer:
+#: every full travel passes through `PartlyOpen` for 0.23-0.70 s before its end state (#294).
+#: (seconds since the command, PWI4 state)
+FULL_CLOSE = [
+    (0.0, CoversState.Open),
+    (2.0, CoversState.Moving),
+    (22.0, CoversState.Moving),
+    (24.4, CoversState.PartlyOpen),
+    (26.4, CoversState.Closed),
+]
+
+
+@pytest.mark.parametrize(
+    ("motion", "lifecycle"),
+    [
+        (CoverActivities.Opening, CoverActivities.StartingUp),
+        (CoverActivities.Closing, CoverActivities.ShuttingDown),
+    ],
+)
+def test_one_partly_open_reading_at_the_end_of_a_travel_is_not_a_stop(motion, lifecycle):
+    from covers import Covers
+
+    recorder = RecordingActivities(active={motion, lifecycle})
+    covers = _component(Covers, recorder, _partly_open_since=None)
+
+    covers._end_motion_stopped_short(CoversState.PartlyOpen, now=24.4)
+
+    assert motion in recorder.active
+    assert lifecycle in recorder.active
+
+
+def test_partly_open_interrupted_by_another_state_starts_the_wait_again():
+    from covers import PARTLY_OPEN_SETTLE_SECONDS, Covers
+
+    recorder = RecordingActivities(active={CoverActivities.Closing})
+    covers = _component(Covers, recorder, _partly_open_since=None)
+
+    covers._end_motion_stopped_short(CoversState.PartlyOpen, now=0.0)
+    covers._end_motion_stopped_short(CoversState.Moving, now=1.0)
+    covers._end_motion_stopped_short(CoversState.PartlyOpen, now=PARTLY_OPEN_SETTLE_SECONDS)
+
+    assert CoverActivities.Closing in recorder.active
+
+
+def test_a_full_close_shuts_the_covers_down_and_powers_them_off(monkeypatch):
+    """The 2026-10-05 mast01 shutdown: a tick read the end-of-travel `PartlyOpen`, called it
+    a stop, and the `Closed` branch never ran -- the Covers outlet stayed on."""
+    import threading
+    import types
+
+    import covers as covers_module
+    from covers import Covers
+
+    readings = iter(FULL_CLOSE)
+    current = {}
+
+    class TimedCovers(Covers):
+        connected = True
+
+        @property
+        def state(self):
+            return current["state"]
+
+    recorder = RecordingActivities(active={CoverActivities.Closing, CoverActivities.ShuttingDown})
+    powered_off = []
+    covers = _component(
+        TimedCovers,
+        recorder,
+        unit=types.SimpleNamespace(unit_shutdown_event=threading.Event()),
+        _was_shut_down=False,
+        _partly_open_since=None,
+        power_off=lambda: powered_off.append(True),
+    )
+    monkeypatch.setattr(covers_module.time, "monotonic", lambda: current["t"])
+
+    for t, state in readings:
+        current.update(t=t, state=state)
+        covers.ontimer()
+
+    assert CoverActivities.Closing not in recorder.active
+    assert CoverActivities.ShuttingDown not in recorder.active
+    assert covers._was_shut_down is True
+    assert powered_off == [True]
 
 
 # --------------------------------------------------------------------------------- stage

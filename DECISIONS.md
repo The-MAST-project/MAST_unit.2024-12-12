@@ -2,6 +2,32 @@
 
 ---
 
+## [2026-10-05] `PartlyOpen` means stopped short only once it has held for 1.5 s
+
+**Refines** the 2026-09-22 entry "`Moving` is the only cover state that means motion": its
+`_end_motion_stopped_short` acted on a single `PartlyOpen` reading.
+
+**Why:** PWI4 also reports `PartlyOpen` for 0.23-0.70 s at the end of every full travel, just
+before `Open` / `Closed` (four travels on mast01, 2026-10-05; mast00's measurement on
+`MOVE_TIMEOUT_SECONDS` shows the same). The mast03 probe behind the 2026-09-22 entry never sampled
+an end of travel. When the 2 s covers timer landed in that window, a completed travel was logged
+as stopped short. On shutdown that meant the `Closed` branch of `ontimer` never ran, so the Covers
+outlet stayed on and `_was_shut_down` stayed False. Six of the seven `stopped short` lines on the
+share are of this kind (#294).
+
+**What:** `_end_motion_stopped_short` takes the tick's time. It remembers when a motion was first
+read `PartlyOpen` (`_partly_open_since`) and ends the motion only once that has held for
+`PARTLY_OPEN_SETTLE_SECONDS = 1.5`, about twice the longest window measured. Any other state, or
+no motion in progress, clears it.
+
+**Implications:** a cover that really stops is noticed one tick later, about 2 s after it would
+have been. The threshold is a time, not a count of ticks, so it stays right whatever the
+timer's interval. `Aborting` still ends on any at-rest
+reading, `PartlyOpen` included: a blip can only meet an abort at the very end of a travel, where
+the covers are about to rest anyway.
+
+---
+
 ## [2026-10-05] An autofocus run that fails leaves the unit as one that did not solve
 
 **Why:** `do_start_autofocus` had six exits, and each did its own subset of the cleanup. Only
