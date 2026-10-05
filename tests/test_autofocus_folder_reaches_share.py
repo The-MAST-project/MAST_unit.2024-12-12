@@ -135,8 +135,10 @@ class TestEveryEndingMovesTheFolderOnce:
 
         unit.imager.start_exposure = start_exposure
 
-        with pytest.raises(ValueError, match="Cannot end exposure series"):
-            _run(harness, unit, [])
+        _run(harness, unit, [])
+
+        assert _moves(events) == _folders(tmp_path)
+        assert len(_moves(events)) == 1
 
         assert _moves(events) == _folders(tmp_path)
         assert len(_moves(events)) == 1

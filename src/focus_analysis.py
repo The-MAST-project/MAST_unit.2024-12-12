@@ -99,12 +99,17 @@ def analyze_focus_files(
     Raises
     ------
     FocusAnalysisError
-        ``phase="start"`` if the analyser never starts, ``phase="finish"`` if it
-        starts but does not finish, within ``timeout`` seconds.
+        ``phase="start"`` if the analyser cannot be reached or never starts,
+        ``phase="finish"`` if it starts but does not finish, within ``timeout`` seconds.
     """
     op = "analyze_focus_files"
     ps3_client = PS3CLIClient()
-    ps3_client.connect(host, port)
+    try:
+        ps3_client.connect(host, port)
+    except Exception as ex:  # noqa: BLE001 -- PS3CLIClient.connect wraps every failure in a bare Exception
+        raise FocusAnalysisError(
+            f"cannot reach the focus analyser at {host}:{port} ({ex.__cause__!r})", phase="start"
+        ) from ex
     try:
         posix_files = [Path(file).as_posix() for file in files]
         logger.info(f"calling ps3_client.begin_analyze_focus({posix_files})")
