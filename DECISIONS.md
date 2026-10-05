@@ -2,6 +2,35 @@
 
 ---
 
+## [2026-10-05] An autofocus run that fails leaves the unit as one that did not solve
+
+**Why:** `do_start_autofocus` had six exits, and each did its own subset of the cleanup. Only
+the normal end returned the focuser, stopped tracking and ended `Autofocusing`. On mast01 the
+pre-sweep settle timeout returned with `Autofocusing` still set (#290). With ps3cli down, the
+thread died on the bare `Exception` that `PS3CLIClient.connect` raises: both activity flags
+stayed set, the focuser stayed mid-sweep, and the traceback reached only stderr (#291).
+
+**What:**
+
+- `do_start_autofocus` starts `Autofocusing` and calls `_run_autofocus`. Its `finally` ends
+  both `AutofocusAnalysis` and `Autofocusing` on every exit (`end_activity` is a no-op on an
+  inactive one). An exception is logged with its traceback, stored in `unit.errors`, and the
+  run is abandoned.
+- `_abandon_run` is the one failure cleanup: the focuser back to where the run found it, once
+  that is known (it is read after the settle), and tracking off. A settle timeout, an analyser
+  that did not start, an exception, and exhausted tries all call it.
+- An operator stop is not a failure and is unchanged: it leaves the focuser and tracking as
+  they are.
+- `analyze_focus_files` turns a failed `connect` into `FocusAnalysisError(phase="start")`, so
+  an unreachable ps3cli takes the path built for an analyser that never starts.
+  `PlaneWave/ps3cli_client.py` stays as PlaneWave shipped it.
+
+**Implications:** an analyser that does not start now also restores the focuser and stops
+tracking, which it did not before. The entry position lives on the `Autofocuser` for the
+duration of a run (`_entry_position`), beside `latest_result`.
+
+---
+
 ## [2026-10-04] Download the solver test fixture over plain HTTPS, not through `gh`
 
 **Supersedes** the fetch mechanism in the 2026-06-23 entry "Host the solver test fixture as a
