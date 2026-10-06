@@ -6,6 +6,11 @@ them -- the unit's own, and every component's via `unit_shutdown_event`. Measure
 ends its flags inline, came out clean on the same event.
 
 The invariant under test is one line: do not cancel a timer while an activity depends on it.
+
+Since opmode-design 5.2 the cancelling is no longer `do_shutdown`'s at all: a `controlled` unit
+runs start -> shut -> start, and a shutdown that killed the unit timer left the next startup
+unable to finish. Teardown moved to `end_lifespan`, at process exit, after the shutdown -- and
+its sweep -- have finished.
 """
 
 from __future__ import annotations
@@ -87,6 +92,7 @@ def _unit(components):
     unit.timer = FakeTimer()
     unit.unit_shutdown_event = FakeEvent()
     unit._was_shut_down = False
+    unit.abort = lambda: None  # do_shutdown aborts first; abort itself is tested elsewhere
 
     recorder = FakeActivities(UnitActivities)
     for attr in ("is_active", "start_activity", "end_activity"):
@@ -123,7 +129,7 @@ def test_a_component_that_never_settles_is_ended_rather_than_stranded():
     assert CoverActivities.ShuttingDown in covers.ended
 
 
-def test_the_sweep_happens_before_the_timers_are_cancelled():
+def test_end_lifespan_tears_down_only_after_the_shutdown_sweep():
     """Order is the whole defect: sweeping after the event is set would be sweeping after the
     component timers are already dead, which is where the stranded flags come from."""
     covers = FakeComponent("covers", CoverActivities, clears_on_shutdown=False)
@@ -132,6 +138,7 @@ def test_the_sweep_happens_before_the_timers_are_cancelled():
     unit = _unit([covers])
     unit.timer.cancel = lambda: order.append("timer_cancelled")
     unit.unit_shutdown_event.set = lambda: order.append("event_set")
+    unit.shutdown = unit.do_shutdown  # synchronous, so end_lifespan's wait returns at once
     original_end = covers.end_activity
 
     def record_end(activity, **kwargs):
@@ -140,7 +147,7 @@ def test_the_sweep_happens_before_the_timers_are_cancelled():
 
     covers.end_activity = record_end
 
-    unit.do_shutdown()
+    unit.end_lifespan()
 
     assert "component_flag_ended" in order
     assert order.index("component_flag_ended") < order.index("timer_cancelled")
@@ -158,10 +165,22 @@ def test_unit_shutting_down_is_ended_by_do_shutdown_itself():
     assert unit._was_shut_down is True
 
 
-def test_the_teardown_still_happens():
+def test_do_shutdown_leaves_the_timers_running():
+    """start -> shut -> start: the unit timer is the only thing that ends StartingUp, so a
+    shutdown that cancelled it left the next startup unable to finish (opmode-design 5.2)."""
     unit = _unit([FakeComponent("covers", CoverActivities)])
 
     unit.do_shutdown()
+
+    assert unit.timer.cancelled is False
+    assert unit.unit_shutdown_event.was_set is False
+
+
+def test_end_lifespan_still_tears_down():
+    unit = _unit([FakeComponent("covers", CoverActivities)])
+    unit.shutdown = unit.do_shutdown
+
+    unit.end_lifespan()
 
     assert unit.timer.cancelled is True
     assert unit.unit_shutdown_event.was_set is True
@@ -181,7 +200,7 @@ def test_a_component_with_no_activities_is_skipped_not_crashed_on():
 
     unit.do_shutdown()
 
-    assert unit.unit_shutdown_event.was_set is True
+    assert unit._was_shut_down is True
 
 
 @pytest.mark.parametrize("stuck", [CoverActivities.Opening, CoverActivities.Closing])
@@ -240,3 +259,77 @@ def test_do_shutdown_ends_unit_shuttingdown_after_the_components_settle():
 
     assert order == ["components_settled", "unit_flag_ended"]
     assert not unit._recorder.is_active(UnitActivities.ShuttingDown)
+
+
+# ------------------------------------------------------------- abort before shutdown (5.3)
+
+
+def test_shutdown_aborts_before_it_shuts_any_component_down():
+    """Nothing may still be exposing or guiding while the covers close."""
+    order: list[str] = []
+    covers = FakeComponent("covers", CoverActivities)
+    original_shutdown = covers.shutdown
+
+    def record_shutdown():
+        order.append("covers.shutdown")
+        original_shutdown()
+
+    covers.shutdown = record_shutdown
+    unit = _unit([covers])
+    unit.abort = lambda: order.append("abort")
+
+    unit.do_shutdown()
+
+    assert order == ["abort", "covers.shutdown"]
+
+
+def test_shutdown_waits_for_aborting_to_end(monkeypatch):
+    import unit as unit_module
+
+    covers = FakeComponent("covers", CoverActivities)
+    unit = _unit([covers])
+    unit.abort = lambda: unit.start_activity(UnitActivities.Aborting)
+
+    waits: list[bool] = []
+
+    def fake_sleep(_seconds):
+        # The flag clears while do_shutdown waits, as ontimer would end it.
+        waits.append(covers.shutdown_called)
+        unit.end_activity(UnitActivities.Aborting)
+
+    monkeypatch.setattr(unit_module.time, "sleep", fake_sleep)
+
+    unit.do_shutdown()
+
+    assert waits == [False], "waited once, before any component was shut down"
+    assert covers.shutdown_called
+
+
+def test_an_abort_that_never_settles_does_not_stop_the_shutdown(monkeypatch, caplog):
+    """Bounded on purpose: shutdown is the make-safe path, and a run that ignores its abort
+    must not keep the covers open."""
+    import unit as unit_module
+
+    monkeypatch.setattr(unit_module, "ABORT_SETTLE_TIMEOUT_SECONDS", 0.0)
+    covers = FakeComponent("covers", CoverActivities)
+    unit = _unit([covers])
+    unit.abort = lambda: unit.start_activity(UnitActivities.Aborting)
+
+    with caplog.at_level("ERROR"):
+        unit.do_shutdown()
+
+    assert covers.shutdown_called
+    assert any("abort not settled" in r.getMessage() for r in caplog.records)
+
+
+def test_unsettled_names_unit_work_and_component_aborts():
+    covers = FakeComponent("covers", CoverActivities, active=[CoverActivities.Aborting])
+    unit = _unit([covers])
+    unit.start_activity(UnitActivities.Exposing)
+    unit.start_activity(UnitActivities.ShuttingDown)  # lifecycle, not work: not listed
+
+    assert unit._unsettled_by_abort() == ["Exposing", "covers.Aborting"]
+
+    unit.end_activity(UnitActivities.Exposing)
+    covers.end_activity(CoverActivities.Aborting)
+    assert unit._unsettled_by_abort() == []

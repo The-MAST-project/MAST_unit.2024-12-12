@@ -1,3 +1,4 @@
+import threading
 import time
 
 import numpy as np
@@ -142,13 +143,30 @@ class Imager(ImagerInterface, SwitchedOutlet):
 
     @endpoint(tier=Tier.INTERFACE, completion=ImagerActivities.ShuttingDown)
     def shutdown(self) -> CanonicalResponse:
-        return self._backend.shutdown()
+        response = self._backend.shutdown()
+        # The machine's power_down_on_shutdown (opmode-design 4a); off by default. On a thread:
+        # powerdown() waits for the backend's shutdown (a warm-up, on the ASCOM camera) with no
+        # deadline, which must not hold the shutdown request. It calls the backend's shutdown,
+        # not this one, so there is no recursion.
+        if self._power_down_on_shutdown():
+            threading.Thread(name="imager-powerdown-thread", target=self.do_powerdown, daemon=True).start()
+        return response
+
+    def _power_down_on_shutdown(self) -> bool:
+        conf = getattr(getattr(self, "unit", None), "unit_conf", None)
+        return bool(getattr(conf, "power_down_on_shutdown", False))
 
     @property
     def is_shutting_down(self) -> bool:
         return self._backend.is_shutting_down
 
     def powerdown(self):
+        self.do_powerdown()
+
+    def do_powerdown(self):
+        """The power-down itself: shut the backend down if needed, wait for it, power off.
+
+        Separate from `powerdown()` so it can be a thread target (do_-named, by convention)."""
         if not self._backend.was_shut_down:
             self._backend.shutdown()
         while self._backend.is_shutting_down:

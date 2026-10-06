@@ -80,7 +80,7 @@ def test_focuser_set_position_names_what_it_rejected():
 # ---------------------------------------------------------------------------- covers
 
 
-def _disconnected_covers():
+def _disconnected_covers(power_down_on_shutdown: bool = False):
     from covers import Covers
 
     class _Covers(Covers):
@@ -93,7 +93,10 @@ def _disconnected_covers():
         def power_off(self):
             self.powered_off = True
 
-    return object.__new__(_Covers)
+    covers = object.__new__(_Covers)
+    conf = type("Conf", (), {"power_down_on_shutdown": power_down_on_shutdown})()
+    covers.unit = type("FakeUnit", (), {"unit_conf": conf})()
+    return covers
 
 
 @pytest.mark.parametrize("verb", ["open", "close"])
@@ -103,8 +106,15 @@ def test_covers_motion_refuses_when_disconnected(verb):
 
 
 def test_covers_shutdown_succeeds_when_disconnected():
-    """Powering off IS the shutdown for a disconnected cover, so this one is not a refusal."""
+    """Not a refusal: there is nothing to close. The outlet stays on -- powering off is the
+    control machine's call, through powerdown (opmode-design 4a)."""
     covers = _disconnected_covers()
+    assert_ok(covers.shutdown())
+    assert not covers.powered_off
+
+
+def test_covers_shutdown_powers_off_when_the_unit_is_configured_to():
+    covers = _disconnected_covers(power_down_on_shutdown=True)
     assert_ok(covers.shutdown())
     assert covers.powered_off
 

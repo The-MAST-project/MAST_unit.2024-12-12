@@ -114,12 +114,12 @@ def test_shutdown_clears_the_flag_even_when_the_sequence_fails():
     `powerdown()` that never returns -- which is the failure mode this whole issue is about."""
     recorder = RecordingActivities()
     mount = _mount(recorder, connected=True)
-    boom = RuntimeError("PDU unreachable")
+    boom = RuntimeError("PWI4 unreachable")
 
     def explode():
         raise boom
 
-    mount.power_off = explode
+    mount.disconnect = explode
     try:
         with pytest.raises(RuntimeError):
             mount.shutdown()
@@ -129,7 +129,9 @@ def test_shutdown_clears_the_flag_even_when_the_sequence_fails():
     assert MountActivities.ShuttingDown not in recorder.active
 
 
-def test_shutdown_disconnects_and_powers_off_and_records_that_it_did():
+def test_shutdown_disconnects_and_records_that_it_did_but_leaves_the_outlet_on():
+    """Shutdown leaves the mount powered, ready to start up again or be powered down
+    (opmode-design 4a). Powering off is powerdown()'s, or power_down_on_shutdown's."""
     recorder = RecordingActivities()
     mount = _mount(recorder, connected=True)
     try:
@@ -138,9 +140,24 @@ def test_shutdown_disconnects_and_powers_off_and_records_that_it_did():
         _release(mount)
 
     assert mount.disconnected is True
-    assert mount.powered_off is True
+    assert mount.powered_off is False
     assert mount._was_shut_down is True
     assert "/fans/off" in mount.pw.requests
+
+
+def test_shutdown_powers_off_when_the_unit_is_configured_to():
+    recorder = RecordingActivities()
+    unit = type("FakeUnit", (), {"unit_conf": type("Conf", (), {"power_down_on_shutdown": True})()})()
+    mount = _mount(recorder, connected=True, unit=unit)
+    try:
+        mount.shutdown()
+    finally:
+        _release(mount)
+
+    assert mount.disconnected is True
+    assert mount.powered_off is True
+    assert MountActivities.PoweringDown not in recorder.active
+    assert MountActivities.ShuttingDown not in recorder.active
 
 
 def test_shutdown_does_not_park():
@@ -169,7 +186,7 @@ def test_shutdown_of_an_already_disconnected_mount_still_completes():
         _release(mount)
 
     assert MountActivities.ShuttingDown not in recorder.active
-    assert mount.powered_off is True
+    assert mount.powered_off is False
     assert mount.disconnected is False
 
 
@@ -206,9 +223,9 @@ def test_shutdown_ends_everything_even_when_the_sequence_fails():
     mount = _mount(recorder, connected=True)
 
     def explode():
-        raise RuntimeError("PDU unreachable")
+        raise RuntimeError("PWI4 unreachable")
 
-    mount.power_off = explode
+    mount.disconnect = explode
     try:
         with pytest.raises(RuntimeError):
             mount.shutdown()

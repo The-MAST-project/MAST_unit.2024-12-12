@@ -341,16 +341,26 @@ class Covers(Component, SwitchedOutlet):
     @endpoint(tier=Tier.INTERFACE, completion=CoverActivities.ShuttingDown)
     def shutdown(self):
         """
-        Performs the ``shutdown`` procedure for the **MAST** mirror covers
+        Performs the ``shutdown`` procedure for the **MAST** mirror covers: close them.
+
+        The outlet stays on afterwards, as for every component (opmode-design 4a): powering
+        off is the control machine's decision, through ``powerdown`` -- unless the machine's
+        ``power_down_on_shutdown`` is set. Until 2026-10-06 the covers powered off on every
+        shutdown, unconditionally.
         """
         if not self.connected:
-            self.power_off()
+            if self._power_down_on_shutdown():
+                self.power_off()
             return CanonicalResponse_Ok
 
         if self.state != CoversState.Closed:
             self.start_activity(CoverActivities.ShuttingDown)
             self.close()
         return CanonicalResponse_Ok
+
+    def _power_down_on_shutdown(self) -> bool:
+        conf = getattr(getattr(self, "unit", None), "unit_conf", None)
+        return bool(getattr(conf, "power_down_on_shutdown", False))
 
     @property
     def is_shutting_down(self) -> bool:
@@ -389,7 +399,8 @@ class Covers(Component, SwitchedOutlet):
             if self.is_active(CoverActivities.ShuttingDown):
                 self.end_activity(CoverActivities.ShuttingDown)
                 self._was_shut_down = True
-                self.power_off()
+                if self._power_down_on_shutdown():
+                    self.power_off()
 
         self._end_motion_stopped_short(state)
         self._end_abort_when_at_rest(state)

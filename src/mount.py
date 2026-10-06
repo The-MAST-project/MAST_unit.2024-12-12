@@ -173,8 +173,14 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Mount")
         Component.__init__(self, MountActivities)
 
+        # Powered in every opmode (opmode-design 3, 4a): a `controlled` unit waits for its
+        # `startup` with the mount powered, connected and its axes energised.
         if not self.is_on():
-            self.power_on()
+            self.start_activity(MountActivities.PoweringUp)
+            try:
+                self.power_on()
+            finally:
+                self.end_activity(MountActivities.PoweringUp)
 
         self._was_shut_down: bool = False
         self.last_axis0_position_degrees: int = -99999
@@ -285,7 +291,9 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     @endpoint(tier=Tier.INTERFACE, completion=MountActivities.ShuttingDown)
     def shutdown(self):
         """
-        Performs the **MAST** mount shutdown routine: fans off, disconnect, power OFF.
+        Performs the **MAST** mount shutdown routine: fans off, disconnect. The outlet stays on,
+        ready for `startup()` again or `powerdown()` -- unless the unit's
+        `power_down_on_shutdown` is set, in which case this powers down too (opmode-design 4a).
 
         `ShuttingDown` is raised for the duration and **ended here**, not from `ontimer`.
         That is the same shape `Focuser.shutdown()` uses, and for the same reason: this is
@@ -312,11 +320,17 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.pw.request("/fans/off")
             if self.connected:
                 self.disconnect()
-            self.power_off()
             self._was_shut_down = True
         finally:
             self._end_every_activity()
+        # Not when powerdown() is what called us: it powers off itself, after we return.
+        if self._power_down_on_shutdown() and not self.is_active(MountActivities.PoweringDown):
+            self.powerdown()
         return CanonicalResponse_Ok
+
+    def _power_down_on_shutdown(self) -> bool:
+        conf = getattr(getattr(self, "unit", None), "unit_conf", None)
+        return bool(getattr(conf, "power_down_on_shutdown", False))
 
     def _end_every_activity(self) -> None:
         """End every mount activity still raised. Disconnecting is the last moment any of
@@ -340,6 +354,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def is_shutting_down(self) -> bool:
         return self.is_active(MountActivities.ShuttingDown)
 
+    @endpoint(tier=Tier.OPERATION, completion=MountActivities.PoweringDown)
     def powerdown(self):
         """Shut the mount down if it has not been, then make sure the outlet is off.
 
@@ -349,9 +364,15 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         a flag that could never clear hung this call for ever -- and with it
         `Unit.power_all_off()`, which walks the components in series (MAST_unit#193).
         """
-        if not self._was_shut_down:
-            self.shutdown()
-        self.power_off()
+        self.start_activity(MountActivities.PoweringDown)
+        try:
+            # shutdown() is synchronous and ends its own flags, so there is nothing to wait on.
+            if not self._was_shut_down:
+                self.shutdown()
+            self.power_off()
+        finally:
+            self.end_activity(MountActivities.PoweringDown)
+        return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION, completion=MountActivities.Parking)
     def park(self):
@@ -1213,6 +1234,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         add_api_route(router, base_path + "/start_tracking", endpoint=self.start_tracking, methods=["PUT"])
         add_api_route(router, base_path + "/stop_tracking", endpoint=self.stop_tracking, methods=["PUT"])
         add_api_route(router, base_path + "/park", endpoint=self.park, methods=["PUT"])
+        add_api_route(router, base_path + "/powerdown", endpoint=self.powerdown, methods=["PUT"])
         add_api_route(router, base_path + "/find_home", endpoint=self.find_home, methods=["PUT"])
         # PUT per invariant 5 (#48). `/goto` and the divergent `goto()` it pointed at
         # were retired in #37: the equatorial and horizontal slews are separate verbs.
