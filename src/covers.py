@@ -34,6 +34,12 @@ MINIMUM_PWI4_VERSION = (4, 1, 6)
 #: from that rather than guessed, with room for a slower unit.
 MOVE_TIMEOUT_SECONDS = 60
 
+#: How long `PartlyOpen` must hold during a motion before it counts as stopped short. PWI4
+#: passes through `PartlyOpen` at the end of every full travel, for 0.23-0.70 s over four
+#: travels measured on mast01 on 2026-10-05 (MAST_unit#294); a cover that really stopped holds
+#: it until commanded again.
+PARTLY_OPEN_SETTLE_SECONDS = 1.5
+
 #: PWI4's `mirrorcover.overall_state_name` -> our `CoversState`.
 #:
 #: Keyed on the NAME. **Never cast PWI4's integer into `CoversState`**: the two enumerations
@@ -116,6 +122,9 @@ class Covers(Component, SwitchedOutlet):
 
         if not self.is_on():
             self.power_on()
+
+        # When the current motion was first read `PartlyOpen`, while it still reads so.
+        self._partly_open_since: float | None = None
 
         self.timer: RepeatTimer = RepeatTimer(2, self.ontimer)
         self.timer.name = "covers-timer-thread"
@@ -402,19 +411,22 @@ class Covers(Component, SwitchedOutlet):
                 if self._power_down_on_shutdown():
                     self.power_off()
 
-        self._end_motion_stopped_short(state)
+        self._end_motion_stopped_short(state, now=time.monotonic())
         self._end_abort_when_at_rest(state)
 
-    def _end_motion_stopped_short(self, state: CoversState) -> None:
+    def _end_motion_stopped_short(self, state: CoversState, now: float) -> None:
         """End a motion activity whose covers stopped between the two end states.
 
-        `PartlyOpen` is the only state that means this. Measured on mast03, 2026-09-22:
-        PWI4 reports `Opening` / `Closing` for the whole of a travel -- 97 samples, none
-        of them `PartlyOpen` -- and switches to `PartlyOpen` only once motion has stopped,
-        holding it until commanded again. Covers that have not begun moving yet still
-        report the end state they are sitting at, so this cannot fire in the gap between
-        issuing a command and PWI4 acting on it, which was measured at ~0.3 s against a
-        2 s timer.
+        `PartlyOpen` is the only state that means this, but only once it has held for
+        `PARTLY_OPEN_SETTLE_SECONDS`. PWI4 reports `Opening` / `Closing` through the travel
+        (mast03, 2026-09-22: 97 samples, none of them `PartlyOpen`), then `PartlyOpen` for
+        under a second just before the end state (mast01, 2026-10-05: every full travel), and
+        holds `PartlyOpen` only when motion has really stopped. Ending on one reading cut
+        short a full travel whenever the 2 s timer landed in that window, and the `Closed`
+        branch of `ontimer` -- which powers the outlet off -- never ran (MAST_unit#294).
+
+        Covers that have not begun moving yet still report the end state they are sitting
+        at, so this cannot fire in the gap between issuing a command and PWI4 acting on it.
 
         Without this, `ShuttingDown` is ended only by reaching `Closed`, so a cover that
         stopped short keeps the flag raised and `powerdown()` waits out the whole of
@@ -423,15 +435,24 @@ class Covers(Component, SwitchedOutlet):
         `_was_shut_down` is deliberately not set and the outlet deliberately not powered
         off: the covers are not shut, and `powerdown()` owns the power-off.
         """
-        if state is not CoversState.PartlyOpen:
+        moving = [
+            (motion, lifecycle)
+            for motion, lifecycle in (
+                (CoverActivities.Opening, CoverActivities.StartingUp),
+                (CoverActivities.Closing, CoverActivities.ShuttingDown),
+            )
+            if self.is_active(motion)
+        ]
+        if state is not CoversState.PartlyOpen or not moving:
+            self._partly_open_since = None
+            return
+        if self._partly_open_since is None:
+            self._partly_open_since = now
+        if now - self._partly_open_since < PARTLY_OPEN_SETTLE_SECONDS:
             return
 
-        for motion, lifecycle in (
-            (CoverActivities.Opening, CoverActivities.StartingUp),
-            (CoverActivities.Closing, CoverActivities.ShuttingDown),
-        ):
-            if not self.is_active(motion):
-                continue
+        self._partly_open_since = None
+        for motion, lifecycle in moving:
             logger.warning(f"covers: {motion.name} stopped short; covers are {state.name}")
             self.end_activity(motion)
             if self.is_active(lifecycle):

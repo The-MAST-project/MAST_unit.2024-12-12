@@ -61,6 +61,8 @@ class Autofocuser:
     def __init__(self, unit: "Unit"):  # type: ignore[name]
         self.unit = unit  # type: ignore[name]
         self.latest_result: PS3FocusAnalysisResult | None = None
+        # Where the current run found the focuser, once it is known.
+        self._entry_position: int | None = None
 
     @property
     def is_autofocusing(self) -> bool:
@@ -167,7 +169,7 @@ class Autofocuser:
             ],
         ).start()
 
-    def do_start_autofocus(  # noqa: C901
+    def do_start_autofocus(
         self,
         target_ra: float | None = None,  # center of ROI
         target_dec: float | None = None,  # center of ROI
@@ -198,10 +200,32 @@ class Autofocuser:
         op = "do_start_autofocus"
         self.unit.errors = []
         self.latest_result = None
+        self._entry_position = None
 
         assert self.unit.unit_conf is not None
 
         self.unit.start_activity(UnitActivities.Autofocusing)
+        try:
+            self._run_autofocus(target_ra, target_dec, exposure, start_position, ticks_per_step, number_of_images)
+        except Exception as ex:  # noqa: BLE001 -- the run's own thread: anything escaping reaches only stderr
+            logger.exception(f"{op}: autofocus run failed")
+            self.unit.errors.append(f"{op}: autofocus run failed: {ex!r}")
+            self._abandon_run()
+        finally:
+            self.unit.end_activity(UnitActivities.AutofocusAnalysis)
+            self.unit.end_activity(UnitActivities.Autofocusing)
+
+    def _run_autofocus(  # noqa: C901
+        self,
+        target_ra: float | None,
+        target_dec: float | None,
+        exposure: float,
+        start_position: int | None,
+        ticks_per_step: int,
+        number_of_images: int,
+    ):
+        op = "do_start_autofocus"
+        assert self.unit.unit_conf is not None
 
         self.unit.required_stage.move_to_preset(StagePresetPosition.Sky)
 
@@ -245,6 +269,7 @@ class Autofocuser:
                     f"focuser={self.unit.focuser.position}->{self.unit.focuser.target}); "
                     f"aborting autofocus"
                 )
+                self._abandon_run()
                 return
             if not self.unit.is_active(UnitActivities.Autofocusing):
                 logger.info("activity 'Autofocusing' was stopped while settling")
@@ -260,7 +285,7 @@ class Autofocuser:
         # endorsed -- which is how one night walked the focuser 750 ticks off (#233).
         # Read after the settle above, so a focuser still moving on entry is not captured
         # mid-flight and restored to somewhere it was only passing through.
-        entry_position: int = self.unit.required_focuser.position
+        self._entry_position = self.unit.required_focuser.position
 
         acquisition_conf = self.unit.unit_conf.acquisition
         roi_conf = acquisition_conf.rois[self.unit.fcu_version]
@@ -362,7 +387,7 @@ class Autofocuser:
                     self.log_and_store_error(f"{op}: {ex}")
                     self.unit.end_activity(UnitActivities.AutofocusAnalysis)
                     if ex.phase == "start":
-                        self.unit.end_activity(UnitActivities.Autofocusing)
+                        self._abandon_run()
                         return
                     continue  # next try_number
 
@@ -464,13 +489,21 @@ class Autofocuser:
             msg = f"{op}: could not achieve {max_tolerance=} within {max_tries=}"
             self.log_and_store_error(msg)
             boxed_log(logger=logger, lines=[msg], level=logging.ERROR)
-            logger.info(f"{op}: returning the focuser to {entry_position}, where the run found it")
-            self.unit.required_focuser.position = entry_position
-            while self.unit.required_focuser.is_active(FocuserActivities.Moving):
-                time.sleep(0.5)
+            self._abandon_run()
+            return
 
         self.unit.required_mount.stop_tracking()
-        self.unit.end_activity(UnitActivities.Autofocusing)
+
+    def _abandon_run(self) -> None:
+        """Leave the unit as a run that did not solve does: the focuser back where the run
+        found it, if that is known yet, and tracking off. Not for an operator stop, which
+        leaves both as they are."""
+        if self._entry_position is not None:
+            logger.info(f"do_start_autofocus: returning the focuser to {self._entry_position}, where the run found it")
+            self.unit.required_focuser.position = self._entry_position
+            while self.unit.required_focuser.is_active(FocuserActivities.Moving):
+                time.sleep(0.5)
+        self.unit.required_mount.stop_tracking()
 
     def save_analysis(self, folder: str, status: PS3AutofocusStatus | None = None, errors: list[str] | None = None):
         filename = os.path.join(folder, "status.json")

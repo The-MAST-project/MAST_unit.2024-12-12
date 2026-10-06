@@ -2,6 +2,61 @@
 
 ---
 
+## [2026-10-05] `PartlyOpen` means stopped short only once it has held for 1.5 s
+
+**Refines** the 2026-09-22 entry "`Moving` is the only cover state that means motion": its
+`_end_motion_stopped_short` acted on a single `PartlyOpen` reading.
+
+**Why:** PWI4 also reports `PartlyOpen` for 0.23-0.70 s at the end of every full travel, just
+before `Open` / `Closed` (four travels on mast01, 2026-10-05; mast00's measurement on
+`MOVE_TIMEOUT_SECONDS` shows the same). The mast03 probe behind the 2026-09-22 entry never sampled
+an end of travel. When the 2 s covers timer landed in that window, a completed travel was logged
+as stopped short. On shutdown that meant the `Closed` branch of `ontimer` never ran, so the Covers
+outlet stayed on and `_was_shut_down` stayed False. Six of the seven `stopped short` lines on the
+share are of this kind (#294).
+
+**What:** `_end_motion_stopped_short` takes the tick's time. It remembers when a motion was first
+read `PartlyOpen` (`_partly_open_since`) and ends the motion only once that has held for
+`PARTLY_OPEN_SETTLE_SECONDS = 1.5`, about twice the longest window measured. Any other state, or
+no motion in progress, clears it.
+
+**Implications:** a cover that really stops is noticed one tick later, about 2 s after it would
+have been. The threshold is a time, not a count of ticks, so it stays right whatever the
+timer's interval. `Aborting` still ends on any at-rest
+reading, `PartlyOpen` included: a blip can only meet an abort at the very end of a travel, where
+the covers are about to rest anyway.
+
+---
+
+## [2026-10-05] An autofocus run that fails leaves the unit as one that did not solve
+
+**Why:** `do_start_autofocus` had six exits, and each did its own subset of the cleanup. Only
+the normal end returned the focuser, stopped tracking and ended `Autofocusing`. On mast01 the
+pre-sweep settle timeout returned with `Autofocusing` still set (#290). With ps3cli down, the
+thread died on the bare `Exception` that `PS3CLIClient.connect` raises: both activity flags
+stayed set, the focuser stayed mid-sweep, and the traceback reached only stderr (#291).
+
+**What:**
+
+- `do_start_autofocus` starts `Autofocusing` and calls `_run_autofocus`. Its `finally` ends
+  both `AutofocusAnalysis` and `Autofocusing` on every exit (`end_activity` is a no-op on an
+  inactive one). An exception is logged with its traceback, stored in `unit.errors`, and the
+  run is abandoned.
+- `_abandon_run` is the one failure cleanup: the focuser back to where the run found it, once
+  that is known (it is read after the settle), and tracking off. A settle timeout, an analyser
+  that did not start, an exception, and exhausted tries all call it.
+- An operator stop is not a failure and is unchanged: it leaves the focuser and tracking as
+  they are.
+- `analyze_focus_files` turns a failed `connect` into `FocusAnalysisError(phase="start")`, so
+  an unreachable ps3cli takes the path built for an analyser that never starts.
+  `PlaneWave/ps3cli_client.py` stays as PlaneWave shipped it.
+
+**Implications:** an analyser that does not start now also restores the focuser and stops
+tracking, which it did not before. The entry position lives on the `Autofocuser` for the
+duration of a run (`_entry_position`), beside `latest_result`.
+
+---
+
 ## [2026-10-04] Download the solver test fixture over plain HTTPS, not through `gh`
 
 **Supersedes** the fetch mechanism in the 2026-06-23 entry "Host the solver test fixture as a
