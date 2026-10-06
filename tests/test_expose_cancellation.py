@@ -220,6 +220,13 @@ class TestAbortReachesTheRun:
         def is_active(self, activity):
             return activity in self.activities
 
+        # abort() raises UnitActivities.Aborting (opmode-design 5.3); ontimer ends it.
+        def start_activity(self, activity, **_):
+            self.activities.add(activity)
+
+        def end_activity(self, activity, **_):
+            self.activities.discard(activity)
+
     def test_abort_cancels_a_run_in_flight(self):
         stub = self.Aborting(exposing=True)
 

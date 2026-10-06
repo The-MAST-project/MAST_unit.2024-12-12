@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 
 from common.models.statuses import ComponentStatus, FullUnitStatus
+from common.opmode import OpMode, OpState
 from unit import Unit
 
 STANDING_ERROR = "a standing unit error"
@@ -77,6 +78,9 @@ class Stub:
         # `Unit.__init__` always builds a FluxMeteringSession -- but `status` reads it, so a
         # Stub without one raises where the real thing cannot.
         self.flux_metering = parts.pop("flux_metering", FluxMetering())
+        # Read by `status` since opmode/opstate went on the wire (opmode-design 6).
+        self.opmode = OpMode.CONTROLLED
+        self.opstate = OpState.INITIALIZED
         assert not parts, f"unknown parts: {sorted(parts)}"
 
     def component_status(self) -> ComponentStatus:

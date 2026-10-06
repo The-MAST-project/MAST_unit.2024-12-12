@@ -504,7 +504,14 @@ from pyximc import *
         """
         self.disconnect()
         self._was_shut_down = True
+        # The machine's power_down_on_shutdown (opmode-design 4a); off by default.
+        if self._power_down_on_shutdown():
+            self.powerdown()
         return CanonicalResponse_Ok
+
+    def _power_down_on_shutdown(self) -> bool:
+        conf = getattr(getattr(self, "unit", None), "unit_conf", None)
+        return bool(getattr(conf, "power_down_on_shutdown", False))
 
     @property
     def is_shutting_down(self) -> bool:

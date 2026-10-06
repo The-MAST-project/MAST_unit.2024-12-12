@@ -369,9 +369,14 @@ def test_partly_open_interrupted_by_another_state_starts_the_wait_again():
     assert CoverActivities.Closing in recorder.active
 
 
-def test_a_full_close_shuts_the_covers_down_and_powers_them_off(monkeypatch):
+@pytest.mark.parametrize("power_down_on_shutdown", [False, True])
+def test_a_full_close_shuts_the_covers_down(monkeypatch, power_down_on_shutdown):
     """The 2026-10-05 mast01 shutdown: a tick read the end-of-travel `PartlyOpen`, called it
-    a stop, and the `Closed` branch never ran -- the Covers outlet stayed on."""
+    a stop, and the `Closed` branch never ran.
+
+    Whether that branch then powers the outlet off is the machine's
+    `power_down_on_shutdown` (opmode-design 4a, default False): otherwise the covers stay
+    powered until the control machine sends `powerdown`. Either way the branch must run."""
     import threading
     import types
 
@@ -393,7 +398,10 @@ def test_a_full_close_shuts_the_covers_down_and_powers_them_off(monkeypatch):
     covers = _component(
         TimedCovers,
         recorder,
-        unit=types.SimpleNamespace(unit_shutdown_event=threading.Event()),
+        unit=types.SimpleNamespace(
+            unit_shutdown_event=threading.Event(),
+            unit_conf=types.SimpleNamespace(power_down_on_shutdown=power_down_on_shutdown),
+        ),
         _was_shut_down=False,
         _partly_open_since=None,
         power_off=lambda: powered_off.append(True),
@@ -407,7 +415,7 @@ def test_a_full_close_shuts_the_covers_down_and_powers_them_off(monkeypatch):
     assert CoverActivities.Closing not in recorder.active
     assert CoverActivities.ShuttingDown not in recorder.active
     assert covers._was_shut_down is True
-    assert powered_off == [True]
+    assert powered_off == ([True] if power_down_on_shutdown else [])
 
 
 # --------------------------------------------------------------------------------- stage

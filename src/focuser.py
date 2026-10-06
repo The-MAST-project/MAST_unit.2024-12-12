@@ -69,8 +69,14 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Focuser")
         Component.__init__(self, FocuserActivities)
 
+        self._was_shut_down = False
+        # Powered in every opmode: only the unit reads the opmode (opmode-design 4a).
         if not self.is_on():
-            self.power_on()
+            self.start_activity(FocuserActivities.PoweringUp)
+            try:
+                self.power_on()
+            finally:
+                self.end_activity(FocuserActivities.PoweringUp)
 
         self.pw: pwi4_client.PWI4 = pwi4_client.PWI4()
         self.connect()
@@ -120,19 +126,32 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
         if self.connected:
             self.disconnect()
         self.pw.focuser_disable()
+        self._was_shut_down = True
         self.end_activity(FocuserActivities.ShuttingDown)
+        # Not when powerdown() is what called us: it powers off itself, after we return.
+        if self._power_down_on_shutdown() and not self.is_active(FocuserActivities.PoweringDown):
+            self.powerdown()
         return CanonicalResponse_Ok
+
+    def _power_down_on_shutdown(self) -> bool:
+        conf = getattr(getattr(self, "unit", None), "unit_conf", None)
+        return bool(getattr(conf, "power_down_on_shutdown", False))
 
     @property
     def is_shutting_down(self) -> bool:
         return self.is_active(FocuserActivities.ShuttingDown)
 
+    @endpoint(tier=Tier.OPERATION, completion=FocuserActivities.PoweringDown)
     def powerdown(self):
-        if not self._was_shut_down:
-            self.shutdown()
-        while self.is_shutting_down:
-            time.sleep(1)
-        self.power_off()
+        self.start_activity(FocuserActivities.PoweringDown)
+        try:
+            # shutdown() is synchronous and ends its own flag, so there is nothing to wait on.
+            if not self._was_shut_down:
+                self.shutdown()
+            self.power_off()
+        finally:
+            self.end_activity(FocuserActivities.PoweringDown)
+        return CanonicalResponse_Ok
 
     def connect(self):
         if not self.is_on():
@@ -397,6 +416,7 @@ class Focuser(Component, SwitchedOutlet, AscomDispatcher):
 
         router = APIRouter()
         register_component_endpoints(router, self, base_path)
+        add_api_route(router, base_path + "/powerdown", endpoint=self.powerdown, methods=["PUT"])
         add_api_route(router, base_path + "/position", endpoint=self.get_position)
         add_api_route(
             router,

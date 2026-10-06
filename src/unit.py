@@ -45,6 +45,7 @@ from common.interfaces.components import Component
 from common.interfaces.imager import ImagerTypes
 from common.mast_logging import DailyFileHandler, get_logger
 from common.models.assignments import AssignmentNotification, UnitAssignment
+from common.opmode import OpmodeBase, OpState
 
 if TYPE_CHECKING:  # `guiding` imports `unit` back, so this stays type-only
     from guiding import Guider
@@ -80,6 +81,35 @@ AUTOFOCUS_STOP_TIMEOUT_SECONDS = 30.0
 #: timers they depend on. Above the slowest of them: the covers close asynchronously against
 #: their own `MOVE_TIMEOUT_SECONDS` of 60 (MAST_unit#259).
 SHUTDOWN_SETTLE_TIMEOUT_SECONDS = 70.0
+
+#: How long `do_shutdown` waits for its abort to settle before shutting the components down
+#: anyway. Bounded, unlike the other lifecycle waits (opmode-design 11), because shutdown is
+#: the make-safe path: a run that ignores its abort must not keep the covers open. Long
+#: enough for a run to finish the exposure it is inside, which is how the exposure and
+#: flux-metering runs unwind.
+ABORT_SETTLE_TIMEOUT_SECONDS = 120.0
+
+#: The unit's own in-flight work: what an abort is meant to stop. `Aborting` ends when none
+#: of these is active and no component reports its own `Aborting`. Lifecycle flags
+#: (StartingUp, ShuttingDown, PoweringDown) are deliberately not here.
+_ABORTABLE_WORK = (
+    UnitActivities.AutofocusingPWI4,
+    UnitActivities.Autofocusing,
+    UnitActivities.AutofocusAnalysis,
+    UnitActivities.Calibrating,
+    UnitActivities.CalibratingFocus,
+    UnitActivities.CalibratingOpticalCenter,
+    UnitActivities.CalibratingStage,
+    UnitActivities.PreGuiding,
+    UnitActivities.Guiding,
+    UnitActivities.Acquiring,
+    UnitActivities.Positioning,
+    UnitActivities.Solving,
+    UnitActivities.Correcting,
+    UnitActivities.Dancing,
+    UnitActivities.Exposing,
+    UnitActivities.FluxMetering,
+)
 
 
 def configured_imager() -> ImagerTypes | None:
@@ -134,7 +164,7 @@ def _start_exposure_or_raise(imager, settings: ImagerSettings) -> None:
         raise RuntimeError(f"{function_name()}: the imager refused the exposure: {response.errors}")
 
 
-class Unit(Component):
+class Unit(Component, OpmodeBase):
     MAX_UNITS = 20
     MAX_AUTOFOCUS_TRIES = 3
 
@@ -156,6 +186,7 @@ class Unit(Component):
         # logger.info(f"Unit.__init__: initiating instance 0x{id(self):x}")
 
         Component.__init__(self, UnitActivities)
+        OpmodeBase.__init__(self)
 
         self._connected: bool = False
 
@@ -287,7 +318,7 @@ class Unit(Component):
         return FcuVersion(self.stage.fcu_version)
 
     def do_startup(self):
-        self.start_activity(UnitActivities.StartingUp)
+        # StartingUp is raised by startup(), before this thread exists.
         [comp.startup() for comp in self.components]
 
     @endpoint(tier=Tier.CONTRACT, completion=UnitActivities.StartingUp)
@@ -298,31 +329,45 @@ class Unit(Component):
         """
         Starts the **MAST** ``unit`` subsystem.  Makes it ``operational``.
         """
+        # On receipt, not on completion (opmode-design 4): a repeat while starting is still
+        # a startup received.
+        self._set_opstate(OpState.RUNNING)
         if self.is_active(UnitActivities.StartingUp):
             return
 
         self._was_shut_down = False
+        # Raised here rather than in the thread, so a second call arriving before the thread
+        # runs sees it and does not start another.
+        self.start_activity(UnitActivities.StartingUp)
         Thread(name="unit-startup-thread", target=self.do_startup).start()
         return CanonicalResponse_Ok
 
     def do_shutdown(self):
-        self.start_activity(UnitActivities.ShuttingDown)
-        [comp.shutdown() for comp in self.components]
-        if self.guider:
-            self.guider.abort()
+        # ShuttingDown is raised by shutdown(), before this thread exists.
+        if not self.is_active(UnitActivities.ShuttingDown):
+            self.start_activity(UnitActivities.ShuttingDown)  # a direct call, as the tests make
 
-        # Before cancelling anything. A component that leaves its flags to its own `ontimer`
-        # -- the covers, whose `shutdown()` starts an asynchronous close -- can clear them
-        # only while that timer still runs, and the last two lines of this method stop every
-        # component timer via the event, plus this unit's own (MAST_unit#259, #253).
+        # Stop all in-flight work first, and wait for it, so nothing is still exposing or
+        # guiding while the covers close (opmode-design 5.3). This replaces a guider-only
+        # abort that ran *after* the components had been shut down.
+        self.abort()
+        self._await_abort_settled()
+
+        [comp.shutdown() for comp in self.components]
+
+        # A component that leaves its flags to its own `ontimer` -- the covers, whose
+        # `shutdown()` starts an asynchronous close -- clears them while its timer runs; this
+        # waits for that, bounded, and ends what does not settle (MAST_unit#259, #253).
         self._await_components_at_rest()
 
         self._was_shut_down = True
-        # Here rather than in `ontimer`, which is the only other place that ends it and which
-        # is cancelled on the next line -- the same trap #193 fixed on the mount.
+        # Ended here, by the method that did the work, not left to `ontimer` -- the same
+        # shape #193 gave the mount.
         self.end_activity(UnitActivities.ShuttingDown)
-        self.timer.cancel()
-        self.unit_shutdown_event.set()
+        # No process teardown here. Cancelling the timers and setting the shutdown event
+        # used to live on these lines, and broke start -> shut -> start: the unit timer is
+        # the only thing that ends StartingUp, so the next startup could never complete
+        # (opmode-design 5.2). Teardown is end_lifespan's, at process exit.
 
     def _await_components_at_rest(self) -> None:
         """Wait, bounded, for every component to finish shutting down; end whatever does not.
@@ -350,10 +395,38 @@ class Unit(Component):
                 continue
             logger.error(
                 f"{comp.name}: still reporting {[a.name for a in stuck]} at the end of shutdown; "
-                f"ending them here, because the timer that would is about to be cancelled"
+                f"ending them here, so the unit does not report work that will never finish"
             )
             for activity in stuck:
                 comp.end_activity(activity)
+
+    def _await_abort_settled(self) -> None:
+        """Wait, bounded, for `Aborting` to end; carry on with the shutdown if it does not."""
+        deadline = time.monotonic() + ABORT_SETTLE_TIMEOUT_SECONDS
+        while self.is_active(UnitActivities.Aborting) and time.monotonic() < deadline:
+            time.sleep(0.5)
+        if self.is_active(UnitActivities.Aborting):
+            logger.error(
+                f"abort not settled after {ABORT_SETTLE_TIMEOUT_SECONDS:.0f}s; still running: "
+                f"{self._unsettled_by_abort()}; shutting down anyway"
+            )
+
+    def _unsettled_by_abort(self) -> list[str]:
+        """What an abort has not yet stopped: the unit's work flags, and component `Aborting`s."""
+        remaining = [flag.name for flag in _ABORTABLE_WORK if self.is_active(flag)]
+        for comp in self.components:
+            flag = self._component_flag(comp, "Aborting")
+            if flag is not None and comp.is_active(flag):
+                remaining.append(f"{getattr(comp, 'name', type(comp).__name__)}.Aborting")
+        return remaining
+
+    @staticmethod
+    def _component_flag(comp, member: str):
+        """A component's own activity member by name, or None if it has no such member."""
+        activities = getattr(comp, "activities", None)
+        if activities is None:
+            return None
+        return getattr(type(activities), member, None)
 
     @staticmethod
     def _shutting_down_flag(comp):
@@ -371,16 +444,36 @@ class Unit(Component):
     def is_shutting_down(self) -> bool:
         return self.is_active(UnitActivities.ShuttingDown)
 
+    @endpoint(tier=Tier.CONTRACT, completion=UnitActivities.PoweringDown)
+    def endpoint_powerdown(self):
+        return self.powerdown()
+
     def powerdown(self):
         """
-        Powers down the unit by shutting down and then turning off all power sockets.
+        Powers down the unit's components: shuts down if not already, then turns off their
+        power sockets. Not the computer's own outlet -- a process cannot acknowledge switching
+        itself off, so waking and killing the machine is the controller's (opmode-design 6).
+
+        Runs on a thread and returns at once; watch `PoweringDown` clear. Waiting for the
+        shutdown on the request thread used to hold the HTTP caller and a uvicorn worker for
+        as long as it took (opmode-design 5.4).
         """
-        if not self._was_shut_down:
-            self.shutdown()
-        while self.is_shutting_down:
-            time.sleep(0.5)
-        self.power_all_off()
+        if self.is_active(UnitActivities.PoweringDown):
+            return CanonicalResponse_Ok
+        self.start_activity(UnitActivities.PoweringDown)
+        Thread(name="unit-powerdown-thread", target=self.do_powerdown).start()
         return CanonicalResponse_Ok
+
+    def do_powerdown(self):
+        try:
+            if not self._was_shut_down:
+                self.shutdown()
+            # Unbounded by design (opmode-design 11): this is a thread, not a request.
+            while self.is_shutting_down:
+                time.sleep(0.5)
+            self.power_all_off()
+        finally:
+            self.end_activity(UnitActivities.PoweringDown)
 
     @endpoint(tier=Tier.CONTRACT, completion=UnitActivities.ShuttingDown)
     def endpoint_shutdown(self):
@@ -389,13 +482,20 @@ class Unit(Component):
     def shutdown(self):
         """
         Shuts down the **MAST** ``unit`` subsystem.  Makes it ``idle``.
+
+        Accepted in every opstate -- it is how a supervisor makes a machine safe, including
+        one it never started -- and idempotent (opmode-design 4).
         """
+        self._set_opstate(OpState.SHUTDOWN)
         if not self.connected:
             self.connect()
 
         if self.is_active(UnitActivities.ShuttingDown):
             return
 
+        # Raised here rather than in the thread, so a caller that waits on is_shutting_down
+        # right after this returns -- powerdown, end_lifespan -- cannot miss it.
+        self.start_activity(UnitActivities.ShuttingDown)
         Thread(name="shutdown-thread", target=self.do_shutdown).start()
         return CanonicalResponse_Ok
 
@@ -514,6 +614,8 @@ class Unit(Component):
 
         ret = FullUnitStatus(
             **self.component_status().model_dump(),
+            opmode=self.opmode,
+            opstate=self.opstate,
             id=id(self),
             powered=True,
             # `is_guiding` reaches PHD2 over the RPC and `is_autofocusing` reads the unit's
@@ -566,7 +668,7 @@ class Unit(Component):
 
         app_quit(reason="quit()")
 
-    @endpoint(tier=Tier.CONTRACT)
+    @endpoint(tier=Tier.CONTRACT, completion=UnitActivities.Aborting)
     def endpoint_abort(self):
         return self.abort()
 
@@ -597,8 +699,15 @@ class Unit(Component):
 
         Each sub-abort is attempted independently, and a failure in one is collected
         rather than allowed to skip the others.
+
+        **`UnitActivities.Aborting` says when it has all stopped.** Raised here, ended by
+        `ontimer` once none of `_ABORTABLE_WORK` is active and no component reports its own
+        `Aborting`. That is what `shutdown` waits on (opmode-design 5.3), and what a caller of
+        the endpoint watches; this method itself still returns at once.
         """
         errors: list[str] = []
+        if not self.is_active(UnitActivities.Aborting):
+            self.start_activity(UnitActivities.Aborting)
 
         # Before the sub-aborts, so the run cannot start another frame in the gap. The
         # imager's own abort, fired below with the rest of the components, is what releases
@@ -657,6 +766,10 @@ class Unit(Component):
             or (self.covers and self.covers.is_active(CoverActivities.StartingUp))
         ):
             self.end_activity(UnitActivities.StartingUp)
+
+        # UnitActivities.Aborting: raised by abort(), ended once everything it reached stopped.
+        if self.is_active(UnitActivities.Aborting) and not self._unsettled_by_abort():
+            self.end_activity(UnitActivities.Aborting)
 
         # UnitActivities.ShuttingDown is deliberately NOT ended here. `do_shutdown` shuts the
         # components down one after another, so between one finishing and the next starting
@@ -731,12 +844,33 @@ class Unit(Component):
                 logger.info(f"PlaneWave autofocus in progress {self.autofocus_try=}")
 
     def end_lifespan(self):
+        """Shut down, wait for it to finish, then tear the process's timers down.
+
+        The wait is unbounded by design (opmode-design 11): the unit does not cut its own
+        shutdown short; the process manager's kill timeout is the backstop.
+        """
         logger.info("unit end lifespan")
         self.shutdown()
+        while self.is_shutting_down:
+            time.sleep(0.5)
+        self._teardown()
+
+    def _teardown(self) -> None:
+        """Stop the unit's timer and, through the event, every component's. Process exit only."""
+        self.timer.cancel()
+        self.unit_shutdown_event.set()
 
     def start_lifespan(self):
-        logger.debug("unit start lifespan")
-        self.startup()
+        """The one place the opmode is acted on (opmode-design 4a).
+
+        `operated`: start at once, as a unit always has. `controlled`: report INITIALIZED and
+        wait for the `startup` endpoint. Construction has already happened, in `main()`.
+        """
+        logger.debug(f"unit start lifespan, opmode={self.opmode}")
+        if self.is_operated:
+            self.startup()
+        else:
+            self._set_opstate(OpState.INITIALIZED)
 
     @property
     def _operational_components(self) -> list[Component]:
@@ -1843,6 +1977,7 @@ class Unit(Component):
 
         add_api_route(router, base_path + "/startup", endpoint=self.endpoint_startup, methods=["PUT"])
         add_api_route(router, base_path + "/shutdown", endpoint=self.endpoint_shutdown, methods=["PUT"])
+        add_api_route(router, base_path + "/powerdown", endpoint=self.endpoint_powerdown, methods=["PUT"])
         # PUT-only, like every other state-changing route here. GET was accepted alongside
         # it while MAST_common's shared plan client migrated; that client now sends PUT
         # (models/plans.py), so the shim is gone (#48).
