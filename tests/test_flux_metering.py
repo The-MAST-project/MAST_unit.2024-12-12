@@ -162,37 +162,44 @@ class FakeUnit:
         self.ended.append(flag)
 
 
-@pytest.fixture
-def session(tmp_path, monkeypatch):
-    """A session wired to fakes, with the mover stubbed out.
+def _make_session(folder, peak_cell=(2, -1), cells=200, **params):
+    """A session wired to fakes, writing into `folder`. See the `session` fixture."""
+    mount = FakeMount(square_spiral(cells))
+    unit = FakeUnit(mount, FakeImager())
+    meter_kwargs = {k: params.pop(k) for k in ("peak_counts", "sigma_cells") if k in params}
+    meter = SimulatedFluxMeter(peak_cell=peak_cell, **meter_kwargs)
+    s = FluxMeteringSession(unit, flux_meter=meter)  # type: ignore[arg-type]
+    s.params = FluxMeteringParams(**params)
+    s.state.folder = str(folder)
+    s._meter = meter
+    # The simulator's reading follows wherever the mount says it is.
+    original = s._read_spiral_offset
 
-    `move_ram_to_shared` is a no-op here: these frames are in a tmp directory that is under
-    no configured root, and what is under test is the walk, not the mover.
-    """
+    def tracking_read():
+        cell, ring, offset = original()
+        if cell is not None:
+            meter.at_cell = cell
+        return cell, ring, offset
+
+    s._read_spiral_offset = tracking_read  # type: ignore[method-assign]
+    return s, unit, mount, meter
+
+
+def _stub_the_mover(monkeypatch) -> None:
+    """`move_ram_to_shared` is a no-op here: these frames are in a tmp directory that is
+    under no configured root, and what is under test is the walk, not the mover."""
     import flux_metering.session as session_module
 
     monkeypatch.setattr(session_module.filer, "move_ram_to_shared", lambda *a, **k: None)
 
-    def build(peak_cell=(2, -1), cells=200, **params):
-        mount = FakeMount(square_spiral(cells))
-        unit = FakeUnit(mount, FakeImager())
-        meter_kwargs = {k: params.pop(k) for k in ("peak_counts", "sigma_cells") if k in params}
-        meter = SimulatedFluxMeter(peak_cell=peak_cell, **meter_kwargs)
-        s = FluxMeteringSession(unit, flux_meter=meter)  # type: ignore[arg-type]
-        s.params = FluxMeteringParams(**params)
-        s.state.folder = str(tmp_path)
-        s._meter = meter
-        # The simulator's reading follows wherever the mount says it is.
-        original = s._read_spiral_offset
 
-        def tracking_read():
-            cell, ring, offset = original()
-            if cell is not None:
-                meter.at_cell = cell
-            return cell, ring, offset
+@pytest.fixture
+def session(tmp_path, monkeypatch):
+    """A session wired to fakes, with the mover stubbed out."""
+    _stub_the_mover(monkeypatch)
 
-        s._read_spiral_offset = tracking_read  # type: ignore[method-assign]
-        return s, unit, mount, meter
+    def build(**params):
+        return _make_session(tmp_path, **params)
 
     return build
 
@@ -539,24 +546,35 @@ def test_a_frame_that_is_nowhere_says_where_it_looked(tmp_path, monkeypatch):
 # repeats in every run on the share. These pin what each frame now says about itself.
 
 
-@pytest.fixture
-def walked(session, tmp_path):
+@pytest.fixture(scope="module")
+def walked(tmp_path_factory):
     """A finished walk whose products sit in a properly shaped run folder.
 
     The folder shape matters: RUNDATE and RUNSEQ are read back out of it, so a bare
     tmp_path would omit them and the test would prove nothing.
+
+    Built once per distinct set of parameters for the whole module, and shared. A walk is
+    the expensive part of these tests -- around 8 s, nearly all of it the aperture
+    photometry of each simulated frame -- and the tests using this fixture only read its
+    products back; none writes to it. Six of them ask for the same default walk.
     """
-    folder = tmp_path / "2026-09-01" / "FluxMetering" / "0004"
-    folder.mkdir(parents=True)
+    mp = pytest.MonkeyPatch()
+    _stub_the_mover(mp)
+    walks: dict = {}
 
     def build(**params):
-        s, unit, mount, meter = session(**params)
-        s.state.folder = str(folder)
-        s._expose_reference()
-        s._walk_spiral()
-        return s, folder
+        key = tuple(sorted(params.items()))
+        if key not in walks:
+            folder = tmp_path_factory.mktemp("walked") / "2026-09-01" / "FluxMetering" / "0004"
+            folder.mkdir(parents=True)
+            s, _unit, _mount, _meter = _make_session(folder, **params)
+            s._expose_reference()
+            s._walk_spiral()
+            walks[key] = (s, folder)
+        return walks[key]
 
-    return build
+    yield build
+    mp.undo()
 
 
 def _header(folder, name):
