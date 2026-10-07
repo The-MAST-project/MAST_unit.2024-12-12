@@ -13,6 +13,8 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import ValidationError
 
 from common import iers_policy
+from common.activities import UnitActivities
+from common.canonical import CanonicalResponse
 from common.config import Config, ConfigError
 from common.endpoints import TIER_GROUPS, Tier, operation_area_tag
 from common.filer import Filer
@@ -289,6 +291,29 @@ def create_app(unit=None) -> FastAPI:
             status_code=500,
             content={"message": f"{function_name()}: Exception occurred: {exc}"},
         )
+
+    @app.middleware("http")
+    async def refuse_while_shutting_down(request: Request, call_next):
+        """While the unit shuts down, answer status and refuse everything else.
+
+        Every other request, an abort or a component's powerdown included, could interrupt
+        what the shutdown is doing -- stop the covers part-way through closing, or power one
+        off mid-close. The shutdown aborts in-flight work itself, first. Gating here, rather
+        than in each endpoint, covers every route the app has or will have.
+
+        Only new requests are gated; one already running when the shutdown starts carries
+        on. Added before CORS, so CORS still wraps the refusal and a browser can read it.
+        """
+        is_active = getattr(unit, "is_active", None)
+        if (
+            is_active is not None
+            and is_active(UnitActivities.ShuttingDown)
+            and not request.url.path.rstrip("/").endswith("/status")
+        ):
+            return JSONResponse(
+                CanonicalResponse(errors=[f"{request.url.path}: refused, the unit is shutting down"]).model_dump()
+            )
+        return await call_next(request)
 
     app.add_middleware(
         CORSMiddleware,
