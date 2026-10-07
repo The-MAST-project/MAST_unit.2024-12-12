@@ -1,5 +1,6 @@
 import math
 import time
+from contextlib import suppress
 from enum import StrEnum
 from logging import Logger
 from typing import TYPE_CHECKING, Annotated
@@ -318,7 +319,8 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         self.start_activity(MountActivities.ShuttingDown)
         try:
             self.pw.request("/fans/off")
-            self.stop_tracking()
+            with suppress(Exception):
+                self.stop_tracking()
             if self.connected:
                 self.disconnect()
             self._was_shut_down = True
