@@ -128,18 +128,28 @@ def _shim_filer_for_tests() -> None:
     import common.filer as filer_module
 
     tmp_root = tempfile.mkdtemp(prefix="mast-unit-tests-")
-    location = filer_module.Location(None, tmp_root)
+
+    # One directory per role, as on a real machine. They used to be one and the same, so
+    # the app lifespan's relocation sweep queued a move of a folder onto itself; that move
+    # could never complete, and every lifespan test then waited out `Filer.flush()`'s 30 s
+    # timeout on it -- about two minutes of the suite.
+    def _location(role: str):
+        path = os.path.join(tmp_root, role)
+        os.makedirs(path, exist_ok=True)
+        return filer_module.Location(None, path)
+
+    local, shared, ram = _location("local"), _location("shared"), _location("ram")
 
     def _tmp_init(self, logger=None):
-        self.local = location
-        self.shared = location
-        self.ram = location
+        self.local = local
+        self.shared = shared
+        self.ram = ram
         # Not reached by any test directly: `init_log` builds a `Filer()` and asks it
         # for `machine_log_root()`, which reads both. Every attribute the real
         # `__init__` binds has to be here, or importing anything that logs blows up
         # during collection.
-        self.share_root = location
-        self.machine = location
+        self.share_root = shared
+        self.machine = shared
         self.tops = {
             filer_module.FilerTop.Local: self.local,
             filer_module.FilerTop.Shared: self.shared,
