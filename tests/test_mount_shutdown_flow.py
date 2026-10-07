@@ -14,6 +14,8 @@ block that ends `Parking` and `ShuttingDown` was unreachable in any case.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 # No platform guard: `conftest` stubs the absent hardware modules, so this runs on a dev
@@ -42,17 +44,40 @@ class RecordingActivities:
 
 
 class FakePw:
-    """The PWI4 client surface the shutdown path touches."""
+    """The PWI4 client surface the shutdown path touches.
+
+    Tracking is modelled because shutdown and park stop it first (72c35cd), and
+    `stop_tracking` then waits for `status()` to report it off. `calls` records the order
+    of the hardware actions, so a test can say which came first.
+    """
 
     def __init__(self):
         self.requests: list[str] = []
         self.parked = False
+        self.tracking = True
+        self.calls: list[str] = []
 
     def request(self, path: str):
         self.requests.append(path)
 
+    def mount_tracking_off(self):
+        self.tracking = False
+        self.calls.append("tracking_off")
+
+    def status(self):
+        return SimpleNamespace(mount=SimpleNamespace(is_tracking=self.tracking))
+
     def mount_park(self):
         self.parked = True
+        self.calls.append("park")
+
+
+@pytest.fixture(autouse=True)
+def _no_tracking_wait(monkeypatch):
+    """`_await_tracking` sleeps a second before each look; the fake answers at once."""
+    import mount as mount_module
+
+    monkeypatch.setattr(mount_module.time, "sleep", lambda _seconds: None)
 
 
 def _mount(recorder, *, connected: bool, **attributes):
@@ -66,7 +91,12 @@ def _mount(recorder, *, connected: bool, **attributes):
     mount._was_shut_down = False
     mount.disconnected = False
     mount.powered_off = False
-    mount.disconnect = lambda: setattr(mount, "disconnected", True)
+
+    def disconnect():
+        mount.disconnected = True
+        mount.pw.calls.append("disconnect")
+
+    mount.disconnect = disconnect
     mount.power_off = lambda: setattr(mount, "powered_off", True)
     type(mount).connected = property(lambda self, value=connected: value)
     for name, value in attributes.items():
@@ -296,6 +326,67 @@ def test_park_still_parks_a_connected_mount():
     assert not response.failed
     assert mount.pw.parked is True
     assert MountActivities.Parking in recorder.started
+
+
+# ------------------------------------------------------------------------------- tracking
+
+
+def test_shutdown_stops_tracking_before_it_disconnects():
+    """72c35cd: the axes must not be left tracking when the mount is let go."""
+    recorder = RecordingActivities()
+    mount = _mount(recorder, connected=True)
+    try:
+        mount.shutdown()
+    finally:
+        _release(mount)
+
+    assert mount.pw.tracking is False
+    assert mount.pw.calls == ["tracking_off", "disconnect"]
+
+
+def test_a_failure_to_stop_tracking_does_not_cost_the_disconnect():
+    """d9e0bad: an unreachable PWI4 at that line must not stop the shutdown short."""
+    recorder = RecordingActivities()
+    mount = _mount(recorder, connected=True)
+
+    def unreachable():
+        raise ConnectionError("PWI4 unreachable")
+
+    mount.pw.mount_tracking_off = unreachable
+    try:
+        response = mount.shutdown()
+    finally:
+        _release(mount)
+
+    assert not response.failed
+    assert mount.disconnected is True
+    assert mount._was_shut_down is True
+    assert MountActivities.ShuttingDown not in recorder.active
+
+
+def test_park_stops_tracking_before_it_parks():
+    recorder = RecordingActivities()
+    mount = _mount(recorder, connected=True)
+    try:
+        mount.park()
+    finally:
+        _release(mount)
+
+    assert mount.pw.calls == ["tracking_off", "park"]
+
+
+def test_shutdown_of_a_disconnected_mount_does_not_try_to_stop_tracking():
+    """`stop_tracking` refuses a disconnected mount and says so; the shutdown completes."""
+    recorder = RecordingActivities()
+    mount = _mount(recorder, connected=False)
+    try:
+        response = mount.shutdown()
+    finally:
+        _release(mount)
+
+    assert not response.failed
+    assert "tracking_off" not in mount.pw.calls
+    assert MountActivities.ShuttingDown not in recorder.active
 
 
 # ------------------------------------------------------------------------------- contract
