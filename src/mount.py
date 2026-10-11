@@ -1,3 +1,4 @@
+import datetime
 import math
 import time
 from contextlib import suppress
@@ -33,6 +34,10 @@ if TYPE_CHECKING:
     from unit import Unit
 
 logger = get_logger(__name__)
+
+#: How long after `find_home` before `ontimer` may take "not slewing" as "homed": PWI4 may
+#: not have started the slew by the next tick.
+FINDING_HOME_GRACE_SECONDS = 5
 
 # class SpiralSettings(BaseModel):
 #     x: float
@@ -440,7 +445,16 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                 details=([f"target={self.target}" if self.target else "unsolicited movement"]),
             )
 
-        if self.is_active(MountActivities.FindingHome) and not self.is_moving:
+        # On PWI4's own `is_slewing`, not `is_moving`: homing does not raise the axes' RMS
+        # error that `is_moving` reads, so FindingHome ended on the first tick (1.2 s, while
+        # the mount was still homing -- 2026-10-11). And not before FINDING_HOME_GRACE_SECONDS:
+        # right after `find_home`, PWI4 may not be slewing *yet*.
+        if (
+            self.is_active(MountActivities.FindingHome)
+            and datetime.datetime.now(datetime.UTC) - self.timings[MountActivities.FindingHome].start_time
+            >= datetime.timedelta(seconds=FINDING_HOME_GRACE_SECONDS)
+            and not status.mount.is_slewing  # type: ignore
+        ):
             self.end_activity(MountActivities.FindingHome)
             self.target = None
             if self.is_active(MountActivities.StartingUp):

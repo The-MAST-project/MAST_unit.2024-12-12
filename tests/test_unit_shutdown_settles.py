@@ -1,33 +1,35 @@
-"""A unit shutdown waits for its components before cancelling their timers (#259, #253).
+"""A unit shutdown: `do_shutdown` dispatches, `ontimer` ends ShuttingDown (#259, #253).
 
-`do_shutdown()` used to raise component activities and then kill the timers that would clear
-them -- the unit's own, and every component's via `unit_shutdown_event`. Measured on mast03
-2026-09-22: the covers held `["Closing", "ShuttingDown"]` indefinitely while the mount, which
-ends its flags inline, came out clean on the same event.
+`do_shutdown` connects, waits for an in-flight startup to finish dispatching, aborts, and calls
+every component's `shutdown()` except the power switch's. It does not wait for them. The unit's
+`ontimer` ends `UnitActivities.ShuttingDown` -- after shutting the power switch down -- once
+`do_shutdown` has returned and no component still reports its own `ShuttingDown`.
 
-The invariant under test is one line: do not cancel a timer while an activity depends on it.
+The "has returned" condition is the mast03 race of 2026-09-22: components are shut down one
+after another, and a tick landing between two of them, with no component flag up, cleared the
+unit's flag 0.75 s into a shutdown whose covers took 27.5 s more to close.
 
-Since opmode-design 5.2 the cancelling is no longer `do_shutdown`'s at all: a `production` unit
-runs start -> shut -> start, and a shutdown that killed the unit timer left the next startup
-unable to finish. Teardown moved to `end_lifespan`, at process exit, after the shutdown -- and
-its sweep -- have finished.
+Bounded: past SHUTDOWN_SETTLE_TIMEOUT_SECONDS, whatever a component still reports is ended, so
+`end_lifespan` and `do_powerdown` -- which wait on the flag unbounded -- are not hung on work
+that will never finish. Teardown is `end_lifespan`'s, at process exit (opmode-design 5.2).
 """
 
 from __future__ import annotations
 
 import pytest
 
-from common.activities import CoverActivities, UnitActivities
+from common.activities import CoverActivities, FocuserActivities, Timing, UnitActivities
 
 
 class FakeActivities:
-    """The slice of the `Activities` mixin `do_shutdown` uses, over a real IntFlag."""
+    """The slice of the `Activities` mixin the shutdown uses, over a real IntFlag."""
 
     def __init__(self, flag_type, active=()):
         self.activities = flag_type(0)
         self._flag_type = flag_type
+        self.timings: dict = {}
         for a in active:
-            self.activities |= a
+            self.start_activity(a)
         self.ended: list = []
 
     def is_active(self, activity):
@@ -35,21 +37,21 @@ class FakeActivities:
 
     def start_activity(self, activity, **kwargs):
         self.activities |= activity
+        self.timings[activity] = Timing()
 
     def end_activity(self, activity, **kwargs):
         self.activities &= ~activity
         self.ended.append(activity)
 
-    def await_activity_clear(self, activity, *, timeout, interval=0.2):
-        """The real one polls; these fakes settle or not by construction, so answer at once."""
-        return not self.is_active(activity)
-
 
 class FakeComponent(FakeActivities):
-    def __init__(self, name, flag_type, active=(), clears_on_shutdown=True):
+    connected = True
+
+    def __init__(self, name, flag_type, active=(), clears_on_shutdown=True, on_shutdown=None):
         super().__init__(flag_type, active)
         self._name = name
         self._clears = clears_on_shutdown
+        self._on_shutdown = on_shutdown
         self.shutdown_called = False
 
     @property
@@ -61,6 +63,24 @@ class FakeComponent(FakeActivities):
         self.start_activity(self._flag_type.ShuttingDown)
         if self._clears:
             self.end_activity(self._flag_type.ShuttingDown)
+        if self._on_shutdown:
+            self._on_shutdown()
+
+
+class Outlet:
+    """The power switch: a `SwitchedOutlet`, with no activities enum."""
+
+    name = "power_switch"
+    connected = True
+
+    def __init__(self, record=None):
+        self.shutdown_called = False
+        self._record = record
+
+    def shutdown(self):
+        self.shutdown_called = True
+        if self._record is not None:
+            self._record.append("power_switch.shutdown")
 
 
 class FakeTimer:
@@ -82,92 +102,117 @@ class FakeEvent:
         return self.was_set
 
 
-def _unit(components):
-    """A Unit that runs the real `do_shutdown` over fake components."""
+def _unit(components, power_switch=None):
+    """A Unit that runs the real `do_shutdown` and `_end_shutting_down_when_done` over fakes."""
     from unit import Unit
 
     unit = object.__new__(Unit)
-    unit.components = components
+    unit.power_switch = power_switch
+    unit.components = ([power_switch] if power_switch else []) + components
     unit.guider = None
     unit.timer = FakeTimer()
     unit.unit_shutdown_event = FakeEvent()
     unit._was_shut_down = False
+    unit._startup_dispatching = False
+    unit._shutdown_dispatching = False
     unit.abort = lambda: None  # do_shutdown aborts first; abort itself is tested elsewhere
 
     recorder = FakeActivities(UnitActivities)
-    for attr in ("is_active", "start_activity", "end_activity"):
+    for attr in ("is_active", "start_activity", "end_activity", "timings"):
         setattr(unit, attr, getattr(recorder, attr))
     unit._recorder = recorder
     return unit
 
 
-def test_a_component_that_settles_is_not_swept():
-    covers = FakeComponent("covers", CoverActivities, clears_on_shutdown=True)
+def _shut_down(unit):
+    """`shutdown()` without its thread, then one `ontimer` tick."""
+    unit.start_activity(UnitActivities.ShuttingDown)
+    unit._shutdown_dispatching = True
+    unit.do_shutdown()
+    unit._end_shutting_down_when_done()
+
+
+# ------------------------------------------------------------------ do_shutdown dispatches
+
+
+def test_do_shutdown_dispatches_and_leaves_shuttingdown_to_ontimer():
+    covers = FakeComponent("covers", CoverActivities, clears_on_shutdown=False)
     unit = _unit([covers])
+    unit.start_activity(UnitActivities.ShuttingDown)
 
     unit.do_shutdown()
 
     assert covers.shutdown_called
-    assert covers.activities == CoverActivities(0)
+    assert unit._recorder.is_active(UnitActivities.ShuttingDown), "not ended by do_shutdown"
+    assert unit._shutdown_dispatching is False
 
 
-def test_a_component_that_never_settles_is_ended_rather_than_stranded():
-    """The mast03 case. The covers leave `Closing` / `ShuttingDown` to their own `ontimer`,
-    and that timer is about to be cancelled, so nothing else can ever take them down."""
-    covers = FakeComponent(
-        "covers",
-        CoverActivities,
-        active=[CoverActivities.Closing],
-        clears_on_shutdown=False,
-    )
-    unit = _unit([covers])
+def test_a_component_that_raises_does_not_stop_the_next():
+    """The covers come after the imager: an imager that raises must not leave them open."""
 
-    unit.do_shutdown()
+    class Broken(FakeComponent):
+        def shutdown(self):
+            raise RuntimeError("imager refused")
 
-    assert covers.activities == CoverActivities(0), f"stranded {covers.activities!r}"
-    assert CoverActivities.Closing in covers.ended
-    assert CoverActivities.ShuttingDown in covers.ended
+    covers = FakeComponent("covers", CoverActivities)
+    unit = _unit([Broken("imager", FocuserActivities), covers])
+
+    _shut_down(unit)
+
+    assert covers.shutdown_called
+    assert not unit._recorder.is_active(UnitActivities.ShuttingDown)
 
 
-def test_end_lifespan_tears_down_only_after_the_shutdown_sweep():
-    """Order is the whole defect: sweeping after the event is set would be sweeping after the
-    component timers are already dead, which is where the stranded flags come from."""
-    covers = FakeComponent("covers", CoverActivities, clears_on_shutdown=False)
-    order: list[str] = []
-
-    unit = _unit([covers])
-    unit.timer.cancel = lambda: order.append("timer_cancelled")
-    unit.unit_shutdown_event.set = lambda: order.append("event_set")
-    unit.shutdown = unit.do_shutdown  # synchronous, so end_lifespan's wait returns at once
-    original_end = covers.end_activity
-
-    def record_end(activity, **kwargs):
-        order.append("component_flag_ended")
-        original_end(activity, **kwargs)
-
-    covers.end_activity = record_end
-
-    unit.end_lifespan()
-
-    assert "component_flag_ended" in order
-    assert order.index("component_flag_ended") < order.index("timer_cancelled")
-    assert order.index("component_flag_ended") < order.index("event_set")
-
-
-def test_unit_shutting_down_is_ended_by_do_shutdown_itself():
-    """`Unit.ontimer` is the only other place that ends it, and `do_shutdown` cancels that
-    timer -- the same trap #193 fixed on the mount, one level up."""
+def test_do_shutdown_clears_its_dispatch_flag_even_when_it_raises():
+    """Otherwise ontimer could never end ShuttingDown, and end_lifespan would hang."""
     unit = _unit([FakeComponent("covers", CoverActivities)])
 
+    def broken_abort():
+        raise RuntimeError("abort blew up")
+
+    unit.abort = broken_abort
+    unit._shutdown_dispatching = True
+
+    with pytest.raises(RuntimeError):
+        unit.do_shutdown()
+
+    assert unit._shutdown_dispatching is False
+
+
+def test_do_shutdown_connects_a_disconnected_unit_first():
+    """The covers do nothing when disconnected; the connect moved here from `shutdown()`."""
+    covers = FakeComponent("covers", CoverActivities)
+    covers.connected = False
+    order: list[str] = []
+    unit = _unit([covers])
+    unit.connect = lambda: order.append("connect")
+    covers.shutdown = lambda: order.append("covers.shutdown")
+
     unit.do_shutdown()
 
-    assert not unit._recorder.is_active(UnitActivities.ShuttingDown)
-    assert unit._was_shut_down is True
+    assert order == ["connect", "covers.shutdown"]
+
+
+def test_a_connect_that_raises_does_not_cost_the_shutdown(caplog):
+    covers = FakeComponent("covers", CoverActivities)
+    covers.connected = False
+    unit = _unit([covers])
+
+    def broken_connect():
+        raise RuntimeError("no route")
+
+    unit.connect = broken_connect
+
+    with caplog.at_level("ERROR"):
+        unit.do_shutdown()
+
+    assert covers.shutdown_called
+    assert any("connect failed" in r.getMessage() for r in caplog.records)
 
 
 def test_do_shutdown_leaves_the_timers_running():
-    """start -> shut -> start: the unit timer is the only thing that ends StartingUp, so a
-    shutdown that cancelled it left the next startup unable to finish (opmode-design 5.2)."""
+    """start -> shut -> start: the unit timer is the only thing that ends StartingUp, and now
+    ShuttingDown too (opmode-design 5.2)."""
     unit = _unit([FakeComponent("covers", CoverActivities)])
 
     unit.do_shutdown()
@@ -176,89 +221,122 @@ def test_do_shutdown_leaves_the_timers_running():
     assert unit.unit_shutdown_event.was_set is False
 
 
-def test_end_lifespan_still_tears_down():
-    unit = _unit([FakeComponent("covers", CoverActivities)])
-    unit.shutdown = unit.do_shutdown
-
-    unit.end_lifespan()
-
-    assert unit.timer.cancelled is True
-    assert unit.unit_shutdown_event.was_set is True
+# ------------------------------------------------------------ ontimer ends ShuttingDown
 
 
-def test_a_component_with_no_activities_is_skipped_not_crashed_on():
-    """`self.components` carries the power switch, which is a `SwitchedOutlet` rather than a
-    component with an activities enum."""
+def test_ontimer_ends_shuttingdown_once_every_component_has_ended_its_own():
+    covers = FakeComponent("covers", CoverActivities, clears_on_shutdown=False)
+    unit = _unit([covers])
 
-    class Outlet:
-        name = "power_switch"
+    _shut_down(unit)
+    assert unit._recorder.is_active(UnitActivities.ShuttingDown), "the covers are still closing"
 
-        def shutdown(self):
-            pass
+    covers.end_activity(CoverActivities.ShuttingDown)  # as the covers' own ontimer does
+    unit._end_shutting_down_when_done()
 
-    unit = _unit([Outlet(), FakeComponent("covers", CoverActivities)])
-
-    unit.do_shutdown()
-
+    assert not unit._recorder.is_active(UnitActivities.ShuttingDown)
     assert unit._was_shut_down is True
 
 
-@pytest.mark.parametrize("stuck", [CoverActivities.Opening, CoverActivities.Closing])
-def test_any_stuck_activity_is_swept_not_just_shuttingdown(stuck):
-    covers = FakeComponent("covers", CoverActivities, active=[stuck], clears_on_shutdown=True)
-    unit = _unit([covers])
+def test_a_tick_between_two_components_does_not_end_shuttingdown():
+    """The mast03 race: the focuser has finished, the covers have not started."""
+    unit = _unit([])
+    focuser = FakeComponent("focuser", FocuserActivities, on_shutdown=lambda: unit._end_shutting_down_when_done())
+    covers = FakeComponent("covers", CoverActivities, clears_on_shutdown=False)
+    unit.components = [focuser, covers]
 
+    unit.start_activity(UnitActivities.ShuttingDown)
+    unit._shutdown_dispatching = True
     unit.do_shutdown()
 
-    assert covers.activities == CoverActivities(0)
+    assert unit._recorder.is_active(UnitActivities.ShuttingDown)
 
 
-def test_ontimer_does_not_end_unit_shuttingdown():
-    """The race measured on mast03, 2026-09-22.
+def test_shuttingdown_is_not_ended_while_do_shutdown_has_not_started():
+    """`shutdown()` raises the dispatch flag before its thread, so a tick in between waits."""
+    unit = _unit([FakeComponent("covers", CoverActivities)])
+    unit.start_activity(UnitActivities.ShuttingDown)
+    unit._shutdown_dispatching = True
 
-    `do_shutdown` shuts components down one after another. Between one finishing and the next
-    starting, no component reports `ShuttingDown` -- and the old `ontimer` branch read that
-    window as "the unit is down". The flag cleared 0.75 s into a shutdown whose covers took
-    27.5 s more to close, so the declared completion of `PUT /unit/shutdown` went clear while
-    the mirror was still moving.
+    unit._end_shutting_down_when_done()
 
-    `do_shutdown` ends it once the components have settled, so `ontimer` must not race it.
-    """
-    import inspect
-
-    from unit import Unit
-
-    source = inspect.getsource(Unit.ontimer)
-    assert "end_activity(UnitActivities.ShuttingDown)" not in source
+    assert unit._recorder.is_active(UnitActivities.ShuttingDown)
 
 
-def test_do_shutdown_ends_unit_shuttingdown_after_the_components_settle():
-    """The positive half: removing the ontimer branch must not leave the flag stranded -- the
-    trap #193 and #259 are both about."""
-    covers = FakeComponent("covers", CoverActivities, clears_on_shutdown=True)
+def test_the_power_switch_is_shut_down_last_by_ontimer():
     order: list[str] = []
+    covers = FakeComponent("covers", CoverActivities, clears_on_shutdown=False)
+    original = covers.shutdown
 
+    def record():
+        order.append("covers.shutdown")
+        original()
+
+    covers.shutdown = record
+    switch = Outlet(order)
+    unit = _unit([covers], power_switch=switch)
+
+    _shut_down(unit)
+    assert not switch.shutdown_called, "not while the covers are still closing"
+
+    covers.end_activity(CoverActivities.ShuttingDown)
+    unit._end_shutting_down_when_done()
+
+    assert order == ["covers.shutdown", "power_switch.shutdown"]
+
+
+def test_a_component_that_never_settles_is_swept_after_the_timeout(monkeypatch, caplog):
+    import unit as unit_module
+
+    monkeypatch.setattr(unit_module, "SHUTDOWN_SETTLE_TIMEOUT_SECONDS", 0.0)
+    covers = FakeComponent("covers", CoverActivities, active=[CoverActivities.Closing], clears_on_shutdown=False)
     unit = _unit([covers])
-    original_end = unit.end_activity
 
-    def record_end(activity, **kwargs):
-        if activity == UnitActivities.ShuttingDown:
-            order.append("unit_flag_ended")
-        original_end(activity, **kwargs)
+    with caplog.at_level("ERROR"):
+        _shut_down(unit)
 
-    unit.end_activity = record_end
-    original_await = unit._await_components_at_rest
-
-    def record_await():
-        order.append("components_settled")
-        original_await()
-
-    unit._await_components_at_rest = record_await
-
-    unit.do_shutdown()
-
-    assert order == ["components_settled", "unit_flag_ended"]
+    assert covers.activities == CoverActivities(0), f"stranded {covers.activities!r}"
+    assert CoverActivities.ShuttingDown in covers.ended
     assert not unit._recorder.is_active(UnitActivities.ShuttingDown)
+    assert any("covers: still reporting" in r.getMessage() for r in caplog.records)
+
+
+def test_before_the_timeout_nothing_is_swept():
+    covers = FakeComponent("covers", CoverActivities, active=[CoverActivities.Closing], clears_on_shutdown=False)
+    unit = _unit([covers])
+
+    _shut_down(unit)
+
+    assert covers.is_active(CoverActivities.Closing)
+    assert unit._recorder.is_active(UnitActivities.ShuttingDown)
+
+
+# -------------------------------------------------------------------------- end_lifespan
+
+
+def test_end_lifespan_tears_down_only_after_shuttingdown_ends(monkeypatch):
+    """Order is the whole defect: tearing down first kills the timers that end the flags."""
+    import unit as unit_module
+
+    covers = FakeComponent("covers", CoverActivities, clears_on_shutdown=False)
+    order: list[str] = []
+    unit = _unit([covers])
+    unit.timer.cancel = lambda: order.append("timer_cancelled")
+    unit.unit_shutdown_event.set = lambda: order.append("event_set")
+    unit.shutdown = lambda: _shut_down(unit)
+
+    def tick(_seconds):
+        # The covers close, then the unit timer runs.
+        covers.end_activity(CoverActivities.ShuttingDown)
+        unit._end_shutting_down_when_done()
+        order.append("tick")
+
+    monkeypatch.setattr(unit_module.time, "sleep", tick)
+
+    unit.end_lifespan()
+
+    assert order == ["tick", "timer_cancelled", "event_set"]
+    assert unit._was_shut_down is True
 
 
 # ------------------------------------------------------------- abort before shutdown (5.3)
@@ -333,3 +411,42 @@ def test_unsettled_names_unit_work_and_component_aborts():
     unit.end_activity(UnitActivities.Exposing)
     covers.end_activity(CoverActivities.Aborting)
     assert unit._unsettled_by_abort() == []
+
+
+# ---------------------------------------------------------------- shutdown during startup
+
+
+def test_shutdown_waits_for_an_in_flight_startup_to_finish_dispatching(monkeypatch):
+    """Else covers.startup(), still to come, opens the covers this shutdown closed."""
+    import unit as unit_module
+
+    covers = FakeComponent("covers", CoverActivities)
+    unit = _unit([covers])
+    unit._startup_dispatching = True
+    waits: list[bool] = []
+
+    def fake_sleep(_seconds):
+        waits.append(covers.shutdown_called)
+        unit._startup_dispatching = False  # do_startup's finally
+
+    monkeypatch.setattr(unit_module.time, "sleep", fake_sleep)
+
+    unit.do_shutdown()
+
+    assert waits == [False], "waited before shutting anything down"
+    assert covers.shutdown_called
+
+
+def test_a_startup_that_never_finishes_dispatching_does_not_stop_the_shutdown(monkeypatch, caplog):
+    import unit as unit_module
+
+    monkeypatch.setattr(unit_module, "STARTUP_DISPATCH_TIMEOUT_SECONDS", 0.0)
+    covers = FakeComponent("covers", CoverActivities)
+    unit = _unit([covers])
+    unit._startup_dispatching = True
+
+    with caplog.at_level("ERROR"):
+        unit.do_shutdown()
+
+    assert covers.shutdown_called
+    assert any("startup still dispatching" in r.getMessage() for r in caplog.records)

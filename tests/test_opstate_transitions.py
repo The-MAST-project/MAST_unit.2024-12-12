@@ -122,6 +122,68 @@ def test_shutdown_is_idempotent_and_startup_returns_to_running(unit, monkeypatch
     assert unit.opstate is OpState.RUNNING
 
 
+def test_shutdown_raises_its_dispatch_flag_before_the_thread(unit):
+    """Else an ontimer tick before `do_shutdown` runs sees no component flag and ends it."""
+    unit.shutdown()
+
+    assert unit._shutdown_dispatching is True
+    assert _NoThread.started == ["shutdown-thread"]
+
+
+def test_a_repeat_shutdown_does_not_reconnect_and_reports_ok(unit):
+    """The connect is `do_shutdown`'s: a repeat must not reconnect what is being disconnected."""
+    connects: list[int] = []
+    unit.connect = lambda: connects.append(1)
+    unit.start_activity(UnitActivities.ShuttingDown)
+
+    response = unit.shutdown()
+
+    assert response.succeeded
+    assert connects == []
+    assert _NoThread.started == []
+
+
+@pytest.fixture
+def ticking_unit(unit):
+    """`unit`, plus what `ontimer` reads, with no components and no autofocus."""
+    for name in ("mount", "imager", "stage", "focuser", "covers", "pw", "autofocuser", "power_switch"):
+        setattr(unit, name, None)
+    return unit
+
+
+def test_ontimer_does_not_end_startingup_while_startup_is_dispatching(ticking_unit):
+    """The 2026-10-11 gap: between two components, no component StartingUp is up."""
+    ticking_unit.startup()
+    assert ticking_unit._startup_dispatching
+
+    ticking_unit.ontimer()
+
+    assert ticking_unit.is_active(UnitActivities.StartingUp)
+
+
+def test_ontimer_ends_startingup_once_dispatched_and_no_component_is_starting(ticking_unit):
+    ticking_unit.startup()
+    ticking_unit._startup_dispatching = False  # do_startup's finally
+
+    ticking_unit.ontimer()
+
+    assert not ticking_unit.is_active(UnitActivities.StartingUp)
+
+
+def test_do_startup_clears_its_dispatch_flag_even_when_a_component_raises(unit):
+    class Broken:
+        def startup(self):
+            raise RuntimeError("no camera")
+
+    unit.components = [Broken()]
+    unit._startup_dispatching = True
+
+    with pytest.raises(RuntimeError):
+        unit.do_startup()
+
+    assert unit._startup_dispatching is False
+
+
 def test_opstate_cannot_be_assigned_from_outside(unit):
     """Components used to write the unit's opstate; there is one writer now."""
     with pytest.raises(AttributeError):
