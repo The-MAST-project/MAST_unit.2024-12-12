@@ -81,4 +81,4 @@ def test_unknown_phase_is_rejected(root):
     with pytest.raises(ValueError, match="unknown calibration phase"):
         PathMaker().make_calibration_folder("../escape", root=root)
 
-    assert set(CALIBRATION_PHASE_FOLDERS) == {"focuser", "optical_center", "stage"}
+    assert set(CALIBRATION_PHASE_FOLDERS) == {"focuser", "optical_center", "stage", "focus_on_star"}

@@ -16,6 +16,7 @@ from common.endpoints import Tier, endpoint
 from common.filer import Filer, MoveGuardian
 from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification, UnitAssignment
+from common.models.statuses import ImagerSettings
 from common.notifications import Notifier
 from common.object_resolver import TOTAL_TIMEOUT_SECONDS, ObjectNameError, resolve_object_name
 
@@ -150,6 +151,69 @@ class Acquirer:
         if self._cancelled():
             return f"{ACQUISITION_CANCELLED} during phase '{phase.upper()}'"
         return f"phase '{phase.upper()}' did not reach tolerance in {tries} tries"
+
+    def spec_phase_tolerance(self) -> SolvingTolerance:
+        """How close the SPEC phase must put the target: the guiding tolerance."""
+        assert self.unit.unit_conf is not None
+        tolerance = self.unit.unit_conf.guiding.tolerance
+        return SolvingTolerance(
+            Angle(tolerance.ra_arcsec * u.arcsecond),  # type: ignore
+            Angle(tolerance.dec_arcsec * u.arcsecond),  # type: ignore
+        )
+
+    def spec_phase_imager_settings(self, acquisition: Acquisition, exposure: float, phase: str = "spec") -> ImagerSettings:
+        """How the SPEC phase exposes.
+
+        The guiding settings, overridden by the acquisition's own; on FCU v2 the full
+        ASI frame at bin 1. A method rather than inline in `do_acquire` because
+        focus_on_star solves exactly as this phase does -- the solve's reference pixel is
+        the fibre, which is where that run wants its star -- and two copies of these
+        overrides would drift.
+        """
+        assert self.unit.unit_conf is not None
+        acquisition_conf = self.unit.unit_conf.acquisition
+
+        # make default guiding settings
+        spec_imager_settings = self.unit.required_guider.make_guiding_settings(
+            base_folder=os.path.join(acquisition.folder, phase)
+        )
+        # override with acquisition settings
+        spec_imager_settings.seconds = exposure
+        if acquisition_conf.binning is not None:
+            spec_imager_settings.binning = acquisition_conf.binning
+        if acquisition_conf.gain is not None:
+            spec_imager_settings.gain = acquisition_conf.gain
+
+        spec_imager_settings.use_set_limit_frame = acquisition.use_set_limit_frame
+
+        # override for fcu_v2 to use full frame
+        if self.unit.fcu_version == FcuVersion.v2:
+            from common.asi import ASI_294MM_HEIGHT, ASI_294MM_WIDTH
+            from common.models.statuses import ImagerPixel, ImagerRoi
+
+            # ROI to be used for the exposures
+            spec_imager_settings.roi = ImagerRoi(
+                x=0,
+                y=0,
+                # width=self.unit.required_imager.full_frame.width,
+                # height=self.unit.required_imager.full_frame.height,
+                width=ASI_294MM_WIDTH,
+                height=ASI_294MM_HEIGHT,
+            )
+            # override the roi to be the ASI full frame, we get it from PHD2
+            spec_imager_settings.roi.x = 0
+            spec_imager_settings.roi.y = 0
+            spec_imager_settings.roi.width = ASI_294MM_WIDTH
+            spec_imager_settings.roi.height = ASI_294MM_HEIGHT
+            spec_imager_settings.roi._center = ImagerPixel(
+                x=spec_imager_settings.roi.width // 2, y=spec_imager_settings.roi.height // 2
+            )
+
+            # spec_imager_settings.use_set_limit_frame = True
+            spec_imager_settings.use_set_limit_frame = False
+            spec_imager_settings.binning = 1
+
+        return spec_imager_settings
 
     def do_acquire(self, acquisition: Acquisition) -> str | None:  # noqa: C901
         """Run one acquisition. Returns None when it reached tolerance, else why it did not."""
@@ -329,50 +393,7 @@ class Acquirer:
         if self.unit.is_active(UnitActivities.Positioning):
             self.unit.end_activity(UnitActivities.Positioning)
 
-        assert self.unit.unit_conf is not None
-        phase_conf = self.unit.unit_conf.guiding
-        ra_tolerance = Angle(phase_conf.tolerance.ra_arcsec * u.arcsecond)  # type: ignore
-        dec_tolerance = Angle(phase_conf.tolerance.dec_arcsec * u.arcsecond)  # type: ignore
-
-        # make default guiding settings
-        spec_imager_settings = self.unit.required_guider.make_guiding_settings(
-            base_folder=os.path.join(self.latest_acquisition.folder, phase)
-        )
-        # override with acquisition settings
-        spec_imager_settings.seconds = exposure
-        if acquisition_conf.binning is not None:
-            spec_imager_settings.binning = acquisition_conf.binning
-        if acquisition_conf.gain is not None:
-            spec_imager_settings.gain = acquisition_conf.gain
-
-        spec_imager_settings.use_set_limit_frame = acquisition.use_set_limit_frame
-
-        # override for fcu_v2 to use full frame
-        if self.unit.fcu_version == FcuVersion.v2:
-            from common.asi import ASI_294MM_HEIGHT, ASI_294MM_WIDTH
-            from common.models.statuses import ImagerPixel, ImagerRoi
-
-            # ROI to be used for the exposures
-            spec_imager_settings.roi = ImagerRoi(
-                x=0,
-                y=0,
-                # width=self.unit.required_imager.full_frame.width,
-                # height=self.unit.required_imager.full_frame.height,
-                width=ASI_294MM_WIDTH,
-                height=ASI_294MM_HEIGHT,
-            )
-            # override the roi to be the ASI full frame, we get it from PHD2
-            spec_imager_settings.roi.x = 0
-            spec_imager_settings.roi.y = 0
-            spec_imager_settings.roi.width = ASI_294MM_WIDTH
-            spec_imager_settings.roi.height = ASI_294MM_HEIGHT
-            spec_imager_settings.roi._center = ImagerPixel(
-                x=spec_imager_settings.roi.width // 2, y=spec_imager_settings.roi.height // 2
-            )
-
-            # spec_imager_settings.use_set_limit_frame = True
-            spec_imager_settings.use_set_limit_frame = False
-            spec_imager_settings.binning = 1
+        spec_imager_settings = self.spec_phase_imager_settings(acquisition, exposure, phase)
 
         achieved_tolerances = self.unit.required_solver.solve_and_correct(
             target=target,
@@ -380,7 +401,7 @@ class Acquirer:
             solver_id=acquisition.solver_id,
             make_corrections=acquisition.make_corrections,
             imager_settings=spec_imager_settings,
-            solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
+            solving_tolerance=self.spec_phase_tolerance(),
             parent_activity=UnitActivities.Acquiring,
             phase=phase,
             max_tries=tries,
