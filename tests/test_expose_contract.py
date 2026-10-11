@@ -58,7 +58,7 @@ class FakeImager:
 
 class FakeMount:
     def __init__(self):
-        self.tracking = False
+        self.is_tracking = False
         self.stop_calls = 0
         self.slews = []
         self.start_tracking_raises = False
@@ -72,10 +72,10 @@ class FakeMount:
     def start_tracking(self):
         if self.start_tracking_raises:
             raise RuntimeError("the mount would not start tracking")
-        self.tracking = True
+        self.is_tracking = True
 
     def stop_tracking(self):
-        self.tracking = False
+        self.is_tracking = False
         self.stop_calls += 1
 
 
@@ -130,7 +130,7 @@ class TestCleanupOnFailure:
 
         assert response == CanonicalResponse_Ok
         assert stub.imager.ended == stub.imager.series, "the series must be closed"
-        assert not stub.mount.tracking
+        assert not stub.mount.is_tracking
         assert stub.mount.stop_calls == 1
 
     def test_a_failing_run_still_closes_the_series_and_stops_tracking(self):
@@ -141,7 +141,7 @@ class TestCleanupOnFailure:
 
         assert response.failed, "the failure must be reported, not swallowed"
         assert stub.imager.ended == stub.imager.series, "the series must be closed even on failure"
-        assert not stub.mount.tracking, "the mount must not be left tracking forever"
+        assert not stub.mount.is_tracking, "the mount must not be left tracking forever"
         assert stub.mount.stop_calls == 1
 
 

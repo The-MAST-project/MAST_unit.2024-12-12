@@ -132,6 +132,28 @@ already records each result itself.
 that solves guide frames repeatedly (the pointing check and the lock nudge, on
 `eli/exclude-region`) passes `keep_artifacts=False`, so such a solve leaves no file behind and a
 failed one is diagnosed from the log, not from a kept result text.
+## [2026-10-11] `expose` leaves the mount's tracking as it found it
+
+**Why:** `do_expose` started tracking before a run and stopped it afterwards, in both directions
+unconditionally. The stop meant two exposures could not share a field: on 2026-09-02 a mirror-in /
+mirror-out pair landed on different fields. It also stopped the mount under a frame taken while
+guiding. The start was not free either: `Mount.start_tracking` re-issues `mount_tracking_on`,
+which resets a non-sidereal rate, and waits at least a second. A first fix added
+`start_tracking` / `stop_tracking` query flags. That made every caller learn the side effect, and
+it did not nest.
+
+**What:** team decision, 2026-10-11. `expose` reads `mount.is_tracking` and passes it to
+`do_expose`. If the mount was tracking, `expose` neither starts nor stops it. Otherwise it starts
+tracking for the run and stops it afterwards, also on failure. The read happens before the slew,
+because PWI4 engages tracking at the end of an equatorial goto. No query flags. `guiding.py`
+already followed this rule.
+
+**Implications:** whoever starts tracking owns stopping it. A caller that turns tracking on and
+then goes away leaves the mount tracking until park, shutdown or another operation stops it. The
+open-loop tracking grid's `goto_alt_az` -> `expose` sequence is unchanged: `goto_alt_az` stops
+tracking, so `expose` finds it off and starts it from the commanded alt/az. The rule composes
+only when operations nest. Overlapping operations are not refused yet (#303). Extending the rule
+to autofocus, calibration, acquisition and spiral search is #304.
 
 ---
 
