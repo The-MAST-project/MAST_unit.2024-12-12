@@ -1108,32 +1108,13 @@ class Unit(Component, OpmodeBase):
                 ),
             ),
         ] = None,
-        start_tracking: Annotated[
-            bool,
-            Query(
-                description=(
-                    "#### Start the mount tracking before exposing.\n"
-                    "Default `true`, which is the historical behavior. Pass `false` when the "
-                    "caller has already established tracking and does not want it re-commanded: "
-                    "`start_tracking` has no *already tracking?* guard, so it re-issues "
-                    "`mount_tracking_on` (resetting any non-sidereal rate) and then waits at "
-                    "least a second for PWI4 to confirm."
-                ),
-            ),
-        ] = True,
-        stop_tracking: Annotated[
-            bool,
-            Query(
-                description=(
-                    "#### Stop the mount tracking after the last exposure.\n"
-                    "Default `true`, which is the historical behavior. Pass `false` to expose "
-                    "without ending the pointing -- two exposures that must share a field, or "
-                    "a frame taken while guiding is paused, where stopping the mount would let "
-                    "the field walk away before guiding resumes."
-                ),
-            ),
-        ] = True,
     ) -> CanonicalResponse:
+        """Expose, optionally after a slew, leaving the mount's tracking as it was found.
+
+        If the mount was already tracking, `expose` neither re-commands nor stops it: the
+        caller that started tracking owns it. Otherwise `expose` starts tracking for the run
+        and stops it afterwards, also when the run fails.
+        """
 
         if seconds_between_exposures is not None:
             return CanonicalResponse(
@@ -1199,6 +1180,9 @@ class Unit(Component, OpmodeBase):
             return CanonicalResponse(errors=[f"expose: {e}"])
 
         assert self.mount is not None
+        # Read before the slew: PWI4 engages tracking at the end of an equatorial goto, so
+        # afterwards the mount always looks like someone else's.
+        mount_was_tracking = self.mount.is_tracking
         if (ra_j2000_hours is not None and isinstance(ra_j2000_hours, float)) and (
             dec_j2000_degs is not None and isinstance(dec_j2000_degs, float)
         ):
@@ -1228,8 +1212,7 @@ class Unit(Component, OpmodeBase):
                 height,
                 binning,
                 gain,
-                start_tracking,
-                stop_tracking,
+                mount_was_tracking,
             ],
         ).start()
         return CanonicalResponse_Ok
@@ -1248,8 +1231,7 @@ class Unit(Component, OpmodeBase):
         height: int = 1300,
         binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
         gain: int = asi.ASI_294MM_DEFAULT_GAIN,
-        start_tracking: bool = True,
-        stop_tracking: bool = True,
+        mount_was_tracking: bool = False,
     ) -> CanonicalResponse:
 
         assert self.mount is not None
@@ -1259,7 +1241,7 @@ class Unit(Component, OpmodeBase):
         seconds = exposure_seconds
 
         try:
-            if start_tracking:
+            if not mount_was_tracking:
                 self.mount.start_tracking()
             exposure_series = self.imager.start_exposure_series(purpose="unit.do_exposure")
             try:
@@ -1281,12 +1263,12 @@ class Unit(Component, OpmodeBase):
                 # This runs in `expose-thread`, where an exception would otherwise vanish
                 # entirely -- the endpoint has already returned "ok" to the caller. Logging
                 # is the only trace there is; the finally below is what keeps the exposure
-                # series from dangling and, unless the caller asked otherwise, stops the mount.
+                # series from dangling and stops the tracking this run started.
                 logger.exception(f"{op}: exposure run failed")
                 return CanonicalResponse(errors=[f"{op}: exposure run failed, see the log"])
             finally:
                 self.imager.end_exposure_series(exposure_series)
-                if stop_tracking:
+                if not mount_was_tracking:
                     self.mount.stop_tracking()
             return CanonicalResponse_Ok
         finally:
