@@ -35,9 +35,16 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-#: How long after `find_home` before `ontimer` may take "not slewing" as "homed": PWI4 may
-#: not have started the slew by the next tick.
+#: How long after `find_home` before `ontimer` may take "at rest" as "homed": PWI4 may not
+#: have started moving the axes by the next tick.
 FINDING_HOME_GRACE_SECONDS = 5
+
+#: Past this, FindingHome ends whatever the axes say, with an ERROR. Homing takes ~11 s.
+FINDING_HOME_CEILING_SECONDS = 120
+
+#: An axis whose measured velocity is below this (deg/s) counts as stopped. Homing peaks at
+#: 20 deg/s; a stopped axis reads ~0.001 (mast00, 2026-10-12).
+AXIS_AT_REST_DEGS_PER_SECOND = 0.01
 
 # class SpiralSettings(BaseModel):
 #     x: float
@@ -190,6 +197,8 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                 self.end_activity(MountActivities.PoweringUp)
 
         self._was_shut_down: bool = False
+        # `_end_finding_home_when_homed` warns once if PWI4 reports no axis velocities.
+        self._warned_no_axis_velocities: bool = False
         self.last_axis0_position_degrees: int = -99999
         self.last_axis1_position_degrees: int = -99999
         self.default_guide_rate_degs_per_second = 0.002083  # degs/sec
@@ -445,20 +454,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                 details=([f"target={self.target}" if self.target else "unsolicited movement"]),
             )
 
-        # On PWI4's own `is_slewing`, not `is_moving`: homing does not raise the axes' RMS
-        # error that `is_moving` reads, so FindingHome ended on the first tick (1.2 s, while
-        # the mount was still homing -- 2026-10-11). And not before FINDING_HOME_GRACE_SECONDS:
-        # right after `find_home`, PWI4 may not be slewing *yet*.
-        if (
-            self.is_active(MountActivities.FindingHome)
-            and datetime.datetime.now(datetime.UTC) - self.timings[MountActivities.FindingHome].start_time
-            >= datetime.timedelta(seconds=FINDING_HOME_GRACE_SECONDS)
-            and not status.mount.is_slewing  # type: ignore
-        ):
-            self.end_activity(MountActivities.FindingHome)
-            self.target = None
-            if self.is_active(MountActivities.StartingUp):
-                self.end_activity(MountActivities.StartingUp)
+        self._end_finding_home_when_homed(status)
 
         if self.is_active(MountActivities.Parking) and not self.is_moving:
             self.end_activity(MountActivities.Parking)
@@ -473,6 +469,61 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             self.target = None
 
         self._end_abort_when_at_rest(status)
+
+    def _end_finding_home_when_homed(self, status) -> None:
+        """End `FindingHome` (and `StartingUp` with it) once PWI4 has finished the homing
+        trajectory and the axes have stopped.
+
+        Homed means, after FINDING_HOME_GRACE_SECONDS: not `is_slewing`, both axes' setpoint
+        velocity exactly 0 (PWI4 commands nothing more), and both measured velocities below
+        AXIS_AT_REST_DEGS_PER_SECOND (they have actually stopped). Recorded on mast00,
+        2026-10-12: homing sweeps each axis out and back at up to 20 deg/s for ~11 s; the
+        setpoint passes through zero at each reversal but never rests on it, and there the
+        measured velocity lags far behind, so the pair cannot be fooled by a tick landing on a
+        reversal. `is_slewing` stays False throughout homing -- ending on it alone (with the
+        grace) let FindingHome end 4.5 s early, with an axis still at 20 deg/s.
+
+        Two fallbacks. A PWI4 that does not report the axis velocities (they arrived in
+        4.0.13) gets the old rule, `not is_slewing`, with one WARNING. And past
+        FINDING_HOME_CEILING_SECONDS the flag ends regardless, with an ERROR naming the
+        values, so a setpoint held non-zero cannot keep it up for good.
+        """
+        if not self.is_active(MountActivities.FindingHome):
+            return
+        started = self.timings[MountActivities.FindingHome].start_time
+        elapsed = (datetime.datetime.now(datetime.UTC) - started).total_seconds()
+        if elapsed < FINDING_HOME_GRACE_SECONDS:
+            return
+
+        axes = (status.mount.axis0, status.mount.axis1)  # type: ignore
+        setpoints = [axis.setpoint_velocity_degs_per_sec for axis in axes]
+        measured = [axis.measured_velocity_degs_per_sec for axis in axes]
+        slewing = bool(status.mount.is_slewing)  # type: ignore
+
+        if None in setpoints or None in measured:
+            if not self._warned_no_axis_velocities:
+                logger.warning("PWI4 reports no axis velocities; ending FindingHome on `is_slewing` alone")
+                self._warned_no_axis_velocities = True
+            homed = not slewing
+        else:
+            homed = (
+                not slewing
+                and all(setpoint == 0.0 for setpoint in setpoints)
+                and all(abs(velocity) < AXIS_AT_REST_DEGS_PER_SECOND for velocity in measured)
+            )
+
+        if not homed:
+            if elapsed < FINDING_HOME_CEILING_SECONDS:
+                return
+            logger.error(
+                f"FindingHome not at rest after {elapsed:.0f}s "
+                f"(setpoints={setpoints}, measured={measured}, is_slewing={slewing}); ending it anyway"
+            )
+
+        self.end_activity(MountActivities.FindingHome)
+        self.target = None
+        if self.is_active(MountActivities.StartingUp):
+            self.end_activity(MountActivities.StartingUp)
 
     def _end_abort_when_at_rest(self, status) -> None:
         """End `Aborting` once the mount is stopped: no commanded slew, no residual motion."""
