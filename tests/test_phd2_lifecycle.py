@@ -1,4 +1,5 @@
-"""PHD2's startup and shutdown connect and disconnect; they never launch or kill phd2.exe.
+"""PHD2's startup and shutdown connect and disconnect (and switch the cooler); they never launch
+or kill phd2.exe.
 
 `shutdown()` used to terminate phd2.exe and `startup()` did nothing (the constructor had
 launched it), so under the opmode lifecycle -- startup -> shutdown -> startup in one process --
@@ -44,7 +45,7 @@ def _connector(connected: bool, failing: tuple[str, ...] = ()) -> PHD2Connector:
         step.__name__ = name
         return step
 
-    for name in ("stop_guiding", "disconnect_equipment", "disconnect", "_await_phd2", "connect_equipment"):
+    for name in ("stop_guiding", "_cooler_off", "disconnect_equipment", "disconnect", "_await_phd2", "connect_equipment"):
         setattr(c, name, record(name))
     c.start_activity = lambda activity, **_: c.flags.append(("start", activity.name))
     c.end_activity = lambda activity, **_: c.flags.append(("end", activity.name))
@@ -65,7 +66,7 @@ class TestShutdown:
         response = c.shutdown()
 
         assert response.succeeded
-        assert c.calls == ["stop_guiding", "disconnect_equipment", "disconnect"]
+        assert c.calls == ["stop_guiding", "_cooler_off", "disconnect_equipment", "disconnect"]
         assert c.watched_process.terminated is False, "phd2.exe is the supervisor's, not ours to kill"
         assert c.flags == [("start", "ShuttingDown"), ("end", "ShuttingDown")]
 
@@ -76,8 +77,26 @@ class TestShutdown:
 
         assert response.failed
         assert "stop_guiding failed" in response.errors[0]
-        assert c.calls == ["stop_guiding", "disconnect_equipment", "disconnect"]
+        assert c.calls == ["stop_guiding", "_cooler_off", "disconnect_equipment", "disconnect"]
         assert ("end", "ShuttingDown") in c.flags
+
+    def test_the_cooler_goes_off_while_phd2_still_has_the_camera(self):
+        """Before `disconnect_equipment`: afterwards PHD2 can no longer reach the camera, and
+        with the outlets powered after a shutdown it could otherwise cool all day."""
+        c = _connector(connected=True)
+
+        c.shutdown()
+
+        assert c.calls.index("_cooler_off") < c.calls.index("disconnect_equipment")
+
+    def test_a_cooler_that_will_not_switch_off_is_reported_and_the_equipment_still_released(self):
+        c = _connector(connected=True, failing=("_cooler_off",))
+
+        response = c.shutdown()
+
+        assert response.failed
+        assert "_cooler_off failed" in response.errors[0]
+        assert c.calls[-2:] == ["disconnect_equipment", "disconnect"]
 
     def test_not_connected_it_only_closes_the_socket(self):
         c = _connector(connected=False)

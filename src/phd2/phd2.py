@@ -1433,8 +1433,17 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         res = self.call("save_image")
         return res["result"]["filename"]
 
+    def _cooler_off(self) -> None:
+        """Switch the camera's cooler off, raising on failure.
+
+        Not `cooler_on = False`: that setter swallows its errors (an assignment cannot report),
+        and `shutdown()` wants a failure in its response.
+        """
+        self.call("set_cooler_state", False)
+
     def shutdown(self) -> CanonicalResponse:
-        """Stop guiding, release PHD2's equipment, and close the JSON-RPC connection.
+        """Stop guiding, switch the cooler off, release PHD2's equipment, and close the
+        JSON-RPC connection.
 
         `phd2.exe` is left running. It used to be terminated here, which was harmless while a
         shutdown only ever preceded process exit; under the opmode lifecycle a unit runs
@@ -1447,12 +1456,18 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
         The equipment is released, not just the socket: with the process staying up, PHD2
         would otherwise hold the guide camera and its ASCOM connection to the mount all day.
+
+        The cooler is switched off first, while PHD2 still has the camera: nothing else turned
+        it off, and with the outlets left powered after a shutdown it could cool all day. No
+        warm-up ramp: ZWO documents none for the ASI294 (manual rev. 2.2, cooled quick guide),
+        and a TEC switched off drifts to ambient at the camera's own thermal rate, which is
+        what a software ramp would only approximate. Startup switches it back on.
         """
         self.start_activity(PHD2Activities.ShuttingDown)
         errors: list[str] = []
         try:
             if self.connected:
-                for step in (self.stop_guiding, self.disconnect_equipment):
+                for step in (self.stop_guiding, self._cooler_off, self.disconnect_equipment):
                     try:
                         step()
                     except Exception as ex:  # noqa: BLE001 -- reported, and the disconnect still runs
