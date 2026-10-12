@@ -342,6 +342,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.instance = instance
         self.conn = None
         self._terminate = False
+        self._terminate_requested = False  # set only by disconnect(); see _worker
         self.worker = None
         self.lock = threading.Lock()
         # Guards the request counter and the pending map together, so an id cannot be handed
@@ -910,6 +911,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             # caller in `call` waits out its whole timeout for an answer that cannot arrive --
             # and before there was a timeout, for the life of the process.
             self._fail_pending("the reader thread exited")
+            # And the JSON-RPC connection is gone, so `connected` must say so. It stayed True
+            # when PHD2 closed or reset the socket (PHD2 exiting, crashing or being restarted),
+            # so a dead connection read as connected. Only `disconnect()` exits on purpose, and
+            # it clears the flag itself; it joins this thread before `connect()` sets it again,
+            # so this cannot overwrite a fresh connection.
+            if not self._terminate_requested:
+                logger.warning("PHD2 closed the JSON-RPC connection; marking it disconnected")
+            self._connected = False
 
     def _read_forever(self):
         assert self.conn is not None
@@ -976,6 +985,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.conn = PHD2Connection()
             self.conn.connect(self.hostname, 4400 + self.instance - 1)
             self._terminate = False
+            self._terminate_requested = False
             self.worker = threading.Thread(name="phd2-worker", target=self._worker)
             self.worker.start()
             self._connected = True
@@ -995,6 +1005,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if self.worker is not None:
             if self.worker.is_alive():
                 # print("DBG: terminating worker")
+                # Apart from `_terminate`, which the reader also sets itself when the server
+                # resets the connection: this one says the exit was asked for.
+                self._terminate_requested = True
                 self._terminate = True
                 if self.conn:
                     self.conn.terminate()
