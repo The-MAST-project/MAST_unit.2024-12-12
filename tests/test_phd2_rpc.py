@@ -51,6 +51,8 @@ def make_connector() -> PHD2Connector:
     p._next_request_id = 0
     p._pending = {}
     p._terminate = False
+    p._terminate_requested = False
+    p._connected = True
     return p
 
 
@@ -224,3 +226,45 @@ class TestOneWriterAtATime:
 
         assert first.encode() in written, f"the first line arrived spliced: {written!r}"
         assert second.encode() in written, f"the second line arrived spliced: {written!r}"
+
+
+class TestConnectedFollowsTheConnection:
+    """`connected` stays True only while the JSON-RPC connection is up.
+
+    It stayed True when PHD2 closed or reset the socket, so a PHD2 that had exited or been
+    restarted read as connected -- and every call then failed with "no reply".
+    """
+
+    class ResettingConnection(FakeConnection):
+        def read_line(self) -> str:
+            raise ConnectionResetError("PHD2 went away")
+
+    def test_the_server_closing_the_connection_marks_it_disconnected(self, caplog):
+        connector = make_connector()
+        connector.conn.lines.put("")  # server closed the socket
+
+        with caplog.at_level("WARNING"):
+            connector._worker()
+
+        assert connector._connected is False
+        assert "PHD2 closed the JSON-RPC connection" in caplog.text
+
+    def test_a_reset_marks_it_disconnected(self):
+        connector = make_connector()
+        connector.conn = self.ResettingConnection()
+
+        connector._worker()
+
+        assert connector._connected is False
+
+    def test_a_requested_disconnect_is_not_reported_as_phd2_closing(self, caplog):
+        """`disconnect()` stops the reader on purpose; that is not PHD2 going away."""
+        connector = make_connector()
+        connector._terminate_requested = True
+        connector._terminate = True
+
+        with caplog.at_level("WARNING"):
+            connector._worker()
+
+        assert connector._connected is False
+        assert "PHD2 closed" not in caplog.text
