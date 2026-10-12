@@ -37,6 +37,37 @@ acquisition is bounded by its own tries, and an abort clears `Acquiring`, which 
 
 **Implications:** the HTTP endpoint behaves as before. An outside caller still cannot see
 `failure`; exposing it in status is left for the flux orchestrator work.
+## [2026-10-12] The flux camera is served from the spec host; the unit still orchestrates
+
+**Why:** the Thorlabs Zelux that meters the fiber output is attached to mast-ns-spec, not to
+the unit PC, so `FluxMeteringSession` can no longer open it through the SDK. Moving the whole
+run off the unit is the longer-term plan, but it is parked; this is the interim step that
+keeps `acquire_and_find_max_flux` working with the camera where it now is.
+
+**What:** a separate flux-meter service on the spec host opens the camera at its startup and
+holds it; there is no open, close or claim. `flux_metering/remote.py` adds `RemoteFluxMeter`,
+the `FluxMeter` protocol over three endpoints: `GET /info` (read once, on construction),
+`PUT /configure`, and `POST /expose`, which returns the frame as `np.save` bytes. Every
+transport failure, timeout or non-2xx becomes a `FluxMeterError` carrying the service's own
+text, which the session already turns into a clean failed run. The host and port are
+constants in `remote.py` (`mast-ns-spec`, 8003), not configuration: the arrangement is a
+stopgap, and a `services` entry in the configuration database would outlive it. Clients
+use `trust_env=False`, like every other in-site client in MAST, because the Weizmann proxy
+in some units' environment answers in-site requests with an HTML error page. `_open_meter`
+builds a `RemoteFluxMeter` unless a meter was injected, and `require_can_start` preflights
+`GET /info` with a 2 s timeout, so an unreachable service refuses the run before dispatch.
+`description` gains `remote@<host>:<port>`, so `result.json` shows the frames came over the network.
+
+**Implications:**
+- `flux_started_utc` / `flux_ended_utc` are still stamped on the unit, so they now bracket the
+  HTTP round trip, a superset of the true exposure window. The overlap check against the imager
+  frame stays conservative; tightening it needs the service to report its own exposure times.
+- The `/expose` read timeout is the exposure plus 10 s, which must stay above the service's own
+  poll slack (5 s in `thorcam.POLL_SLACK_MS`) plus the frame transfer.
+- The flux-meter service must be started with `--port 8003`; nothing checks the two agree
+  except the preflight failing.
+- `flux_metering/thorcam/` stays in this tree, unused by the unit, until it moves to the
+  service.
 
 ---
 

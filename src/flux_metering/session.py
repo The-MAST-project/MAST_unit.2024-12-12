@@ -56,6 +56,7 @@ from common.utils import function_name
 from flux_metering.aperture_photometry_single import SATURATION_ADU
 from flux_metering.correlate import measure_pair
 from flux_metering.flux_meter import FluxMeter, FluxMeterError, measure_frame, saturated_pixels
+from flux_metering.remote import PREFLIGHT_TIMEOUT_S, RemoteFluxMeter
 from imaging.frame_shift import MIN_CONFIDENCE
 from mount import SettleMode
 from spiral_search import resolve_center
@@ -151,8 +152,8 @@ class FluxMeteringSession:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        #: Injected for tests and for any machine without a Zelux attached; `None` means
-        #: open a real ThorCam when the run starts.
+        #: Injected for tests; `None` means reach the flux-meter service on the site's spec
+        #: host when the run starts.
         self._injected_meter = flux_meter
         self._meter: FluxMeter | None = None
         self._solve_thread: threading.Thread | None = None
@@ -224,6 +225,15 @@ class FluxMeteringSession:
                 f"only {free / 1024**3:.1f} GB free where the frames are written; "
                 f"at least {RAM_DISK_MIN_FREE_BYTES / 1024**3:.0f} GB is wanted before starting"
             )
+
+        # Last, being the one check that goes over the network. The camera is on the spec
+        # host, so a service that is down would otherwise surface only after
+        # the folding mirror had moved, as a run that failed rather than one never started.
+        if self._injected_meter is None:
+            try:
+                RemoteFluxMeter.at_spec_host(timeout_s=PREFLIGHT_TIMEOUT_S)
+            except FluxMeterError as ex:
+                return f"the flux meter is not available: {ex}"
         return None
 
     def start(self, params: FluxMeteringParams):
@@ -1108,11 +1118,7 @@ class FluxMeteringSession:
         if self._injected_meter is not None:
             self._meter = self._injected_meter
         else:
-            from flux_metering.thorcam import ThorCam
-
-            cam = ThorCam()
-            cam.open()
-            self._meter = cam
+            self._meter = RemoteFluxMeter.at_spec_host()
         try:
             self._meter.configure(
                 exposure_us=self.params.flux_exposure_us,
