@@ -866,7 +866,7 @@ class Unit(Component, OpmodeBase):
         `operated`: start at once, as a unit always has. `controlled`: report INITIALIZED and
         wait for the `startup` endpoint. Construction has already happened, in `main()`.
         """
-        logger.debug(f"unit start lifespan, opmode={self.opmode}")
+        logger.info(f"unit start lifespan, opmode={self.opmode} (from {self.opmode_source})")
         if self.is_operated:
             self.startup()
         else:
