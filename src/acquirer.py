@@ -45,6 +45,8 @@ logger = get_logger(__name__)
 #: unbuilt on three of four units (MAST_unit#95).
 REQUIRED_COMPONENTS = ("mount", "guider", "imager", "solver", "stage")
 
+ACQUISITION_CANCELLED = "the acquisition was cancelled"
+
 
 class Acquirer:
     from typing import TYPE_CHECKING
@@ -81,9 +83,10 @@ class Acquirer:
         stayed invisible for months.
         """
         try:
-            self.do_acquire(acquisition)
-        except Exception:
+            acquisition.failure = self.do_acquire(acquisition)
+        except Exception as ex:
             logger.exception(f"{function_name()}: acquisition failed")
+            acquisition.failure = f"the acquisition raised: {ex!r}"
         finally:
             # Removed once every protected artifact has reached the shared area, and never
             # before -- so a frame that failed to move keeps its folder instead of being
@@ -141,13 +144,15 @@ class Acquirer:
         except Exception:  # the unwind must finish even if part of it fails
             logger.exception(f"{op}: error while unwinding a cancelled acquisition")
 
-    def do_acquire(self, acquisition: Acquisition):  # noqa: C901
-        """
-        Called from start_acquisition()
+    def _phase_failure(self, phase: str, tries: int) -> str:
+        """Why a phase ended without reaching tolerance: `solve_and_correct` returns False
+        for a cancellation too, and the two call for different responses."""
+        if self._cancelled():
+            return f"{ACQUISITION_CANCELLED} during phase '{phase.upper()}'"
+        return f"phase '{phase.upper()}' did not reach tolerance in {tries} tries"
 
-        :param acquisition:
-        :return:
-        """
+    def do_acquire(self, acquisition: Acquisition) -> str | None:  # noqa: C901
+        """Run one acquisition. Returns None when it reached tolerance, else why it did not."""
         op = function_name()
 
         self.unit.errors = []
@@ -163,7 +168,7 @@ class Acquirer:
             msg = f"{op}: cannot acquire, these components did not initialize: {', '.join(missing)}"
             logger.error(msg)
             self.unit.errors.append(msg)
-            return
+            return msg
 
         self.latest_acquisition = acquisition
 
@@ -187,9 +192,10 @@ class Acquirer:
         if not hasattr(acquisition, "target_ra") or not hasattr(acquisition, "target_dec"):
             st = self.unit.required_mount.status()
             if st.ra_j2000_hours is None or st.dec_j2000_degs is None:
-                self.unit.errors.append("cannot get coordinates from mount (mount not connected)")
+                msg = "cannot get coordinates from mount (mount not connected)"
+                self.unit.errors.append(msg)
                 self.unit.end_activity(UnitActivities.Acquiring)
-                return
+                return msg
 
             acquisition.target_ra = st.ra_j2000_hours
             acquisition.target_dec = st.dec_j2000_degs
@@ -232,7 +238,7 @@ class Acquirer:
 
             if not self._await_stage():
                 self._abandon(op)
-                return
+                return ACQUISITION_CANCELLED
             self.unit.required_mount.wait_until_settled(SettleMode.SLEW)
 
             self.unit.end_activity(UnitActivities.Positioning)
@@ -296,10 +302,11 @@ class Acquirer:
             self.latest_acquisition.save_corrections(phase)
 
             if not achieved_tolerances:
+                failure = self._phase_failure(phase, tries)
                 self.unit.end_activity(UnitActivities.Acquiring)
                 self.unit.required_mount.stop_tracking()
                 self.unit.required_imager.end_exposure_series(acquisition_exposure_series)
-                return
+                return failure
 
         phase = "spec"
         boxed_log(logger, [f"starting phase '{phase.upper()}'"])
@@ -312,11 +319,11 @@ class Acquirer:
 
         if not self._await_stage():
             self._abandon(op, acquisition_exposure_series)
-            return
+            return ACQUISITION_CANCELLED
         logger.info("sleeping additional 5 seconds to let the stage stop moving ...")
         if not self._cancellable_sleep(5):
             self._abandon(op, acquisition_exposure_series)
-            return
+            return ACQUISITION_CANCELLED
         logger.info(f"stage now at {self.unit.required_stage.position}")
 
         if self.unit.is_active(UnitActivities.Positioning):
@@ -381,10 +388,11 @@ class Acquirer:
         self.latest_acquisition.save_corrections(phase)
         logger.info(f"{op}: phase '{phase.upper()}' {achieved_tolerances=}")
         if not achieved_tolerances:
+            failure = self._phase_failure(phase, tries)
             self.unit.end_activity(UnitActivities.Acquiring)
             self.unit.required_mount.stop_tracking()
             self.unit.required_imager.end_exposure_series(acquisition_exposure_series)
-            return
+            return failure
 
         if self.unit.required_imager.can_image_to_memory:
             self.unit.reference_image = self.unit.required_imager.image_array
@@ -411,11 +419,11 @@ class Acquirer:
             lines.append("moving stage to SPEC")
         if not self._await_stage():
             self._abandon(op)
-            return
+            return ACQUISITION_CANCELLED
         logger.info("sleeping additional 5 seconds to let the stage stop moving ...")
         if not self._cancellable_sleep(5):
             self._abandon(op)
-            return
+            return ACQUISITION_CANCELLED
 
         if self.latest_acquisition.handover_automatically_to_guider:
             lines.append("starting PHD2 guiding")
@@ -437,6 +445,7 @@ class Acquirer:
 
         if self.unit.required_acquirer.latest_acquisition is not None:
             self.unit.required_acquirer.latest_acquisition.post_process()
+        return None
 
     def start_acquisition_and_guiding_for_assignment(self, assignment: UnitAssignment):
         """Acquire and hand over to guiding for a controller-issued assignment.
@@ -600,6 +609,80 @@ class Acquirer:
             )
         return ra, dec, None
 
+    def prepare_acquisition(
+        self,
+        seconds: float | None = 5.0,
+        ra_j2000_hours: str | float | None = None,
+        dec_j2000_degs: str | float | None = None,
+        object_name: str | None = None,
+        resolve_timeout: float = TOTAL_TIMEOUT_SECONDS,
+        gain_absolute: int | None = asi.ASI_294MM_DEFAULT_GAIN,
+        gain_percent: int | None = None,
+        approach_mode: ApproachMode = ApproachMode.GRADUAL_BY_RATE,
+        make_corrections: bool = True,
+        skip_sky: bool = False,
+        use_set_limit_frame: bool = True,
+        handover_automatically_to_guider: bool = True,
+    ) -> Acquisition | CanonicalResponse:
+        """Check the request and build its `Acquisition`, or return the refusal.
+
+        Split from the endpoint so a caller already on its own thread can run the
+        acquisition with `run_acquisition` and know when it has ended, rather than start it
+        on another thread and infer the end from `Acquiring` (MAST_unit#316).
+        """
+        op = function_name()
+
+        missing = self.missing_components()
+        if missing:
+            return CanonicalResponse(
+                errors=[f"cannot start acquisition, these components did not initialize: {', '.join(missing)}"]
+            )
+
+        assert self.unit.required_mount.pw is not None, f"{op}: unit.required_mount.pw is None"
+
+        pw_status = self.unit.required_mount.pw.status()
+
+        ra_j2000_hours, dec_j2000_degs, problem = self._target_coordinates(
+            op, ra_j2000_hours, dec_j2000_degs, object_name, resolve_timeout, pw_status
+        )
+        if problem is not None:
+            return CanonicalResponse(errors=[problem])
+
+        assert self.unit.unit_conf is not None
+        assert self.unit.unit_conf.solving.method in self.unit.unit_conf.solving.valid_methods, (
+            "unit unit_conf.solving.method is not in allowed_methods"
+        )
+
+        solver_name = self.unit.unit_conf.solving.method
+
+        if all([gain_absolute, gain_percent]):
+            return CanonicalResponse(errors=["supply only one of 'gain_absolute' or 'gain_percent', not both"])
+
+        # A backstop, not the diagnosis. Every way of failing to get coordinates now
+        # returns its own reason from `_target_coordinates` above, so reaching here means
+        # that function grew a path which returns neither coordinates nor a problem.
+        # Deliberately not phrased as "no coordinates supplied and mount not connected":
+        # that was accurate when this was the only check, and would now send the reader
+        # after a fault that has already been ruled out.
+        if ra_j2000_hours is None or dec_j2000_degs is None:
+            return CanonicalResponse(errors=[f"{op}: no target coordinates were determined, and no reason was given"])
+
+        assert self.unit.unit_conf is not None
+        return Acquisition(
+            unit=self.unit,
+            approach_mode=approach_mode,
+            solver_id=SolverId[solver_name],
+            make_corrections=make_corrections,
+            target_ra=float(ra_j2000_hours),
+            target_dec=float(dec_j2000_degs),
+            exposure=seconds,
+            gain_absolute=gain_absolute or asi.ASI_294MM_DEFAULT_GAIN,
+            gain_percent=gain_percent,
+            skip_sky=skip_sky,
+            use_set_limit_frame=use_set_limit_frame,
+            handover_automatically_to_guider=handover_automatically_to_guider,
+        )
+
     @endpoint(tier=Tier.OPERATION)
     def endpoint_start_acquisition_and_guiding(
         self,
@@ -692,58 +775,22 @@ class Acquirer:
         :return: The folder path on the MAST-SHARE with the acquisition's products
         """
 
-        op = function_name()
-
-        missing = self.missing_components()
-        if missing:
-            return CanonicalResponse(
-                errors=[f"cannot start acquisition, these components did not initialize: {', '.join(missing)}"]
-            )
-
-        assert self.unit.required_mount.pw is not None, f"{op}: unit.required_mount.pw is None"
-
-        pw_status = self.unit.required_mount.pw.status()
-
-        ra_j2000_hours, dec_j2000_degs, problem = self._target_coordinates(
-            op, ra_j2000_hours, dec_j2000_degs, object_name, resolve_timeout, pw_status
-        )
-        if problem is not None:
-            return CanonicalResponse(errors=[problem])
-
-        assert self.unit.unit_conf is not None
-        assert self.unit.unit_conf.solving.method in self.unit.unit_conf.solving.valid_methods, (
-            "unit unit_conf.solving.method is not in allowed_methods"
-        )
-
-        solver_name = self.unit.unit_conf.solving.method
-
-        if all([gain_absolute, gain_percent]):
-            return CanonicalResponse(errors=["supply only one of 'gain_absolute' or 'gain_percent', not both"])
-
-        # A backstop, not the diagnosis. Every way of failing to get coordinates now
-        # returns its own reason from `_target_coordinates` above, so reaching here means
-        # that function grew a path which returns neither coordinates nor a problem.
-        # Deliberately not phrased as "no coordinates supplied and mount not connected":
-        # that was accurate when this was the only check, and would now send the reader
-        # after a fault that has already been ruled out.
-        if ra_j2000_hours is None or dec_j2000_degs is None:
-            return CanonicalResponse(errors=[f"{op}: no target coordinates were determined, and no reason was given"])
-
-        assert self.unit.unit_conf is not None
-        acquisition = Acquisition(
-            unit=self.unit,
-            approach_mode=approach_mode,
-            solver_id=SolverId[solver_name],
-            make_corrections=make_corrections,
-            target_ra=float(ra_j2000_hours),
-            target_dec=float(dec_j2000_degs),
-            exposure=seconds,
-            gain_absolute=gain_absolute or asi.ASI_294MM_DEFAULT_GAIN,
+        prepared = self.prepare_acquisition(
+            seconds=seconds,
+            ra_j2000_hours=ra_j2000_hours,
+            dec_j2000_degs=dec_j2000_degs,
+            object_name=object_name,
+            resolve_timeout=resolve_timeout,
+            gain_absolute=gain_absolute,
             gain_percent=gain_percent,
+            approach_mode=approach_mode,
+            make_corrections=make_corrections,
             skip_sky=skip_sky,
             use_set_limit_frame=use_set_limit_frame,
             handover_automatically_to_guider=handover_automatically_to_guider,
         )
-        Thread(name="acquisition", target=self.run_acquisition, args=[acquisition]).start()
+        if isinstance(prepared, CanonicalResponse):
+            return prepared
+        Thread(name="acquisition", target=self.run_acquisition, args=[prepared]).start()
 
         return CanonicalResponse_Ok

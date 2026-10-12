@@ -40,6 +40,7 @@ import numpy as np
 from astropy.io import fits
 
 from common.activities import UnitActivities
+from common.canonical import CanonicalResponse
 from common.filer import Filer, FilerTop, MoveGuardian
 from common.mast_logging import get_logger
 from common.models.statuses import (
@@ -67,11 +68,6 @@ logger = get_logger(__name__)
 filer = Filer(logger)
 
 REFERENCE_IMAGE = "reference.fits"
-
-#: How long to wait for the whole acquisition to reach tolerance before giving up. The
-#: procedure is meaningless without a converged acquisition, so this is a ceiling on
-#: waiting, not a tolerance of its own.
-ACQUISITION_TIMEOUT_SECONDS = 900.0
 
 #: How long to wait for the solver's background cleanup to put the solved frame beside the
 #: original. It is normally there within a second; this only avoids assuming it.
@@ -620,13 +616,22 @@ class FluxMeteringSession:
         gradual-by-rate, corrections on, sky phase skipped (the fibre only sees light with
         the folding mirror in, so the spec phase is the one that matters), and no handover
         to the guider.
+
+        Run on this thread rather than through the endpoint, so the call returns exactly
+        when the acquisition ends. Started on another thread, its end could only be read
+        from `Acquiring`, which is not yet set for a moment after the start -- and a spiral
+        once walked right through that moment (MAST_unit#316). An abort clears `Acquiring`,
+        which the acquisition honors, so this call still returns promptly.
         """
         acquirer = self.unit.acquirer
         if acquirer is None:
             self.state.last_error = "no acquirer"
             return False
+        if self._stop.is_set():
+            self.state.last_error = "aborted before acquisition"
+            return False
 
-        response = acquirer.endpoint_start_acquisition_and_guiding(
+        acquisition = acquirer.prepare_acquisition(
             seconds=self.params.seconds,
             ra_j2000_hours=self.params.ra_j2000_hours,
             dec_j2000_degs=self.params.dec_j2000_degs,
@@ -635,22 +640,18 @@ class FluxMeteringSession:
             use_set_limit_frame=True,
             handover_automatically_to_guider=False,
         )
-        if response is not None and getattr(response, "failed", False):
-            self.state.last_error = f"acquisition refused: {response.errors}"
+        if isinstance(acquisition, CanonicalResponse):
+            self.state.last_error = f"acquisition refused: {acquisition.errors}"
             return False
 
-        deadline = time.monotonic() + ACQUISITION_TIMEOUT_SECONDS
-        while time.monotonic() < deadline:
-            if self._stop.is_set():
-                self.state.last_error = "aborted during acquisition"
-                return False
-            if not self.unit.is_active(UnitActivities.Acquiring):
-                break
-            time.sleep(1.0)
-        else:
-            self.state.last_error = f"acquisition did not finish within {ACQUISITION_TIMEOUT_SECONDS:g}s"
-            return False
+        acquirer.run_acquisition(acquisition)
 
+        if self._stop.is_set():
+            self.state.last_error = "aborted during acquisition"
+            return False
+        if acquisition.failure is not None:
+            self.state.last_error = f"acquisition failed: {acquisition.failure}"
+            return False
         return True
 
     def _ram_disk_free_bytes(self) -> int | None:
