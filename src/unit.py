@@ -863,11 +863,11 @@ class Unit(Component, OpmodeBase):
     def start_lifespan(self):
         """The one place the opmode is acted on (opmode-design 4a).
 
-        `operated`: start at once, as a unit always has. `controlled`: report INITIALIZED and
+        `development`: start at once, as a unit always has. `production`: report INITIALIZED and
         wait for the `startup` endpoint. Construction has already happened, in `main()`.
         """
         logger.info(f"unit start lifespan, opmode={self.opmode} (from {self.opmode_source})")
-        if self.is_operated:
+        if self.is_development:
             self.startup()
         else:
             self._set_opstate(OpState.INITIALIZED)

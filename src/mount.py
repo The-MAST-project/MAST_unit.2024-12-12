@@ -174,8 +174,9 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         SwitchedOutlet.__init__(self, OutletDomain.UnitOutlets, outlet_name="Mount")
         Component.__init__(self, MountActivities)
 
-        # Powered in every opmode (opmode-design 3, 4a): a `controlled` unit waits for its
-        # `startup` with the mount powered, connected and its axes energised.
+        # Powered in every opmode (opmode-design 3, 4a): a `production` unit waits for its
+        # `startup` with the mount powered. Connecting -- which energises the axes -- is
+        # `startup()`'s, so the mount is not connected until then.
         if not self.is_on():
             self.start_activity(MountActivities.PoweringUp)
             try:

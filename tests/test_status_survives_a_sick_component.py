@@ -79,7 +79,7 @@ class Stub:
         # Stub without one raises where the real thing cannot.
         self.flux_metering = parts.pop("flux_metering", FluxMetering())
         # Read by `status` since opmode/opstate went on the wire (opmode-design 6).
-        self.opmode = OpMode.CONTROLLED
+        self.opmode = OpMode.PRODUCTION
         self.opstate = OpState.INITIALIZED
         assert not parts, f"unknown parts: {sorted(parts)}"
 
