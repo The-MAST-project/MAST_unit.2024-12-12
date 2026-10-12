@@ -45,6 +45,16 @@ chain="…"` at INFO, and `DEGRADED usb-link=HighSpeed …` at WARNING when a US
 the link. `DEGRADED` is the tag for any degradation that is not a fault; the line format
 is pinned in `tests/test_usb_link.py`. It never fails startup (`DECISIONS.md` 2026-09-27).
 
+## The flux meter is on the spec host
+
+`acquire_and_find_max_flux` runs in this service, but the Thorlabs Zelux that meters the
+fiber output is attached to `mast-ns-spec`, where a separate flux-meter service holds it. The
+unit reaches it through `flux_metering/remote.py` (`RemoteFluxMeter`: `GET /info`,
+`PUT /configure`, `POST /expose`) at **`mast-ns-spec:8003`**, hard-coded as
+`FLUX_METER_HOST` / `FLUX_METER_PORT` rather than configured, because the arrangement is a
+stopgap. When the service does not answer, a flux-metering run is refused before it starts. `flux_metering/thorcam/` is the camera driver the
+service will take over (`DECISIONS.md` 2026-10-12).
+
 ## Tests
 
 `tests/` holds a pytest suite that drives the real connector code with mocked
