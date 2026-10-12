@@ -866,6 +866,68 @@ def test_an_abort_during_acquisition_fails_the_run(session):
     assert "aborted" in (s.state.last_error or "")
 
 
+def _run_recording_the_order(s, unit, *, leaves_mirror_at_spec: bool) -> list[str]:
+    """Drive `do_acquire_and_find_max_flux` with everything after the reference stubbed,
+    recording when the acquisition, the mirror and the reference happen."""
+    events: list[str] = []
+
+    class OrderedAcquirer(FakeAcquirer):
+        START_DELAY_S = 0.0
+        RUN_S = 0.0
+
+        def run_acquisition(self, acquisition):
+            super().run_acquisition(acquisition)
+            if leaves_mirror_at_spec:
+                # The real acquirer's last act on FCU v2: the mirror goes back in.
+                unit.stage._remaining = 0
+            events.append("acquire")
+
+    unit.acquirer = OrderedAcquirer(unit)
+    stage_move = unit.stage.move_to_preset
+
+    def recording_move(preset):
+        events.append("mirror")
+        stage_move(preset)
+
+    unit.stage.move_to_preset = recording_move
+    s._expose_reference = lambda: events.append("reference")  # type: ignore[method-assign]
+    s.start_solving_the_reference = lambda: None  # type: ignore[method-assign]
+    s._walk_spiral = lambda: "converged"  # type: ignore[method-assign]
+    s._await_reference_solve = lambda: None  # type: ignore[method-assign]
+    s._measure = lambda reference: None  # type: ignore[method-assign]
+    s._finish = lambda terminal: events.append(f"finish:{terminal}")  # type: ignore[method-assign]
+
+    s.do_acquire_and_find_max_flux()
+    return events
+
+
+def test_the_mirror_is_not_moved_when_the_acquisition_leaves_it_in(session):
+    """Putting the mirror in before acquiring was undone at once: the acquisition takes it
+    out to solve and puts it back, two 42 s traverses for nothing (MAST_unit#312)."""
+    s, unit, _mount, _meter = session()
+
+    events = _run_recording_the_order(s, unit, leaves_mirror_at_spec=True)
+
+    assert events == ["acquire", "reference", "finish:converged"]
+    assert unit.stage.moves == []
+
+
+def test_a_mirror_the_acquisition_left_out_is_put_in_before_the_reference(session):
+    s, unit, _mount, _meter = session()
+
+    events = _run_recording_the_order(s, unit, leaves_mirror_at_spec=False)
+
+    assert events == ["acquire", "mirror", "reference", "finish:converged"]
+
+
+def test_a_run_without_acquisition_still_puts_the_mirror_in_first(session):
+    s, unit, _mount, _meter = session(skip_acquisition=True)
+
+    events = _run_recording_the_order(s, unit, leaves_mirror_at_spec=False)
+
+    assert events == ["mirror", "reference", "finish:converged"]
+
+
 # ------------------------------------------------- solving the reference frame --
 
 

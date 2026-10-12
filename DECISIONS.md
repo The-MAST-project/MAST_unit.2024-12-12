@@ -2,6 +2,23 @@
 
 ---
 
+## [2026-10-13] Flux metering puts the folding mirror in after the acquisition, not before
+
+**Why:** the run moved the mirror to SPEC, then the acquisition took it out to solve on FCU v2 and
+put it back: two 42 s traverses that undid each other on every run (mast03, 2026-10-12, runs 0004
+and 0008). MAST_unit#312.
+
+**What:** `do_acquire_and_find_max_flux` opens the meter, acquires, then calls
+`_position_folding_mirror`. After an acquisition the mirror is normally already at SPEC, so that
+call returns at once; if the acquisition left it elsewhere, it is moved and waited on by
+position as before. A `skip_acquisition` run positions the mirror first, as before.
+
+**Implications:** a stage that cannot reach SPEC is now found after the acquisition rather than
+before it. The acquirer's own stage waits do not confirm arrival; that, and refusing up front for
+an unhomed stage or an out-of-travel preset, stay with MAST_unit#312.
+
+---
+
 ## [2026-10-13] Flux metering runs its acquisition itself and reads how it ended
 
 **Why:** `FluxMeteringSession._acquire` started the acquisition through the endpoint, which spawns

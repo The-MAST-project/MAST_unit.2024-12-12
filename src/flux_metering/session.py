@@ -280,9 +280,6 @@ class FluxMeteringSession:
         caller watching it."""
         op = function_name()
         try:
-            if not self._position_folding_mirror():
-                self._finish("failed")
-                return
             self._open_meter()
             if self.params.skip_acquisition:
                 # Engineering only. The spiral, the products and the correlation can then be
@@ -301,6 +298,13 @@ class FluxMeteringSession:
                 )
             elif not self._acquire():
                 self._finish("acquisition_failed")
+                return
+
+            # After the acquisition, not before: it takes the mirror out to solve and puts it
+            # back, so positioning first cost two traverses (MAST_unit#312). Normally the
+            # mirror is already in and this returns at once.
+            if not self._position_folding_mirror():
+                self._finish("failed")
                 return
 
             self.state.phase = "reference"
