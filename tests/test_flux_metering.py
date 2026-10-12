@@ -774,6 +774,98 @@ def test_an_abort_during_positioning_stops_the_run(session):
     assert "aborted" in (s.state.last_error or "")
 
 
+# ---------------------------------------------------------------- acquisition --
+
+
+class FakeAcquirer:
+    """Shaped like the real one: `run_acquisition` raises `Acquiring` only after a delay,
+    and the endpoint spawns it on a thread and returns at once. The delay is the window in
+    which "not started yet" used to read as "finished" (MAST_unit#316)."""
+
+    START_DELAY_S = 0.3
+    RUN_S = 0.3
+
+    def __init__(self, unit, *, failure=None, refusal=None):
+        self.unit = unit
+        self.failure = failure
+        self.refusal = refusal
+        self.requested: dict = {}
+        self.finished = False
+
+    def prepare_acquisition(self, **kwargs):
+        from common.canonical import CanonicalResponse
+
+        self.requested = kwargs
+        if self.refusal is not None:
+            return CanonicalResponse(errors=[self.refusal])
+        return SimpleNamespace(failure=None)
+
+    def run_acquisition(self, acquisition):
+        from common.activities import UnitActivities
+
+        time.sleep(self.START_DELAY_S)
+        self.unit.start_activity(UnitActivities.Acquiring)
+        time.sleep(self.RUN_S)
+        acquisition.failure = self.failure
+        self.unit.end_activity(UnitActivities.Acquiring)
+        self.finished = True
+
+    def endpoint_start_acquisition_and_guiding(self, **kwargs):
+        from threading import Thread
+
+        from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+
+        prepared = self.prepare_acquisition(**kwargs)
+        if isinstance(prepared, CanonicalResponse):
+            return prepared
+        Thread(target=self.run_acquisition, args=[prepared]).start()
+        return CanonicalResponse_Ok
+
+
+def test_the_run_waits_for_an_acquisition_that_starts_late(session):
+    s, unit, _mount, _meter = session()
+    unit.acquirer = FakeAcquirer(unit)
+
+    assert s._acquire() is True
+    assert unit.acquirer.finished, "the spiral must not start before the acquisition ends"
+
+
+def test_an_acquisition_that_misses_tolerance_fails_the_run(session):
+    s, unit, _mount, _meter = session()
+    unit.acquirer = FakeAcquirer(unit, failure="phase 'SPEC' did not reach tolerance in 20 tries")
+
+    assert s._acquire() is False
+    assert "phase 'SPEC' did not reach tolerance in 20 tries" in (s.state.last_error or "")
+
+
+def test_a_refused_acquisition_fails_the_run_with_the_reason(session):
+    s, unit, _mount, _meter = session()
+    unit.acquirer = FakeAcquirer(unit, refusal="no target coordinates were determined")
+
+    assert s._acquire() is False
+    assert "no target coordinates were determined" in (s.state.last_error or "")
+    assert not unit.acquirer.finished
+
+
+def test_the_acquisition_is_spec_only_and_hands_nothing_to_the_guider(session):
+    s, unit, _mount, _meter = session()
+    unit.acquirer = FakeAcquirer(unit)
+
+    s._acquire()
+
+    assert unit.acquirer.requested["skip_sky"] is True
+    assert unit.acquirer.requested["handover_automatically_to_guider"] is False
+
+
+def test_an_abort_during_acquisition_fails_the_run(session):
+    s, unit, _mount, _meter = session()
+    unit.acquirer = FakeAcquirer(unit)
+    s._stop.set()
+
+    assert s._acquire() is False
+    assert "aborted" in (s.state.last_error or "")
+
+
 # ------------------------------------------------- solving the reference frame --
 
 
