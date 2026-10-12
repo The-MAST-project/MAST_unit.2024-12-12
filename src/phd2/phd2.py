@@ -249,6 +249,19 @@ class SingleFrameResult:
 #: a bounded time; it is a constant rather than config because it is needed before
 #: any configuration has been read.
 PHD2_STARTUP_TIMEOUT: float = 30.0
+
+#: Within this many degrees above PHD2's reported cooler set point, the camera counts as cooled:
+#: `ImagerActivities.CoolingDown` ends and the imager is operational again.
+COOLING_TOLERANCE_DEGREES: float = 1.0
+
+#: How often the cool-down watcher reads the cooler when the unit configuration does not say
+#: (`imager.temp_check_interval`).
+COOLING_POLL_SECONDS_DEFAULT: float = 10.0
+
+#: Still cooling after this long, the watcher warns once: the set point may be out of the
+#: cooler's reach at this ambient temperature. It keeps waiting -- the imager stays
+#: non-operational until it gets there, which is the point.
+COOLING_SLOW_WARNING_SECONDS: float = 900.0
 PHD2_STARTUP_POLL: float = 0.5
 
 
@@ -263,6 +276,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     #: half-built object -- either re-running the whole body (launching a second phd2.exe)
     #: or, once `_initialized` is set unconditionally, silently accepting a broken one.
     _init_error: BaseException | None = None
+    #: The cool-down watcher's last (temperature, set point) reading, for why_not_operational.
+    _cooling_reading: tuple[float, float] | None = None
 
     @property
     def conf(self):
@@ -426,7 +441,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.connect_equipment()
             # Inside the guard: its setter is a bare `call()`, so on a torn-down
             # connection it raises the cleanup's own error over the real one.
-            self.cooler_on = True
+            self._start_cooling_down()
         except Exception as ex:
             # Not `self.connected = False`: that property's setter disconnects, which nulls
             # self.conn and makes the next call raise "no connection to PHD2 server" -- the
@@ -1129,7 +1144,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     return
 
             if not self.cooler_on:
-                self.cooler_on = True
+                self._start_cooling_down()
 
             assert imager_settings and imager_settings.roi
             if new_interface:
@@ -1437,9 +1452,77 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         """Switch the camera's cooler off, raising on failure.
 
         Not `cooler_on = False`: that setter swallows its errors (an assignment cannot report),
-        and `shutdown()` wants a failure in its response.
+        and `shutdown()` wants a failure in its response. Ends a cool-down in progress: with the
+        cooler off there is nothing to wait for.
         """
+        self._end_cooling_down()
         self.call("set_cooler_state", False)
+
+    # ----------------------------------------------------------------- cooling down
+
+    def _start_cooling_down(self) -> None:
+        """Switch the cooler on, and hold `ImagerActivities.CoolingDown` until it gets there.
+
+        The flag is the imager's (`self.parent`), as the ASCOM backend's is. A watcher thread
+        reads the cooler every `imager.temp_check_interval` seconds and ends the flag once the
+        sensor is within COOLING_TOLERANCE_DEGREES of PHD2's set point. While it is up the
+        imager is not operational (see `operational`). The set point is PHD2's own, from its
+        profile: PHD2's JSON-RPC can switch the cooler but not set its target.
+        """
+        self.cooler_on = True
+        parent = self.parent
+        if parent is None or parent.is_active(ImagerActivities.CoolingDown):
+            return
+        self._cooling_reading = None
+        parent.start_activity(ImagerActivities.CoolingDown)
+        threading.Thread(name="phd2-cooldown", target=self.do_cool_down, daemon=True).start()
+
+    def _end_cooling_down(self) -> None:
+        parent = self.parent
+        if parent is not None and parent.is_active(ImagerActivities.CoolingDown):
+            parent.end_activity(ImagerActivities.CoolingDown)
+
+    @property
+    def _cooling_poll_seconds(self) -> float:
+        unit = getattr(self.parent, "unit", None)
+        conf = getattr(unit, "unit_conf", None) if unit is not None else None
+        interval = getattr(getattr(conf, "imager", None), "temp_check_interval", None)
+        return float(interval) if interval else COOLING_POLL_SECONDS_DEFAULT
+
+    def do_cool_down(self) -> None:
+        """End `CoolingDown` once the sensor is within tolerance of the set point.
+
+        Exits, ending the flag, if PHD2 disconnects (a shutdown). Keeps waiting otherwise --
+        a set point out of the cooler's reach at this ambient keeps the imager non-operational,
+        reported in `why_not_operational` and warned about once after
+        COOLING_SLOW_WARNING_SECONDS.
+        """
+        parent = self.parent
+        started = time.monotonic()
+        warned = False
+        while parent is not None and parent.is_active(ImagerActivities.CoolingDown):
+            if not self.connected:
+                self._end_cooling_down()
+                return
+            status = self.cooler_status
+            temperature = status.get("temperature") if status else None
+            set_point = status.get("setpoint") if status else None
+            if temperature is not None and set_point is not None:
+                self._cooling_reading = (float(temperature), float(set_point))
+                if float(temperature) <= float(set_point) + COOLING_TOLERANCE_DEGREES:
+                    logger.info(
+                        f"phd2: cooled to {float(temperature):.1f} C (set point {float(set_point):.1f} C) "
+                        f"in {time.monotonic() - started:.0f}s"
+                    )
+                    self._end_cooling_down()
+                    return
+            if not warned and time.monotonic() - started > COOLING_SLOW_WARNING_SECONDS:
+                logger.warning(
+                    f"phd2: still cooling after {time.monotonic() - started:.0f}s, reading {self._cooling_reading}; "
+                    "the set point may be out of the cooler's reach at this ambient temperature"
+                )
+                warned = True
+            time.sleep(self._cooling_poll_seconds)
 
     def shutdown(self) -> CanonicalResponse:
         """Stop guiding, switch the cooler off, release PHD2's equipment, and close the
@@ -1598,7 +1681,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         try:
             self._await_phd2()
             self.connect_equipment()
-            self.cooler_on = True
+            self._start_cooling_down()
         except Exception as ex:  # noqa: BLE001 -- reported; the unit's operational says why
             logger.exception(f"phd2 startup: could not connect: {ex}")
             return CanonicalResponse(errors=[f"phd2 startup: could not connect: {ex}"])
@@ -1867,14 +1950,26 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         return None
 
     @property
+    def _cooling_down(self) -> bool:
+        parent = self.parent
+        return parent is not None and parent.is_active(ImagerActivities.CoolingDown)
+
+    @property
     def operational(self) -> bool:
-        return self.connected  # Assuming PHD2 is always operational when connected
+        """Connected, and not still cooling to the set point (see `_start_cooling_down`)."""
+        return self.connected and not self._cooling_down
 
     @property
     def why_not_operational(self) -> list[str]:
         ret = []
         if not self.connected:
             ret.append(f"{self.name}: not connected")
+        if self._cooling_down:
+            reading = self._cooling_reading
+            if reading:
+                ret.append(f"{self.name}: cooling down, {reading[0]:.1f} C, set point {reading[1]:.1f} C")
+            else:
+                ret.append(f"{self.name}: cooling down to the set point")
         return ret
 
     @property
