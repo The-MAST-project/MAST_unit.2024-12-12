@@ -7,7 +7,7 @@ ends its flags inline, came out clean on the same event.
 
 The invariant under test is one line: do not cancel a timer while an activity depends on it.
 
-Since opmode-design 5.2 the cancelling is no longer `do_shutdown`'s at all: a `controlled` unit
+Since opmode-design 5.2 the cancelling is no longer `do_shutdown`'s at all: a `production` unit
 runs start -> shut -> start, and a shutdown that killed the unit timer left the next startup
 unable to finish. Teardown moved to `end_lifespan`, at process exit, after the shutdown -- and
 its sweep -- have finished.

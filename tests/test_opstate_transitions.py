@@ -1,6 +1,6 @@
 """The unit's `opstate`: which lifecycle command it is living under (opmode-design 4, 4a).
 
-INITIALIZING -> INITIALIZED (end of start_lifespan, controlled) -> RUNNING <-> SHUTDOWN, each
+INITIALIZING -> INITIALIZED (end of start_lifespan, production) -> RUNNING <-> SHUTDOWN, each
 set on *receipt* of the command, not on its completion; health stays in `operational`. Only
 the unit writes it, and only `start_lifespan` acts on the opmode.
 """
@@ -51,7 +51,7 @@ def unit(monkeypatch):
     from common.opmode import OpmodeBase
 
     OpmodeBase.__init__(u)
-    u._opmode = OpMode.CONTROLLED
+    u._opmode = OpMode.PRODUCTION
     u.components = []
     u._was_shut_down = False
     flags = _Flags()
@@ -64,15 +64,15 @@ def test_a_new_unit_is_initializing(unit):
     assert unit.opstate is OpState.INITIALIZING
 
 
-def test_controlled_start_lifespan_reports_initialized_and_does_not_start(unit):
+def test_production_start_lifespan_reports_initialized_and_does_not_start(unit):
     unit.start_lifespan()
 
     assert unit.opstate is OpState.INITIALIZED
     assert _NoThread.started == []
 
 
-def test_operated_start_lifespan_starts_at_once(unit):
-    unit._opmode = OpMode.OPERATED
+def test_development_start_lifespan_starts_at_once(unit):
+    unit._opmode = OpMode.DEVELOPMENT
 
     unit.start_lifespan()
 
