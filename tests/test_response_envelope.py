@@ -212,14 +212,15 @@ def test_zwo_startup_returns_an_envelope():
     assert_ok(backend.startup())
 
 
-def test_phd2_startup_returns_ok_because_init_already_started_it():
-    """Not a stub reporting false success: `PHD2Connector.__init__` launches phd2.exe
-    and connects the equipment, so by the time this runs there is nothing left to do
-    and `Ok` is the honest answer. It must not repeat that work -- doing so launches a
-    second phd2.exe (#84)."""
+def test_phd2_startup_returns_ok_when_already_connected():
+    """`PHD2Connector.__init__` launches phd2.exe and connects, so the first startup has
+    nothing left to do and `Ok` is the honest answer. (Reconnecting after a shutdown, and
+    never launching a second phd2.exe (#84), are in test_phd2_lifecycle.py.)"""
     from phd2.phd2 import PHD2Connector
 
-    assert_ok(object.__new__(PHD2Connector).startup())
+    connector = object.__new__(PHD2Connector)
+    connector._connected = True
+    assert_ok(connector.startup())
 
 
 # ------------------------------------------------------------------ wire shape (HTTP)

@@ -1421,15 +1421,34 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         return res["result"]["filename"]
 
     def shutdown(self) -> CanonicalResponse:
+        """Stop guiding, release PHD2's equipment, and close the JSON-RPC connection.
+
+        `phd2.exe` is left running. It used to be terminated here, which was harmless while a
+        shutdown only ever preceded process exit; under the opmode lifecycle a unit runs
+        startup -> shutdown -> startup in one process, and the second startup found no PHD2 and
+        the unit stayed non-operational (mast00, 2026-10-12). The design is that the supervisor
+        starts and watches `phd2.exe`, restarting it if it dies; the unit only connects and
+        disconnects. Until the supervisor owns it, `__init__` still launches it -- and
+        `WatchedProcess.start` kills any instance left from a previous run first, so leaving
+        it running here cannot produce a second `phd2.exe` (#84).
+
+        The equipment is released, not just the socket: with the process staying up, PHD2
+        would otherwise hold the guide camera and its ASCOM connection to the mount all day.
+        """
         self.start_activity(PHD2Activities.ShuttingDown)
-        self.stop_guiding()
-        self.disconnect()
-        if self.watched_process:
-            self.watched_process.terminate()
-        self.end_activity(PHD2Activities.ShuttingDown)
-        # Unlike startup(), this has real content -- it just never reported it,
-        # falling off the end and returning None (#73).
-        return CanonicalResponse_Ok
+        errors: list[str] = []
+        try:
+            if self.connected:
+                for step in (self.stop_guiding, self.disconnect_equipment):
+                    try:
+                        step()
+                    except Exception as ex:  # noqa: BLE001 -- reported, and the disconnect still runs
+                        errors.append(f"phd2 shutdown: {step.__name__} failed: {ex}")
+                        logger.exception(errors[-1])
+            self.disconnect()
+        finally:
+            self.end_activity(PHD2Activities.ShuttingDown)
+        return CanonicalResponse(errors=errors) if errors else CanonicalResponse_Ok
 
     @property
     def is_shutting_down(self) -> bool:
@@ -1535,24 +1554,26 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         # return 0
 
     def startup(self) -> CanonicalResponse:
-        """Nothing to do, and `Ok` is the truthful answer.
+        """Connect to the running `phd2.exe` and its equipment, if not connected already.
 
-        Unlike the ASCOM backend -- which powers on, connects and enables the cooler
-        *in* `startup()` -- this connector does all of that in `__init__`: it locates
-        and launches `phd2.exe` through `WatchedProcess`, waits for it, then calls
-        `connect()` and `connect_equipment()`. So by the time anything can call this,
-        the component is started.
+        Connect only, never launch: `phd2.exe` is the supervisor's to start and watch (for now
+        `__init__` launches it, once per process), and launching here would make a second one
+        (#84). `shutdown()` disconnects but leaves the process up, so the next startup -- the
+        normal start -> shut -> start of the opmode lifecycle -- reconnects here.
 
-        It returns an envelope rather than `None` so the wrapper can declare
-        `-> CanonicalResponse` (#73), and `Ok` rather than an error because startup
-        genuinely is complete. What it must **not** do is repeat the constructor's
-        work: that launches a second `phd2.exe`, which is #84.
-
-        That the work lives in the constructor at all is a lifecycle defect rather
-        than a contract one -- `Component.startup` is documented as running at the
-        start of every observing session, which a constructor cannot do. Tracked
-        under `epic:unit-lifecycle`.
+        Already connected, as on the first startup after `__init__`, it does nothing.
+        `_await_phd2` retries until PHD2 answers, so a PHD2 that the supervisor is restarting
+        is waited for, up to PHD2_STARTUP_TIMEOUT, rather than failed at once.
         """
+        if self.connected:
+            return CanonicalResponse_Ok
+        try:
+            self._await_phd2()
+            self.connect_equipment()
+            self.cooler_on = True
+        except Exception as ex:  # noqa: BLE001 -- reported; the unit's operational says why
+            logger.exception(f"phd2 startup: could not connect: {ex}")
+            return CanonicalResponse(errors=[f"phd2 startup: could not connect: {ex}"])
         return CanonicalResponse_Ok
 
     def abort(self) -> CanonicalResponse:
