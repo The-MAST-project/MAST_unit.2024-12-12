@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from common.activities import CoverActivities, FocuserActivities, Timing, UnitActivities
+from common.activities import CoverActivities, FocuserActivities, StageActivities, Timing, UnitActivities
 
 
 class FakeActivities:
@@ -115,6 +115,7 @@ def _unit(components, power_switch=None):
     unit._was_shut_down = False
     unit._startup_dispatching = False
     unit._shutdown_dispatching = False
+    unit._shutdown_dispatched_at = None
     unit.abort = lambda: None  # do_shutdown aborts first; abort itself is tested elsewhere
 
     recorder = FakeActivities(UnitActivities)
@@ -179,35 +180,74 @@ def test_do_shutdown_clears_its_dispatch_flag_even_when_it_raises():
     assert unit._shutdown_dispatching is False
 
 
-def test_do_shutdown_connects_a_disconnected_unit_first():
-    """The covers do nothing when disconnected; the connect moved here from `shutdown()`."""
-    covers = FakeComponent("covers", CoverActivities)
-    covers.connected = False
+class Connectable(FakeComponent):
+    """Records every `connected = ...` assignment, as the real setters act on each one."""
+
+    def __init__(self, name, flag_type, connected, raises=False, record=None):
+        super().__init__(name, flag_type)
+        self._connected = connected
+        self._raises = raises
+        self.sets: list[bool] = []
+        self._record = record
+
+    @property
+    def connected(self):
+        return self._connected
+
+    @connected.setter
+    def connected(self, value):
+        if self._raises:
+            raise RuntimeError("no route")
+        self.sets.append(value)
+        self._connected = value
+        if self._record is not None:
+            self._record.append(f"{self.name}.connect")
+
+    def shutdown(self):
+        if self._record is not None:
+            self._record.append(f"{self.name}.shutdown")
+        super().shutdown()
+
+
+def test_do_shutdown_connects_only_what_is_disconnected():
+    """The covers do nothing when disconnected, so they are connected first. The stage, already
+    connected, is left alone: reconnecting an open stage lost it (mast00, 2026-10-12)."""
     order: list[str] = []
-    unit = _unit([covers])
-    unit.connect = lambda: order.append("connect")
-    covers.shutdown = lambda: order.append("covers.shutdown")
+    covers = Connectable("covers", CoverActivities, connected=False, record=order)
+    stage = Connectable("stage", StageActivities, connected=True, record=order)
+    unit = _unit([covers, stage], power_switch=Outlet())
 
     unit.do_shutdown()
 
-    assert order == ["connect", "covers.shutdown"]
+    assert covers.sets == [True]
+    assert stage.sets == [], "an already-connected component is not reconnected"
+    assert order.index("covers.connect") < order.index("covers.shutdown")
+
+
+def test_an_unreachable_power_switch_does_not_reconnect_the_components():
+    """The switch reads disconnected when unreachable; that must not trigger a unit-wide
+    reconnect, which is what its old constant `False` did on every shutdown."""
+    stage = Connectable("stage", StageActivities, connected=True)
+    switch = Outlet()
+    switch.connected = False
+    unit = _unit([stage], power_switch=switch)
+
+    unit.do_shutdown()
+
+    assert stage.sets == []
 
 
 def test_a_connect_that_raises_does_not_cost_the_shutdown(caplog):
-    covers = FakeComponent("covers", CoverActivities)
-    covers.connected = False
-    unit = _unit([covers])
-
-    def broken_connect():
-        raise RuntimeError("no route")
-
-    unit.connect = broken_connect
+    covers = Connectable("covers", CoverActivities, connected=False, raises=True)
+    stage = Connectable("stage", StageActivities, connected=False)
+    unit = _unit([covers, stage])
 
     with caplog.at_level("ERROR"):
         unit.do_shutdown()
 
     assert covers.shutdown_called
-    assert any("connect failed" in r.getMessage() for r in caplog.records)
+    assert stage.sets == [True], "one failed connect does not stop the next"
+    assert any("could not connect covers" in r.getMessage() for r in caplog.records)
 
 
 def test_do_shutdown_leaves_the_timers_running():
@@ -283,6 +323,25 @@ def test_the_power_switch_is_shut_down_last_by_ontimer():
     unit._end_shutting_down_when_done()
 
     assert order == ["covers.shutdown", "power_switch.shutdown"]
+
+
+def test_the_settle_bound_counts_from_the_end_of_dispatch_not_the_start_of_shutdown():
+    """mast00, 2026-10-12: a 120 s abort wait spent a bound counted from the start, and the
+    covers were swept 6 s into their close -- shutdown reported done with the mirror moving."""
+    import datetime
+
+    covers = FakeComponent("covers", CoverActivities, active=[CoverActivities.Closing], clears_on_shutdown=False)
+    unit = _unit([covers])
+    unit.start_activity(UnitActivities.ShuttingDown)
+    # ShuttingDown raised long ago -- the abort wait took most of it ...
+    unit.timings[UnitActivities.ShuttingDown].start_time -= datetime.timedelta(seconds=200)
+    unit._shutdown_dispatching = True
+    unit.do_shutdown()  # ... and dispatch has only just finished.
+
+    unit._end_shutting_down_when_done()
+
+    assert covers.is_active(CoverActivities.Closing), "the covers' close is not cut short"
+    assert unit._recorder.is_active(UnitActivities.ShuttingDown)
 
 
 def test_a_component_that_never_settles_is_swept_after_the_timeout(monkeypatch, caplog):

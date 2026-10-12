@@ -77,9 +77,10 @@ filer = Filer(logger)
 
 AUTOFOCUS_STOP_TIMEOUT_SECONDS = 30.0
 
-#: How long `ontimer` waits for the components to end their `ShuttingDown` before it ends what
-#: they still report and ends the unit's. Above the slowest of them: the covers close
-#: asynchronously against their own `MOVE_TIMEOUT_SECONDS` of 60 (MAST_unit#259).
+#: How long `ontimer` waits, after `do_shutdown` has finished dispatching, for the components
+#: to end their `ShuttingDown` before it ends what they still report and ends the unit's.
+#: Above the slowest of them: the covers close asynchronously against their own
+#: `MOVE_TIMEOUT_SECONDS` of 60 (MAST_unit#259).
 SHUTDOWN_SETTLE_TIMEOUT_SECONDS = 70.0
 
 #: How long `do_shutdown` waits for its abort to settle before shutting the components down
@@ -284,6 +285,8 @@ class Unit(Component, OpmodeBase):
         self._startup_dispatching = False
         # The same for `do_shutdown` and ShuttingDown.
         self._shutdown_dispatching = False
+        # When `do_shutdown` finished dispatching (monotonic); the settle bound counts from it.
+        self._shutdown_dispatched_at: float | None = None
 
         self.connected_clients: list[WebSocket] = []
         # self.imager.register_visualizer('image-to-dashboard', self.push_image_to_dashboards)
@@ -371,11 +374,7 @@ class Unit(Component, OpmodeBase):
             # Here, not on the request thread: a repeat `shutdown` must not reconnect what a
             # running one is disconnecting, and a connect that raises must not cost the
             # shutdown. Needed at all because the covers do nothing when disconnected.
-            if not self.connected:
-                try:
-                    self.connect()
-                except Exception:
-                    logger.exception("shutdown: connect failed; shutting down what is reachable")
+            self._connect_the_disconnected()
 
             # A startup still calling the components' startup() would undo this shutdown
             # behind its back -- covers.startup() opens the covers it just closed.
@@ -392,11 +391,29 @@ class Unit(Component, OpmodeBase):
             for comp in self._components_but_power_switch:
                 self._shutdown_component(comp)
         finally:
+            # Before the flag drops, so `ontimer` never sees dispatch done without the instant.
+            self._shutdown_dispatched_at = time.monotonic()
             self._shutdown_dispatching = False
         # No process teardown here. Cancelling the timers and setting the shutdown event
         # used to live on these lines, and broke start -> shut -> start: the unit timer is
         # the only thing that ends StartingUp, so the next startup could never complete
         # (opmode-design 5.2). Teardown is end_lifespan's, at process exit.
+
+    def _connect_the_disconnected(self) -> None:
+        """Connect each component that reports disconnected; leave the connected ones alone.
+
+        Not `self.connect()`, which sets `connected = True` on every component whatever its
+        state. Most setters are not idempotent: PHD2's drops and reopens its JSON-RPC
+        connection, and the stage's reopened an already-open device and lost it, leaving its
+        `Aborting` unendable (mast00, 2026-10-12). The power switch has nothing to connect.
+        """
+        for comp in self._components_but_power_switch:
+            try:
+                if not comp.connected:
+                    # Every concrete component has a setter; `Component` declares a getter only.
+                    comp.connected = True  # type: ignore[misc]
+            except Exception:
+                logger.exception(f"shutdown: could not connect {getattr(comp, 'name', type(comp).__name__)}; carrying on")
 
     @staticmethod
     def _shutdown_component(comp) -> None:
@@ -429,6 +446,11 @@ class Unit(Component, OpmodeBase):
         Bounded by SHUTDOWN_SETTLE_TIMEOUT_SECONDS: past it, whatever a component still
         reports is ended, named, so the unit does not hang `end_lifespan` and `do_powerdown`
         on work that will never finish (MAST_unit#253).
+
+        The bound counts from the end of dispatch, not from the start of ShuttingDown. Counted
+        from the start, a 120 s abort wait spent it all, and the covers' flags were swept 6 s
+        into their close -- the unit reported the shutdown done with the mirror still moving
+        (mast00, 2026-10-12).
         """
         if not self.is_active(UnitActivities.ShuttingDown) or self._shutdown_dispatching:
             return
@@ -439,8 +461,8 @@ class Unit(Component, OpmodeBase):
             if (flag := self._shutting_down_flag(comp)) is not None and comp.is_active(flag)
         ]
         if still:
-            elapsed = datetime.datetime.now(datetime.UTC) - self.timings[UnitActivities.ShuttingDown].start_time
-            if elapsed < datetime.timedelta(seconds=SHUTDOWN_SETTLE_TIMEOUT_SECONDS):
+            dispatched_at = self._shutdown_dispatched_at
+            if dispatched_at is not None and time.monotonic() - dispatched_at < SHUTDOWN_SETTLE_TIMEOUT_SECONDS:
                 return
             self._end_stuck_component_activities()
 
