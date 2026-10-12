@@ -449,6 +449,12 @@ from pyximc import *
         if not self.is_on():
             return
 
+        # Idempotent. `open_device` on an already-open device lost it: the stage then read
+        # disconnected, its `ontimer` returned early, and an `Aborting` raised by the shutdown
+        # could never end (mast00, 2026-10-12).
+        if bool(value) == self.connected:
+            return
+
         assert ximclib
         assert self.device
         if value:

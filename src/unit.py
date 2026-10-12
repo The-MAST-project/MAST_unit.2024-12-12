@@ -77,9 +77,10 @@ filer = Filer(logger)
 
 AUTOFOCUS_STOP_TIMEOUT_SECONDS = 30.0
 
-#: How long `do_shutdown` waits for the components to come to rest before it cancels the
-#: timers they depend on. Above the slowest of them: the covers close asynchronously against
-#: their own `MOVE_TIMEOUT_SECONDS` of 60 (MAST_unit#259).
+#: How long `ontimer` waits, after `do_shutdown` has finished dispatching, for the components
+#: to end their `ShuttingDown` before it ends what they still report and ends the unit's.
+#: Above the slowest of them: the covers close asynchronously against their own
+#: `MOVE_TIMEOUT_SECONDS` of 60 (MAST_unit#259).
 SHUTDOWN_SETTLE_TIMEOUT_SECONDS = 70.0
 
 #: How long `do_shutdown` waits for its abort to settle before shutting the components down
@@ -88,6 +89,12 @@ SHUTDOWN_SETTLE_TIMEOUT_SECONDS = 70.0
 #: enough for a run to finish the exposure it is inside, which is how the exposure and
 #: flux-metering runs unwind.
 ABORT_SETTLE_TIMEOUT_SECONDS = 120.0
+
+#: How long `do_shutdown` waits for an in-flight `do_startup` to finish calling the
+#: components' startup() before shutting them down anyway. Those calls start motions rather
+#: than wait for them, so this is seconds in practice; bounded for the same make-safe reason
+#: as the abort wait.
+STARTUP_DISPATCH_TIMEOUT_SECONDS = 60.0
 
 #: The unit's own in-flight work: what an abort is meant to stop. `Aborting` ends when none
 #: of these is active and no component reports its own `Aborting`. Lifecycle flags
@@ -272,6 +279,14 @@ class Unit(Component, OpmodeBase):
         self.autofocus_result: AutofocusResult | None = None
 
         self._was_shut_down = False
+        # True from `startup()` until `do_startup` has called every component's startup().
+        # `ontimer` may not end StartingUp before then: between two components no
+        # component flag is up, and that gap is not "done" (see ontimer).
+        self._startup_dispatching = False
+        # The same for `do_shutdown` and ShuttingDown.
+        self._shutdown_dispatching = False
+        # When `do_shutdown` finished dispatching (monotonic); the settle bound counts from it.
+        self._shutdown_dispatched_at: float | None = None
 
         self.connected_clients: list[WebSocket] = []
         # self.imager.register_visualizer('image-to-dashboard', self.push_image_to_dashboards)
@@ -319,7 +334,10 @@ class Unit(Component, OpmodeBase):
 
     def do_startup(self):
         # StartingUp is raised by startup(), before this thread exists.
-        [comp.startup() for comp in self.components]
+        try:
+            [comp.startup() for comp in self.components]
+        finally:
+            self._startup_dispatching = False
 
     @endpoint(tier=Tier.CONTRACT, completion=UnitActivities.StartingUp)
     def endpoint_startup(self):
@@ -339,6 +357,7 @@ class Unit(Component, OpmodeBase):
         # Raised here rather than in the thread, so a second call arriving before the thread
         # runs sees it and does not start another.
         self.start_activity(UnitActivities.StartingUp)
+        self._startup_dispatching = True
         Thread(name="unit-startup-thread", target=self.do_startup).start()
         return CanonicalResponse_Ok
 
@@ -347,45 +366,113 @@ class Unit(Component, OpmodeBase):
         if not self.is_active(UnitActivities.ShuttingDown):
             self.start_activity(UnitActivities.ShuttingDown)  # a direct call, as the tests make
 
-        # Stop all in-flight work first, and wait for it, so nothing is still exposing or
-        # guiding while the covers close (opmode-design 5.3). This replaces a guider-only
-        # abort that ran *after* the components had been shut down.
-        self.abort()
-        self._await_abort_settled()
+        # Dispatch only: `ontimer` ends ShuttingDown once this has returned and every component
+        # has ended its own. The `finally` is what lets it -- an exception here must not leave
+        # ShuttingDown raised, since `end_lifespan` and `do_powerdown` wait on it unbounded.
+        self._shutdown_dispatching = True
+        try:
+            # Here, not on the request thread: a repeat `shutdown` must not reconnect what a
+            # running one is disconnecting, and a connect that raises must not cost the
+            # shutdown. Needed at all because the covers do nothing when disconnected.
+            self._connect_the_disconnected()
 
-        [comp.shutdown() for comp in self.components]
+            # A startup still calling the components' startup() would undo this shutdown
+            # behind its back -- covers.startup() opens the covers it just closed.
+            self._await_startup_dispatched()
 
-        # A component that leaves its flags to its own `ontimer` -- the covers, whose
-        # `shutdown()` starts an asynchronous close -- clears them while its timer runs; this
-        # waits for that, bounded, and ends what does not settle (MAST_unit#259, #253).
-        self._await_components_at_rest()
+            # Stop all in-flight work first, and wait for it, so nothing is still exposing or
+            # guiding while the covers close (opmode-design 5.3). This replaces a guider-only
+            # abort that ran *after* the components had been shut down.
+            self.abort()
+            self._await_abort_settled()
 
-        self._was_shut_down = True
-        # Ended here, by the method that did the work, not left to `ontimer` -- the same
-        # shape #193 gave the mount.
-        self.end_activity(UnitActivities.ShuttingDown)
+            # Each on its own: one that raises must not keep the next -- the covers -- from
+            # closing. Not the power switch: `ontimer` shuts it down once the others are down.
+            for comp in self._components_but_power_switch:
+                self._shutdown_component(comp)
+        finally:
+            # Before the flag drops, so `ontimer` never sees dispatch done without the instant.
+            self._shutdown_dispatched_at = time.monotonic()
+            self._shutdown_dispatching = False
         # No process teardown here. Cancelling the timers and setting the shutdown event
         # used to live on these lines, and broke start -> shut -> start: the unit timer is
         # the only thing that ends StartingUp, so the next startup could never complete
         # (opmode-design 5.2). Teardown is end_lifespan's, at process exit.
 
-    def _await_components_at_rest(self) -> None:
-        """Wait, bounded, for every component to finish shutting down; end whatever does not.
+    def _connect_the_disconnected(self) -> None:
+        """Connect each component that reports disconnected; leave the connected ones alone.
 
-        `await_activity_clear` leaves a flag set when it times out, deliberately, so that the
-        component still reports it. That is the right default everywhere else and the wrong
-        one here: the timers are about to be cancelled, so a flag left set is a flag nothing
-        can ever take down. The sweep is what keeps the unit from reporting work that will
-        never finish, and it names the component so the cause is not silent.
+        Not `self.connect()`, which sets `connected = True` on every component whatever its
+        state. Most setters are not idempotent: PHD2's drops and reopens its JSON-RPC
+        connection, and the stage's reopened an already-open device and lost it, leaving its
+        `Aborting` unendable (mast00, 2026-10-12). The power switch has nothing to connect.
         """
-        deadline = time.monotonic() + SHUTDOWN_SETTLE_TIMEOUT_SECONDS
+        for comp in self._components_but_power_switch:
+            try:
+                if not comp.connected:
+                    # Every concrete component has a setter; `Component` declares a getter only.
+                    comp.connected = True  # type: ignore[misc]
+            except Exception:
+                logger.exception(f"shutdown: could not connect {getattr(comp, 'name', type(comp).__name__)}; carrying on")
 
-        for comp in self.components:
-            shutting_down = self._shutting_down_flag(comp)
-            if shutting_down is None:
-                continue
-            comp.await_activity_clear(shutting_down, timeout=max(0.0, deadline - time.monotonic()))
+    @staticmethod
+    def _shutdown_component(comp) -> None:
+        try:
+            comp.shutdown()
+        except Exception:
+            logger.exception(f"shutdown: {getattr(comp, 'name', type(comp).__name__)} failed; carrying on")
 
+    def _await_startup_dispatched(self) -> None:
+        """Wait, bounded, for an in-flight `do_startup` to finish calling the components."""
+        deadline = time.monotonic() + STARTUP_DISPATCH_TIMEOUT_SECONDS
+        while self._startup_dispatching and time.monotonic() < deadline:
+            time.sleep(0.5)
+        if self._startup_dispatching:
+            logger.error(f"startup still dispatching after {STARTUP_DISPATCH_TIMEOUT_SECONDS:.0f}s; shutting down anyway")
+
+    @property
+    def _components_but_power_switch(self) -> list[Component]:
+        return [comp for comp in self.components if comp is not self.power_switch]
+
+    def _end_shutting_down_when_done(self) -> None:
+        """`ontimer`'s half of shutdown: once `do_shutdown` has dispatched and no component
+        still reports its own `ShuttingDown`, shut the power switch down and end the unit's.
+
+        The dispatch condition is what makes this safe in `ontimer`: the components are shut
+        down one after another, so mid-dispatch there are ticks with no component flag up.
+        Reading that as "done" cleared the flag 0.75 s into a shutdown whose covers took 27.5 s
+        more to close (mast03, 2026-09-22, MAST_unit#259).
+
+        Bounded by SHUTDOWN_SETTLE_TIMEOUT_SECONDS: past it, whatever a component still
+        reports is ended, named, so the unit does not hang `end_lifespan` and `do_powerdown`
+        on work that will never finish (MAST_unit#253).
+
+        The bound counts from the end of dispatch, not from the start of ShuttingDown. Counted
+        from the start, a 120 s abort wait spent it all, and the covers' flags were swept 6 s
+        into their close -- the unit reported the shutdown done with the mirror still moving
+        (mast00, 2026-10-12).
+        """
+        if not self.is_active(UnitActivities.ShuttingDown) or self._shutdown_dispatching:
+            return
+
+        still = [
+            comp
+            for comp in self._components_but_power_switch
+            if (flag := self._shutting_down_flag(comp)) is not None and comp.is_active(flag)
+        ]
+        if still:
+            dispatched_at = self._shutdown_dispatched_at
+            if dispatched_at is not None and time.monotonic() - dispatched_at < SHUTDOWN_SETTLE_TIMEOUT_SECONDS:
+                return
+            self._end_stuck_component_activities()
+
+        if self.power_switch is not None:
+            self._shutdown_component(self.power_switch)
+        self._was_shut_down = True
+        self.end_activity(UnitActivities.ShuttingDown)
+
+    def _end_stuck_component_activities(self) -> None:
+        """End, naming them, whatever activities the components still report."""
         for comp in self.components:
             activities: IntFlag | None = getattr(comp, "activities", None)
             if activities is None:
@@ -394,7 +481,8 @@ class Unit(Component, OpmodeBase):
             if not stuck:
                 continue
             logger.error(
-                f"{comp.name}: still reporting {[a.name for a in stuck]} at the end of shutdown; "
+                f"{comp.name}: still reporting {[a.name for a in stuck]} "
+                f"{SHUTDOWN_SETTLE_TIMEOUT_SECONDS:.0f}s into shutdown; "
                 f"ending them here, so the unit does not report work that will never finish"
             )
             for activity in stuck:
@@ -487,15 +575,14 @@ class Unit(Component, OpmodeBase):
         one it never started -- and idempotent (opmode-design 4).
         """
         self._set_opstate(OpState.SHUTDOWN)
-        if not self.connected:
-            self.connect()
-
         if self.is_active(UnitActivities.ShuttingDown):
-            return
+            return CanonicalResponse_Ok
 
         # Raised here rather than in the thread, so a caller that waits on is_shutting_down
         # right after this returns -- powerdown, end_lifespan -- cannot miss it.
         self.start_activity(UnitActivities.ShuttingDown)
+        # Before the thread, for the same reason: `ontimer` must not see ShuttingDown without it.
+        self._shutdown_dispatching = True
         Thread(name="shutdown-thread", target=self.do_shutdown).start()
         return CanonicalResponse_Ok
 
@@ -757,13 +844,22 @@ class Unit(Component, OpmodeBase):
         """
         Used in order to end activities that were started elsewhere in the code.
         """
-        # UnitActivities.StartingUp
-        if self.is_active(UnitActivities.StartingUp) and not (
-            (self.mount and self.mount.is_active(MountActivities.StartingUp))
-            or (self.imager and self.imager.is_active(ImagerActivities.StartingUp))
-            or (self.stage and self.stage.is_active(StageActivities.StartingUp))
-            or (self.focuser and self.focuser.is_active(FocuserActivities.StartingUp))
-            or (self.covers and self.covers.is_active(CoverActivities.StartingUp))
+        # UnitActivities.StartingUp: ended once every component's startup() has been called
+        # and none still reports its own StartingUp. The first condition is not redundant:
+        # do_startup calls them one after another, a component connects (seconds) before it
+        # raises its flag, and the imager raises none -- so mid-dispatch there are ticks
+        # with no component flag up. On 2026-10-11 that ended StartingUp after 1.9 s of a
+        # 34 s startup, before the covers, focuser and stage had begun.
+        if (
+            self.is_active(UnitActivities.StartingUp)
+            and not self._startup_dispatching
+            and not (
+                (self.mount and self.mount.is_active(MountActivities.StartingUp))
+                or (self.imager and self.imager.is_active(ImagerActivities.StartingUp))
+                or (self.stage and self.stage.is_active(StageActivities.StartingUp))
+                or (self.focuser and self.focuser.is_active(FocuserActivities.StartingUp))
+                or (self.covers and self.covers.is_active(CoverActivities.StartingUp))
+            )
         ):
             self.end_activity(UnitActivities.StartingUp)
 
@@ -771,13 +867,7 @@ class Unit(Component, OpmodeBase):
         if self.is_active(UnitActivities.Aborting) and not self._unsettled_by_abort():
             self.end_activity(UnitActivities.Aborting)
 
-        # UnitActivities.ShuttingDown is deliberately NOT ended here. `do_shutdown` shuts the
-        # components down one after another, so between one finishing and the next starting
-        # there is a window in which no component reports `ShuttingDown` -- and a 2 s tick
-        # landing in it read that as "the unit is down". Measured on mast03 2026-09-22: the
-        # flag cleared 0.75 s into a shutdown whose covers took 27.5 s more to close, so
-        # `/unit/shutdown`'s declared completion went clear while the mirror was still moving.
-        # `do_shutdown` ends it once the components have actually settled (MAST_unit#259).
+        self._end_shutting_down_when_done()
 
         # UnitActivities.AutofocusingPWI4
         if self.pw is not None and self.autofocuser is not None and self.is_active(UnitActivities.AutofocusingPWI4):
