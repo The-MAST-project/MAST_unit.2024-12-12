@@ -28,6 +28,7 @@ from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_debug, function_name
 from failure_streaks import FailureStreaks
 from phd2.fits_header import stamp_cooling
+from phd2.limit_frame import limit_frame_accepted, limit_frame_covers_sensor, limit_frame_extent
 from phd2.phd2_locate import locate_phd2_exe
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 
@@ -1081,10 +1082,28 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if not self.conn or not self.conn.is_connected():
             raise PHD2ConnectorError("PHD2 Server not connected")
 
+    def limit_frame_for_phd2(self, roi: ImagerRoi | None) -> ImagerRoi | None:
+        """`roi` as PHD2 should be given it, or PHD2ConnectorError if the camera would reject it.
+
+        A frame PHD2 would widen to the whole sensor becomes no limit frame. Widened, it is rejected
+        too, and comes out right only while the camera's last accepted frame was full width.
+        """
+        sensor_width, sensor_height = self.camera_x_size, self.camera_y_size
+        binning = self.profile_binning or 1
+        if roi is None or limit_frame_covers_sensor(roi, sensor_width, sensor_height, binning):
+            return None
+        if not limit_frame_accepted(roi, sensor_width, sensor_height, binning):
+            width, height = limit_frame_extent(sensor_width, sensor_height, binning)
+            raise PHD2ConnectorError(
+                f"limit frame {roi} reaches past {width}x{height}, the most the camera accepts at binning {binning}"
+            )
+        return roi
+
     def set_limit_frame(self, roi: ImagerRoi | None = None):
         if not self.connected:
             logger.error(f"{function_name()}: not connected")
 
+        roi = self.limit_frame_for_phd2(roi)
         if roi is not None:
             logger.debug(f"{function_name()}: setting {roi=}")
             self.call("set_limit_frame", params={"roi": [roi.x, roi.y, roi.width, roi.height]})
@@ -1565,6 +1584,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 logger.warning(msg)
                 return CanonicalResponse(errors=[msg])
 
+        if guiding_settings.use_set_limit_frame:
+            try:
+                self.limit_frame_for_phd2(guiding_settings.roi)
+            except PHD2ConnectorError as ex:
+                msg = f"{function_name()}: {ex}, cannot guide"
+                logger.warning(msg)
+                return CanonicalResponse(errors=[msg])
+
         logger.info(f"{function_name()}: starting guiding")
         self.parent.unit.start_activity(UnitActivities.Guiding)
         self.guide(imager_settings=guiding_settings)
@@ -1695,6 +1722,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             requested_bpp = 8 if settings.format == "raw8" else 16
             if requested_bpp != self.profile_bpp:
                 msg = f"{function_name()}: {requested_bpp=} does not match {self.profile_bpp=}, cannot start exposure"
+                logger.warning(msg)
+                return CanonicalResponse(errors=[msg])
+
+        if settings.use_set_limit_frame and not self._is_guiding(self.app_state):
+            try:
+                self.limit_frame_for_phd2(settings.roi)
+            except PHD2ConnectorError as ex:
+                msg = f"{function_name()}: {ex}, cannot start exposure"
                 logger.warning(msg)
                 return CanonicalResponse(errors=[msg])
 

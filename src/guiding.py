@@ -7,6 +7,7 @@ from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.utils import function_name
+from phd2.limit_frame import derived_guiding_roi
 from phd2.phd2 import PHD2Connector
 from solving_guider import SolvingGuider
 
@@ -18,8 +19,7 @@ from common.config.rois import FcuVersion, SpecRoiConfig
 from common.endpoints import Tier, endpoint
 from common.interfaces.guiding import GuiderInterface, GuiderTypes
 from common.mast_logging import get_logger
-from common.models.statuses import GuiderStatus, ImagerRoi, ImagerSettings
-from common.rois import SpecRoi
+from common.models.statuses import GuiderStatus, ImagerSettings
 
 logger = get_logger(__name__)
 guider_address_port = ("127.0.0.1", 8001)
@@ -149,19 +149,12 @@ class Guider(GuiderInterface):
         if not isinstance(cfg, SpecRoiConfig):
             raise ValueError(f"cannot make a guiding ROI from {type(cfg)}")
 
-        half_width = min(cfg.fiber_x - cfg.margin_horizontal, camera_x_size - cfg.margin_horizontal - cfg.fiber_x)
-        half_height = min(cfg.fiber_y - cfg.margin_vertical, camera_y_size - cfg.margin_vertical - cfg.fiber_y)
-
-        from common import asi
-
-        guiding_roi = SpecRoi(width=half_width * 2, height=half_height * 2, fiber_x=cfg.fiber_x, fiber_y=cfg.fiber_y)
-
         return ImagerSettings(
             seconds=guiding_conf.exposure,
             base_folder=base_folder,
             gain=guiding_conf.gain,
             binning=guiding_conf.binning,
-            roi=ImagerRoi.from_other(guiding_roi),
+            roi=derived_guiding_roi(cfg, camera_x_size, camera_y_size, guiding_conf.binning),
             save=save,
         )
 
