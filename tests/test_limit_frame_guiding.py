@@ -34,18 +34,18 @@ from common.config.phd2 import LimitFrameConfig, LimitFrameMode, PHD2Config
 from common.models.statuses import ImagerRoi, ImagerSettings
 from failure_streaks import FailureStreaks
 
-# The derived ROI is conditioned by ImagerRoi.model_post_init (mod-8 width /
-# mod-2 height at all supported binnings, center-preserving shrink), so its
+# The derived ROI is conditioned by ImagerRoi.model_post_init (mod-16 width /
+# mod-4 height, center-preserving shrink), so its
 # wire value is the CONDITIONED form -- see wire_form(). A fixed rect bypasses
 # conditioning (ImagerRoi.verbatim) and goes on the wire exactly as configured.
 # The fiber/margin-derived guiding ROI make_guiding_settings() produces today
 # (values from the 2026-07-08 labcomp2 ZWO bench).
 DERIVED_ROI = {"x": 1144, "y": 822, "width": 6000, "height": 4000}
-# The explicit rectangle from PR #29's deployment example. Conditioning WOULD
-# mutate it (to 1984x396@3038,2693) -- which is exactly what must not happen.
+# The explicit rectangle from PR #29's deployment example.
 EXPLICIT_RECT = {"x": 3031, "y": 2692, "width": 2000, "height": 400}
-# A rect no camera would accept as a readout ROI (odd width and height):
-# PHD2 owns that concern, the connector must still pass it through untouched.
+# A rect no camera would accept as a readout ROI (odd width and height), so
+# conditioning would change it: PHD2 owns that concern, the connector must
+# still pass it through untouched.
 ODD_RECT = {"x": 100, "y": 200, "width": 1999, "height": 401}
 
 LEGACY_PHD2_DOC = {
@@ -133,13 +133,11 @@ class TestStartGuidingLimitFrame:
         assert guiding_settings_of(p).use_set_limit_frame is True
 
     def test_fixed_rectangle_bypasses_conditioning_that_would_mutate(self):
-        """EXPLICIT_RECT is chosen so conditioning would change it; prove it didn't."""
-        assert wire_form(EXPLICIT_RECT) != rect_list(EXPLICIT_RECT), (
-            "test rect no longer exercises conditioning -- pick one that does"
-        )
-        p = make_connector(LimitFrameConfig(mode=LimitFrameMode.FIXED, **EXPLICIT_RECT))
+        """ODD_RECT is chosen so conditioning would change it; prove it didn't."""
+        assert wire_form(ODD_RECT) != rect_list(ODD_RECT), "test rect no longer exercises conditioning -- pick one that does"
+        p = make_connector(LimitFrameConfig(mode=LimitFrameMode.FIXED, **ODD_RECT))
         p.start_guiding()
-        assert limit_frame_rois(p) == [rect_list(EXPLICIT_RECT)]
+        assert limit_frame_rois(p) == [rect_list(ODD_RECT)]
 
     def test_derived_mode_uses_derived_roi(self):
         p = make_connector(LimitFrameConfig(mode=LimitFrameMode.DERIVED))
