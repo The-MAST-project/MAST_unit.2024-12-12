@@ -153,6 +153,11 @@ def test_otherwise_one_info_verdict_and_nothing_degraded(monkeypatch, caplog, ch
 class _Backend:
     """Records when it was started, so the test can see the walk ran first."""
 
+    # Read by `Imager.startup` after the backend starts, to decide whether to start the
+    # cool-down; a disconnected backend has none to start.
+    connected = False
+    cooler_on = False
+
     def __init__(self, response, caplog):
         self.response = response
         self.caplog = caplog

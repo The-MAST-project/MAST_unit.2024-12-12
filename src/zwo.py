@@ -181,12 +181,18 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             self.image_saved_event.clear()
 
     @property
-    def temperature(self) -> float:
+    def temperature(self) -> float | None:
+        """The sensor temperature (deg C), or None when the camera cannot be read.
+
+        None rather than raising: a failed read used to fall through to `val / 10.0` with `val`
+        never assigned, and raised UnboundLocalError instead of recording the error.
+        """
         self.errors = []
         try:
             val, _ = zwoasi.getControlValue(self.cam_id, asi.Control.Temperature)
         except Exception as ex:  # noqa: BLE001 -- ZWO SDK boundary: the ctypes wrapper raises undocumented types; recorded in self.errors for the caller
             self.errors.append(f"failed to get control AsiControl.Temperature ({asi.Control.Temperature}), {ex=}")
+            return None
         return val / 10.0
 
     def cooler(self, onoff: bool):
@@ -199,7 +205,8 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             )
 
     @property
-    def cooler_power(self) -> float:
+    def cooler_power(self) -> float | None:
+        """The cooler's power, or None when the camera cannot be read (see `temperature`)."""
         self.errors = []
         try:
             val, _ = zwoasi.getControlValue(self.cam_id, asi.Control.CoolPowerPerc)
@@ -207,22 +214,40 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             self.errors.append(
                 "failed to get control AsiControl.ASI_COOLER_POWER_PERC " + f"({asi.Control.CoolPowerPerc}), {ex=}"
             )
+            return None
         return val / 10.0
 
+    @property
+    def can_set_cooler_set_point(self) -> bool:
+        """True: the SDK sets `TargetTemp`, and the camera's cooler is regulated."""
+        return True
+
+    def set_cooler_set_point(self, degrees: float) -> None:
+        """Set `TargetTemp`, which the SDK takes in whole degrees C."""
+        self.set_control(asi.Control.TargetTemp, int(round(degrees)))
+
     def startup(self) -> CanonicalResponse:
+        """Switch the cooler on. The set point is applied just before, by the `Imager` wrapper,
+        from `imager.cooler_set_point` (it used to be a hard-coded -5); the wrapper also holds
+        `CoolingDown` until the camera gets there."""
         # self.set_control(asi.Control.ASI_HIGH_SPEED_MODE, 1)
-        self.set_control(asi.Control.TargetTemp, -5)
         self.set_control(asi.Control.CoolerOn, True)
         # Was `return super().startup()`, which resolved to `Component.startup` -- an
         # abstract method with an empty body -- so it did nothing and returned None.
         return CanonicalResponse_Ok
 
     def shutdown(self) -> CanonicalResponse:
+        """Switch the cooler off. No warm-up ramp: ZWO documents none for these cameras, and a
+        TEC switched off drifts to ambient at the camera's own rate. (A `TargetTemp = 10` used
+        to precede it, which does nothing once the cooler is off.)"""
         self.start_activity(ImagerActivities.ShuttingDown)
-        self.set_control(asi.Control.TargetTemp, 10)
-        self.set_control(asi.Control.CoolerOn, False)
-        # del self._image_array
-        self.end_activity(ImagerActivities.ShuttingDown)
+        try:
+            end = getattr(self.parent_imager, "end_cooling_down", None)
+            if end is not None:
+                end()
+            self.set_control(asi.Control.CoolerOn, False)
+        finally:
+            self.end_activity(ImagerActivities.ShuttingDown)
         # Was `return super().shutdown()` -- see the note on startup().
         return CanonicalResponse_Ok
 

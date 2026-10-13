@@ -18,6 +18,19 @@ from imagers.usb_link import log_usb_link
 logger = get_logger(__name__)
 __all__ = ["Imager"]
 
+#: Within this many degrees above the camera's reported set point, it counts as cooled:
+#: `ImagerActivities.CoolingDown` ends and the imager is operational again. Also the margin
+#: for warning that PHD2's profile set point differs from `imager.cooler_set_point`.
+COOLING_TOLERANCE_DEGREES: float = 1.0
+
+#: How often the cool-down watcher reads the camera when `imager.temp_check_interval` is unset.
+COOLING_POLL_SECONDS_DEFAULT: float = 10.0
+
+#: Still cooling after this long, the watcher warns once: the set point may be out of the
+#: cooler's reach at this ambient. It keeps waiting -- the imager stays non-operational until
+#: it gets there, which is the point.
+COOLING_SLOW_WARNING_SECONDS: float = 900.0
+
 
 class Imager(ImagerInterface, SwitchedOutlet):
     """
@@ -27,6 +40,8 @@ class Imager(ImagerInterface, SwitchedOutlet):
 
     _instance = None
     _initialized = False
+    #: The cool-down watcher's last (temperature, set point) reading, for why_not_operational.
+    _cooling_reading: tuple[float, float] | None = None
 
     @staticmethod
     def valid_imager_types() -> list[str]:
@@ -134,12 +149,131 @@ class Imager(ImagerInterface, SwitchedOutlet):
     def can_send_image_saved_event(self) -> bool:
         return self._backend.can_send_image_saved_event
 
+    # ------------------------------------------------------------------- the cooler
+
+    @property
+    def set_point(self) -> float | None:
+        return self._backend.set_point
+
+    @property
+    def can_set_cooler_set_point(self) -> bool:
+        return self._backend.can_set_cooler_set_point
+
+    def set_cooler_set_point(self, degrees: float) -> None:
+        self._backend.set_cooler_set_point(degrees)
+
+    @property
+    def _configured_set_point(self) -> float | None:
+        conf = getattr(getattr(self, "unit", None), "unit_conf", None)
+        return getattr(getattr(conf, "imager", None), "cooler_set_point", None)
+
+    def _apply_set_point(self) -> None:
+        """Before the backend starts: write `imager.cooler_set_point` where the backend can.
+
+        Read live, so a config edit takes effect at the next startup. A backend that cannot
+        set it (PHD2: the set point is its profile's) is checked after startup instead -- see
+        `_check_set_point`. A failure to apply is logged, not raised: the camera still cools,
+        to whatever target it held.
+        """
+        wanted = self._configured_set_point
+        if wanted is None or not self.can_set_cooler_set_point:
+            return
+        try:
+            self.set_cooler_set_point(wanted)
+            logger.info(f"imager: cooler set point {wanted:.1f} C (imager.cooler_set_point)")
+        except Exception as ex:  # noqa: BLE001 -- reported; the camera keeps its previous target
+            logger.exception(f"imager: could not apply cooler set point {wanted:.1f} C: {ex}")
+
+    def _check_set_point(self) -> None:
+        """After startup, on a backend that cannot set the target: warn if the camera's set
+        point differs from the configured one, so a drifted PHD2 profile is noticed."""
+        wanted = self._configured_set_point
+        if wanted is None or self.can_set_cooler_set_point:
+            return
+        actual = self.set_point
+        if actual is not None and abs(float(actual) - wanted) > COOLING_TOLERANCE_DEGREES:
+            logger.warning(
+                f"imager: the camera's set point is {float(actual):.1f} C but imager.cooler_set_point is "
+                f"{wanted:.1f} C, and this backend cannot set it -- update the {self.backend_type} profile"
+            )
+
+    def start_cooling_down(self) -> None:
+        """Hold `ImagerActivities.CoolingDown` until the sensor reaches the set point.
+
+        Called whenever the cooler is switched on: by `startup`, by `turn_cooler_on`, and by a
+        backend that switches it on itself (PHD2's constructor and exposure path). A watcher
+        thread reads the camera every `imager.temp_check_interval` seconds and ends the flag
+        once the sensor is within COOLING_TOLERANCE_DEGREES of the set point. While it is up
+        the imager is not operational. One implementation for every backend.
+        """
+        if self.is_active(ImagerActivities.CoolingDown):
+            return
+        # Not before the backend exists: a backend that switches its cooler on during its own
+        # construction (inside `__init__`, before `_backend` is assigned) would start a watcher
+        # that reads a missing `_backend`. `startup()` starts the cool-down for it instead.
+        if getattr(self, "_backend", None) is None:
+            return
+        self._cooling_reading = None
+        self.start_activity(ImagerActivities.CoolingDown)
+        threading.Thread(name="imager-cooldown", target=self.do_cool_down, daemon=True).start()
+
+    def end_cooling_down(self) -> None:
+        if self.is_active(ImagerActivities.CoolingDown):
+            self.end_activity(ImagerActivities.CoolingDown)
+
+    @property
+    def _cooling_poll_seconds(self) -> float:
+        conf = getattr(getattr(self, "unit", None), "unit_conf", None)
+        interval = getattr(getattr(conf, "imager", None), "temp_check_interval", None)
+        return float(interval) if interval else COOLING_POLL_SECONDS_DEFAULT
+
+    def do_cool_down(self) -> None:
+        """End `CoolingDown` once the sensor is within tolerance of the set point.
+
+        Exits, ending the flag, if the backend disconnects (a shutdown). Keeps waiting
+        otherwise -- a set point out of the cooler's reach keeps the imager non-operational,
+        reported in `why_not_operational` and warned about once after
+        COOLING_SLOW_WARNING_SECONDS.
+        """
+        started = time.monotonic()
+        warned = False
+        while self.is_active(ImagerActivities.CoolingDown):
+            if not self._backend.connected:
+                self.end_cooling_down()
+                return
+            try:
+                temperature, set_point = self._backend.temperature, self._backend.set_point
+            except Exception as ex:  # noqa: BLE001 -- a failed read is retried on the next poll
+                logger.warning(f"imager: cool-down could not read the camera: {ex}")
+                temperature = set_point = None
+            if temperature is not None and set_point is not None:
+                self._cooling_reading = (float(temperature), float(set_point))
+                if float(temperature) <= float(set_point) + COOLING_TOLERANCE_DEGREES:
+                    logger.info(
+                        f"imager: cooled to {float(temperature):.1f} C (set point {float(set_point):.1f} C) "
+                        f"in {time.monotonic() - started:.0f}s"
+                    )
+                    self.end_cooling_down()
+                    return
+            if not warned and time.monotonic() - started > COOLING_SLOW_WARNING_SECONDS:
+                logger.warning(
+                    f"imager: still cooling after {time.monotonic() - started:.0f}s, reading {self._cooling_reading}; "
+                    "the set point may be out of the cooler's reach at this ambient temperature"
+                )
+                warned = True
+            time.sleep(self._cooling_poll_seconds)
+
     @endpoint(tier=Tier.INTERFACE, completion=Completion.IMMEDIATE)
     def startup(self) -> CanonicalResponse:
         # Here rather than in a backend: the walk reads the PnP tree, not the camera, so it
         # answers the same whichever backend holds the camera (#264).
         log_usb_link()
-        return self._backend.startup()
+        self._apply_set_point()
+        response = self._backend.startup()
+        self._check_set_point()
+        if self._backend.connected and self._backend.cooler_on:
+            self.start_cooling_down()
+        return response
 
     @endpoint(tier=Tier.INTERFACE, completion=ImagerActivities.ShuttingDown)
     def shutdown(self) -> CanonicalResponse:
@@ -225,10 +359,10 @@ class Imager(ImagerInterface, SwitchedOutlet):
     @property
     def operational(self) -> bool:
         """
-        Check if the imager is operational.
-        :return: True if the imager is operational, False otherwise
+        Check if the imager is operational: the backend is, and the camera is not still
+        cooling to its set point (`start_cooling_down`).
         """
-        return self._backend.operational
+        return self._backend.operational and not self.is_active(ImagerActivities.CoolingDown)
 
     @property
     def why_not_operational(self) -> list[str]:
@@ -236,7 +370,14 @@ class Imager(ImagerInterface, SwitchedOutlet):
         Get the reason why the imager is not operational.
         :return: A string explaining why the imager is not operational, or None if it is operational
         """
-        return self._backend.why_not_operational
+        reasons = list(self._backend.why_not_operational)
+        if self.is_active(ImagerActivities.CoolingDown):
+            reading = self._cooling_reading
+            if reading:
+                reasons.append(f"imager: cooling down, {reading[0]:.1f} C, set point {reading[1]:.1f} C")
+            else:
+                reasons.append("imager: cooling down to the set point")
+        return reasons
 
     def abort(self) -> CanonicalResponse:
         """
@@ -409,10 +550,12 @@ class Imager(ImagerInterface, SwitchedOutlet):
     @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
     def turn_cooler_on(self) -> CanonicalResponse:
         self.cooler_on = True
+        self.start_cooling_down()
         return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
     def turn_cooler_off(self) -> CanonicalResponse:
+        self.end_cooling_down()
         self.cooler_on = False
         return CanonicalResponse_Ok
 

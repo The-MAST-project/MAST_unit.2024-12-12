@@ -830,6 +830,24 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         return self.operational_set_point
 
     @property
+    def can_set_cooler_set_point(self) -> bool:
+        """What the driver says: ASCOM's own `CanSetCCDTemperature` (some cameras cannot)."""
+        if not self.connected:
+            return False
+        response = ascom_run(self, "CanSetCCDTemperature")
+        return bool(response.succeeded and response.value)
+
+    def set_cooler_set_point(self, degrees: float) -> None:
+        """Write `SetCCDTemperature`, and keep `operational_set_point` (what `set_point` and
+        `cooldown()` use) in step. Raises if the driver refuses."""
+        if not self.can_set_cooler_set_point:
+            raise NotImplementedError("this ASCOM camera cannot set its CCD temperature")
+        response = ascom_run(self, f"SetCCDTemperature = {degrees}")
+        if response.failed:
+            raise RuntimeError(f"SetCCDTemperature = {degrees} refused: {response.failure}")
+        self.operational_set_point = degrees
+
+    @property
     def temperature(self) -> float:
         """
         Returns the current camera temperature

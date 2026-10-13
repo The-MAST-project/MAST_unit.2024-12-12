@@ -164,8 +164,7 @@ def test_the_flag_is_set_in_a_finally():
 def test_the_cooler_assignment_is_inside_the_guard():
     source = _init_source()
 
-    # The cooler goes on through `_start_cooling_down()`, which still assigns `cooler_on` first.
-    assert source.index("self._start_cooling_down()") < source.index("except Exception"), (
+    assert source.index("self.cooler_on = True") < source.index("except Exception"), (
         "outside the guard, its setter's error replaces the real failure as the reported cause"
     )
 
@@ -176,3 +175,12 @@ def test_the_handler_does_not_assign_the_connected_property():
 
     assert not any("self.connected = False" in line for line in code)
     assert any("self._connected = False" in line for line in code)
+
+
+def test_the_constructor_switches_the_cooler_on_without_starting_the_cool_down():
+    """`__init__` runs inside `Imager.__init__`, before the wrapper's `_backend` is assigned, so
+    asking the wrapper to start its cool-down there started a watcher that read a missing
+    `_backend` (AttributeError on mast00, 2026-10-13). The wrapper's `startup()` starts it."""
+    code = [line.split("#", 1)[0] for line in _init_source().splitlines()]
+
+    assert not any("_start_cooling_down()" in line for line in code)
