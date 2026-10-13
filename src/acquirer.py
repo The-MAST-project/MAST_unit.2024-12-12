@@ -32,7 +32,7 @@ from common.parsers import (
 )
 from common.rois import SkyRoi
 from common.utils import Coord, boxed_log, function_name
-from mount import SettleMode
+from mount import SETTLE_START_GRACE_SECONDS, SLEW_SETTLE_TOLERANCE_ARCSEC, SettleMode
 from phd2.phd2 import PHD2Connector
 from solving import SolverId, SolvingTolerance
 from stage import StagePresetPosition
@@ -125,15 +125,24 @@ class Acquirer:
             time.sleep(0.2)
         return True
 
-    def _await_slew(self, acquisition: Acquisition) -> bool:
-        """Wait out the slew to the target, returning False if cancelled while it ran.
+    def _await_slew(self, slew_commanded_at: float | None) -> bool:
+        """Wait out the slew commanded at `slew_commanded_at` (monotonic; None if there was
+        none), returning False if cancelled while it ran.
+
+        Only the part of the start grace not yet spent since the goto is passed on: the
+        grace guards a stale `is_slewing` read just after the goto, and by the time the
+        stage has been waited on it has usually run out.
 
         A settle timeout is logged by the mount and does not fail the acquisition: the
-        correction loop recovers from a frame taken slightly off, and the 0.5" settle can
-        time out in wind on a mount that points well enough to solve.
+        correction loop recovers from a frame taken slightly off.
         """
-        if acquisition.slew_to_target:
-            self.unit.required_mount.wait_until_settled(SettleMode.SLEW)
+        if slew_commanded_at is not None:
+            elapsed = time.monotonic() - slew_commanded_at
+            self.unit.required_mount.wait_until_settled(
+                SettleMode.SLEW,
+                dist_tolerance_arcsec=SLEW_SETTLE_TOLERANCE_ARCSEC,
+                start_grace_seconds=max(0.0, SETTLE_START_GRACE_SECONDS - elapsed),
+            )
         return not self._cancelled()
 
     def _abandon(self, op: str, acquisition_exposure_series=None) -> None:
@@ -297,8 +306,10 @@ class Acquirer:
 
         self.unit.required_mount.start_tracking()
         self.unit.start_activity(UnitActivities.Positioning)
+        slew_commanded_at: float | None = None
         if self.latest_acquisition.slew_to_target:
             self.unit.required_mount.goto_ra_dec_j2000(target_ra_j2000_hours, target_dec_j2000_degs)
+            slew_commanded_at = time.monotonic()
 
         acquisition_exposure_series = self.unit.required_imager.start_exposure_series(purpose="acquisition")
 
@@ -311,7 +322,7 @@ class Acquirer:
             #
             self.unit.required_stage.move_to_preset(StagePresetPosition.Sky)
 
-            if not self._await_stage() or not self._await_slew(acquisition):
+            if not self._await_stage() or not self._await_slew(slew_commanded_at):
                 self._abandon(op)
                 return ACQUISITION_CANCELLED
 
@@ -399,7 +410,7 @@ class Acquirer:
             self._abandon(op, acquisition_exposure_series)
             return ACQUISITION_CANCELLED
         logger.info(f"stage now at {self.unit.required_stage.position}")
-        if not self._await_slew(acquisition):
+        if not self._await_slew(slew_commanded_at):
             self._abandon(op, acquisition_exposure_series)
             return ACQUISITION_CANCELLED
 
