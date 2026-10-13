@@ -7,7 +7,7 @@ from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.utils import function_name
-from phd2.phd2 import PHD2Connector
+from phd2.phd2 import PHD2Connector, limit_frame_extent
 from solving_guider import SolvingGuider
 
 if TYPE_CHECKING:
@@ -149,8 +149,10 @@ class Guider(GuiderInterface):
         if not isinstance(cfg, SpecRoiConfig):
             raise ValueError(f"cannot make a guiding ROI from {type(cfg)}")
 
-        half_width = min(cfg.fiber_x - cfg.margin_horizontal, camera_x_size - cfg.margin_horizontal - cfg.fiber_x)
-        half_height = min(cfg.fiber_y - cfg.margin_vertical, camera_y_size - cfg.margin_vertical - cfg.fiber_y)
+        # Bounded by what PHD2 can apply as a limit frame, not by the raw sensor (MAST_unit#330).
+        usable_x, usable_y = limit_frame_extent(camera_x_size, camera_y_size, guiding_conf.binning)
+        half_width = min(cfg.fiber_x - cfg.margin_horizontal, usable_x - cfg.margin_horizontal - cfg.fiber_x)
+        half_height = min(cfg.fiber_y - cfg.margin_vertical, usable_y - cfg.margin_vertical - cfg.fiber_y)
 
         from common import asi
 
