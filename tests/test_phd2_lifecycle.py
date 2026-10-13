@@ -16,15 +16,25 @@ import pytest
 
 import phd2.phd2 as phd2_module
 from common.activities import ImagerActivities
-from phd2.phd2 import COOLING_TOLERANCE_DEGREES, PHD2Connector
+from phd2.phd2 import PHD2Connector
 
 
 class _Imager:
-    """The parent imager: owns `ImagerActivities`, which the cool-down raises and ends."""
+    """The parent imager: owns `ImagerActivities` and the shared cool-down, which PHD2 asks
+    it to start and end (the cool-down itself is tested in test_imager_cooling.py)."""
 
     def __init__(self):
         self.activities = ImagerActivities(0)
         self.unit = None
+        self.cooling_calls: list[str] = []
+
+    def start_cooling_down(self):
+        self.cooling_calls.append("start")
+        self.start_activity(ImagerActivities.CoolingDown)
+
+    def end_cooling_down(self):
+        self.cooling_calls.append("end")
+        self.end_activity(ImagerActivities.CoolingDown)
 
     def is_active(self, activity):
         return bool(self.activities & activity)
@@ -170,83 +180,39 @@ class TestStartup:
         assert "could not connect" in response.errors[0]
 
 
-class TestCoolingDown:
-    """The cooler switched on raises `ImagerActivities.CoolingDown` on the imager, and the imager
-    is not operational until the sensor is within COOLING_TOLERANCE_DEGREES of PHD2's set point."""
+class TestTheCooler:
+    """What PHD2 still does itself: switch the cooler, and tell the imager. The cool-down
+    (the flag, the watcher, "not operational meanwhile") is the wrapper's."""
 
-    def _cooling(self, monkeypatch, readings):
-        """A connector that has switched its cooler on, its watcher not yet run, and the
-        cooler reading `readings` in turn (temperature, set point) -- None for a failed read."""
+    def test_switching_the_cooler_on_asks_the_imager_to_start_the_cool_down(self):
         c = _connector(connected=True)
-        sequence = iter(readings)
 
-        def status(self):
-            reading = next(sequence)
-            return None if reading is None else {"temperature": reading[0], "setpoint": reading[1], "coolerOn": True}
-
-        monkeypatch.setattr(PHD2Connector, "cooler_status", property(status))
-        monkeypatch.setattr(phd2_module.time, "sleep", lambda _s: None)
         c._start_cooling_down()
-        return c
-
-    def test_switching_the_cooler_on_raises_cooling_down_and_makes_it_not_operational(self, monkeypatch):
-        c = self._cooling(monkeypatch, [])
 
         assert c.calls == ["cooler=True"]
-        assert c.parent.is_active(ImagerActivities.CoolingDown)
-        assert c.operational is False
+        assert c.parent.cooling_calls == ["start"]
 
-    def test_it_ends_once_within_tolerance_of_the_set_point(self, monkeypatch):
-        c = self._cooling(monkeypatch, [(12.0, -10.0), None, (-8.5, -10.0), (-10.0 + COOLING_TOLERANCE_DEGREES, -10.0)])
-
-        _NoThread.started[0]()
-
-        assert not c.parent.is_active(ImagerActivities.CoolingDown)
-        assert c.operational is True
-        assert c._cooling_reading == (-10.0 + COOLING_TOLERANCE_DEGREES, -10.0)
-
-    def test_while_cooling_why_not_operational_gives_the_reading(self, monkeypatch):
-        c = self._cooling(monkeypatch, [])
-        c._cooling_reading = (3.2, -10.0)
-        monkeypatch.setattr(PHD2Connector, "name", property(lambda self: "phd2"))
-
-        assert c.why_not_operational == ["phd2: cooling down, 3.2 C, set point -10.0 C"]
-
-    def test_a_disconnect_ends_it(self, monkeypatch):
-        c = self._cooling(monkeypatch, [])
-        c._connected = False
-
-        _NoThread.started[0]()
-
-        assert not c.parent.is_active(ImagerActivities.CoolingDown)
-
-    def test_switching_the_cooler_off_ends_it(self, monkeypatch):
-        c = self._cooling(monkeypatch, [])
-        monkeypatch.setattr(PHD2Connector, "call", lambda self, *a, **k: None)
+    def test_switching_the_cooler_off_ends_the_cool_down_first(self, monkeypatch):
+        c = _connector(connected=True)
+        c._start_cooling_down()
+        sent = []
+        monkeypatch.setattr(PHD2Connector, "call", lambda self, method, *a, **k: sent.append((method, a)))
 
         PHD2Connector._cooler_off(c)
 
-        assert not c.parent.is_active(ImagerActivities.CoolingDown)
+        assert c.parent.cooling_calls == ["start", "end"]
+        assert sent == [("set_cooler_state", (False,))]
 
-    def test_a_second_cooler_on_does_not_start_a_second_watcher(self, monkeypatch):
-        c = self._cooling(monkeypatch, [])
-
+    def test_operational_is_the_connection_alone(self):
+        """The wrapper adds the cool-down; the backend reports only its connection."""
+        c = _connector(connected=True)
         c._start_cooling_down()
 
-        assert len(_NoThread.started) == 1
+        assert c.operational is True
 
-    def test_an_unreachable_set_point_warns_once_and_keeps_waiting(self, monkeypatch, caplog):
-        monkeypatch.setattr(phd2_module, "COOLING_SLOW_WARNING_SECONDS", -1.0)
-        c = self._cooling(monkeypatch, [(5.0, -20.0)] * 3 + [None])
-        polls = iter(range(3))
+    def test_it_cannot_set_the_set_point(self):
+        c = _connector(connected=True)
 
-        def sleep(_s):
-            if next(polls, None) is None:
-                c._connected = False  # stop the loop after three polls
-
-        monkeypatch.setattr(phd2_module.time, "sleep", sleep)
-
-        with caplog.at_level("WARNING"):
-            _NoThread.started[0]()
-
-        assert caplog.text.count("still cooling") == 1
+        assert c.can_set_cooler_set_point is False
+        with pytest.raises(NotImplementedError):
+            c.set_cooler_set_point(5.0)
