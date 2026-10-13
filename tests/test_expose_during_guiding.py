@@ -76,6 +76,9 @@ def make_connector(app_state: str, tmp_path=None) -> PHD2Connector:
     p.app_state = app_state
     p.image_was_saved = False
     p.image_saved_event = threading.Event()
+    # wait_for_image_saved also stamps the cooler readings; with no path there is nothing to stamp.
+    p._exposure_image_path = None
+    p._cooler_before = None
     p.parent = FakeParent()
     p.call = MagicMock(return_value={"result": {"filename": TEMP_FILE}})
     return p
@@ -175,7 +178,6 @@ class TestTheWaitIsBounded:
     def test_it_returns_rather_than_blocking_for_ever(self):
         p = make_connector("Stopped")
         p.image_was_saved = False
-        p.need_to_reset_limit_frame = False
 
         p.wait_for_image_saved(timeout=0.05)
 
@@ -185,7 +187,6 @@ class TestTheWaitIsBounded:
     def test_a_saved_image_does_not_wait_at_all(self):
         p = make_connector("Stopped")
         p.image_was_saved = True
-        p.need_to_reset_limit_frame = False
 
         p.wait_for_image_saved(timeout=0.05)
 
