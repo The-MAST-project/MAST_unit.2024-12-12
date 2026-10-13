@@ -194,6 +194,7 @@ class PointingMonitor:
                 unit=self._connector.parent.unit,
                 phase=SOLVING_PHASE,
                 full_frame_input_image_path=image_path,
+                keep_artifacts=False,
                 target=target,
                 **origin,
             )
