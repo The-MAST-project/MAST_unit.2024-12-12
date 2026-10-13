@@ -169,6 +169,7 @@ def nudge_lock_to_target(unit, connector, target: Coord, conf: LockNudgeConfig) 
             unit=unit,
             phase="spec",
             full_frame_input_image_path=image_path,
+            keep_artifacts=False,
             target=target,
         )
     except Exception as ex:
