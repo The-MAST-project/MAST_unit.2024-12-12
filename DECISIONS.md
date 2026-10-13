@@ -2,6 +2,21 @@
 
 ---
 
+## [2026-10-13] Stage homing waits 150 s, enough for a homing from the far end
+
+**Why:** `Stage.home` gave `command_homezero` 60 s. From the SPEC end of travel homing takes
+longer (mast03, 2026-10-12: still running at 60 s, at 68058 and 59475). `Timeout` abandons the
+wait but not the call, so startup's move to SKY took over the motor and the late-returning call
+zeroed the stage mid-move; the next move to SPEC then stopped at the end of travel. MAST_unit#311.
+
+**What:** `HOMING_TIMEOUT_SECONDS = 150.0`, used by `home`.
+
+**Implications:** a stopgap. Startup can now take up to 150 s longer on a stage that never
+homes, and an expired homing is still left running behind the next move; not leaving it running
+is #311's ask.
+
+---
+
 ## [2026-10-05] `PartlyOpen` means stopped short only once it has held for 1.5 s
 
 **Refines** the 2026-09-22 entry "`Moving` is the only cover state that means motion": its
