@@ -83,6 +83,9 @@ class Stub:
         self.opstate = OpState.INITIALIZED
         assert not parts, f"unknown parts: {sorted(parts)}"
 
+    def _idleness_status(self) -> dict:
+        return Unit._idleness_status(self)  # type: ignore[arg-type]
+
     def component_status(self) -> ComponentStatus:
         return ComponentStatus(
             detected=True,

@@ -144,10 +144,15 @@ def test_a_repeat_shutdown_does_not_reconnect_and_reports_ok(unit):
 
 
 @pytest.fixture
-def ticking_unit(unit):
+def ticking_unit(unit, monkeypatch):
     """`unit`, plus what `ontimer` reads, with no components and no autofocus."""
-    for name in ("mount", "imager", "stage", "focuser", "covers", "pw", "autofocuser", "power_switch"):
+    for name in ("mount", "imager", "stage", "focuser", "covers", "pw", "autofocuser", "power_switch", "guider"):
         setattr(unit, name, None)
+    # What the idle clock (`_track_idleness`) reads; `unit_conf` would otherwise be a live Config read.
+    unit.activities = UnitActivities(0)
+    unit._idle_since = unit._active_since = None
+    unit._guiding_live = False
+    monkeypatch.setattr(type(unit), "unit_conf", property(lambda self: None))
     return unit
 
 

@@ -287,6 +287,11 @@ class Unit(Component, OpmodeBase):
         self._shutdown_dispatching = False
         # When `do_shutdown` finished dispatching (monotonic); the settle bound counts from it.
         self._shutdown_dispatched_at: float | None = None
+        # The idle clock (`_track_idleness`): when the unit last became idle / busy (monotonic),
+        # and PHD2's live guiding state, cached each tick because asking is a socket round trip.
+        self._idle_since: float | None = None
+        self._active_since: float | None = None
+        self._guiding_live: bool = False
 
         self.connected_clients: list[WebSocket] = []
         # self.imager.register_visualizer('image-to-dashboard', self.push_image_to_dashboards)
@@ -350,6 +355,8 @@ class Unit(Component, OpmodeBase):
         # On receipt, not on completion (opmode-design 4): a repeat while starting is still
         # a startup received.
         self._set_opstate(OpState.RUNNING)
+        # A startup is an explicit "I want this unit": idleness counts afresh from when it ends.
+        self._idle_since = self._active_since = None
         if self.is_active(UnitActivities.StartingUp):
             return
 
@@ -703,6 +710,7 @@ class Unit(Component, OpmodeBase):
             **self.component_status().model_dump(),
             opmode=self.opmode,
             opstate=self.opstate,
+            **self._idleness_status(),
             id=id(self),
             powered=True,
             # `is_guiding` reaches PHD2 over the RPC and `is_autofocusing` reads the unit's
@@ -836,6 +844,119 @@ class Unit(Component, OpmodeBase):
             return CanonicalResponse(errors=errors)
         return CanonicalResponse_Ok
 
+    # ------------------------------------------------------------------- idleness
+    # Design: mast-claude-config plans/unit_idleness_design.md (rev. 2026-10-13).
+
+    #: Components whose activities make the unit busy, by the key `why_busy` reports them under.
+    _BUSY_OWNERS = ("mount", "covers", "focuser", "stage", "imager")
+
+    @property
+    def why_busy(self) -> dict[str, list[str]]:
+        """What keeps the unit busy, by owner -- `{}` when idle.
+
+        The unit's own activities, every component's (the imager's wrapper and backend
+        together), and guiding: PHD2's live state (`_guiding_live`, cached by `ontimer`) or the
+        unit's `Guiding` flag, either one. Not `ImagerActivities.CoolingDown`: the camera
+        cooling to its set point is preparation, not work done for anyone. Not tracking,
+        which is a state, not an activity. Keyed by owner because flag names repeat across
+        enums; the integers are never unioned.
+        """
+        busy: dict[str, list[str]] = {}
+
+        unit_flags = list(self.activities_verbal or [])
+        if self._guiding_live and "Guiding" not in unit_flags:
+            unit_flags.append("Guiding")
+        if unit_flags:
+            busy["unit"] = unit_flags
+
+        for owner in self._BUSY_OWNERS:
+            component = getattr(self, owner, None)
+            if component is None:
+                continue
+            names = list(component.activities_verbal or [])
+            if owner == "imager":
+                backend = getattr(component, "_backend", None)
+                names += [n for n in (getattr(backend, "activities_verbal", None) or []) if n not in names]
+                names = [n for n in names if n != ImagerActivities.CoolingDown.name]
+            if names:
+                busy[owner] = names
+        return busy
+
+    @property
+    def is_busy(self) -> bool:
+        return bool(self.why_busy)
+
+    def is_idle(self) -> bool:
+        """Not busy (see `why_busy`). Overrides `Activities.is_idle`, which reads only the
+        unit's own flags -- a direct mount slew or a covers move raises none of those."""
+        return not self.is_busy
+
+    def _refresh_guiding_live(self) -> None:
+        """Cache PHD2's guiding state for `why_busy`. A failed read keeps the previous value:
+        guessing "not guiding" could shut down a unit the spectrograph is integrating on."""
+        guider = getattr(self, "guider", None)
+        if guider is None:
+            self._guiding_live = False
+            return
+        try:
+            self._guiding_live = bool(guider.is_guiding)
+        except Exception:  # noqa: BLE001 -- keep the last answer; retried next tick
+            logger.debug("idleness: could not read guider.is_guiding; keeping the last answer", exc_info=True)
+
+    def _track_idleness(self) -> None:
+        """`ontimer`'s idle clock, and the auto-shutdown.
+
+        Runs only while RUNNING: in INITIALIZED there is nothing to shut down, and in
+        SHUTDOWN it already is -- both marks are cleared. Each tick stamps `_idle_since` on
+        busy -> idle and `_active_since` on idle -> busy. Idle for
+        `minutes_to_autoshutdown_on_idle` (read live; 0 disables) shuts the unit down -- a
+        `shutdown`, never a `powerdown` -- after which it is no longer RUNNING, so it cannot
+        fire twice.
+        """
+        if self.opstate != OpState.RUNNING:
+            self._idle_since = self._active_since = None
+            return
+
+        self._refresh_guiding_live()
+        now = time.monotonic()
+
+        if self.is_busy:
+            if self._active_since is None:
+                self._active_since = now
+            self._idle_since = None
+            return
+
+        if self._idle_since is None:
+            self._idle_since = now
+        self._active_since = None
+
+        conf = self.unit_conf
+        minutes = getattr(conf, "minutes_to_autoshutdown_on_idle", 0) if conf is not None else 0
+        if minutes and now - self._idle_since >= minutes * 60:
+            logger.info(
+                f"auto-shutdown: idle for {(now - self._idle_since) / 60:.0f} min "
+                f"(minutes_to_autoshutdown_on_idle={minutes})"
+            )
+            self.shutdown()
+
+    def _idleness_status(self) -> dict:
+        """The three FullUnitStatus idleness fields. All None outside RUNNING (unknown);
+        `idle_seconds` None while busy, `active_seconds` None while idle."""
+        unknown = {"idle_seconds": None, "active_seconds": None, "why_busy": None}
+        if self.opstate != OpState.RUNNING:
+            return unknown
+        now = time.monotonic()
+        try:
+            busy = self.why_busy
+        except Exception:  # noqa: BLE001 -- a sick component must not cost the whole status (#222)
+            logger.exception("idleness: could not compute why_busy; reporting it unknown")
+            return unknown
+        return {
+            "idle_seconds": None if busy or self._idle_since is None else round(now - self._idle_since, 1),
+            "active_seconds": None if not busy or self._active_since is None else round(now - self._active_since, 1),
+            "why_busy": busy,
+        }
+
     def ontimer(self):  # noqa: C901
         if self.unit_shutdown_event.is_set():
             self.timer.cancel()
@@ -868,6 +989,8 @@ class Unit(Component, OpmodeBase):
             self.end_activity(UnitActivities.Aborting)
 
         self._end_shutting_down_when_done()
+
+        self._track_idleness()
 
         # UnitActivities.AutofocusingPWI4
         if self.pw is not None and self.autofocuser is not None and self.is_active(UnitActivities.AutofocusingPWI4):
@@ -1617,7 +1740,7 @@ class Unit(Component, OpmodeBase):
             return CanonicalResponse(errors=self.why_not_operational)
 
         if not self.is_idle():
-            return CanonicalResponse(errors=[f"busy ({self.activities=})"])
+            return CanonicalResponse(errors=[f"busy ({self.why_busy})"])
 
         Thread(target=self.do_execute_assignment, args=[assignment]).start()
 
