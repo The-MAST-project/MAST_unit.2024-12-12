@@ -7,6 +7,7 @@ text were one path, and the read-back found text where the WCS should be.
 
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 import threading
@@ -38,8 +39,11 @@ SOLVED_STDOUT = (
 
 
 def _new_fits_arg(command: str) -> Path:
+    """The --new-fits path, back in the form this process can open: solve-field is given cygwin paths."""
     tokens = shlex.split(command)
-    return Path(tokens[tokens.index("--new-fits") + 1])
+    path = tokens[tokens.index("--new-fits") + 1]
+    match = re.match(r"^/cygdrive/([a-z])/", path)
+    return Path(f"{match.group(1).upper()}:/{path[match.end() :]}") if match else Path(path)
 
 
 def _solve_field_that_solves(command, **_kwargs):
