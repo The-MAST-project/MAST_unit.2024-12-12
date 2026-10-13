@@ -174,6 +174,18 @@ install_hardware_stubs()
 _block_external_processes()
 
 
+# Tests stay off the internet: a connection off this machine fails the test, unless it is
+# marked `network` -- and those are skipped in CI and when the IERS host is unreachable.
+# Installed at import, like the process guard, so collection is covered too. The module is
+# common's (common/testing/network.py), so the two suites cannot drift.
+from common.testing import network as _network  # noqa: E402
+
+_network.install()
+pytest_configure = _network.pytest_configure
+pytest_collection_modifyitems = _network.pytest_collection_modifyitems
+_allow_network_for_marked_tests = _network.allow_network_for_marked_tests
+
+
 class ActivitySpy:
     """The activity bookkeeping half of a component, over a set.
 
