@@ -268,3 +268,34 @@ def test_a_default_expose_still_runs_with_no_limit_frame():
     assert not response.errors
     assert r.sent_frames() == [None]
     assert "capture_single_frame" in r.methods()
+
+
+@pytest.mark.parametrize(
+    ("frame", "expected"),
+    [
+        ((0, 0, 8288, 5600), [0, 0, 8288, 5600]),  # short of the bottom: a real crop, kept
+        ((400, 0, 7888, 5644), PHD2ConnectorError),  # full height but offset: refused, not full frame
+        ((0, 640, 8288, 5000), PHD2ConnectorError),  # full width but offset: refused, not full frame
+    ],
+    ids=["cropped-bottom", "offset-left", "offset-top"],
+)
+def test_only_a_frame_widened_to_the_whole_sensor_becomes_no_limit_frame(frame, expected):
+    r = rig()
+
+    if expected is PHD2ConnectorError:
+        with pytest.raises(PHD2ConnectorError):
+            r.connector.set_limit_frame(roi=ImagerRoi.verbatim(*frame))
+        assert r.sent_frames() == []
+    else:
+        r.connector.set_limit_frame(roi=ImagerRoi.verbatim(*frame))
+        assert r.sent_frames() == [expected]
+
+
+def test_whether_a_frame_covers_the_sensor_is_judged_at_the_profile_binning():
+    frame = (40, 40, 8248, 5604)  # at bin 2: 20,20 -> widened to the whole 4144x2822; at bin 1: x=40 is not
+    assert phd2_requested_frame(frame, 2) == (0, 0, 4160, 2848)
+    r = rig(binning=2)
+
+    r.connector.set_limit_frame(roi=ImagerRoi.verbatim(*frame))
+
+    assert r.sent_frames() == [None]

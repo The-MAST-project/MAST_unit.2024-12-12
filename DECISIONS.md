@@ -48,8 +48,9 @@ guiding on a narrower frame it was sheared too (mast03, 2026-10-13). MAST_unit#3
   by that extent. `make_guiding_settings` and mastrometry's spec phase both call it. mast03's
   frame becomes 7952x5604@10,26; frames that already fit are unchanged, and centers are kept.
 - A frame PHD2 would widen to the whole sensor is sent as no limit frame (`roi: None`). That
-  covers the exact sensor and the full frame trimmed by `ImagerRoi` conditioning (8272x5640@7,1,
-  MAST_common#17), which a default `/expose` sends. `None` reads out the full 8288x5644 and resets
+  covers the exact sensor and a full frame trimmed by `ImagerRoi` conditioning (MAST_common#17),
+  such as the 8256x5636@14,2 a default `/expose` sends at binning 1. At binning 2 that path hands
+  over binned coordinates, which PHD2 reads as unbinned; that predates this and is not changed. `None` reads out the full 8288x5644 and resets
   the camera's ROI, so such an image is now the true full frame, a few px larger than its name says.
 - `start_guiding` and `start_exposure` refuse a frame that does not fit, next to their binning and
   bpp checks and before raising `Guiding` / `Exposing`; `set_limit_frame` raises
