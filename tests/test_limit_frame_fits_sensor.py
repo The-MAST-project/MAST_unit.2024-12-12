@@ -30,6 +30,7 @@ from common.activities import UnitActivities
 from common.config.phd2 import LimitFrameConfig, LimitFrameMode, PHD2Config
 from common.config.rois import FcuVersion, SpecRoiConfig
 from common.models.statuses import ImagerRoi, ImagerSettings
+from common.rois import UnitRoi
 from failure_streaks import FailureStreaks
 
 SENSOR_WIDTH, SENSOR_HEIGHT = asi.ASI_294MM_WIDTH, asi.ASI_294MM_HEIGHT
@@ -124,6 +125,7 @@ class Rig:
     connector: PHD2Connector
     rpc: MagicMock
     unit: MagicMock
+    parent: MagicMock
 
     def sent_frames(self) -> list:
         return [c.kwargs["params"]["roi"] for c in self.rpc.call_args_list if c.args and c.args[0] == "set_limit_frame"]
@@ -166,7 +168,7 @@ def rig(binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1, limit_frame: Limi
     parent = MagicMock(name="parent")
     parent.unit = unit
     p.parent = parent
-    return Rig(p, rpc, unit)
+    return Rig(p, rpc, unit, parent)
 
 
 def test_a_full_sensor_frame_is_sent_as_no_limit_frame():
@@ -220,3 +222,49 @@ def test_guiding_starts_with_a_frame_the_camera_accepts():
 
     assert r.sent_frames() == [list(FITS_AT_BIN_1_ONLY)]
     r.unit.start_activity.assert_called_once_with(UnitActivities.Guiding)
+
+
+TRIMMED_FULL_FRAMES = {
+    "conditioned-full-sensor": lambda: ImagerRoi(x=0, y=0, width=SENSOR_WIDTH, height=SENSOR_HEIGHT),
+    "default-expose": lambda: ImagerRoi.from_other(
+        UnitRoi(SENSOR_WIDTH // 2, SENSOR_HEIGHT // 2, SENSOR_WIDTH, SENSOR_HEIGHT)
+    ).binned(1),
+    "trimmed-three-times": lambda: ImagerRoi.verbatim(21, 3, 8240, 5632),
+}
+
+
+@pytest.mark.parametrize("make", list(TRIMMED_FULL_FRAMES.values()), ids=list(TRIMMED_FULL_FRAMES))
+def test_a_full_frame_trimmed_by_conditioning_is_sent_as_no_limit_frame(make):
+    """ImagerRoi conditioning trims a full frame by a few px (MAST_common#17); PHD2 widens it back."""
+    roi = make()
+    assert (roi.x, roi.y) != (0, 0) or (roi.width, roi.height) != (SENSOR_WIDTH, SENSOR_HEIGHT)
+    assert phd2_requested_frame(as_tuple(roi), 1) == (0, 0, SENSOR_WIDTH, 5664)
+    r = rig()
+
+    r.connector.set_limit_frame(roi=roi)
+
+    assert r.sent_frames() == [None]
+
+
+def exposure(roi: ImagerRoi) -> ImagerSettings:
+    return ImagerSettings(seconds=0.01, binning=1, gain=170, format="raw16", roi=roi, image_path="unused.fits")
+
+
+def test_an_exposure_with_a_frame_the_camera_would_reject_is_refused_before_it_starts():
+    r = rig()
+
+    response = r.connector.start_exposure(exposure(ImagerRoi.verbatim(*MAST03_OLD_FRAME)))
+
+    assert response.errors
+    assert "capture_single_frame" not in r.methods()
+    r.parent.start_activity.assert_not_called()
+
+
+def test_a_default_expose_still_runs_with_no_limit_frame():
+    r = rig()
+
+    response = r.connector.start_exposure(exposure(TRIMMED_FULL_FRAMES["default-expose"]()))
+
+    assert not response.errors
+    assert r.sent_frames() == [None]
+    assert "capture_single_frame" in r.methods()

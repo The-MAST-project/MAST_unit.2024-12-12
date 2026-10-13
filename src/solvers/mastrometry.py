@@ -18,9 +18,10 @@ from common.filer import Filer, MoveGuardian
 from common.interfaces.solving import SolverInterface, SolvingResult
 from common.mast_logging import get_logger
 from common.models.statuses import ImagerRoi
-from common.rois import SkyRoi, SpecRoi
+from common.rois import SkyRoi
 from common.utils import Coord, boxed_log, function_name
 from imagers import ImagerSettings
+from phd2.limit_frame import derived_guiding_roi
 
 from .astrometry_dot_net import cygwin_to_win, generate_random_string, parse_solver_output, win_to_cygwin
 from .pixel_grid import roi_center_to_crpix
@@ -189,16 +190,7 @@ class MastrometryDotNet(SolverInterface):
                     assert fcu_version in unit_conf.guiding.rois
                     cfg = cast(SpecRoiConfig, unit_conf.guiding.rois[fcu_version])
 
-                    half_width = min(
-                        cfg.fiber_x - cfg.margin_horizontal, camera_x_size - cfg.margin_horizontal - cfg.fiber_x
-                    )
-                    half_height = min(cfg.fiber_y - cfg.margin_vertical, camera_y_size - cfg.margin_vertical - cfg.fiber_y)
-
-                    spec_roi = SpecRoi(
-                        fiber_x=cfg.fiber_x, fiber_y=cfg.fiber_y, width=half_width * 2, height=half_height * 2
-                    )
-
-                    imager_roi = ImagerRoi.from_other(spec_roi)
+                    imager_roi = derived_guiding_roi(cfg, camera_x_size, camera_y_size, unit_conf.guiding.binning)
 
                 case _:
                     # No ROI and no recognized phase: leave imager_roi=None
