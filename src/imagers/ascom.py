@@ -826,8 +826,20 @@ class ASCOMImager(ImagerInterface, SwitchedOutlet, AscomDispatcher):
         self.power_off()
 
     @property
-    def set_point(self):
-        return self.operational_set_point
+    def set_point(self) -> float | None:
+        """The set point the driver reports now (ASCOM's `SetCCDTemperature`, read), or None
+        when disconnected or the driver will not say -- a camera that cannot set its
+        temperature raises on the read.
+
+        A measurement, not an echo (#109): this used to return `operational_set_point`, the
+        value last *requested*, so a camera that clamped or refused it still read as -25.
+        """
+        if not self.connected:
+            return None
+        response = ascom_run(self, "SetCCDTemperature")
+        if response.succeeded and response.value is not None:
+            return float(response.value)
+        return None
 
     @property
     def can_set_cooler_set_point(self) -> bool:
