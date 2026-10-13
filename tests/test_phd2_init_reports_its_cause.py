@@ -164,7 +164,8 @@ def test_the_flag_is_set_in_a_finally():
 def test_the_cooler_assignment_is_inside_the_guard():
     source = _init_source()
 
-    assert source.index("self.cooler_on = True") < source.index("except Exception"), (
+    # The cooler goes on through `_start_cooling_down()`, which still assigns `cooler_on` first.
+    assert source.index("self._start_cooling_down()") < source.index("except Exception"), (
         "outside the guard, its setter's error replaces the real failure as the reported cause"
     )
 
