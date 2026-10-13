@@ -105,6 +105,12 @@ class StagePresetPosition(Enum):
 #: a position anyone can command.
 STARTUP_PRESET = StagePresetPosition.Sky
 
+#: How long `home` waits for `command_homezero`. From the SPEC end of travel homing outlasts a
+#: minute: on mast03 on 2026-10-12 it was still running at 60 s with about a fifth of the
+#: travel left. An expired wait does not stop the call, which then zeroes the stage in the
+#: middle of whatever move follows (MAST_unit#311), so this must cover a full-travel homing.
+HOMING_TIMEOUT_SECONDS = 150.0
+
 #: The preset names the API accepts, for anyone building a UI over it.
 stage_position_names: list[str] = [p.value for p in StagePresetPosition]
 
@@ -373,7 +379,7 @@ class Stage(Component, SwitchedOutlet):
         with self.stage_lock:
             assert ximclib
             try:
-                with Timeout(60) as timeout:
+                with Timeout(HOMING_TIMEOUT_SECONDS) as timeout:
                     result = timeout.run(ximclib.command_homezero, self.device)
                 if result == Result.Ok:
                     # Homing moves the stage, so the same staleness applies. Left out, a
