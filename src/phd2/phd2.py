@@ -28,6 +28,7 @@ from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_debug, function_name
 from failure_streaks import FailureStreaks
 from phd2.fits_header import stamp_cooling
+from phd2.limit_frame import limit_frame_accepted, limit_frame_covers_sensor, limit_frame_extent
 from phd2.phd2_locate import locate_phd2_exe
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 
@@ -104,29 +105,6 @@ class PHD2ConnectorError(Exception):
     Guider methods
 
     """
-
-
-#: PHD2's ZWO driver widens a limit frame to multiples of this, in binned coordinates, and does
-#: not keep the result inside the sensor (`constrain_roi` in upstream `cam_zwo.cpp`). The camera
-#: rejects a frame widened past the sensor; PHD2 logs that and goes on copying the camera's rows
-#: with the rejected frame's stride, shearing every frame (MAST_unit#330).
-PHD2_ROI_ALIGNMENT = 32
-
-
-def limit_frame_extent(sensor_width: int, sensor_height: int, binning: int) -> tuple[int, int]:
-    """How far right and down, in unbinned pixels, a limit frame may reach and still be accepted."""
-    # PHD2's binned frame size: the binned sensor with its width floored to 8 and height to 2.
-    binned_width = (sensor_width // binning) & ~7
-    binned_height = (sensor_height // binning) & ~1
-    return (
-        (binned_width - binned_width % PHD2_ROI_ALIGNMENT) * binning,
-        (binned_height - binned_height % PHD2_ROI_ALIGNMENT) * binning,
-    )
-
-
-def limit_frame_accepted(roi: ImagerRoi, sensor_width: int, sensor_height: int, binning: int) -> bool:
-    width, height = limit_frame_extent(sensor_width, sensor_height, binning)
-    return roi.x + roi.width <= width and roi.y + roi.height <= height
 
 
 class PHD2Accumulator:
@@ -1107,15 +1085,13 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def limit_frame_for_phd2(self, roi: ImagerRoi | None) -> ImagerRoi | None:
         """`roi` as PHD2 should be given it, or PHD2ConnectorError if the camera would reject it.
 
-        A frame covering the whole sensor becomes no limit frame. Widened to 32 px it is rejected
+        A frame PHD2 would widen to the whole sensor becomes no limit frame. Widened, it is rejected
         too, and comes out right only while the camera's last accepted frame was full width.
         """
         sensor_width, sensor_height = self.camera_x_size, self.camera_y_size
-        if roi is None or (
-            roi.x <= 0 and roi.y <= 0 and roi.x + roi.width >= sensor_width and roi.y + roi.height >= sensor_height
-        ):
-            return None
         binning = self.profile_binning or 1
+        if roi is None or limit_frame_covers_sensor(roi, sensor_width, sensor_height, binning):
+            return None
         if not limit_frame_accepted(roi, sensor_width, sensor_height, binning):
             width, height = limit_frame_extent(sensor_width, sensor_height, binning)
             raise PHD2ConnectorError(
@@ -1746,6 +1722,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             requested_bpp = 8 if settings.format == "raw8" else 16
             if requested_bpp != self.profile_bpp:
                 msg = f"{function_name()}: {requested_bpp=} does not match {self.profile_bpp=}, cannot start exposure"
+                logger.warning(msg)
+                return CanonicalResponse(errors=[msg])
+
+        if settings.use_set_limit_frame and not self._is_guiding(self.app_state):
+            try:
+                self.limit_frame_for_phd2(settings.roi)
+            except PHD2ConnectorError as ex:
+                msg = f"{function_name()}: {ex}, cannot start exposure"
                 logger.warning(msg)
                 return CanonicalResponse(errors=[msg])
 
