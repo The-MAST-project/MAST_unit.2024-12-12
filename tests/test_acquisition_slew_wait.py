@@ -122,6 +122,12 @@ class _Unit:
         return activity in self.activities
 
 
+@pytest.fixture(autouse=True)
+def _in_tmp_path(tmp_path, monkeypatch):
+    """The sky phase writes its sequence file under the acquisition's (relative) folder."""
+    monkeypatch.chdir(tmp_path)
+
+
 def _acquisition(slew_to_target=True, skip_sky=False):
     return SimpleNamespace(
         target_ra=1.0,
