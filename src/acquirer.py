@@ -125,6 +125,17 @@ class Acquirer:
             time.sleep(0.2)
         return True
 
+    def _await_slew(self, acquisition: Acquisition) -> bool:
+        """Wait out the slew to the target, returning False if cancelled while it ran.
+
+        A settle timeout is logged by the mount and does not fail the acquisition: the
+        correction loop recovers from a frame taken slightly off, and the 0.5" settle can
+        time out in wind on a mount that points well enough to solve.
+        """
+        if acquisition.slew_to_target:
+            self.unit.required_mount.wait_until_settled(SettleMode.SLEW)
+        return not self._cancelled()
+
     def _abandon(self, op: str, acquisition_exposure_series=None) -> None:
         """Unwind exactly as a failed phase does.
 
@@ -300,10 +311,9 @@ class Acquirer:
             #
             self.unit.required_stage.move_to_preset(StagePresetPosition.Sky)
 
-            if not self._await_stage():
+            if not self._await_stage() or not self._await_slew(acquisition):
                 self._abandon(op)
                 return ACQUISITION_CANCELLED
-            self.unit.required_mount.wait_until_settled(SettleMode.SLEW)
 
             self.unit.end_activity(UnitActivities.Positioning)
 
@@ -389,6 +399,9 @@ class Acquirer:
             self._abandon(op, acquisition_exposure_series)
             return ACQUISITION_CANCELLED
         logger.info(f"stage now at {self.unit.required_stage.position}")
+        if not self._await_slew(acquisition):
+            self._abandon(op, acquisition_exposure_series)
+            return ACQUISITION_CANCELLED
 
         if self.unit.is_active(UnitActivities.Positioning):
             self.unit.end_activity(UnitActivities.Positioning)

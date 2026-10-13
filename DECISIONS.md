@@ -33,6 +33,25 @@ keeps the widened frame inside the sensor and that build is deployed (reported u
 misplaced `fixed` frame no longer guides on sheared frames; the refusal is a WARNING and an error
 in the backend's response, which `Guider.start_guiding` does not pass on, the same as for the
 binning and bpp refusals.
+## [2026-10-13] An acquisition waits for the slew before its first exposure, on every path
+
+**Why:** the only slew wait in `do_acquire` sat in the FCU v1 `sky` phase. On FCU v2 -- every
+production unit -- and on v1 with `skip_sky`, the `spec` phase waited only for the stage and a
+fixed 5 s, so any longer slew was still moving when the first frame was taken (mast04,
+2026-10-12: a 10 s slew to Markab, exposure started 5 s in). Each acquisition lost one iteration
+to a trailed frame. MAST_unit#315.
+
+**What:** `Acquirer._await_slew` waits on `wait_until_settled(SettleMode.SLEW)` when the
+acquisition slewed, and reports a cancellation that landed during the wait. Both phases call it
+after their stage wait, so the slew overlaps the stage move and the 5 s sleep. A settle timeout
+is logged by the mount and does not fail the acquisition, as before in the v1 `sky` phase: the
+correction loop recovers from a frame taken slightly off, and the 0.5" settle can time out in
+wind on a mount that points well enough to solve.
+
+**Implications:** an acquisition that did not slew no longer waits on the mount at all, in either
+phase. A cancel during the slew is honored only once the settle returns, because
+`wait_until_settled` does not poll a cancel flag. On v1 without `skip_sky` the `spec` phase waits
+a second time; the slew is long over by then, so it costs only the settle's start-grace window.
 
 ---
 
