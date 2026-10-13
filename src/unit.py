@@ -292,6 +292,10 @@ class Unit(Component, OpmodeBase):
         self._idle_since: float | None = None
         self._active_since: float | None = None
         self._guiding_live: bool = False
+        # The most recent lifecycle command, "startup" or "shutdown". Only it completes into an
+        # opstate (STARTED_UP / SHUT_DOWN), so a shutdown received mid-startup is not overwritten
+        # by the startup finishing after it.
+        self._last_lifecycle_command: str | None = None
 
         self.connected_clients: list[WebSocket] = []
         # self.imager.register_visualizer('image-to-dashboard', self.push_image_to_dashboards)
@@ -352,9 +356,9 @@ class Unit(Component, OpmodeBase):
         """
         Starts the **MAST** ``unit`` subsystem.  Makes it ``operational``.
         """
-        # On receipt, not on completion (opmode-design 4): a repeat while starting is still
-        # a startup received.
-        self._set_opstate(OpState.RUNNING)
+        # The opstate becomes STARTED_UP when the sequence completes (`ontimer`, where
+        # StartingUp ends), not here; this only records that a startup is now the latest command.
+        self._last_lifecycle_command = "startup"
         # A startup is an explicit "I want this unit": idleness counts afresh from when it ends.
         self._idle_since = self._active_since = None
         if self.is_active(UnitActivities.StartingUp):
@@ -477,6 +481,10 @@ class Unit(Component, OpmodeBase):
             self._shutdown_component(self.power_switch)
         self._was_shut_down = True
         self.end_activity(UnitActivities.ShuttingDown)
+        # The shutdown sequence has completed. Into SHUT_DOWN only if it is still the latest
+        # lifecycle command -- a startup received meanwhile completes into STARTED_UP instead.
+        if self._last_lifecycle_command == "shutdown":
+            self._set_opstate(OpState.SHUT_DOWN)
 
     def _end_stuck_component_activities(self) -> None:
         """End, naming them, whatever activities the components still report."""
@@ -581,7 +589,9 @@ class Unit(Component, OpmodeBase):
         Accepted in every opstate -- it is how a supervisor makes a machine safe, including
         one it never started -- and idempotent (opmode-design 4).
         """
-        self._set_opstate(OpState.SHUTDOWN)
+        # The opstate becomes SHUT_DOWN when the sequence completes (`_end_shutting_down_when_done`),
+        # not here; this only records that a shutdown is now the latest command.
+        self._last_lifecycle_command = "shutdown"
         if self.is_active(UnitActivities.ShuttingDown):
             return CanonicalResponse_Ok
 
@@ -906,14 +916,14 @@ class Unit(Component, OpmodeBase):
     def _track_idleness(self) -> None:
         """`ontimer`'s idle clock, and the auto-shutdown.
 
-        Runs only while RUNNING: in INITIALIZED there is nothing to shut down, and in
-        SHUTDOWN it already is -- both marks are cleared. Each tick stamps `_idle_since` on
+        Runs only while STARTED_UP: in INITIALIZED there is nothing to shut down, and in
+        SHUT_DOWN it already is -- both marks are cleared. Each tick stamps `_idle_since` on
         busy -> idle and `_active_since` on idle -> busy. Idle for
         `minutes_to_autoshutdown_on_idle` (read live; 0 disables) shuts the unit down -- a
-        `shutdown`, never a `powerdown` -- after which it is no longer RUNNING, so it cannot
-        fire twice.
+        `shutdown`, never a `powerdown`. It cannot fire twice: while that shutdown runs the unit
+        is busy (ShuttingDown), and once it completes the opstate is SHUT_DOWN.
         """
-        if self.opstate != OpState.RUNNING:
+        if self.opstate != OpState.STARTED_UP:
             self._idle_since = self._active_since = None
             return
 
@@ -940,10 +950,10 @@ class Unit(Component, OpmodeBase):
             self.shutdown()
 
     def _idleness_status(self) -> dict:
-        """The three FullUnitStatus idleness fields. All None outside RUNNING (unknown);
+        """The three FullUnitStatus idleness fields. All None outside STARTED_UP (unknown);
         `idle_seconds` None while busy, `active_seconds` None while idle."""
         unknown = {"idle_seconds": None, "active_seconds": None, "why_busy": None}
-        if self.opstate != OpState.RUNNING:
+        if self.opstate != OpState.STARTED_UP:
             return unknown
         now = time.monotonic()
         try:
@@ -983,6 +993,10 @@ class Unit(Component, OpmodeBase):
             )
         ):
             self.end_activity(UnitActivities.StartingUp)
+            # The startup sequence has completed. Into STARTED_UP only if no shutdown has been
+            # received since -- that one completes into SHUT_DOWN instead.
+            if self._last_lifecycle_command == "startup":
+                self._set_opstate(OpState.STARTED_UP)
 
         # UnitActivities.Aborting: raised by abort(), ended once everything it reached stopped.
         if self.is_active(UnitActivities.Aborting) and not self._unsettled_by_abort():
@@ -1076,14 +1090,17 @@ class Unit(Component, OpmodeBase):
     def start_lifespan(self):
         """The one place the opmode is acted on (opmode-design 4a).
 
-        `development`: start at once, as a unit always has. `production`: report INITIALIZED and
-        wait for the `startup` endpoint. Construction has already happened, in `main()`.
+        INITIALIZED in both modes -- constructed, not yet started. `development` then starts at
+        once, as a unit always has, and becomes STARTED_UP when that completes; `production`
+        waits for the `startup` endpoint. (INITIALIZED used to be production's alone, while
+        development went straight to RUNNING on receipt -- with the opstate now set on
+        completion, development would otherwise sit visibly in INITIALIZING during its first
+        startup.) Construction has already happened, in `main()`.
         """
         logger.info(f"unit start lifespan, opmode={self.opmode} (from {self.opmode_source})")
+        self._set_opstate(OpState.INITIALIZED)
         if self.is_development:
             self.startup()
-        else:
-            self._set_opstate(OpState.INITIALIZED)
 
     @property
     def _operational_components(self) -> list[Component]:

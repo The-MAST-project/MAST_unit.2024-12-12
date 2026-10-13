@@ -116,6 +116,7 @@ def _unit(components, power_switch=None):
     unit._startup_dispatching = False
     unit._shutdown_dispatching = False
     unit._shutdown_dispatched_at = None
+    unit._last_lifecycle_command = None
     unit.abort = lambda: None  # do_shutdown aborts first; abort itself is tested elsewhere
 
     recorder = FakeActivities(UnitActivities)

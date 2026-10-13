@@ -2,7 +2,7 @@
 
 Design: mast-claude-config plans/unit_idleness_design.md (rev. 2026-10-13). Busy is the unit's
 activities, every component's (the imager's wrapper and backend together) and guiding -- not
-`ImagerActivities.CoolingDown`, not tracking. The clock runs only while RUNNING, restarts at
+`ImagerActivities.CoolingDown`, not tracking. The clock runs only while STARTED_UP, restarts at
 `startup`, and after `minutes_to_autoshutdown_on_idle` idle (0 disables) the unit shuts down.
 
 The unit is never constructed (that builds every component); a bare instance carries fake
@@ -67,10 +67,10 @@ def unit():
 
     def shutdown():
         u.shutdowns.append(1)
-        u._set_opstate(OpState.SHUTDOWN)
+        u._set_opstate(OpState.SHUT_DOWN)
 
     u.shutdown = shutdown
-    u._set_opstate(OpState.RUNNING)
+    u._set_opstate(OpState.STARTED_UP)
     return u
 
 
@@ -154,7 +154,7 @@ class TestTheClock:
 
         assert unit._active_since == 1000.0, "still active, the mark unchanged"
 
-    @pytest.mark.parametrize("opstate", [OpState.INITIALIZED, OpState.SHUTDOWN])
+    @pytest.mark.parametrize("opstate", [OpState.INITIALIZED, OpState.SHUT_DOWN])
     def test_outside_running_it_does_not_run(self, unit, clock, opstate):
         unit._idle_since = 500.0
         unit._set_opstate(opstate)
