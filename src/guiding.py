@@ -216,13 +216,17 @@ class Guider(GuiderInterface):
             #     logger.error(error)
             #     return CanonicalResponse(errors=[error])
 
-            self.unit.end_activity(UnitActivities.Acquiring)
             self.unit.end_activity(UnitActivities.Guiding)
             # Positioning too. `do_acquire` raises it around the stage moves between
             # phases, so a stop that lands in that window used to leave it set for good --
             # a stale flag that makes the unit look busy to everything that reads status,
             # and exactly the imbalance `test_activity_flag_balance` refuses.
             self.unit.end_activity(UnitActivities.Positioning)
+            # After `Guiding`, so an acquisition waiting on guiding sees it end rather than
+            # stopping it a second time. `Acquiring` itself clears once the acquisition has
+            # unwound (MAST_unit#326).
+            if self.unit.acquirer is not None:
+                self.unit.acquirer.cancel()
 
             if self.unit.imager is not None and self.unit.imager.is_active(ImagerActivities.Exposing):
                 logger.debug(f"{function_name()}: imager is exposing, stopping exposure ...")

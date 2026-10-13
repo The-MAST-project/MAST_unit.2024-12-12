@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from common.models.statuses import ComponentStatus, FullUnitStatus
+from common.models.statuses import ComponentStatus, FullUnitStatus, LatestAcquisition
 from common.opmode import OpMode, OpState
 from unit import Unit
 
@@ -64,6 +64,22 @@ class FluxMetering:
         return None
 
 
+class Acquisition:
+    def __init__(self, record: LatestAcquisition | None = None, failure: str | None = None):
+        self.record = record
+        self.failure = failure
+
+    def status(self) -> LatestAcquisition | None:
+        if self.failure:
+            raise ValueError(self.failure)
+        return self.record
+
+
+class Acquirer:
+    def __init__(self, latest_acquisition: Acquisition | None = None):
+        self.latest_acquisition = latest_acquisition
+
+
 class Stub:
     """Enough of a Unit to run `status`'s own body."""
 
@@ -78,6 +94,7 @@ class Stub:
         # `Unit.__init__` always builds a FluxMeteringSession -- but `status` reads it, so a
         # Stub without one raises where the real thing cannot.
         self.flux_metering = parts.pop("flux_metering", FluxMetering())
+        self.acquirer = parts.pop("acquirer", Acquirer())
         # Read by `status` since opmode/opstate went on the wire (opmode-design 6).
         self.opmode = OpMode.PRODUCTION
         self.opstate = OpState.INITIALIZED
@@ -191,3 +208,29 @@ def test_every_component_is_guarded(part: str):
 
     assert status.errors is not None
     assert any(e.startswith(f"{part}.status") for e in status.errors)
+
+
+class TestTheLatestAcquisition:
+    """Published from `acquirer.latest_acquisition` (MAST_unit#326)."""
+
+    def test_none_before_the_first_acquisition(self):
+        assert status_of(Stub()).latest_acquisition is None
+
+    def test_the_record_is_published(self):
+        record = LatestAcquisition(
+            folder="Z:/MAST/mast01/2026-10-13/Acquisitions/seq=0001",
+            target_ra_j2000_hours=5.5,
+            target_dec_j2000_degs=-12.0,
+            succeeded=True,
+        )
+
+        status = status_of(Stub(acquirer=Acquirer(Acquisition(record))))
+
+        assert status.latest_acquisition == record
+
+    def test_a_record_that_cannot_be_read_is_named(self):
+        status = status_of(Stub(acquirer=Acquirer(Acquisition(failure="under none of the filer's roots"))))
+
+        assert status.latest_acquisition is None
+        assert status.errors is not None
+        assert any(e.startswith("acquirer.latest_acquisition") for e in status.errors)

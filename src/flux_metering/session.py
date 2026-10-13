@@ -624,8 +624,8 @@ class FluxMeteringSession:
         Run on this thread rather than through the endpoint, so the call returns exactly
         when the acquisition ends. Started on another thread, its end could only be read
         from `Acquiring`, which is not yet set for a moment after the start -- and a spiral
-        once walked right through that moment (MAST_unit#316). An abort clears `Acquiring`,
-        which the acquisition honors, so this call still returns promptly.
+        once walked right through that moment (MAST_unit#316). An abort cancels the
+        acquisition, which unwinds, so this call still returns promptly.
         """
         acquirer = self.unit.acquirer
         if acquirer is None:

@@ -53,9 +53,8 @@ OUT_OF_SCOPE = {
 }
 
 # Dispatch sites whose target is not `do_`-named, keyed to the issue that owns the rename.
-# All four are #81's; the two in `acquirer.py` are the ones #102 introduced.
+# Both are #81's.
 KNOWN_MISNAMED = {
-    ("acquirer.py", "self.run_acquisition"): "MAST_unit#81",
     ("guiding.py", "self.start_guiding"): "MAST_unit#81",
     ("zwo.py", "self.save_in_thread"): "MAST_unit#81",
 }

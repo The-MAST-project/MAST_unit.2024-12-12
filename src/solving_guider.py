@@ -65,7 +65,7 @@ class SolvingGuider(GuiderInterface):
                 make_corrections=self.unit.acquirer.latest_acquisition.make_corrections,
                 imager_settings=guiding_settings,
                 solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
-                parent_activity=UnitActivities.Acquiring,
+                cancelled=lambda: not self.unit.is_active(UnitActivities.Guiding),
                 phase=phase,
             )
 
