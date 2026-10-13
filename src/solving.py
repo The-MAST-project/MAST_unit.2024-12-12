@@ -16,7 +16,7 @@ from common.config.unit import AcquisitionConfig, ToleranceConfig
 from common.const import Const
 from common.corrections import Correction, Corrections
 from common.filer import Filer, MoveGuardian
-from common.interfaces.solving import SolverId, SolverInterface, SolvingResult, SolvingTolerance
+from common.interfaces.solving import SolverId, SolverInterface, SolvingResult, SolvingTolerance, target_offset_arcsec
 from common.mast_logging import get_logger
 from common.models.statuses import ImagerSettings
 from common.safety import safety_get_sensor
@@ -335,22 +335,12 @@ class Solver(SolverInterface):
                 # )
                 dec_avg_rad = float(target.dec.radian + result.solution.dec_rads) / 2  # type: ignore  # noqa: F841 -- #191
                 assert result.solution is not None, f"{op}: result.solution is None"
-                # delta_ra_arcsec = (
-                #     target.ra.arcsecond - result.solution.ra_hours * 15 * 3600
-                # )  # type: ignore
-
-                # Oren's solution to avoid RA wrap-around issues
-                delta_ra_deg = (target.ra.deg - result.solution.ra_hours * 15) % 360  # type: ignore
-                if delta_ra_deg > 180:
-                    delta_ra_deg -= 360
-                delta_ra_arcsec = delta_ra_deg * 3600
-
-                # Eran's original delta_ra calculation with cos(dec) correction
-                # - Angle(result.solution.ra_rads * u.radian).arcsecond  # type: ignore
-                # ) * math.cos(
-                #     dec_avg_rad
-                # )  # type: ignore
-                delta_dec_arcsec = target.dec.arcsecond - Angle(result.solution.dec_rads * u.radian).arcsecond  # type: ignore
+                # Oren's wrap-safe RA delta, now shared: the lock nudge re-references
+                # guiding to the same target just before the fold mirror hides it, and
+                # two copies of this arithmetic could let the two disagree about what
+                # "off target" means.
+                delta_ra_arcsec, _ = target_offset_arcsec(target, result.solution)
+                _, delta_dec_arcsec = target_offset_arcsec(target, result.solution)
 
                 abs_delta_ra_arcsec = abs(delta_ra_arcsec)
                 abs_delta_dec_arcsec = abs(delta_dec_arcsec)

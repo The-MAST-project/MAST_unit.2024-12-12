@@ -33,6 +33,13 @@ integer-division ROI `refpix` that biased pointing by ~0.4").
    `--no-tweak` without reading the comment there; it breaks agreement with the
    reference solver and with full-frame pixel consistency.
 
+## Artifact names come from the input's stem
+
+`MastrometryDotNet.solve` names its outputs `<input stem>,solver=<name>.fits` and
+`<input stem>,solver=<name>-result.txt`. Never derive them by editing the input's
+name (`.replace(".fits", ...)`): a `sav*.tmp` guide frame then gives both the same
+path, and the result text overwrites the solved FITS (#314).
+
 ## Why the surface is kept (don't "simplify" it away)
 
 A bare `solve-field --downsample N` on the full frame would avoid this surface

@@ -1339,6 +1339,12 @@ class Unit(Component, OpmodeBase):
             ),
         ] = None,
     ) -> CanonicalResponse:
+        """Expose, optionally after a slew, leaving the mount's tracking as it was found.
+
+        If the mount was already tracking, `expose` neither re-commands nor stops it: the
+        caller that started tracking owns it. Otherwise `expose` starts tracking for the run
+        and stops it afterwards, also when the run fails.
+        """
 
         if seconds_between_exposures is not None:
             return CanonicalResponse(
@@ -1404,6 +1410,9 @@ class Unit(Component, OpmodeBase):
             return CanonicalResponse(errors=[f"expose: {e}"])
 
         assert self.mount is not None
+        # Read before the slew: PWI4 engages tracking at the end of an equatorial goto, so
+        # afterwards the mount always looks like someone else's.
+        mount_was_tracking = self.mount.is_tracking
         if (ra_j2000_hours is not None and isinstance(ra_j2000_hours, float)) and (
             dec_j2000_degs is not None and isinstance(dec_j2000_degs, float)
         ):
@@ -1433,6 +1442,7 @@ class Unit(Component, OpmodeBase):
                 height,
                 binning,
                 gain,
+                mount_was_tracking,
             ],
         ).start()
         return CanonicalResponse_Ok
@@ -1451,6 +1461,7 @@ class Unit(Component, OpmodeBase):
         height: int = 1300,
         binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
         gain: int = asi.ASI_294MM_DEFAULT_GAIN,
+        mount_was_tracking: bool = False,
     ) -> CanonicalResponse:
 
         assert self.mount is not None
@@ -1460,7 +1471,8 @@ class Unit(Component, OpmodeBase):
         seconds = exposure_seconds
 
         try:
-            self.mount.start_tracking()
+            if not mount_was_tracking:
+                self.mount.start_tracking()
             exposure_series = self.imager.start_exposure_series(purpose="unit.do_exposure")
             try:
                 self._expose_repeatedly(
@@ -1480,13 +1492,14 @@ class Unit(Component, OpmodeBase):
             except Exception:
                 # This runs in `expose-thread`, where an exception would otherwise vanish
                 # entirely -- the endpoint has already returned "ok" to the caller. Logging
-                # is the only trace there is; the finally below is what stops the mount
-                # tracking forever and the exposure series dangling.
+                # is the only trace there is; the finally below is what keeps the exposure
+                # series from dangling and stops the tracking this run started.
                 logger.exception(f"{op}: exposure run failed")
                 return CanonicalResponse(errors=[f"{op}: exposure run failed, see the log"])
             finally:
                 self.imager.end_exposure_series(exposure_series)
-                self.mount.stop_tracking()
+                if not mount_was_tracking:
+                    self.mount.stop_tracking()
             return CanonicalResponse_Ok
         finally:
             # Outside the inner try, because start_tracking() and start_exposure_series()
@@ -2242,6 +2255,24 @@ class Unit(Component, OpmodeBase):
                 router,
                 base_path + "/start_guiding",
                 endpoint=self.guider.endpoint_start_guiding,
+                methods=["PUT"],
+            )
+            add_api_route(
+                router,
+                base_path + "/stop_guiding",
+                endpoint=self.guider.endpoint_stop_guiding,
+                methods=["PUT"],
+            )
+            add_api_route(
+                router,
+                base_path + "/pause_guiding",
+                endpoint=self.guider.endpoint_pause_guiding,
+                methods=["PUT"],
+            )
+            add_api_route(
+                router,
+                base_path + "/resume_guiding",
+                endpoint=self.guider.endpoint_resume_guiding,
                 methods=["PUT"],
             )
             add_api_route(

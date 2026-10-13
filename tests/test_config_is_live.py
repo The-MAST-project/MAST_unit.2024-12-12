@@ -72,7 +72,6 @@ CONSTRUCTION_TIME = {
     ("mount.py", "_ascom"): "the COM object for the configured ASCOM driver",
     ("imagers/ascom.py", "prog_id"): "the ASCOM driver the camera is bound to",
     ("imagers/__init__.py", "_prog_id"): "the ASCOM driver the backend was constructed with",
-    ("phd2/phd2.py", "guiding_verification_timer"): "a RepeatTimer's period, fixed at construction",
 }
 
 

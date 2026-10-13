@@ -37,6 +37,70 @@ acquisition is bounded by its own tries, and an abort clears `Acquiring`, which 
 
 **Implications:** the HTTP endpoint behaves as before. An outside caller still cannot see
 `failure`; exposing it in status is left for the flux orchestrator work.
+## [2026-10-13] Stage homing waits 150 s, enough for a homing from the far end
+
+**Why:** `Stage.home` gave `command_homezero` 60 s. From the SPEC end of travel homing takes
+longer (mast03, 2026-10-12: still running at 60 s, at 68058 and 59475). `Timeout` abandons the
+wait but not the call, so startup's move to SKY took over the motor and the late-returning call
+zeroed the stage mid-move; the next move to SPEC then stopped at the end of travel. MAST_unit#311.
+
+**What:** `HOMING_TIMEOUT_SECONDS = 150.0`, used by `home`.
+
+**Implications:** a stopgap. Startup can now take up to 150 s longer on a stage that never
+homes, and an expired homing is still left running behind the next move; not leaving it running
+is #311's ask.
+
+---
+
+## [2026-10-13] The solver names its artifacts from the input's stem, and a caller may discard them
+
+**Why:** `MastrometryDotNet.solve` built the solved FITS and the result text paths by replacing
+`".fits"` in the input's name. PHD2 guide frames arrive as `sav*.tmp`, so both artifacts got the
+same path, the result text overwrote the solved FITS, and the read-back raised `No SIMPLE card
+found`. The scratch folder was removed only by a thread started after a successful read-back, so
+each failure also left its folder on the RAM disk (mast04, 2026-10-12: 19 folders, 321 MB, #314).
+
+**What:** both paths are built from `Path(input).stem`: `<stem>,solver=<name>.fits` and
+`<stem>,solver=<name>-result.txt`, which leaves a `.fits` input's names unchanged. The cleanup
+thread starts in a `finally`, so a solve that raises still removes its scratch. `solve()` takes
+`keep_artifacts` (default true): with it, the two artifacts are saved beside the input and moved
+to the shared area as before; without it, they are discarded with the scratch. Chosen over a
+caller-chosen artifacts folder and over keeping everything: a caller that solves a guide frame
+every minute would otherwise ship about 1 GB an hour to the share from PHD2's temp folder, and it
+already records each result itself.
+
+**Implications:** acquisition and flux metering keep the default and are unchanged. A caller
+that solves guide frames repeatedly (the pointing check and the lock nudge, on
+`eli/exclude-region`) passes `keep_artifacts=False`, so such a solve leaves no file behind and a
+failed one is diagnosed from the log, not from a kept result text.
+
+---
+
+
+---
+
+## [2026-10-11] `expose` leaves the mount's tracking as it found it
+
+**Why:** `do_expose` started tracking before a run and stopped it afterwards, in both directions
+unconditionally. The stop meant two exposures could not share a field: on 2026-09-02 a mirror-in /
+mirror-out pair landed on different fields. It also stopped the mount under a frame taken while
+guiding. The start was not free either: `Mount.start_tracking` re-issues `mount_tracking_on`,
+which resets a non-sidereal rate, and waits at least a second. A first fix added
+`start_tracking` / `stop_tracking` query flags. That made every caller learn the side effect, and
+it did not nest.
+
+**What:** team decision, 2026-10-11. `expose` reads `mount.is_tracking` and passes it to
+`do_expose`. If the mount was tracking, `expose` neither starts nor stops it. Otherwise it starts
+tracking for the run and stops it afterwards, also on failure. The read happens before the slew,
+because PWI4 engages tracking at the end of an equatorial goto. No query flags. `guiding.py`
+already followed this rule.
+
+**Implications:** whoever starts tracking owns stopping it. A caller that turns tracking on and
+then goes away leaves the mount tracking until park, shutdown or another operation stops it. The
+open-loop tracking grid's `goto_alt_az` -> `expose` sequence is unchanged: `goto_alt_az` stops
+tracking, so `expose` finds it off and starts it from the commanded alt/az. The rule composes
+only when operations nest. Overlapping operations are not refused yet (#303). Extending the rule
+to autofocus, calibration, acquisition and spiral search is #304.
 
 ---
 
@@ -145,6 +209,57 @@ no hardware and no MAST runtime. The solver docs still said the repo had no CI a
   which `tests/conftest.py` blocks. On the runner it would also always skip, and CI runs with
   `-ra` so that a skip stands out.
 - The two tiers now live in different places. `src/solvers/tests/README.md` names both.
+
+---
+
+## [2026-10-04] Guiding is checked against the target by solving the guide frame, without pausing
+
+**Why:** PHD2 reports how well the star holds the lock position. Nothing reported whether the
+lock position was still on the target. A lock on the wrong star, drift between the guide camera
+and the fiber, or a handover that moved the field all read as clean guiding (#283). The previous
+attempt, `validate_guiding`, stopped guiding, took a cropped frame, restarted guiding and solved
+the frame. It was never enabled (`validation_interval` is 0 fleet-wide). It could not have worked
+if enabled: `solve()` was called without its `phase`, hour and degree differences were compared
+against arcsecond tolerances, and a second `StartGuiding` re-started the same timer thread.
+
+**What:** `src/pointing_check.py`'s `PointingMonitor` replaces it.
+
+- Each tick runs `save_image` (the frame PHD2 is already taking) and a SPEC-phase solve, which
+  reports the position at the fiber. It records target minus solved as a `PointingSample`.
+- Nothing pauses, and nothing moves the mount or the lock.
+- One sampling thread per guide session. It starts on PHD2's `StartGuiding` and ends on
+  `GuidingStopped`.
+- The cadence is `phd2.validation_interval`, read on every tick; 0 is off.
+- Samples are taken only while PHD2's state is `Guiding`, because a paused loop hands back its
+  last frame, which can be from before the mirror moved.
+- A frame that is not the full unbinned sensor is recorded **Unavailable** and never solved. The
+  SPEC reference pixel is in full-sensor coordinates, and a crop moves it by the crop origin
+  without the solve failing (#234). The check therefore needs `limit_frame.mode: full_frame`, with
+  the fold mirror kept out of star selection by the exclusion region.
+- A solve that finds no match, or that raises, is recorded as **NotSolved**.
+- The frame is deleted on every path, since it is 94 MB at full size.
+- The record is in `guider_status().pointing_check` (counts plus the last 20 samples) and in
+  `pointing-check.jsonl` under the acquisition's folder **on the share**. The acquisition's
+  RAM-disk folder is released before guiding settles, so it cannot hold the journal.
+- `stop_session` signals the thread and does not join it: it runs on PHD2's event reader, and a
+  solve can take tens of seconds. A sample that finishes after its session has ended is dropped
+  by session number, so it cannot enter the next session's record.
+
+The same change fixes the lock nudge's telemetry. It read `connector.limit_frame_in_force`,
+which #245 removed, so every nudge whose solve succeeded raised before moving the lock. It now
+reads `get_limit_frame()`. The nudge and the monitor share `offset_on_sky_arcsec` (MAST_common)
+for the on-sky angle.
+
+**Implications:**
+
+- Every unit runs `limit_frame.mode: derived` today, so a unit that enables the check reports
+  Unavailable until it is switched to `full_frame`. That is deliberate, and it is another cost of
+  the limit frame, alongside #234 and #245.
+- `PHD2Activities.Validating`, `ExposingForValidation` and `SolvingForValidation` are now
+  unused. They are left declared rather than renumbering the bit flags.
+- The `CONSTRUCTION_TIME` entry for `guiding_verification_timer` is removed with the timer. The
+  2026-09 entry above that counts it among five construction-time bindings is history and is not
+  edited.
 
 ---
 
@@ -498,6 +613,62 @@ next rebase. The lint job is untouched -- it never checks out MAST_common, since
 import the code.
 
 ---
+
+## [2026-09-15] An exposure that never started releases its waiter, and the limit frame travels with the capture
+
+**Why:** #225, met on mast01 on 2026-09-08. An exposure requested while PHD2 was guiding never
+completed and the frame it did take was lost; one requested while PHD2 was paused never started
+at all. Both ended in the same place -- the caller blocked for ever in `wait_for_image_saved`,
+so `do_expose`'s `finally` never ran, `UnitActivities.Exposing` stayed raised, and #219's
+one-run guard then refused every later frame in the run. One frame that could not start cost
+all of them.
+
+Three faults, independent of one another:
+
+- **`save_image` ignores its `path`.** While guiding, PHD2 will not take a separate exposure, so
+  `start_exposure` asked for `save_image` instead -- which writes a temp file of its own choosing
+  and returns the name in the reply. Nothing on that path emits `SingleFrameComplete`, which is
+  the only thing that ever set `image_saved_event`. Every exposure taken while guiding on this
+  fleet had been going to a temp file unnoticed, because the caller hung before it could look and
+  a hang reads as a slow exposure.
+- **`set_limit_frame` is refused whenever a guide session exists at all**, paused included:
+  *"Cannot set the frame limit ROI while calibrating or guiding."* `_is_guiding` accepts only
+  `Guiding` and `LostLock`, so a paused unit took the capture branch, which opened with
+  `set_limit_frame`; the refusal was caught and logged, and the method fell through without ever
+  calling `capture_single_frame`.
+- **The wait was unbounded.** Every hang traced that night ended on an event that nothing left
+  alive would set.
+
+**What was decided:** three changes, one per fault.
+
+The `save_image` reply is read rather than discarded: the file PHD2 chose is moved where the
+caller asked for it, `image_was_saved` is set, the waiter released and both imager flags ended.
+That is the guiding branch's equivalent of `SingleFrameComplete`, which it never had.
+
+The limit frame travels as a parameter of `capture_single_frame` -- which this connector already
+did at one call site and not the other. There is then no ROI to mutate, nothing for PHD2 to
+refuse, and nothing to restore afterwards, which is what makes the paused case work at all.
+
+`wait_for_image_saved` takes a timeout (`IMAGE_SAVE_TIMEOUT`, 300 s), and a capture that never
+started releases its waiter and drops `Exposing`/`Saving` through `_release_unstarted_exposure`
+rather than leaving them for whoever notices. This is the lesson #212 drew for abort, applied to
+the verb that starts rather than the one that stops: **a caught exception that strands a waiter
+is worse than an uncaught one.**
+
+**Implications:** the bounded wait means a fault on this path now surfaces as an error on one
+frame instead of a stalled run, and `do_expose`'s `finally` always gets to run -- so #219's
+one-run guard stops being a second, delayed symptom of any imager fault. The two acquisition-path
+tests in `test_limit_frame_guiding.py` pinned the mechanism rather than the outcome; their stated
+intent -- `use_set_limit_frame` alone decides, the `phd2.limit_frame` config plays no part -- is
+unchanged and still asserted, and only the wire form moved.
+
+**What this deliberately does not do:** it does not correct `_is_guiding`, which still reads a
+narrower set of states than "a session exists" (#224 owns that). It removes the dependency on
+that predicate for the exposure path rather than fixing the predicate.
+
+**Not yet validated against real PHD2.** Whether `capture_single_frame` succeeds during a full
+pause has never been observed, on any night, because the `set_limit_frame` refusal always aborted
+first. The change is pinned by unit tests; the on-sky confirmation is still owed.
 
 ## [2026-09-15] A retry is a fresh attempt, not a continuation of one marching sweep
 
@@ -1494,6 +1665,82 @@ venv and skips cleanly elsewhere. `requirements-dev.txt` declares pytest.
 add bench one-offs; the labcomp2 bench remains for what needs a live PHD2 or a
 real camera. This executes the unit-side half of the 2026-07-07 bench's
 TEST-MIGRATION plan; the common-side half lives in `src/common/tests/`.
+
+---
+
+## [2026-07-06] The fold mirror is inserted under a full PHD2 pause, after guiding settles
+
+**Why:** The exclusion region keeps guiding off stars the parked mirror covers, but
+not off the corridor it sweeps on the way in: for the ~30 s of stage travel the
+selected star can be transiently occulted. The two pre-existing orderings each cost
+something — mirror first leaves an unguided gap in which tracking slip is *frozen
+into* the lock position, while guide-first-then-insert risks losing the star mid
+travel. PHD2's stock `set_paused(full)` inverts that cost: the star, calibration and
+lock position all survive a pause (verified in `myframe.cpp` / `guider.cpp`), so the
+open-loop travel drift is pulled *back* to the lock on resume rather than frozen in.
+
+**What:** `_wait_for_fcu_v2_at_spec` (a passive wait) became
+`_fcu_v2_spec_handover`, which drives the sequence: wait for settle → `set_paused(true,
+"full")` → command the stage to SPEC → wait for at-SPEC → `set_paused(false)` → flip
+PreGuiding to Guiding. Ready-for-exposure now means *stage at SPEC ∧ guiding resumed*,
+with **no settle gate after resume** — the few-pixel pull-back decays into the science
+integration, and stage-at-SPEC is the earliest physically meaningful shutter time
+anyway. On stage fault or timeout guiding **stays paused** and the handover fails
+loudly: resuming with the mirror mid-field would guide on a half-occulted field. The
+`Resumed` event is handled, and `guide()` refuses outright when the exclusion
+rectangle is stale relative to its `depth`/`pad_px` knobs.
+
+**Implications:** Acquisition serializes where it used to overlap, costing ≈ the stage
+move (~30 s) per mirror-inserting acquisition — accepted, because the concurrency it
+replaces was a selection-timing race. **Operator-facing semantic change:** the handover
+thread now commands the stage itself, so a *manual* `start_guiding` on an fcu_v2 unit
+also inserts the mirror via the bracketed sequence (previously it waited passively and
+stranded PreGuiding on a 60 s timeout). Short exposures keep one noted cost: a larger
+fraction of their light is collected during the pull-back. Both fault paths and the
+happy path are covered by the labcomp2 bench suite (6/6); on-sky validation of the
+1–2 px/30 s drift assumption and the re-lock decay is still pending.
+
+---
+
+## [2026-07-03] Guiding excludes the fold-mirror region via `phd2.exclude_region` (guide-first, then insert mirror)
+
+**Why:** Guiding must lock *before* the FCU fold mirror is inserted: in the gap
+between mirror insertion and guiding lock, tracking can slip enough to move the
+fiber off its calibrated pixel, and with the mirror out the viable guide-star
+candidates (those passing PHD2's selection gates — unsaturated, SNR/mass minimums,
+HFD window — which MAST's strong coma confines to the low-coma center of the frame)
+sit exactly in the zone the mirror covers. The custom PHD2 `set_exclude_region` API
+(build `2.6.14dev1mastbuild4`, branch `eli/exclude-region` off upstream master)
+excludes a configured rectangle from guide-star auto-selection, so stars are
+selected as if the mirror were already in.
+
+**What:** `guide()` now applies the DB-persisted `phd2.exclude_region` section
+(`ExcludeRegionConfig` in common, `mode: off | fixed`, default **`off`** — the
+rectangle is per-unit measured geometry) before every guide RPC, mirroring the
+limit-frame set-or-reset discipline, via `set_exclude_region()` /
+`_apply_configured_exclude_region()`, dispatching on `mode` exactly as
+`start_guiding()` does for `phd2.limit_frame`:
+
+- `fixed` → `set_exclude_region(rect)` **then `deselect_star`** — the exclusion only
+  filters *auto-selection*, and a star already selected (left over from a previous
+  session) survives it; verified live against the mastbuild4 build (guide locked
+  inside the region without the deselect, outside it with). The rectangle is sent
+  through `ImagerRoi.verbatim()`: it is a measured shadow band plus a deliberate pad,
+  and the exclusion is a *selection* filter rather than a sensor readout crop, so no
+  camera alignment constraint applies and conditioning would only shift the placement
+  (the MAST_common#17 reasoning that put the limit frame on `verbatim`).
+- `off` → explicit reset (`roi: null`), tolerating "method not found" from older PHD2
+  builds (nothing to reset there); a *set* on an older build fails loudly. A stored
+  rectangle does not override the mode: "measured but not yet enabled" is the normal
+  per-unit state, so `mode` alone decides.
+
+**Implications:** No behavior change until ops measures the mirror shadow and sets
+the section to `fixed` in Mongo. The exclusion protects against the mirror's
+*destination*, not its ~30 s journey across the field — stars in the swept corridor
+are still transiently occulted — which is what the bracketed SPEC handover
+(2026-07-06 entry above) closes; the two ship together. Validated on the PHD2 camera
+simulator end-to-end (select → calibrate → guide → settle with the region honored);
+real-sky validation on a provisioned unit rig is still pending.
 
 ---
 
