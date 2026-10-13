@@ -426,7 +426,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             self.connect_equipment()
             # Inside the guard: its setter is a bare `call()`, so on a torn-down
             # connection it raises the cleanup's own error over the real one.
-            self._start_cooling_down()
+            # Cooler on only -- not `_start_cooling_down()`: this runs inside `Imager.__init__`,
+            # before the wrapper's `_backend` is assigned, and the cool-down watcher reads it
+            # (AttributeError on mast00, 2026-10-13). The wrapper's `startup()` starts the
+            # cool-down for a cooler that is on.
+            self.cooler_on = True
         except Exception as ex:
             # Not `self.connected = False`: that property's setter disconnects, which nulls
             # self.conn and makes the next call raise "no connection to PHD2 server" -- the

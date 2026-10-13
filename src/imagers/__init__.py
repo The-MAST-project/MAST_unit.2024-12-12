@@ -208,6 +208,11 @@ class Imager(ImagerInterface, SwitchedOutlet):
         """
         if self.is_active(ImagerActivities.CoolingDown):
             return
+        # Not before the backend exists: a backend that switches its cooler on during its own
+        # construction (inside `__init__`, before `_backend` is assigned) would start a watcher
+        # that reads a missing `_backend`. `startup()` starts the cool-down for it instead.
+        if getattr(self, "_backend", None) is None:
+            return
         self._cooling_reading = None
         self.start_activity(ImagerActivities.CoolingDown)
         threading.Thread(name="imager-cooldown", target=self.do_cool_down, daemon=True).start()

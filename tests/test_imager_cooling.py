@@ -178,6 +178,17 @@ class TestCoolingDown:
 
         assert not imager.is_active(ImagerActivities.CoolingDown)
 
+    def test_before_the_backend_exists_it_does_nothing(self):
+        """A backend switching its cooler on during its own construction runs inside
+        `Imager.__init__`, before `_backend` is assigned (mast00, 2026-10-13)."""
+        imager = _imager(FakeBackend())
+        del imager._backend
+
+        imager.start_cooling_down()
+
+        assert not imager.is_active(ImagerActivities.CoolingDown)
+        assert _NoThread.started == []
+
     def test_starting_it_twice_runs_one_watcher(self):
         imager = _imager(FakeBackend())
 
