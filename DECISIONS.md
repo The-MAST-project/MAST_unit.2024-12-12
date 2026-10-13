@@ -2,6 +2,34 @@
 
 ---
 
+## [2026-10-14] `Acquiring` is the acquisition's completion flag; cancel goes through `Acquirer.cancel()`
+
+**Why:** a caller of `start_acquisition_and_guiding` could not tell when the acquisition ended or
+whether it succeeded. `Acquiring` was raised on the worker thread after the endpoint had returned,
+cleared by whoever cancelled while the acquisition was still unwinding, and cleared by
+`do_acquire` itself before `post_process`; the outcome lived only on the `Acquisition` object.
+MAST_unit#326.
+
+**What:** the `expose` pattern from #212. `Acquirer._begin` sets `latest_acquisition` and raises
+`Acquiring` on the caller's thread, for every entry point (`launch_acquisition` for the endpoint,
+`run_acquisition` for the flux-metering session). The thread body `do_run_acquisition` records
+`failure` and `succeeded`, releases the folder, and only then ends the flag. Cancelling sets an
+event (`Acquirer.cancel()`, called by `stop_acquisition_and_guiding`), which `do_acquire` and
+`solve_and_correct` poll; `solve_and_correct` takes a `cancelled` predicate in place of
+`parent_activity`, and `SolvingGuider` passes "`Guiding` has ended". The endpoint declares
+`completion=UnitActivities.Acquiring` and returns the share folder; `FullUnitStatus.latest_acquisition`
+publishes the record (team decisions, 2026-10-13: publish the existing record rather than add a
+status mechanism, and make the flag honest rather than have callers poll the record).
+
+**Implications:** `unit/abort` settles only once the acquisition has unwound. With the guider
+handover, `Acquiring` covers the guiding session, as it did before; `succeeded` turns `True` at the
+handover, so a caller can see convergence while guiding runs. Products reach the share
+asynchronously and may still be arriving when the flag clears. A second concurrent acquisition is
+still not refused; that is endpoint admission's (#303). A refused handover still reads as success
+(#332), and an exception still leaves other state behind (#333).
+
+---
+
 ## [2026-10-13] Flux metering puts the folding mirror in after the acquisition, not before
 
 **Why:** the run moved the mirror to SPEC, then the acquisition took it out to solve on FCU v2 and

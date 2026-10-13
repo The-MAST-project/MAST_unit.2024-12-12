@@ -1,13 +1,15 @@
 import datetime
 import os
 from enum import IntEnum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from common import asi
 from common.corrections import Corrections
-from common.filer import Filer, MoveGuardian
+from common.filer import Filer, FilerTop, MoveGuardian
 from common.interfaces.solving import SolverId
 from common.mast_logging import get_logger
+from common.models.statuses import LatestAcquisition
 from common.paths import PathMaker
 from plotting import plot_acquisition_corrections, plot_phase_corrections
 
@@ -95,9 +97,33 @@ class Acquisition:
         self.skip_sky = skip_sky
         self.use_set_limit_frame = use_set_limit_frame
         self.solver_data: Any = None  # May be set by the solver, to remember something
-        #: Set by `Acquirer.run_acquisition` when the acquisition ends: None when it
-        #: reached tolerance, otherwise why it did not. `Acquiring` clears either way.
+        #: Set when the acquisition ends: None when it reached tolerance, otherwise why it
+        #: did not. `Acquiring` clears only after this and `succeeded` are recorded.
         self.failure: str | None = None
+        #: None until the outcome is known. True once converged, which with a guider handover
+        #: is while guiding still runs; False if it, or anything after it, failed.
+        self.succeeded: bool | None = None
+
+    @property
+    def share_folder(self) -> str:
+        """This acquisition's folder on the shared area, where its products end up.
+
+        Converted from a POSIX spelling: the filer's roots are stored that way, and the folder
+        comes from pathlib, spelled with backslashes on Windows.
+        """
+        shared = filer.change_top_to(FilerTop.Shared, Path(self.folder).as_posix())
+        if shared is None:
+            raise ValueError(f"acquisition folder '{self.folder}' is under none of the filer's roots")
+        return shared
+
+    def status(self) -> LatestAcquisition:
+        return LatestAcquisition(
+            folder=self.share_folder,
+            target_ra_j2000_hours=self.target_ra,
+            target_dec_j2000_degs=self.target_dec,
+            succeeded=self.succeeded,
+            failure=self.failure,
+        )
 
     def save_corrections(self, phase: str):
         if phase in self.corrections:

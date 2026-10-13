@@ -20,7 +20,6 @@ from PIL import Image
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from acquirer import Acquirer
-from acquisition import Acquisition
 from autofocusing import Autofocuser, AutofocusResult
 from calibration.calibrator import Calibrator
 from common import asi
@@ -306,7 +305,6 @@ class Unit(Component, OpmodeBase):
 
         self.spiral = SpiralSearch(self)
         self.flux_metering = FluxMeteringSession(self)
-        self.latest_acquisition: Acquisition | None = None
 
         self._initialized = True
         logger.info("unit: initialized")
@@ -743,6 +741,11 @@ class Unit(Component, OpmodeBase):
             focuser=report("focuser.status", self.focuser.status) if self.focuser else None,
             stage=report("stage.status", self.stage.status) if self.stage else None,
             guider=report("guider.status", self.guider.status) if self.guider else None,  # type: ignore
+            latest_acquisition=(
+                report("acquirer.latest_acquisition", self.acquirer.latest_acquisition.status)
+                if self.acquirer is not None and self.acquirer.latest_acquisition is not None
+                else None
+            ),
             # Through `report` like its neighbours: `has_run` is a plain attribute, but
             # `status()` walks the step list and a sick run must not cost the whole status.
             # None until a run has happened, so the field costs nothing on a unit that never
@@ -795,12 +798,16 @@ class Unit(Component, OpmodeBase):
         operation really stopped watches its flag clear in `status`, the same mechanism
         every `completion=<flag>` endpoint already publishes.
 
-        **The exposure run is the one exception, and on purpose.** It is cancelled through
-        `_expose_cancelled` rather than by clearing `UnitActivities.Exposing`, so that flag
-        goes on meaning "a run is in flight" until the thread has closed its exposure series
-        and stopped tracking. Clearing it here would open `expose`'s one-run-at-a-time guard
-        while the old thread was still unwinding, and a second run arriving in that window
-        overwrites the series the first is about to close (#212).
+        **The exposure run and the acquisition are the exceptions, and on purpose.** The
+        exposure run is cancelled through `_expose_cancelled` rather than by clearing
+        `UnitActivities.Exposing`, so that flag goes on meaning "a run is in flight" until
+        the thread has closed its exposure series and stopped tracking. Clearing it here
+        would open `expose`'s one-run-at-a-time guard while the old thread was still
+        unwinding, and a second run arriving in that window overwrites the series the first
+        is about to close (#212). The acquisition is cancelled through `Acquirer.cancel()`
+        (by `stop_acquisition_and_guiding`, below), so `Acquiring` stays raised until it has
+        unwound and recorded its outcome, and a caller waiting on it can then read that
+        outcome (#326).
 
         Each sub-abort is attempted independently, and a failure in one is collected
         rather than allowed to skip the others.
@@ -1733,20 +1740,23 @@ class Unit(Component, OpmodeBase):
             #
             # At this point we have autofocused and can start acquisition
             #
-            self.acquirer.endpoint_start_acquisition_and_guiding(
+            started = self.acquirer.endpoint_start_acquisition_and_guiding(
                 ra_j2000_hours=assignment.plan.target.ra_hours,
                 dec_j2000_degs=assignment.plan.target.dec_degrees,
             )
 
-            if assignment.plan.ulid is not None and self.acquirer.latest_acquisition is not None:
+            if assignment.plan.ulid is not None and not isinstance(started, CanonicalResponse):
                 Notifier().assignment_notification(
                     AssignmentNotification(
                         assignment_id=assignment.plan.ulid,
                         state="in-progress",
                         # Relative to the shared root, not the absolute ram path: the
                         # controller symlinks this, and its shared root is spelled
-                        # differently from ours. MAST_spec#39.
-                        shared_top=os.path.relpath(self.acquirer.latest_acquisition.folder, filer.shared.root),
+                        # differently from ours. MAST_spec#39. Measured from the share
+                        # folder the endpoint returns: the ram folder is on another drive
+                        # on Windows, where relpath raises.
+                        # POSIX-spelled: the controller joins it onto a Linux path.
+                        shared_top=Path(os.path.relpath(started, filer.shared.root)).as_posix(),
                         shared_subpath="acquisition",
                     )
                 )

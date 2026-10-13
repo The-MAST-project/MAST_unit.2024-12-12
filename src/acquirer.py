@@ -1,6 +1,6 @@
 import os
 import time
-from threading import Thread
+from threading import Event, Thread
 from typing import Annotated
 
 import astropy.units as u
@@ -10,7 +10,7 @@ from fastapi import Query
 from acquisition import Acquisition, ApproachMode
 from common import asi
 from common.activities import UnitActivities
-from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from common.canonical import CanonicalResponse
 from common.config.rois import FcuVersion, SkyRoiConfig
 from common.endpoints import Tier, endpoint
 from common.filer import Filer, MoveGuardian
@@ -63,13 +63,39 @@ class Acquirer:
         self.unit = unit
         self.folder: str | None = None
         self.latest_acquisition: Acquisition | None = None
+        self._cancel = Event()
 
     def missing_components(self) -> list[str]:
         """The `REQUIRED_COMPONENTS` this unit did not build, in declaration order."""
         return [name for name in REQUIRED_COMPONENTS if getattr(self.unit, name) is None]
 
-    def run_acquisition(self, acquisition: Acquisition):
-        """Thread entry point for an acquisition: run it, then always release its folder.
+    def _begin(self, acquisition: Acquisition) -> None:
+        """Make `acquisition` the current one and raise `Acquiring`, before anything runs.
+
+        On the caller's thread, so a status read just after the request returns already shows
+        this acquisition as running (MAST_unit#316, #326).
+        """
+        self._cancel.clear()
+        self.latest_acquisition = acquisition
+        self.unit.start_activity(UnitActivities.Acquiring)
+
+    def launch_acquisition(self, acquisition: Acquisition) -> str:
+        """Start `acquisition` on its own thread. Returns its folder on the shared area."""
+        self._begin(acquisition)
+        Thread(name="acquisition", target=self.do_run_acquisition, args=[acquisition]).start()
+        return acquisition.share_folder
+
+    def run_acquisition(self, acquisition: Acquisition) -> None:
+        """Run `acquisition` on the caller's thread, returning when it has ended."""
+        self._begin(acquisition)
+        self.do_run_acquisition(acquisition)
+
+    def cancel(self) -> None:
+        """Ask the running acquisition to stop. `Acquiring` clears once it has unwound."""
+        self._cancel.set()
+
+    def do_run_acquisition(self, acquisition: Acquisition) -> None:
+        """Run an acquisition, record how it ended, release its folder, then end `Acquiring`.
 
         do_acquire() returns early in several places -- mount not connected, a phase that
         never reached tolerance -- and can raise. None of those paths reach post_process(),
@@ -86,24 +112,35 @@ class Acquirer:
             acquisition.failure = self.do_acquire(acquisition)
         except Exception as ex:
             logger.exception(f"{function_name()}: acquisition failed")
-            acquisition.failure = f"the acquisition raised: {ex!r}"
+            # A cancel stops the exposure a solve is waiting on, and the solve can then raise
+            # on the frame that never came. Not after convergence: stopping guiding is how a
+            # guided acquisition normally ends, and it cancels too.
+            cancelled = self._cancelled() and acquisition.succeeded is not True
+            acquisition.failure = (
+                f"{ACQUISITION_CANCELLED}, then raised: {ex!r}" if cancelled else f"the acquisition raised: {ex!r}"
+            )
         finally:
-            # Removed once every protected artifact has reached the shared area, and never
-            # before -- so a frame that failed to move keeps its folder instead of being
-            # deleted with it.
-            MoveGuardian().release_folder(acquisition.folder, logger=logger)
+            acquisition.succeeded = acquisition.failure is None
+            try:
+                # Removed once every protected artifact has reached the shared area, and never
+                # before -- so a frame that failed to move keeps its folder instead of being
+                # deleted with it.
+                MoveGuardian().release_folder(acquisition.folder, logger=logger)
+            finally:
+                self.unit.end_activity(UnitActivities.Acquiring)
 
     def _cancelled(self) -> bool:
-        """True once `Acquiring` has been cleared -- the protocol's cancel signal.
+        """True once `cancel()` has been called for the running acquisition.
 
-        Clearing the flag is how everything here is stopped, and `solve_and_correct`
-        already polls it through `parent_activity`, so a cancellation landing during a
-        SOLVE was always honoured. What it was not honoured during is everything between
+        A signal of its own rather than clearing `Acquiring`, so the flag goes on meaning "an
+        acquisition is running" until it has unwound -- the same split `expose` makes (#212).
+        `solve_and_correct` polls it through `cancelled`, so a cancellation landing during a
+        SOLVE is honored. What it was not honoured during is everything between
         the solves: the stage moves, the `is_moving` spins and the flat five-second
         settles. That is most of an acquisition's wall-clock time, and the likeliest
         moment for an operator to give up on one.
         """
-        return not self.unit.is_active(UnitActivities.Acquiring)
+        return self._cancel.is_set()
 
     def _cancellable_sleep(self, seconds: float, poll: float = 0.2) -> bool:
         """Sleep, returning False the moment the acquisition is cancelled."""
@@ -130,10 +167,10 @@ class Acquirer:
         A cancelled acquisition must leave the unit in the same state as one that could
         not reach tolerance -- tracking stopped, the exposure series closed, and no
         activity flag left set. `Positioning` in particular: `do_acquire` raises it around
-        the stage moves, which is precisely where a cancellation now lands.
+        the stage moves, which is precisely where a cancellation now lands. `Acquiring` is
+        ended by `do_run_acquisition`, once the outcome is recorded.
         """
         logger.info(f"{op}: acquisition cancelled; unwinding")
-        self.unit.end_activity(UnitActivities.Acquiring)
         if self.unit.is_active(UnitActivities.Positioning):
             self.unit.end_activity(UnitActivities.Positioning)
         try:
@@ -170,8 +207,6 @@ class Acquirer:
             self.unit.errors.append(msg)
             return msg
 
-        self.latest_acquisition = acquisition
-
         # Bound ONCE, here, and used for the whole acquisition. The configuration is live
         # now, so re-reading it per step could shift values under a run in progress; an
         # operation uses what it started with. Within one configuration generation this is
@@ -194,7 +229,6 @@ class Acquirer:
             if st.ra_j2000_hours is None or st.dec_j2000_degs is None:
                 msg = "cannot get coordinates from mount (mount not connected)"
                 self.unit.errors.append(msg)
-                self.unit.end_activity(UnitActivities.Acquiring)
                 return msg
 
             acquisition.target_ra = st.ra_j2000_hours
@@ -212,8 +246,6 @@ class Acquirer:
             ra=Angle(target_ra_j2000_hours, unit="hour"),
             dec=Angle(target_dec_j2000_degs, unit="deg"),
         )
-
-        self.unit.start_activity(UnitActivities.Acquiring)
 
         if not self.unit.required_imager.connected:
             self.unit.required_imager.connected = True
@@ -237,7 +269,7 @@ class Acquirer:
             self.unit.required_stage.move_to_preset(StagePresetPosition.Sky)
 
             if not self._await_stage():
-                self._abandon(op)
+                self._abandon(op, acquisition_exposure_series)
                 return ACQUISITION_CANCELLED
             self.unit.required_mount.wait_until_settled(SettleMode.SLEW)
 
@@ -294,7 +326,7 @@ class Acquirer:
                 make_corrections=acquisition.make_corrections,
                 imager_settings=sky_settings,
                 solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
-                parent_activity=UnitActivities.Acquiring,
+                cancelled=self._cancelled,
                 phase="sky",
                 max_tries=tries,
             )
@@ -303,7 +335,6 @@ class Acquirer:
 
             if not achieved_tolerances:
                 failure = self._phase_failure(phase, tries)
-                self.unit.end_activity(UnitActivities.Acquiring)
                 self.unit.required_mount.stop_tracking()
                 self.unit.required_imager.end_exposure_series(acquisition_exposure_series)
                 return failure
@@ -381,7 +412,7 @@ class Acquirer:
             make_corrections=acquisition.make_corrections,
             imager_settings=spec_imager_settings,
             solving_tolerance=SolvingTolerance(ra_tolerance, dec_tolerance),
-            parent_activity=UnitActivities.Acquiring,
+            cancelled=self._cancelled,
             phase=phase,
             max_tries=tries,
         )
@@ -389,7 +420,6 @@ class Acquirer:
         logger.info(f"{op}: phase '{phase.upper()}' {achieved_tolerances=}")
         if not achieved_tolerances:
             failure = self._phase_failure(phase, tries)
-            self.unit.end_activity(UnitActivities.Acquiring)
             self.unit.required_mount.stop_tracking()
             self.unit.required_imager.end_exposure_series(acquisition_exposure_series)
             return failure
@@ -425,27 +455,35 @@ class Acquirer:
             self._abandon(op)
             return ACQUISITION_CANCELLED
 
-        if self.latest_acquisition.handover_automatically_to_guider:
+        acquisition.succeeded = True
+
+        if acquisition.handover_automatically_to_guider:
             lines.append("starting PHD2 guiding")
             boxed_log(logger, lines)
-            self.unit.required_guider.start_guiding()
-
-            while self.unit.is_active(UnitActivities.Guiding):
-                time.sleep(1)
-
-            # Guiding was stopped
-            self.unit.end_activity(UnitActivities.Acquiring)
-            self.unit.required_mount.stop_tracking()
+            self._guide_until_stopped()
         else:
             lines.append("acquisition tuning: guiding must be started manually via /start_guiding")
             boxed_log(logger, lines)
             # End the acquisition but KEEP the mount tracking: the operator fine-tunes the
             # pointing with external tools, then starts guiding via the /start_guiding endpoint.
-            self.unit.end_activity(UnitActivities.Acquiring)
 
         if self.unit.required_acquirer.latest_acquisition is not None:
             self.unit.required_acquirer.latest_acquisition.post_process()
         return None
+
+    def _guide_until_stopped(self) -> None:
+        """Hand over to the guider and wait, on this thread, until guiding is stopped."""
+        self.unit.required_guider.start_guiding()
+
+        while self.unit.is_active(UnitActivities.Guiding):
+            if self._cancelled():
+                # The stop landed during the handover, before guiding was raised, so it found
+                # nothing to stop; stop the guiding that started after it.
+                self.unit.required_guider.stop_acquisition_and_guiding()
+                break
+            time.sleep(1)
+
+        self.unit.required_mount.stop_tracking()
 
     def start_acquisition_and_guiding_for_assignment(self, assignment: UnitAssignment):
         """Acquire and hand over to guiding for a controller-issued assignment.
@@ -494,7 +532,7 @@ class Acquirer:
             # False (manual acquisition-tuning), which would stall the assignment at SPEC.
             handover_automatically_to_guider=True,
         )
-        Thread(name="acquisition", target=self.run_acquisition, args=[acquisition]).start()
+        self.launch_acquisition(acquisition)
 
         """
         This acquisition is part of an assignment, tell the controller where
@@ -627,8 +665,7 @@ class Acquirer:
         """Check the request and build its `Acquisition`, or return the refusal.
 
         Split from the endpoint so a caller already on its own thread can run the
-        acquisition with `run_acquisition` and know when it has ended, rather than start it
-        on another thread and infer the end from `Acquiring` (MAST_unit#316).
+        acquisition with `run_acquisition`, which returns when it has ended (MAST_unit#316).
         """
         op = function_name()
 
@@ -683,7 +720,7 @@ class Acquirer:
             handover_automatically_to_guider=handover_automatically_to_guider,
         )
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, completion=UnitActivities.Acquiring)
     def endpoint_start_acquisition_and_guiding(
         self,
         seconds: float | None = 5.0,
@@ -773,6 +810,12 @@ class Acquirer:
         :param skip_sky: Skip the 'sky' phase
         :param handover_automatically_to_guider: After acquisition, start PHD2 guiding automatically
         :return: The folder path on the MAST-SHARE with the acquisition's products
+
+        **Completion:** `Acquiring` is raised before this returns and clears once the
+        acquisition has ended -- with `handover_automatically_to_guider`, once guiding has
+        been stopped. Its outcome is then in the unit status's `latest_acquisition`, whose
+        `folder` is the one returned here. The products reach that folder asynchronously, so
+        they may still be arriving when the flag clears.
         """
 
         prepared = self.prepare_acquisition(
@@ -791,6 +834,4 @@ class Acquirer:
         )
         if isinstance(prepared, CanonicalResponse):
             return prepared
-        Thread(name="acquisition", target=self.run_acquisition, args=[prepared]).start()
-
-        return CanonicalResponse_Ok
+        return self.launch_acquisition(prepared)

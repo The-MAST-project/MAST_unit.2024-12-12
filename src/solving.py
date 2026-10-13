@@ -1,6 +1,7 @@
 import datetime
 import json
 import os.path
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -146,7 +147,7 @@ class Solver(SolverInterface):
         imager_settings: ImagerSettings,
         solving_tolerance: SolvingTolerance,
         phase: str,
-        parent_activity: UnitActivities | None = None,
+        cancelled: Callable[[], bool] | None = None,
         max_tries: int = 3,
     ) -> bool:
         """
@@ -162,8 +163,7 @@ class Solver(SolverInterface):
         :param solver_id:
         :param imager_settings: Imager settings for the exposure
         :param solving_tolerance: How close do we need to be to stop trying
-        :param parent_activity: If the parent_activity (e.g. UnitActivities.Acquiring, UnitActivities.Guiding)
-               is stopped, this function stops as well
+        :param cancelled: Polled between tries; once it returns True, this function stops as well
         :param max_tries: How many times to try to get withing the solving_tolerance
         :param phase: One of ['sky', 'spec', 'guiding']
 
@@ -177,9 +177,7 @@ class Solver(SolverInterface):
             op += f":{phase=}:{approach_mode=}"
 
         def was_cancelled() -> bool:
-            return not self.unit.is_active(UnitActivities.Solving) or (
-                parent_activity is not None and not self.unit.is_active(parent_activity)
-            )
+            return not self.unit.is_active(UnitActivities.Solving) or (cancelled is not None and cancelled())
 
         self.unit.start_activity(UnitActivities.Solving)
 
@@ -255,6 +253,7 @@ class Solver(SolverInterface):
 
         for try_number in range(max_tries):
             if was_cancelled():
+                self.unit.end_activity(UnitActivities.Solving)
                 return False
 
             op = (
