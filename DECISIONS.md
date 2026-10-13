@@ -2,6 +2,44 @@
 
 ---
 
+## [2026-10-13] Flux metering puts the folding mirror in after the acquisition, not before
+
+**Why:** the run moved the mirror to SPEC, then the acquisition took it out to solve on FCU v2 and
+put it back: two 42 s traverses that undid each other on every run (mast03, 2026-10-12, runs 0004
+and 0008). MAST_unit#312.
+
+**What:** `do_acquire_and_find_max_flux` opens the meter, acquires, then calls
+`_position_folding_mirror`. After an acquisition the mirror is normally already at SPEC, so that
+call returns at once; if the acquisition left it elsewhere, it is moved and waited on by
+position as before. A `skip_acquisition` run positions the mirror first, as before.
+
+**Implications:** a stage that cannot reach SPEC is now found after the acquisition rather than
+before it. The acquirer's own stage waits do not confirm arrival; that, and refusing up front for
+an unhomed stage or an out-of-travel preset, stay with MAST_unit#312.
+
+---
+
+## [2026-10-13] Flux metering runs its acquisition itself and reads how it ended
+
+**Why:** `FluxMeteringSession._acquire` started the acquisition through the endpoint, which spawns
+a thread and returns, then waited while `Acquiring` was set. The thread raises the flag a moment
+after it starts, so a first poll inside that window read "finished" and the spiral ran during the
+acquisition (mast03, 2026-10-12, run 0005). The flag also clears on every exit, so a phase that
+missed tolerance read as success. MAST_unit#316.
+
+**What:** `Acquirer.prepare_acquisition` holds the endpoint's checks and builds the `Acquisition`
+(or returns the refusal); the endpoint is now prepare-then-thread. `do_acquire` returns None on
+success or the reason it did not acquire, and `run_acquisition` records it on
+`Acquisition.failure`, including a raised exception. The flux session calls `prepare_acquisition`
+and `run_acquisition` on its own thread, so the call returns when the acquisition ends, and fails
+the run with `acquisition.failure` when it is set. `ACQUISITION_TIMEOUT_SECONDS` is gone: the
+acquisition is bounded by its own tries, and an abort clears `Acquiring`, which it honors.
+
+**Implications:** the HTTP endpoint behaves as before. An outside caller still cannot see
+`failure`; exposing it in status is left for the flux orchestrator work.
+
+---
+
 ## [2026-10-05] `PartlyOpen` means stopped short only once it has held for 1.5 s
 
 **Refines** the 2026-09-22 entry "`Moving` is the only cover state that means motion": its

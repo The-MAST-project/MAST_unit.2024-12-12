@@ -95,6 +95,9 @@ class Acquisition:
         self.skip_sky = skip_sky
         self.use_set_limit_frame = use_set_limit_frame
         self.solver_data: Any = None  # May be set by the solver, to remember something
+        #: Set by `Acquirer.run_acquisition` when the acquisition ends: None when it
+        #: reached tolerance, otherwise why it did not. `Acquiring` clears either way.
+        self.failure: str | None = None
 
     def save_corrections(self, phase: str):
         if phase in self.corrections:
