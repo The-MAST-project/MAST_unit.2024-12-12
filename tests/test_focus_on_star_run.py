@@ -232,3 +232,24 @@ def test_abort_clears_the_flag():
     unit.start_activity(UnitActivities.FocusingOnStar)
     FocusOnStarSession(unit).abort()
     assert not unit.is_active(UnitActivities.FocusingOnStar)
+
+
+def test_the_acquisition_uses_its_own_try_limit_not_the_units(monkeypatch):
+    """`acquisition_tries`, not `acquisition.tries` (20 on mast00, ~7 min to give up)."""
+    monkeypatch.setattr(
+        session_mod,
+        "Acquisition",
+        lambda **kw: SimpleNamespace(folder="f", save_corrections=lambda phase: None, **kw),
+    )
+    monkeypatch.setattr(session_mod, "MoveGuardian", lambda: SimpleNamespace(release_folder=lambda *a, **k: None))
+    unit = FakeUnit()
+    unit.unit_conf.solving = SimpleNamespace(method="AstrometryDotNet")
+    unit.unit_conf.acquisition = SimpleNamespace(tries=20)
+    unit.required_solver = MagicMock(name="solver")
+    unit.required_solver.solve_and_correct.return_value = True
+    ls = CalibrationConfig().settings.focus_on_star.model_copy(update={"acquisition_tries": 4})
+    star = SimpleNamespace(ra_deg=228.67, dec_deg=32.27)
+
+    assert FocusOnStarRun(unit, session_mod.FocusOnStarStatus())._acquire(star, ls) is True
+
+    assert unit.required_solver.solve_and_correct.call_args.kwargs["max_tries"] == 4
