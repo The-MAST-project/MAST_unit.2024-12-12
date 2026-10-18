@@ -35,6 +35,7 @@ from common.activities import (
 from common.api import ControllerApi
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
+from common.config.calibration import FocusOnStarSettings
 from common.config.rois import FcuVersion
 from common.config.unit import UnitConfig
 from common.const import Const
@@ -64,6 +65,7 @@ from covers import Covers
 from expose_params import MAX_OFFSET_ARCSEC, MAX_OFFSET_DEGREES, resolve_exposure_roi, resolve_offsets
 from flux_metering import correlate
 from flux_metering.session import FluxMeteringParams, FluxMeteringSession, parse_target
+from focus_on_star.session import FocusOnStarParams, FocusOnStarSession
 from focuser import Focuser
 from imagers import Imager
 from mount import Mount, SettleMode
@@ -116,6 +118,7 @@ _ABORTABLE_WORK = (
     UnitActivities.Dancing,
     UnitActivities.Exposing,
     UnitActivities.FluxMetering,
+    UnitActivities.FocusingOnStar,
 )
 
 
@@ -306,6 +309,7 @@ class Unit(Component, OpmodeBase):
 
         self.spiral = SpiralSearch(self)
         self.flux_metering = FluxMeteringSession(self)
+        self.focus_on_star = FocusOnStarSession(self)
         self.latest_acquisition: Acquisition | None = None
 
         self._initialized = True
@@ -844,6 +848,11 @@ class Unit(Component, OpmodeBase):
         # exposure, and `abort` is the one verb that has to answer promptly.
         if self.flux_metering.is_active:
             self.flux_metering.abort()
+
+        # Clears `FocusingOnStar`; the run notices at its next wait and unwinds -- the imager
+        # abort below releases a frame in progress.
+        if self.is_active(UnitActivities.FocusingOnStar):
+            attempt("focus_on_star", self.focus_on_star.abort)
 
         if self.guider:
             attempt("guider", self.guider.abort)
@@ -2075,6 +2084,112 @@ class Unit(Component, OpmodeBase):
         """
         return self.flux_metering.status()
 
+    @endpoint(tier=Tier.OPERATION, completion=UnitActivities.FocusingOnStar)
+    def endpoint_focus_on_star(
+        self,
+        zenith: Annotated[
+            bool,
+            Query(description="Search around the zenith. Set false to use `ra_j2000_hours`/`dec_j2000_degs`."),
+        ] = True,
+        ra_j2000_hours: Annotated[
+            str | float | None,
+            Query(
+                pattern=RA_PATTERN,
+                description=(
+                    "### Right Ascension (J2000) in either:\n"
+                    "- decimal hours (e.g., `12.5`) or\n"
+                    "- sexagesimal format (e.g., `12:30:45.123`). \n"
+                    "- Decimal range: `0 <= RA < 24`.\n"
+                    "Only with `zenith=false`. If neither RA nor Dec is supplied, taken from telescope"
+                ),
+            ),
+        ] = None,
+        dec_j2000_degs: Annotated[
+            str | float | None,
+            Query(
+                pattern=DEC_PATTERN,
+                description=(
+                    "### Declination (J2000) in either:\n"
+                    "- decimal degrees (e.g., `-45.5`) or\n"
+                    "- sexagesimal format (e.g., `-45:30:00.123`). \n"
+                    "- Decimal range: `-90 <= DEC <= 90`.\n"
+                    "Only with `zenith=false`. If neither RA nor Dec is supplied, taken from telescope"
+                ),
+            ),
+        ] = None,
+        fov_percent: Annotated[
+            float | None,
+            Query(
+                gt=0,
+                le=100,
+                description=(
+                    "Width and height of the measured box, as a **linear** percentage of the frame's, "
+                    "centred on the fibre pixel (10 -> about 829 x 564 px). Default from the configuration."
+                ),
+            ),
+        ] = None,
+        star_magnitude: Annotated[
+            float | None,
+            Query(
+                description=(
+                    "Gaia **G** magnitude limit: the star chosen is the brightest one **no brighter** than "
+                    "this. Default from the configuration."
+                ),
+            ),
+        ] = None,
+        steps: Annotated[
+            int | None,
+            Query(ge=3, description="Focus images in the sweep; must be odd. Default from the configuration."),
+        ] = None,
+        ticks_per_step: Annotated[
+            int | None,
+            Query(gt=0, description="Focuser ticks between images. Default from the configuration."),
+        ] = None,
+    ):
+        """
+        Refines focus on **one isolated star at the fibre pixel**, after `/calibrate/focuser`
+        has brought the unit near focus.<br>
+        <br>
+        The routine **chooses the star**: from the GAIA DR3 catalog, near the sky position, the
+        brightest star no brighter than `star_magnitude` with no brighter star anywhere in the
+        measured box. It is acquired onto the fibre pixel the way acquisition's `spec` phase
+        does it -- but the stage is not moved to SPEC and guiding does not start. Then `steps`
+        frames, `ticks_per_step` apart and centred on the current focuser position, measure the
+        star's half-flux diameter inside the box.<br>
+        <br>
+        Solved: the focuser is left at best focus. Not solved: it is returned to where it was.
+        Nothing is written to the configuration database. Answers at once; watch
+        `focus_on_star_status`, and `unit/abort` stops it.
+        """
+        try:
+            ra_decimal, dec_decimal = parse_target(ra_j2000_hours, dec_j2000_degs)
+        except ValueError as ex:
+            return CanonicalResponse(errors=[f"{function_name()}: {ex}"])
+
+        cal = self.unit_conf.calibration if self.unit_conf is not None else None
+        defaults = cal.settings.focus_on_star if cal is not None else FocusOnStarSettings()
+        params = FocusOnStarParams(
+            zenith=zenith,
+            ra_j2000_hours=ra_decimal,
+            dec_j2000_degs=dec_decimal,
+            fov_percent=defaults.fov_percent if fov_percent is None else fov_percent,
+            star_magnitude=defaults.star_magnitude if star_magnitude is None else star_magnitude,
+            steps=defaults.steps if steps is None else steps,
+            ticks_per_step=defaults.ticks_per_step if ticks_per_step is None else ticks_per_step,
+        )
+        outcome = self.focus_on_star.start(params)
+        if isinstance(outcome, str):
+            return CanonicalResponse(errors=[f"{function_name()}: {outcome}"])
+        return CanonicalResponse_Ok
+
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
+    def endpoint_focus_on_star_status(self):
+        """
+        Progress of the current (or last) `focus_on_star` run: phase, the star chosen, the
+        measured box, the focuser positions, the V-curve analysis and how the run ended.
+        """
+        return self.focus_on_star.status()
+
     @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
     def endpoint_flux_metering_runs(self):
         """
@@ -2322,6 +2437,14 @@ class Unit(Component, OpmodeBase):
             base_path + "/spiral_correlate_steps",
             endpoint=self.endpoint_spiral_correlate_steps,
             methods=["PUT"],
+        )
+
+        add_api_route(router, base_path + "/focus_on_star", endpoint=self.endpoint_focus_on_star, methods=["PUT"])
+        add_api_route(
+            router,
+            base_path + "/focus_on_star_status",
+            endpoint=self.endpoint_focus_on_star_status,
+            methods=["GET"],
         )
 
         return router

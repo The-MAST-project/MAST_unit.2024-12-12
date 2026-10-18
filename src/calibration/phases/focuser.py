@@ -79,6 +79,12 @@ class FocuserMoveError(Exception):
 class FocuserCalibrator:
     """Drives the HFD focus calibration loop on a live unit."""
 
+    #: The flags whose clearing stops the loop (see :meth:`_still_calibrating`).  A class
+    #: attribute so a run built on these internals -- focus_on_star -- aborts on its own
+    #: flag, and every wait inherited from here (`_move_focuser`, `_sweep`, `_goto`)
+    #: honours it without being overridden.
+    RUN_ACTIVITIES: tuple[UnitActivities, ...] = (UnitActivities.CalibratingFocus, UnitActivities.Calibrating)
+
     def __init__(self, unit: Unit):
         self.unit = unit
         self.errors: list[str] = []
@@ -729,7 +735,7 @@ class FocuserCalibrator:
 
         TODO(safety): also return False when the unit becomes unsafe, and stow.
         """
-        return self.unit.is_active(UnitActivities.CalibratingFocus) or self.unit.is_active(UnitActivities.Calibrating)
+        return any(self.unit.is_active(flag) for flag in self.RUN_ACTIVITIES)
 
     def _log_error(self, message: str):
         logger.error(message)

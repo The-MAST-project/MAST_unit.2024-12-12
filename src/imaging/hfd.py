@@ -71,6 +71,51 @@ def _disk_crop_box(shape, center, radius, pad, box_size):
     return x0, x1, y0, y1
 
 
+def _fov_crop_box(shape, fov_box, pad):
+    """Pixel box to crop to for an explicit field-of-view box, padded by ``pad``.
+
+    The counterpart of :func:`_disk_crop_box` for ``box=`` callers (focus_on_star),
+    with one deliberate difference: it NEVER returns ``None``.  The disk crop falls
+    back to the whole frame when the crop would be tiny or save nothing, which is
+    harmless there because the disk filter still applies.  Here the box IS the
+    measurement -- one star at the fibre pixel, with brighter ones excluded only by
+    being outside it -- so a fallback would let the whole frame in.
+
+    ``pad`` keeps the stamps of stars just inside the box edge whole, exactly as in
+    the disk crop: background and detection see the padded region, but only stars
+    whose centroid lies inside the unpadded box are kept (:func:`_box_keep`).
+    """
+    ny, nx = shape
+    x0, x1, y0, y1 = fov_box
+    return (
+        max(0, int(np.floor(x0 - pad))),
+        min(nx, int(np.ceil(x1 + pad))),
+        max(0, int(np.floor(y0 - pad))),
+        min(ny, int(np.ceil(y1 + pad))),
+    )
+
+
+def _shift_box(fov_box, crop):
+    """Express ``fov_box`` in the cropped frame's coordinates."""
+    x0, x1, y0, y1 = fov_box
+    cx0, _, cy0, _ = crop
+    return (x0 - cx0, x1 - cx0, y0 - cy0, y1 - cy0)
+
+
+def _box_keep(x, y, fov_box):
+    """Boolean mask of the stars whose centroid lies inside ``(x0, x1, y0, y1)``."""
+    x0, x1, y0, y1 = fov_box
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    return (x >= x0) & (x < x1) & (y >= y0) & (y < y1)
+
+
+def _box_bg_size(crop, box_size):
+    """``Background2D`` box size that still fits a small crop several times over."""
+    x0, x1, y0, y1 = crop
+    return int(min(box_size, max(16, min(x1 - x0, y1 - y0) // 4)))
+
+
 def _apply_crop(data, box):
     """Crop ``data`` to ``box``; ``None`` box returns the array unchanged."""
     if box is None:
@@ -287,24 +332,39 @@ def frame_hfd(
     #               unit's optical-center calibration) instead of near_axis_frac.
     min_area=4,
     max_area=1e5,
+    box=None,  # (x0, x1, y0, y1) in THIS image's pixels: keep only stars whose
+    #            centroid is inside it; overrides center/radius/near_axis_frac.
 ) -> tuple[float, int]:
     """Median HFD of the (near-axis) stars in a focus image.
 
     Stars are restricted to the low-coma zone: the optical-center disk
     ``(center, radius)`` when the unit is calibrated, else ``near_axis_frac`` of
-    the field about the geometric center (see :func:`_low_coma_keep`).  Returns
+    the field about the geometric center (see :func:`_low_coma_keep`) -- or, when
+    ``box`` is given, to that rectangle.  Returns
     ``(hfd_median, n_stars)``; ``(nan, 0)`` when no usable star is found -- real
     focus sweeps routinely have very few or zero stars in the small ROI, so the
     caller marks such a sample invalid rather than failing the run.
     """
     data = _load(image)
+    if box is not None:
+        crop = _fov_crop_box(data.shape, box, r_max + stamp_pad)
+        data = _apply_crop(data, crop)
+        inner = _shift_box(box, crop)
+        data_sub = _bg_subtract(data, _box_bg_size(crop, box_size))
+        x, y, smaj = _detect(data_sub, nsigma, npixels, min_area, max_area)
+        keep = _box_keep(x, y, inner)
+        stars = list(zip(x[keep], y[keep], smaj[keep], strict=True))
+        hfds = _measure_hfds_at(data, data_sub, stars, r_factor, r_min, r_max, stamp_pad, k_thresh, max_value)
+        if len(hfds) < min_stars:
+            return float("nan"), 0
+        return float(np.median(hfds)), len(hfds)
     # Crop to the low-coma disk BEFORE background + detection -- they are the
     # expensive steps and only stars inside the disk can contribute.  Everything
     # below then works in the cropped frame; only aggregates are returned, so no
     # coordinate has to be mapped back.
-    box = _disk_crop_box(data.shape, center, radius, r_max + stamp_pad, box_size)
-    data = _apply_crop(data, box)
-    center = _shift_center(center, box)
+    crop = _disk_crop_box(data.shape, center, radius, r_max + stamp_pad, box_size)
+    data = _apply_crop(data, crop)
+    center = _shift_center(center, crop)
     ny, nx = data.shape
     data_sub = _bg_subtract(data, box_size)
     x, y, smaj = _detect(data_sub, nsigma, npixels, min_area, max_area)
@@ -337,6 +397,8 @@ def measure_sweep_hfd(
     max_area=1e5,
     match_tol=3.0,
     min_frac=0.6,
+    box=None,  # (x0, x1, y0, y1) in the sweep's pixels: keep only stars whose
+    #            centroid is inside it; overrides center/radius/near_axis_frac.
 ) -> tuple[list[tuple[float, int]], int]:
     """Joint HFD over a focus sweep using a CONSISTENT star set.
 
@@ -347,20 +409,33 @@ def measure_sweep_hfd(
     and measure HFD at those fixed positions in every frame -- giving the clean,
     near-monotonic curve the external (catalog-matched) analyzer produces.
 
+    ``box`` restricts the measurement to a rectangle (focus_on_star's field of
+    view) and, unlike the low-coma disk, is never widened to the whole frame.
+
     Returns ``(per_frame, n_consistent)``; ``per_frame[i] = (hfd_median, n_used)``
     aligned with ``images[i]``.
     """
     loaded = [_load(im) for im in images]
-    # One box for the whole sweep, computed from the first frame: the frames
+    # One crop for the whole sweep, computed from the first frame: the frames
     # share pointing and shape, and cross-matching below relies on a star sitting
-    # at the SAME pixel in every frame -- a per-frame box could shift that.
-    box = _disk_crop_box(loaded[0].shape, center, radius, r_max + stamp_pad, box_size)
-    loaded = [_apply_crop(d, box) for d in loaded]
-    center = _shift_center(center, box)
-    subs = [_bg_subtract(d, box_size) for d in loaded]
+    # at the SAME pixel in every frame -- a per-frame crop could shift that.
+    if box is not None:
+        crop = _fov_crop_box(loaded[0].shape, box, r_max + stamp_pad)
+        inner = _shift_box(box, crop)
+        bg_box_size = _box_bg_size(crop, box_size)
+    else:
+        crop = _disk_crop_box(loaded[0].shape, center, radius, r_max + stamp_pad, box_size)
+        inner = None
+        bg_box_size = box_size
+    loaded = [_apply_crop(d, crop) for d in loaded]
+    center = _shift_center(center, crop)
+    subs = [_bg_subtract(d, bg_box_size) for d in loaded]
     detections = [list(zip(*_detect(ds, nsigma, npixels, min_area, max_area), strict=True)) for ds in subs]
     stars = _consistent_stars(detections, len(images), match_tol, min_frac)
-    if stars and (radius is not None or near_axis_frac < 1.0):
+    if stars and inner is not None:
+        keep = _box_keep([s[0] for s in stars], [s[1] for s in stars], inner)
+        stars = [st for st, k in zip(stars, keep, strict=True) if k]
+    elif stars and (radius is not None or near_axis_frac < 1.0):
         sx = np.array([s[0] for s in stars])
         sy = np.array([s[1] for s in stars])
         keep = _low_coma_keep(sx, sy, loaded[0].shape, center, radius, near_axis_frac)

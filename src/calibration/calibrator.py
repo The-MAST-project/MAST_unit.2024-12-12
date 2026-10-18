@@ -89,6 +89,42 @@ PHASE_ACTIVITY = {
 ALL_CALIBRATION_ACTIVITIES = (UnitActivities.Calibrating, *PHASE_ACTIVITY.values())
 
 
+def zenith_dec(unit) -> float | None:
+    """The declination of the zenith: the observatory's latitude.
+
+    Taken from the **mount** first.  PWI4 reports it in the very status
+    object the phases already read for the LST
+    (``pw.status().site.latitude_degs``), and the mount is the thing that
+    actually points -- so its own site setting is authoritative for where
+    zenith is.  The MAST config carries a latitude too, and the two differ
+    in the 4th decimal (~2 m, harmless), but preferring the mount avoids
+    pointing by one source of truth while slewing by another.
+
+    Falls back to the configured site latitude, then to ``None``.  Module-level
+    so focus_on_star can find the zenith without the calibration pointing
+    override that :meth:`Calibrator.resolve_coord` applies.
+    """
+    pw = getattr(unit, "pw", None)
+    if pw is not None:
+        try:
+            latitude = pw.status().site.latitude_degs
+            if latitude is not None:
+                return float(latitude)
+        except Exception as ex:
+            logger.warning(f"could not read the mount's latitude: {ex}")
+    try:
+        site = Config().local_site
+        location = getattr(site, "location", None) if site is not None else None
+        latitude = getattr(location, "latitude", None) if location is not None else None
+        if latitude is not None:
+            logger.debug("zenith dec: falling back to the configured site latitude")
+            return float(latitude)
+    except Exception as ex:
+        logger.warning(f"could not read the configured site latitude: {ex}")
+    logger.warning("no latitude available -- pointing is unresolved; the phase will calibrate at the current pointing")
+    return None
+
+
 def _jsonable(obj):
     """Project a phase result into something ``CanonicalResponse`` can serialize.
 
@@ -274,37 +310,7 @@ class Calibrator:
         return ra, (float(dec) if dec is not None else None)
 
     def _zenith_dec(self) -> float | None:
-        """The declination of the zenith: the observatory's latitude.
-
-        Taken from the **mount** first.  PWI4 reports it in the very status
-        object the phases already read for the LST
-        (``pw.status().site.latitude_degs``), and the mount is the thing that
-        actually points -- so its own site setting is authoritative for where
-        zenith is.  The MAST config carries a latitude too, and the two differ
-        in the 4th decimal (~2 m, harmless), but preferring the mount avoids
-        pointing by one source of truth while slewing by another.
-
-        Falls back to the configured site latitude, then to ``None``.
-        """
-        pw = getattr(self.unit, "pw", None)
-        if pw is not None:
-            try:
-                latitude = pw.status().site.latitude_degs
-                if latitude is not None:
-                    return float(latitude)
-            except Exception as ex:
-                logger.warning(f"could not read the mount's latitude: {ex}")
-        try:
-            site = Config().local_site
-            location = getattr(site, "location", None) if site is not None else None
-            latitude = getattr(location, "latitude", None) if location is not None else None
-            if latitude is not None:
-                logger.debug("zenith dec: falling back to the configured site latitude")
-                return float(latitude)
-        except Exception as ex:
-            logger.warning(f"could not read the configured site latitude: {ex}")
-        logger.warning("no latitude available -- pointing is unresolved; the phase will calibrate at the current pointing")
-        return None
+        return zenith_dec(self.unit)
 
     def _skip_if_present(self, phase: str, force: bool) -> bool:
         """Whether ``phase`` should be skipped because its product already exists.

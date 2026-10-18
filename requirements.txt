@@ -95,3 +95,9 @@ astroplan==0.10.1
 # photometry. Pinned from the live unit environment like everything above.
 scipy==1.18.0
 tifffile==2026.8.16
+
+# Read by catalogs/catshtm.py, imported there lazily: the catsHTM GAIA DR3 catalog that
+# focus_on_star chooses its star from is HDF5. NOT yet in the live unit environment --
+# 3.16.0 is the version verified against numpy 2.5.1 and the \\last0 catalog (2026-10-11).
+# Until a unit has it, only focus_on_star fails there (with a clear error), not startup.
+h5py==3.16.0
