@@ -16,7 +16,7 @@ from calibration.analysis.models import HFDAutofocusResult, HFDAutofocusStatus
 from common.activities import UnitActivities
 from common.config.calibration import CalibrationConfig, FocuserCalibration
 from common.config.rois import FcuVersion
-from focus_on_star.session import FocusOnStarParams, FocusOnStarRun, FocusOnStarSession
+from focus_on_star.session import FocusOnStarParams, FocusOnStarRun, FocusOnStarSession, focus_reference
 from focus_on_star.star_selection import FocusStar
 
 START = 20000
@@ -25,7 +25,7 @@ START = 20000
 class FakeUnit:
     """Enough of a Unit: real activity bookkeeping, mocked components."""
 
-    def __init__(self, *, focus_product=True):
+    def __init__(self, *, focus_product=True, known_as_good_position=0):
         self.activities = UnitActivities.Idle
         for name in ("mount", "pw", "imager", "stage", "solver", "acquirer", "guider"):
             setattr(self, name, MagicMock(name=name))
@@ -43,6 +43,7 @@ class FakeUnit:
             calibration=calibration,
             guiding=SimpleNamespace(rois={FcuVersion.v2: SimpleNamespace(fiber_x=4100, fiber_y=2750)}),
             imager=SimpleNamespace(pixel_scale_at_bin1=0.2616),
+            focuser=SimpleNamespace(known_as_good_position=known_as_good_position),
         )
 
     def is_active(self, flag):
@@ -115,6 +116,7 @@ def test_a_solved_run_leaves_the_focuser_at_best_focus_and_writes_nothing(script
     assert state.start_position == START and state.best_position == 20040 and state.final_position == 20040
     assert not config.mock_calls  # no Config().set_unit / update_unit
     assert state.focus_center == (4100.0, 2750.0)
+    assert state.focus_reference == "calibration"
     x0, x1, y0, y1 = state.box
     assert (x1 - x0, y1 - y0) == (829, 564)
     assert not unit.is_active(UnitActivities.FocusingOnStar)
@@ -179,9 +181,26 @@ def test_bad_parameters_are_refused(params, reason):
     assert reason in FocusOnStarSession(FakeUnit()).require_can_start(params)
 
 
-def test_a_unit_without_a_focus_calibration_is_refused():
+def test_a_unit_without_a_focus_calibration_or_known_good_position_is_refused():
     refusal = FocusOnStarSession(FakeUnit(focus_product=False)).require_can_start(FocusOnStarParams())
     assert "/calibrate/focuser" in refusal
+
+
+def test_known_as_good_position_stands_in_for_a_missing_focus_calibration():
+    unit = FakeUnit(focus_product=False, known_as_good_position=13267)
+    assert FocusOnStarSession(unit).require_can_start(FocusOnStarParams()) is None
+    assert focus_reference(unit.unit_conf) == "known_as_good_position"
+
+
+def test_a_run_on_known_as_good_position_says_so(scripted):
+    state = _run(FakeUnit(focus_product=False, known_as_good_position=13267))
+    assert state.outcome == "solved"
+    assert state.focus_reference == "known_as_good_position"
+
+
+def test_a_focus_calibration_is_preferred_to_known_as_good_position():
+    unit = FakeUnit(focus_product=True, known_as_good_position=13267)
+    assert focus_reference(unit.unit_conf) == "calibration"
 
 
 def test_a_busy_unit_is_refused():

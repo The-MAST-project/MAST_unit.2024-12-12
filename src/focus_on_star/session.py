@@ -1,6 +1,7 @@
 """``PUT /unit/focus_on_star``: one isolated star on the fibre pixel, then a narrow-field V-curve.
 
-An on-demand refinement, run after ``/calibrate/focuser`` has put the unit near focus:
+An on-demand refinement, run once the unit is near focus -- after ``/calibrate/focuser``, or,
+failing a focuser calibration product, at ``focuser.known_as_good_position``:
 
 1. **Sky position** -- the zenith, an explicit (ra, dec), or where the telescope points.
 2. **Star** -- the GAIA DR3 catsHTM catalog is searched around it for the brightest
@@ -132,12 +133,31 @@ class FocusOnStarStatus(BaseModel):
     start_position: int | None = None
     best_position: int | None = None
     final_position: int | None = None
+    #: What says the unit is near focus: "calibration" (a /calibrate/focuser product) or
+    #: "known_as_good_position" (the last ps3cli autofocus, used when there is no product).
+    focus_reference: str | None = None
     errors: list[str] = Field(default_factory=list)
     analysis: HFDAutofocusStatus | None = None
 
 
 def _isoformat_utc() -> str:
     return datetime.datetime.now(datetime.UTC).isoformat()
+
+
+def focus_reference(conf) -> str | None:
+    """What puts the unit near focus, so a narrow sweep can find the minimum; None if nothing.
+
+    A ``/calibrate/focuser`` product first. Failing that, ``focuser.known_as_good_position``,
+    which the focuser goes to at startup (``focuser.py``) -- so the sweep, centred on the
+    current position, is centred on it. Its default of 0 means it was never set.
+    """
+    cal = getattr(conf, "calibration", None)
+    if cal is not None and cal.products.focuser is not None:
+        return "calibration"
+    focuser = getattr(conf, "focuser", None)
+    if focuser is not None and focuser.known_as_good_position > 0:
+        return "known_as_good_position"
+    return None
 
 
 class FocusOnStarSession:
@@ -175,9 +195,10 @@ class FocusOnStarSession:
             return "the unit has no configuration"
         if focus_center_bin1(conf, unit.fcu_version) is None:
             return f"no guiding ROI (fiber_x, fiber_y) is configured for FCU {unit.fcu_version}"
-        cal = conf.calibration
-        if cal is None or cal.products.focuser is None:
-            return "the unit has no focus calibration; run /calibrate/focuser first"
+        if conf.calibration is None:
+            return "the unit has no calibration configuration"
+        if focus_reference(conf) is None:
+            return "the unit has no focus calibration and no focuser.known_as_good_position; run /calibrate/focuser first"
         return None
 
     def start(self, params: FocusOnStarParams) -> str | FocusOnStarStatus:
@@ -192,7 +213,11 @@ class FocusOnStarSession:
                 logger.warning(f"focus_on_star: could not create the run folder ({ex})")
                 folder = None
             self.state = FocusOnStarStatus(
-                active=True, phase="selecting", folder=folder, started_at=_isoformat_utc(), params=asdict(params)
+                active=True,
+                phase="selecting",
+                folder=folder,
+                started_at=_isoformat_utc(),
+                params=asdict(params),
             )
             # Raised here rather than in the thread: the endpoint declares this flag as its
             # completion signal, so a caller answered Ok must find it already set.
@@ -258,6 +283,9 @@ class FocusOnStarRun(FocuserCalibrator):
         start_position: int | None = None
         series = imager.start_exposure_series(purpose="focus-on-star")
         try:
+            state.focus_reference = focus_reference(conf)
+            logger.info(f"{op}: near focus by {state.focus_reference}")
+
             # --- 1. sky position -----------------------------------------------
             sky = self._sky_position(params)
             if sky is None:
