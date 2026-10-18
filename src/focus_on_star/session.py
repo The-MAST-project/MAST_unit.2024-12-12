@@ -188,6 +188,10 @@ class FocusOnStarSession:
         ]
         if missing:
             return f"these components are not available: {', '.join(missing)}"
+        # The same gate as execute_assignment. Present is not ready: before /unit/startup the
+        # mount is disconnected and the stage unhomed, and the run's first move is the stage.
+        if not unit.operational:
+            return f"the unit is not operational: {'; '.join(unit.why_not_operational) or 'no reason recorded'}"
         if unit.activities & BUSY:
             return f"the unit is busy ({unit.activities_verbal})"
         conf = unit.unit_conf
