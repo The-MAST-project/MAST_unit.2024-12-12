@@ -1,7 +1,9 @@
 """`Solver.solve_and_correct` ends `Solving` on every exit, and its own-acquisition branch runs.
 
-Entered at the method itself with a fake unit: the solve, the imager and the mount are never
-reached, or are replaced by a `solve` that raises.
+Entered at the method itself with a fake unit built on `activity_spy`: the real
+`Activities.start_activity` sends a UI notification, which reads the bootstrap config the CI
+runners do not have. The solve, the imager and the mount are never reached, or are replaced by
+a `solve` that raises.
 """
 
 from types import SimpleNamespace
@@ -12,7 +14,7 @@ from astropy.coordinates import Angle
 
 import solving
 from acquisition import ApproachMode
-from common.activities import Activities, UnitActivities
+from common.activities import UnitActivities
 from common.interfaces.solving import SolverId, SolvingTolerance
 from common.models.statuses import ImagerSettings
 from common.utils import Coord
@@ -22,12 +24,10 @@ TARGET = Coord(ra=Angle(6 * u.hourangle), dec=Angle(30 * u.deg))  # type: ignore
 TOLERANCE = SolvingTolerance(Angle(1 * u.arcsecond), Angle(1 * u.arcsecond))  # type: ignore
 
 
-class _Unit(Activities):
-    def __init__(self, latest_acquisition=None):
-        super().__init__()
-        self.activities = UnitActivities.Idle
-        self.errors: list[str] = []
-        self.acquirer = SimpleNamespace(latest_acquisition=latest_acquisition)
+def _unit(spy, latest_acquisition=None):
+    spy.errors = []
+    spy.acquirer = SimpleNamespace(latest_acquisition=latest_acquisition)
+    return spy
 
 
 def _solver(unit) -> Solver:
@@ -56,15 +56,15 @@ def _acquisition():
 
 
 class TestSolvingEndsOnEveryExit:
-    def test_parent_activity_cancelled(self):
+    def test_parent_activity_cancelled(self, activity_spy):
         """The parent (Acquiring) is not active, so the first try returns at once."""
-        unit = _Unit(latest_acquisition=_acquisition())
+        unit = _unit(activity_spy, _acquisition())
 
         assert _call(_solver(unit)) is False
         assert not unit.is_active(UnitActivities.Solving)
 
-    def test_solve_raises(self):
-        unit = _Unit(latest_acquisition=_acquisition())
+    def test_solve_raises(self, activity_spy):
+        unit = _unit(activity_spy, _acquisition())
         unit.start_activity(UnitActivities.Acquiring)
         solver = _solver(unit)
 
@@ -83,7 +83,7 @@ class TestSolvingEndsOnEveryExit:
 class TestOwnAcquisition:
     """With no `latest_acquisition`, the method builds one. It used to raise TypeError."""
 
-    def test_it_is_built_in_hours_and_degrees(self, monkeypatch):
+    def test_it_is_built_in_hours_and_degrees(self, activity_spy, monkeypatch):
         built = {}
 
         def fake_acquisition(**kwargs):
@@ -91,7 +91,7 @@ class TestOwnAcquisition:
             return _acquisition()
 
         monkeypatch.setattr(solving, "Acquisition", fake_acquisition)
-        unit = _Unit(latest_acquisition=None)
+        unit = _unit(activity_spy)
 
         assert _call(_solver(unit)) is False  # cancelled at once: Acquiring is not active
 
@@ -102,7 +102,7 @@ class TestOwnAcquisition:
         assert unit.acquirer.latest_acquisition is not None
         assert "spec" in unit.acquirer.latest_acquisition.corrections
 
-    def test_target_from_the_mount(self, monkeypatch):
+    def test_target_from_the_mount(self, activity_spy, monkeypatch):
         built = {}
 
         def fake_acquisition(**kwargs):
@@ -110,7 +110,7 @@ class TestOwnAcquisition:
             return _acquisition()
 
         monkeypatch.setattr(solving, "Acquisition", fake_acquisition)
-        unit = _Unit(latest_acquisition=None)
+        unit = _unit(activity_spy)
         status = SimpleNamespace(ra_j2000_hours=12.5, dec_j2000_degs=-10.0)
         unit.required_mount = SimpleNamespace(status=lambda: status)
 
