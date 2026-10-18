@@ -8,6 +8,7 @@ from common.corrections import Corrections
 from common.filer import Filer, MoveGuardian
 from common.interfaces.solving import SolverId
 from common.mast_logging import get_logger
+from common.models.statuses import AcquisitionOutcome
 from common.paths import PathMaker
 from plotting import plot_acquisition_corrections, plot_phase_corrections
 
@@ -98,6 +99,8 @@ class Acquisition:
         #: Set by `Acquirer.run_acquisition` when the acquisition ends: None when it
         #: reached tolerance, otherwise why it did not. `Acquiring` clears either way.
         self.failure: str | None = None
+        #: Set by `Acquirer.start`: what `FullUnitStatus.acquisition` reports for this run.
+        self.outcome: AcquisitionOutcome | None = None
 
     def save_corrections(self, phase: str):
         if phase in self.corrections:

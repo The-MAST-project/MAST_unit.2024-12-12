@@ -1440,6 +1440,19 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         st, _ = self.get_status()
         return self._is_guiding(st)
 
+    @property
+    def is_locked(self) -> bool:
+        """Guiding and locked on a star: the AppState is exactly "Guiding".
+
+        Not `is_guiding`, which also counts "LostLock". Calibrating, Selected, Looping and
+        Paused are not locked either.
+        """
+        if not self.connected:
+            return False
+
+        st, _ = self.get_status()
+        return st == "Guiding"
+
     def pause(self):
         """pause guiding (looping exposures continues)"""
         self.call("set_paused", True)
