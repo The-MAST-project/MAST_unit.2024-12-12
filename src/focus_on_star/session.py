@@ -467,10 +467,6 @@ class FocusOnStarRun(FocuserCalibrator):
             acquisition.save_corrections("spec")
             return bool(achieved)
         finally:
-            # solve_and_correct's cancelled return leaves Solving raised, and Aborting
-            # waits for it to clear.
-            if unit.is_active(UnitActivities.Solving):
-                unit.end_activity(UnitActivities.Solving)
             MoveGuardian().release_folder(acquisition.folder, logger=logger)
 
     def _probe(self, st, position: int, box, ls: FocusOnStarSettings, folder):
