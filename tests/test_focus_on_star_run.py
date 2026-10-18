@@ -27,6 +27,8 @@ class FakeUnit:
 
     def __init__(self, *, focus_product=True, known_as_good_position=0):
         self.activities = UnitActivities.Idle
+        self.operational = True
+        self.why_not_operational: list[str] = []
         for name in ("mount", "pw", "imager", "stage", "solver", "acquirer", "guider"):
             setattr(self, name, MagicMock(name=name))
         self.imager.camera_x_size, self.imager.camera_y_size = 8288, 5644
@@ -201,6 +203,16 @@ def test_a_run_on_known_as_good_position_says_so(scripted):
 def test_a_focus_calibration_is_preferred_to_known_as_good_position():
     unit = FakeUnit(focus_product=True, known_as_good_position=13267)
     assert focus_reference(unit.unit_conf) == "calibration"
+
+
+def test_a_unit_that_is_not_operational_is_refused():
+    """Before /unit/startup: the components exist, but the stage is unhomed and the mount
+    disconnected -- and the run's first move is the stage."""
+    unit = FakeUnit()
+    unit.operational = False
+    unit.why_not_operational = ["mount: (via ASCOM) - not connected", "stage: at -1, not at a preset"]
+    refusal = FocusOnStarSession(unit).require_can_start(FocusOnStarParams())
+    assert "not operational" in refusal and "stage: at -1" in refusal
 
 
 def test_a_busy_unit_is_refused():
