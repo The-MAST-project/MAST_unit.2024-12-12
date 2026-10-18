@@ -79,9 +79,17 @@ class Guider(GuiderInterface):
             backend=self._backend.guider_status() if self._backend else None,
         )
 
-    def start_guiding(self):
-        if self._backend:
-            self._backend.start_guiding()
+    def start_guiding(self) -> CanonicalResponse:
+        """Start the backend guiding, and say whether it agreed to.
+
+        PHD2 refuses with errors -- cannot connect, binning or bpp not matching its profile
+        -- and without raising `Guiding`. That answer used to be dropped here, so a caller
+        waiting on `Guiding` saw it already clear and took the handover for done.
+        """
+        if not self._backend:
+            return CanonicalResponse(errors=["no guider backend"])
+        response = self._backend.start_guiding()
+        return response if isinstance(response, CanonicalResponse) else CanonicalResponse_Ok
 
     def start_looping(self):
         if isinstance(self._backend, PHD2Connector):
@@ -251,6 +259,18 @@ class Guider(GuiderInterface):
         if self._backend:
             return self._backend.is_guiding
         return False
+
+    @property
+    def is_locked(self) -> bool:
+        """Guiding, locked on a star: what a completed handover means.
+
+        Stricter than `is_guiding` for PHD2, which also counts `LostLock` (and feeds
+        `status.guiding`, which keeps that meaning). The solving backend has no star lock,
+        so for it this is `is_guiding`.
+        """
+        if isinstance(self._backend, PHD2Connector):
+            return self._backend.is_locked
+        return self.is_guiding
 
 
 if __name__ == "__main__":
