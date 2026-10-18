@@ -133,6 +133,21 @@ class Solver(SolverInterface):
                 )
 
             self.unit.imager.wait_for_image_saved()
+
+            # wait_for_image_saved also returns when the exposure produced nothing -- aborted
+            # (unit/abort, a cancelled parent activity) or failed in the camera. The backend
+            # would then open a path that was never written, and the FileNotFoundError escaped
+            # to the caller: an abort mid-exposure ended focus_on_star as "failed" (mast00,
+            # 2026-10-18). A failed result lets solve_and_correct see the cancellation on its
+            # next try instead. Only for a frame meant for disk: planewave_shm reads memory.
+            if imager_settings.save and imager_settings.image_path and not os.path.exists(imager_settings.image_path):
+                if not self.unit.is_active(UnitActivities.Solving):
+                    why = "the exposure was aborted"
+                else:
+                    why = "the exposure produced no image"
+                logger.warning(f"{op}: {why}, not solving: '{imager_settings.image_path}' does not exist")
+                return SolvingResult(succeeded=False, errors=[why])
+
             return self._backend.solve(unit=self.unit, settings=imager_settings, target=target, phase=phase)
 
     def solve_and_correct(  # noqa: C901
@@ -271,6 +286,10 @@ class Solver(SolverInterface):
                 continue
 
             self.latest_result = result
+            # Before anything is written: an abort during this try's exposure released the
+            # acquisition folder, and the debug JSON below would recreate it just to hold junk.
+            if was_cancelled():
+                return False
             if result is None:
                 self.log_and_store_error(f"{op}: plate_solve returned None")
                 continue
