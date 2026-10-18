@@ -494,7 +494,7 @@ class FocusOnStarRun(FocuserCalibrator):
                 solving_tolerance=acquirer.spec_phase_tolerance(),
                 phase="spec",
                 parent_activity=UnitActivities.FocusingOnStar,
-                max_tries=conf.acquisition.tries,
+                max_tries=ls.acquisition_tries,
             )
             acquisition.save_corrections("spec")
             return bool(achieved)
