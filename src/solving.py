@@ -11,8 +11,6 @@ from acquisition import Acquisition, ApproachMode
 from common.activities import UnitActivities
 from common.asi import ASI_294MM_HEIGHT, ASI_294MM_WIDTH
 from common.config import Config
-from common.config.rois import RoisConfig, SkyRoiConfig
-from common.config.unit import AcquisitionConfig, ToleranceConfig
 from common.const import Const
 from common.corrections import Correction, Corrections
 from common.filer import Filer, MoveGuardian
@@ -171,7 +169,41 @@ class Solver(SolverInterface):
         :return: True if succeeded to achieve tolerances within max_tries, False otherwise
 
         """
+        self.unit.start_activity(UnitActivities.Solving)
+        try:
+            return self._solve_and_correct(
+                target=target,
+                approach_mode=approach_mode,
+                solver_id=solver_id,
+                make_corrections=make_corrections,
+                imager_settings=imager_settings,
+                solving_tolerance=solving_tolerance,
+                phase=phase,
+                parent_activity=parent_activity,
+                max_tries=max_tries,
+            )
+        finally:
+            # Every exit, not only the two that used to end it: a cancellation by the
+            # PARENT activity (an aborted or failed acquisition) returned with Solving
+            # still raised, and so did every raise below. The unit then reported solving
+            # while nothing was, and a waiter on Solving never returned. Correcting is
+            # cleared too, for a raise from inside a correction.
+            self.unit.end_activity(UnitActivities.Correcting)
+            self.unit.end_activity(UnitActivities.Solving)
 
+    def _solve_and_correct(  # noqa: C901
+        self,
+        target: Coord,
+        approach_mode: ApproachMode,
+        solver_id: SolverId,
+        make_corrections: bool,
+        imager_settings: ImagerSettings,
+        solving_tolerance: SolvingTolerance,
+        phase: str,
+        parent_activity: UnitActivities | None,
+        max_tries: int,
+    ) -> bool:
+        """The body of `solve_and_correct`, which raises and ends `Solving` around it."""
         op = function_name()
         if phase:
             op += f":{phase=}:{approach_mode=}"
@@ -181,62 +213,27 @@ class Solver(SolverInterface):
                 parent_activity is not None and not self.unit.is_active(parent_activity)
             )
 
-        self.unit.start_activity(UnitActivities.Solving)
-
         if self.unit.acquirer is not None and not self.unit.acquirer.latest_acquisition:
             # when not part of an acquisition sequence
-            tolerance = ToleranceConfig(
-                ra_arcsec=float(solving_tolerance.ra.arcsecond),  # type: ignore
-                dec_arcsec=float(solving_tolerance.dec.arcsecond),  # type: ignore
-            )  # type: ignore
-
-            if imager_settings.roi:
-                sky_roi_config = SkyRoiConfig(
-                    sky_x=imager_settings.roi.x,
-                    sky_y=imager_settings.roi.y,
-                    width=imager_settings.roi.width,
-                    height=imager_settings.roi.height,
-                )
-            elif self.unit.imager is not None:
-                sky_roi_config = SkyRoiConfig(
-                    sky_x=self.unit.imager.full_frame.x,
-                    sky_y=self.unit.imager.full_frame.y,
-                    width=self.unit.imager.full_frame.width,
-                    height=self.unit.imager.full_frame.height,
-                )
-
-            assert self.unit is not None, f"{op}: self.unit is None"
-            assert self.unit.unit_conf is not None, f"{op}: self.unit.unit_conf is None"
-
-            conf = AcquisitionConfig(
-                exposure=imager_settings.seconds,
-                binning=imager_settings.binning,
-                rois=RoisConfig({self.unit.fcu_version: sky_roi_config}),
-                gain=imager_settings.gain or 100,
-                tries=self.unit.unit_conf.acquisition.tries,
-                tolerance=tolerance,
-            )
-            if self.unit.acquirer is None:
-                raise SolverError(f"{op}: unit.acquirer is None, cannot create latest_acquisition")
-
             if target is None:
-                mount_status = self.unit.mount.status
+                mount_status = self.unit.required_mount.status()
                 target = Coord(
-                    ra=Angle(
-                        mount_status.ra_j2000_hours,
-                        unit="hourangle",
-                        dec=Angle(mount_status.dec_j2000_degs, unit="deg"),
-                    )
+                    ra=Angle(mount_status.ra_j2000_hours, unit="hourangle"),
+                    dec=Angle(mount_status.dec_j2000_degs, unit="deg"),
                 )
 
+            # Hours and degrees, as both of the acquirer's call sites pass them. This
+            # branch used to pass arcseconds, and an `AcquisitionConfig` as `conf=`, which
+            # the constructor stopped accepting (MAST_unit#195) -- a TypeError on the
+            # first solve that ever took it.
             self.unit.acquirer.latest_acquisition = Acquisition(
                 unit=self.unit,
                 approach_mode=approach_mode,
                 solver_id=solver_id,
                 make_corrections=make_corrections,
-                target_ra=target.ra.arcsecond,  # type: ignore
-                target_dec=target.dec.arcsecond,  # type: ignore
-                conf=conf,
+                target_ra=float(target.ra.hour),  # type: ignore
+                target_dec=float(target.dec.deg),  # type: ignore
+                exposure=imager_settings.seconds,
             )
 
             self.unit.acquirer.latest_acquisition.corrections = {}
@@ -402,7 +399,6 @@ class Solver(SolverInterface):
                             f.write(latest_corrections.model_dump_json(indent=2))
                         filer.move_ram_to_shared(file_name)
 
-                    self.unit.end_activity(UnitActivities.Solving)
                     return True
 
                 else:
@@ -577,7 +573,6 @@ class Solver(SolverInterface):
 
         if phase != "guiding":
             logger.info(f"{function_name()}: could not reach tolerances within {max_tries=}")
-        self.unit.end_activity(UnitActivities.Solving)
         return False
 
     @property
