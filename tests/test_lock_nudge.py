@@ -95,10 +95,10 @@ class TestImagerRoiConditioning:
     """
 
     def test_a_configured_rectangle_is_not_the_one_phd2_receives(self):
-        configured = ImagerRoi(x=520, y=0, width=7760, height=4812)
-        verbatim = ImagerRoi.verbatim(x=520, y=0, width=7760, height=4812)
-        assert (configured.x, configured.y) == (527, 1)
-        assert (verbatim.x, verbatim.y) == (520, 0)
+        configured = ImagerRoi(x=521, y=1, width=7759, height=4811)
+        verbatim = ImagerRoi.verbatim(x=521, y=1, width=7759, height=4811)
+        assert (configured.x, configured.y) == (528, 2)
+        assert (verbatim.x, verbatim.y) == (521, 1)
 
     def test_an_offset_is_unchanged_by_the_crop(self):
         """The property the nudge rests on: origin cancels in a difference."""
