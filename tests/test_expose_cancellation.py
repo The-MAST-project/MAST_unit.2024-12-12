@@ -203,6 +203,11 @@ class TestAbortReachesTheRun:
         guider = None
         components: list = []
 
+        class _NoFiberRun:
+            is_active = False
+
+        fiber_focus = _NoFiberRun()
+
         class _FluxMetering:
             """Idle: `Unit.abort` asks it to stop only when a run is in flight."""
 
@@ -212,6 +217,7 @@ class TestAbortReachesTheRun:
                 raise AssertionError("an idle flux-metering session must not be aborted")
 
         flux_metering = _FluxMetering()
+        spirals = _FluxMetering()
 
         def __init__(self, exposing: bool):
             self.activities = {UnitActivities.Exposing} if exposing else set()

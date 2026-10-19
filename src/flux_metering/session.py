@@ -1152,7 +1152,7 @@ class FluxMeteringSession:
                 image_path=path,
                 binning=1,
                 roi=imager.full_frame,
-                gain=self.params.gain or conf.acquisition.gain,
+                gain=conf.acquisition.gain if self.params.gain is None else self.params.gain,
             )
             response = imager.start_exposure(imager.latest_settings)
             if response is not None and response.failed:

@@ -46,12 +46,16 @@ KNOWN_UNVERIFIABLE = {
     "imagers/__init__.py:shutdown": "delegates to self._backend.shutdown()",
     "endpoint_acquire_and_find_max_flux": "delegates to self.flux_metering.start(), which raises the flag",
     "endpoint_focus_on_star": "delegates to self.focus_on_star.start(), which raises the flag",
+    "endpoint_acquire_and_save_spirals": "delegates to self.spirals.start(), which raises the flag",
 }
 
 #: Declarations the walk resolved fully and found false. Empty is the point.
 KNOWN_UNSTARTED: dict[str, str] = {}
 
 _COMPLETION = re.compile(r"completion=([A-Za-z_][\w.]*)")
+
+#: Same reason as the entries above: `fiber_focus.start()` raises the flag past the boundary.
+KNOWN_UNVERIFIABLE["endpoint_acquire_and_focus_fiber"] = "delegates to self.fiber_focus.start(), which raises the flag"
 
 
 def _trees() -> dict[str, ast.Module]:

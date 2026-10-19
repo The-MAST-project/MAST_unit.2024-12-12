@@ -1586,3 +1586,13 @@ def test_the_exposure_model_carries_the_aperture_fields():
     assert e.position_source == "detected"
     assert e.aperture_x == 1.5
     assert e.saturation_threshold == 1022
+
+
+@pytest.mark.parametrize(("gain", "used"), [(None, 170), (0, 0), (250, 250)], ids=["unset", "zero", "given"])
+def test_the_imager_gain_is_the_one_asked_for_even_zero(session, gain, used):
+    """0 is a gain, not an absent one: `gain or configured` silently replaced it."""
+    s, unit, _mount, _meter = session(gain=gain)
+
+    s._expose_imager("frame.fits")
+
+    assert unit.imager.latest_settings.gain == used

@@ -19,6 +19,7 @@ from fastapi.routing import APIRouter
 from PIL import Image
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+import flux_metering.fiber_focus as fiber_focus_run
 from acquirer import Acquirer
 from acquisition import Acquisition
 from autofocusing import Autofocuser, AutofocusResult
@@ -66,6 +67,7 @@ from covers import Covers
 from expose_params import MAX_OFFSET_ARCSEC, MAX_OFFSET_DEGREES, resolve_exposure_roi, resolve_offsets
 from flux_metering import correlate
 from flux_metering.session import FluxMeteringParams, FluxMeteringSession
+from flux_metering.spirals import MAX_RINGS, SpiralsParams, SpiralsSession
 from focus_on_star.session import FocusOnStarParams, FocusOnStarSession
 from focuser import Focuser
 from imagers import Imager
@@ -306,11 +308,14 @@ class Unit(Component, OpmodeBase):
 
         self.controller_api = _try_init("controller_api", ControllerApi)
 
+        self.fiber_focus = fiber_focus_run.FiberFocusSession(self)
+
         self.errors: list[str] = list(self._init_errors)
 
         self.spiral = SpiralSearch(self)
         self.flux_metering = FluxMeteringSession(self)
         self.focus_on_star = FocusOnStarSession(self)
+        self.spirals = SpiralsSession(self)
         self.latest_acquisition: Acquisition | None = None
 
         self._initialized = True
@@ -834,6 +839,11 @@ class Unit(Component, OpmodeBase):
                 logger.exception(f"{function_name()}: aborting {what} failed")
                 errors.append(f"{what}: {ex}")
 
+        # Asked to stop, not waited for, like the flux-metering run below. Before guiding is
+        # stopped, so the run sees the abort rather than the guiding stopping under it.
+        if self.fiber_focus.is_active:
+            self.fiber_focus.abort()
+
         if self.autofocuser is not None and (
             self.is_active(UnitActivities.AutofocusingPWI4) or self.is_active(UnitActivities.Autofocusing)
         ):
@@ -851,6 +861,8 @@ class Unit(Component, OpmodeBase):
         # exposure, and `abort` is the one verb that has to answer promptly.
         if self.flux_metering.is_active:
             self.flux_metering.abort()
+        if self.spirals.is_active:
+            self.spirals.abort()
 
         # Clears `FocusingOnStar`; the run notices at its next wait and unwinds -- the imager
         # abort below releases a frame in progress.
@@ -2087,6 +2099,206 @@ class Unit(Component, OpmodeBase):
         """
         return self.flux_metering.status()
 
+    @endpoint(tier=Tier.OPERATION, completion=UnitActivities.FluxMetering)
+    def endpoint_acquire_and_save_spirals(
+        self,
+        step_seconds: Annotated[
+            float,
+            Query(
+                gt=0,
+                description="Imager exposure for every spiral step frame.",
+            ),
+        ] = 5.0,
+        acquisition_seconds: Annotated[
+            float,
+            Query(
+                gt=0,
+                description="Imager exposure for the acquisition's plate solves. Independent of `step_seconds`.",
+            ),
+        ] = 5.0,
+        flux_seconds: Annotated[
+            float,
+            Query(
+                gt=0,
+                description=(
+                    "ThorCam exposure, for every flux frame. Independent of `step_seconds`. The "
+                    "CS165MU accepts 64 us to 26,843,418 us (~26.8 s); the camera's own range is "
+                    "checked when it is configured, and a value outside it fails the run rather "
+                    "than being silently clamped."
+                ),
+            ),
+        ] = 5.0,
+        ra_j2000_hours: Annotated[
+            str | float | None,
+            Query(
+                pattern=RA_PATTERN,
+                description=(
+                    "### Right Ascension (J2000) in either:\n"
+                    "- decimal hours (e.g., `12.5`) or\n"
+                    "- sexagesimal format (e.g., `12:30:45.123`). \n"
+                    "- Decimal range: `0 <= RA < 24`.\n"
+                    "If not supplied, taken from telescope"
+                ),
+            ),
+        ] = None,
+        dec_j2000_degs: Annotated[
+            str | float | None,
+            Query(
+                pattern=DEC_PATTERN,
+                description=(
+                    "### Declination (J2000) in either:\n"
+                    "- decimal degrees (e.g., `-45.5`) or\n"
+                    "- sexagesimal format (e.g., `-45:30:00.123`). \n"
+                    "- Decimal range: `-90 <= DEC <= 90`.\n"
+                    "If not supplied, taken from telescope"
+                ),
+            ),
+        ] = None,
+        gain: Annotated[
+            int | None,
+            Query(ge=asi.ControlDict[asi.Control.Gain].min_value, le=asi.ControlDict[asi.Control.Gain].max_value),
+        ] = asi.ASI_294MM_DEFAULT_GAIN,
+        number_of_frames: Annotated[
+            int,
+            Query(
+                ge=1,
+                description=(
+                    "Imager+ThorCam pairs per spiral step, all of them kept. Run time and stored "
+                    "frames both scale with this."
+                ),
+            ),
+        ] = 1,
+        skip_acquisition: Annotated[
+            bool,
+            Query(
+                description=(
+                    "**Engineering only.** Skip the acquisition and spiral from wherever the mount "
+                    "is now, so the walk and the products can be exercised in daylight or a "
+                    "closed enclosure with no star to solve on. A run started this way is **not "
+                    "centred on the assumed fibre**. It is recorded in `result.json`."
+                )
+            ),
+        ] = False,
+        x_step_arcsec: Annotated[
+            float,
+            Query(
+                gt=0,
+                description=(
+                    "Spiral step along RA, in arcsec **on the sky**. PWI4 steps the RA coordinate, "
+                    "so the run commands `x_step_arcsec / cos(dec)` of RA, with dec read from the "
+                    "mount after acquisition; the cells are then square on the sky at any "
+                    "declination. Refused within about 5.7 deg of the pole."
+                ),
+            ),
+        ] = 0.5,
+        y_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along Dec, in arcsec")] = 0.5,
+        rings: Annotated[
+            int,
+            Query(
+                ge=1,
+                le=MAX_RINGS,
+                description=(
+                    "Rings walked around the acquired position. The run exposes at the origin and "
+                    "at every cell of these rings -- `(2 * rings + 1) ** 2` steps -- then stops. "
+                    "At most 9: frames are named `step-R-SSS-MM.fits` / `flux-R-SSS-MM.fits`, with "
+                    "the ring `R` as one digit and the step within it `SSS` from 001."
+                ),
+            ),
+        ] = 2,
+        flux_gain: Annotated[
+            int,
+            Query(
+                ge=0,
+                description=(
+                    "ThorCam gain. The CS165MU accepts **0 to 480**; 0 is the floor and the "
+                    "default, so the lever against saturation is a shorter `flux_seconds`."
+                ),
+            ),
+        ] = 0,
+        flux_black_level: Annotated[
+            int,
+            Query(
+                ge=0,
+                description=(
+                    "ThorCam black-level pedestal commanded on the camera, and recorded in every "
+                    "flux frame's header. The CS165MU accepts **0 to 511**."
+                ),
+            ),
+        ] = 3,
+    ):
+        """
+        Acquires the target, then walks a spiral of `rings` rings around it, taking imager
+        ("step") and ThorCam ("flux") frames at every cell.<br>
+        <br>
+        A sibling of `acquire_and_find_max_flux`, which is unchanged. The two cannot run at the
+        same time, and both file their products under `FluxMetering/<NNNN>`.<br>
+        <br>
+        At each spiral step the mount settles, then `number_of_frames` pairs are taken: an
+        imager frame of `step_seconds` and a ThorCam frame of `flux_seconds`, started
+        together. Every frame is kept. **Nothing is measured on the unit** -- no flux, no best
+        cell, no correlation; the frames and `result.json` are the whole product.<br>
+        <br>
+        The run takes `(2 * rings + 1) ** 2` steps and writes several GB. Answers at once;
+        watch `save_spirals_status`, and `unit/abort` stops it. Nothing is written to the
+        configuration database.
+        """
+        # Parsed here, before anything is spent: a bad coordinate must refuse the request
+        # rather than fail inside a run that has already claimed the mount.
+        try:
+            ra_decimal, dec_decimal = parse_target(ra_j2000_hours, dec_j2000_degs)
+        except ValueError as ex:
+            return CanonicalResponse(errors=[f"{function_name()}: {ex}"])
+
+        params = SpiralsParams(
+            step_seconds=step_seconds,
+            acquisition_seconds=acquisition_seconds,
+            flux_seconds=flux_seconds,
+            ra_j2000_hours=ra_decimal,
+            dec_j2000_degs=dec_decimal,
+            gain=gain,
+            number_of_frames=number_of_frames,
+            skip_acquisition=skip_acquisition,
+            x_step_arcsec=x_step_arcsec,
+            y_step_arcsec=y_step_arcsec,
+            rings=rings,
+            flux_gain=flux_gain,
+            flux_black_level=flux_black_level,
+        )
+
+        # Refuse BEFORE touching the stage. `start()` checks this too, but it is called
+        # after the move below, so without this a request that is going to be refused --
+        # a run already in progress, the unit guiding, no acquirer -- would already have
+        # commanded the folding mirror. Same reason `parse_target` is hoisted above:
+        # nothing may be spent until the request is known to be servable.
+        refusal = self.spirals.require_can_start()
+        if refusal is not None:
+            return CanonicalResponse(errors=[f"{function_name()}: {refusal}"])
+
+        # The folding mirror is put in by `do_acquire_and_save_spirals`, on the run's own
+        # thread. It is a 21-22 second traverse, and this route is documented to answer at
+        # once; waiting here would hold a FastAPI worker for the whole move and turn an
+        # immediate route into a slow one for every caller. `save_spirals_status` reports
+        # `positioning` while it happens.
+        outcome = self.spirals.start(params)
+        if isinstance(outcome, str):
+            return CanonicalResponse(errors=[f"{function_name()}: {outcome}"])
+        # The run is dispatched and `UnitActivities.FluxMetering` -- this endpoint's
+        # declared completion flag -- is already raised, so a caller answered Ok can watch
+        # it immediately.
+        return CanonicalResponse_Ok
+
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
+    def endpoint_save_spirals_status(self):
+        """
+        Progress of the current (or last) `acquire_and_save_spirals` run: phase, spiral
+        index, cell and ring, frames taken, the frames of every step so far, and how the run
+        ended.<br>
+        <br>
+        Separate from `find_max_flux_status`, which reports `acquire_and_find_max_flux` and
+        is unchanged. Not part of `unit/status`, for the reason that one is not.
+        """
+        return self.spirals.status()
+
     @endpoint(tier=Tier.OPERATION, completion=UnitActivities.FocusingOnStar)
     def endpoint_focus_on_star(
         self,
@@ -2240,6 +2452,149 @@ class Unit(Component, OpmodeBase):
             return correlate.list_run_steps(date, seq)
         except correlate.CorrelationError as e:
             return CanonicalResponse(errors=[str(e)])
+
+    @endpoint(tier=Tier.OPERATION, completion=UnitActivities.FluxMetering)
+    def endpoint_acquire_and_focus_fiber(
+        self,
+        ra_j2000_hours: Annotated[
+            str | float,
+            Query(
+                pattern=RA_PATTERN,
+                description=(
+                    "### Right Ascension (J2000) in either:\n"
+                    "- decimal hours (e.g., `12.5`) or\n"
+                    "- sexagesimal format (e.g., `12:30:45.123`). \n"
+                    "- Decimal range: `0 <= RA < 24`."
+                ),
+            ),
+        ],
+        dec_j2000_degs: Annotated[
+            str | float,
+            Query(
+                pattern=DEC_PATTERN,
+                description=(
+                    "### Declination (J2000) in either:\n"
+                    "- decimal degrees (e.g., `-45.5`) or\n"
+                    "- sexagesimal format (e.g., `-45:30:00.123`). \n"
+                    "- Decimal range: `-90 <= DEC <= 90`."
+                ),
+            ),
+        ],
+        step: Annotated[
+            int,
+            Query(description="Focuser steps between positions. Negative sweeps inward; 0 only with `count=1`."),
+        ],
+        count: Annotated[
+            int,
+            Query(ge=1, le=fiber_focus_run.MAX_POSITIONS, description="How many focuser positions, `start` included."),
+        ],
+        start: Annotated[
+            int | None,
+            Query(
+                ge=0,
+                description="The first focuser position. If not supplied, the focuser's `known_as_good_position`.",
+            ),
+        ] = None,
+        frames_per_position: Annotated[
+            int,
+            Query(ge=1, description="ThorCam frames at each position, all of them kept."),
+        ] = 1,
+        flux_seconds: Annotated[
+            float,
+            Query(
+                gt=0,
+                description=(
+                    "ThorCam exposure, for every frame. The CS165MU accepts 64 us to ~26.8 s; a "
+                    "value outside the camera's range fails the run rather than being clamped."
+                ),
+            ),
+        ] = 5.0,
+        flux_gain: Annotated[int, Query(ge=0, description="ThorCam gain, **0 to 480** on the CS165MU.")] = 0,
+        flux_black_level: Annotated[
+            int,
+            Query(ge=0, description="ThorCam black level, **0 to 511** on the CS165MU."),
+        ] = 3,
+        settle_seconds: Annotated[
+            float,
+            Query(ge=0, description="Wait after the focuser has arrived, before its position is read and exposed."),
+        ] = 2.0,
+        acquisition_seconds: Annotated[
+            float,
+            Query(gt=0, description="Imager exposure for the acquisition's plate solves."),
+        ] = 5.0,
+        gain: Annotated[
+            int | None,
+            Query(ge=asi.ControlDict[asi.Control.Gain].min_value, le=asi.ControlDict[asi.Control.Gain].max_value),
+        ] = asi.ASI_294MM_DEFAULT_GAIN,
+        guide_settle_timeout_seconds: Annotated[
+            float,
+            Query(
+                gt=0,
+                description=(
+                    "How long to wait, from the `guide` command, for PHD2's `SettleDone`. If it "
+                    "does not arrive in time the run fails. A PHD2 that must calibrate first may "
+                    "need longer."
+                ),
+            ),
+        ] = 120.0,
+    ):
+        """
+        Acquires the target, starts guiding, waits for PHD2 to report that guiding has
+        settled, then steps the focuser through `count` positions from `start` by `step`,
+        taking `frames_per_position` ThorCam frames at each.<br>
+        <br>
+        Once guiding has settled the run never talks to PHD2 again: guide steps, lost stars
+        and PHD2's state do not affect it. If settling fails, or no `SettleDone` arrives
+        within `guide_settle_timeout_seconds`, the run fails and says why.<br>
+        <br>
+        However the run ends, the focuser goes back to `known_as_good_position` and guiding
+        is left running (`unit/abort` stops guiding itself). Frames are named
+        `flux-PPP-FFFFF-MM.fits` -- position index from 001, MEASURED focuser position,
+        frame from 00 -- under `FiberFocus/<NNNN>` with a `result.json`. **Nothing is
+        measured on the unit.** Answers at once; watch `focus_fiber_status`.
+        """
+        op = function_name()
+        try:
+            ra_decimal, dec_decimal = parse_target(ra_j2000_hours, dec_j2000_degs)
+        except ValueError as ex:
+            return CanonicalResponse(errors=[f"{op}: {ex}"])
+        if ra_decimal is None or dec_decimal is None:
+            return CanonicalResponse(errors=[f"{op}: both ra_j2000_hours and dec_j2000_degs are required"])
+
+        if start is None:
+            # Read live, when the request arrives, so result.json records the number used.
+            if self.focuser is None or self.focuser.known_as_good_position is None:
+                return CanonicalResponse(errors=[f"{op}: no start given, and no known_as_good_position to default to"])
+            start = self.focuser.known_as_good_position
+
+        params = fiber_focus_run.FiberFocusParams(
+            ra_j2000_hours=ra_decimal,
+            dec_j2000_degs=dec_decimal,
+            start=start,
+            step=step,
+            count=count,
+            acquisition_seconds=acquisition_seconds,
+            gain=gain,
+            flux_seconds=flux_seconds,
+            flux_gain=flux_gain,
+            flux_black_level=flux_black_level,
+            frames_per_position=frames_per_position,
+            settle_seconds=settle_seconds,
+            guide_settle_timeout_seconds=guide_settle_timeout_seconds,
+        )
+        outcome = self.fiber_focus.start(params)
+        if isinstance(outcome, str):
+            return CanonicalResponse(errors=[f"{op}: {outcome}"])
+        return CanonicalResponse_Ok
+
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
+    def endpoint_focus_fiber_status(self):
+        """
+        Progress of the current (or last) `acquire_and_focus_fiber` run: phase, how PHD2's
+        settle went, every position so far (commanded, measured, frames), and how the run
+        ended.
+        """
+        return self.fiber_focus.status()
 
     @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
     def endpoint_spiral_correlate_steps(
@@ -2416,6 +2771,18 @@ class Unit(Component, OpmodeBase):
         )
         add_api_route(
             router,
+            base_path + "/acquire_and_save_spirals",
+            endpoint=self.endpoint_acquire_and_save_spirals,
+            methods=["PUT"],
+        )
+        add_api_route(
+            router,
+            base_path + "/save_spirals_status",
+            endpoint=self.endpoint_save_spirals_status,
+            methods=["GET"],
+        )
+        add_api_route(
+            router,
             base_path + "/find_max_flux_status",
             endpoint=self.endpoint_find_max_flux_status,
             methods=["GET"],
@@ -2430,6 +2797,18 @@ class Unit(Component, OpmodeBase):
             router,
             base_path + "/flux_metering_run_steps",
             endpoint=self.endpoint_flux_metering_run_steps,
+            methods=["GET"],
+        )
+        add_api_route(
+            router,
+            base_path + "/acquire_and_focus_fiber",
+            endpoint=self.endpoint_acquire_and_focus_fiber,
+            methods=["PUT"],
+        )
+        add_api_route(
+            router,
+            base_path + "/focus_fiber_status",
+            endpoint=self.endpoint_focus_fiber_status,
             methods=["GET"],
         )
         # PUT, not GET: it writes `correlate-<a>-<b>.json` into the run folder, and
