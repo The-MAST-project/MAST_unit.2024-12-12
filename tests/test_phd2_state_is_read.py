@@ -98,11 +98,11 @@ class TestTheGettersRead:
         right for one we are about to send and wrong for one PHD2 already holds: 520,0
         would come back as 527,1 and the reported state would be a place PHD2 is not.
         """
-        conditioned = ImagerRoi(x=520, y=0, width=7760, height=4812)
-        assert (conditioned.x, conditioned.y) == (527, 1), "guard: conditioning does move it"
+        conditioned = ImagerRoi(x=521, y=1, width=7759, height=4811)
+        assert (conditioned.x, conditioned.y) == (528, 2), "guard: conditioning does move it"
 
-        roi = connector(FakePhd2(limit_frame=DERIVED)).get_limit_frame()
-        assert (roi.x, roi.y) == (520, 0)
+        roi = connector(FakePhd2(limit_frame=[521, 1, 7759, 4811])).get_limit_frame()
+        assert (roi.x, roi.y, roi.width, roi.height) == (521, 1, 7759, 4811)
 
     def test_no_limit_frame_reads_as_none(self):
         assert connector(FakePhd2(limit_frame=None)).get_limit_frame() is None
