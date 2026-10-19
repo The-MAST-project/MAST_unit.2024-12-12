@@ -18,6 +18,8 @@ envelope does for you, and which checks refuse what.
 
 ## Running the service
 
+Operator procedure: [Running a unit](https://github.com/The-MAST-project/MAST/wiki/Running-a-unit).
+
 ```
 python app.py [--log-level DEBUG]
 ```

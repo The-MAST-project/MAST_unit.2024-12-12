@@ -329,6 +329,7 @@ def create_app(unit=None) -> FastAPI:
     return app
 
 
+# How-to: https://github.com/The-MAST-project/MAST/wiki/Running-a-unit
 def main():
     boxed_info(logger, "Starting ...")
 
