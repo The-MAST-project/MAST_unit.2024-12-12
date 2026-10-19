@@ -2,6 +2,28 @@
 
 ---
 
+## [2026-10-19] An assignment always acquires, through the acquirer's assignment helper
+
+**Why:** `do_execute_assignment` ran the acquisition only inside `if assignment.plan.autofocus:`,
+so a plan with the default `autofocus=False` was accepted and then did nothing; MAST-control
+failed it 600 s later with "did not reach 'guiding'" (MAST_unit#345). The acquisition step
+existed twice. The copy in `unit.py` was the one wired in, but it acquired at the endpoint's 5 s
+default instead of the configured exposure (#195), and took its products path relative to
+`shared.root`, which raises `ValueError` on Windows while the folder is still on the RAM disk
+(D: vs Z:). The uncalled `Acquirer.start_acquisition_and_guiding_for_assignment` had both right.
+
+**What:** `do_execute_assignment` calls `start_acquisition_and_guiding_for_assignment` at function
+level, after the optional autofocus; the inline copy is gone. The helper builds its `Acquisition`
+through `prepare_acquisition` with `seconds=None`, the checks the operator route already uses, so
+a refusal comes back to the caller, which logs it, instead of being dropped. The autofocus
+notification measures its path from `ram.root` too.
+
+**Implications:** the unattended hand-over to guiding has not been observed on sky yet; #345 stays
+open until a dispatched `autofocus=false` plan reaches guiding and its assignment notification
+arrives. A refused acquisition is still invisible to MAST-control; that is #156's.
+
+---
+
 ## [2026-10-13] Flux metering puts the folding mirror in after the acquisition, not before
 
 **Why:** the run moved the mirror to SPEC, then the acquisition took it out to solve on FCU v2 and

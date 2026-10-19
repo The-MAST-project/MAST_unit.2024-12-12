@@ -166,7 +166,7 @@ class TestAcquisitionPrecedence:
         """RA 0h is in Pisces and dec 0 is the celestial equator. Both are falsy, and the
         truthiness test this replaces sent them to the "not supplied" branch -- silently
         acquiring wherever the mount happened to point. Reachable from Python, not only
-        over HTTP: unit.py's assignment path calls the endpoint directly with plan floats.
+        over HTTP: the assignment path hands plan floats to prepare_acquisition.
         """
         ra, dec, problem = coordinates(ra=0.0, dec=0.0, pw=PwStatus(ra=12.0, dec=34.0))
 

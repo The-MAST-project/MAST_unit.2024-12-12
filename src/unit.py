@@ -1727,38 +1727,22 @@ class Unit(Component, OpmodeBase):
                 return  # should propagate errors as well
 
             if assignment.plan.ulid is not None and self.imager.latest_settings and self.imager.latest_settings.image_path:
+                assert filer.ram is not None
                 Notifier().assignment_notification(
                     AssignmentNotification(
                         assignment_id=assignment.plan.ulid,
                         state="in-progress",
-                        # Relative to the shared root. This sent `.parent.name` -- the bare
-                        # directory name, with no path at all -- so the controller symlinked
-                        # something it could never resolve. MAST_spec#39.
-                        shared_top=os.path.relpath(Path(self.imager.latest_settings.image_path).parent, filer.shared.root),
+                        # Measured from ram.root, where the frames were written: the tree below
+                        # it mirrors the shared one, so this is also the shared-relative path.
+                        # From shared.root it raises ValueError on Windows (D: vs Z:). MAST_spec#39.
+                        shared_top=os.path.relpath(Path(self.imager.latest_settings.image_path).parent, filer.ram.root),
                         shared_subpath="autofocus",
                     )
                 )
 
-            #
-            # At this point we have autofocused and can start acquisition
-            #
-            self.acquirer.endpoint_start_acquisition_and_guiding(
-                ra_j2000_hours=assignment.plan.target.ra_hours,
-                dec_j2000_degs=assignment.plan.target.dec_degrees,
-            )
-
-            if assignment.plan.ulid is not None and self.acquirer.latest_acquisition is not None:
-                Notifier().assignment_notification(
-                    AssignmentNotification(
-                        assignment_id=assignment.plan.ulid,
-                        state="in-progress",
-                        # Relative to the shared root, not the absolute ram path: the
-                        # controller symlinks this, and its shared root is spelled
-                        # differently from ours. MAST_spec#39.
-                        shared_top=os.path.relpath(self.acquirer.latest_acquisition.folder, filer.shared.root),
-                        shared_subpath="acquisition",
-                    )
-                )
+        response = self.acquirer.start_acquisition_and_guiding_for_assignment(assignment)
+        if response.errors:
+            logger.error(f"assignment {assignment.plan.ulid}: acquisition refused: {response.errors}")
 
     @endpoint(tier=Tier.CONTRACT)
     async def endpoint_execute_assignment(self, assignment: UnitAssignment):

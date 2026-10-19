@@ -468,53 +468,35 @@ class Acquirer:
             self.unit.required_acquirer.latest_acquisition.post_process()
         return None
 
-    def start_acquisition_and_guiding_for_assignment(self, assignment: UnitAssignment):
+    def start_acquisition_and_guiding_for_assignment(self, assignment: UnitAssignment) -> CanonicalResponse:
         """Acquire and hand over to guiding for a controller-issued assignment.
 
-        **Unreferenced and unexercised.** Nothing in this repository calls it, no route
-        serves it, and no test covers it -- so it has never run, and restoring it does not
-        change any behaviour a caller can reach today. It is kept because it is the only
-        expression of the *unattended* assignment flow: `handover_automatically_to_guider`
-        is `True` here and `False` in every reachable path, and the `in-progress`
-        notification that tells the controller where the products are exists nowhere else.
+        Checked and built by `prepare_acquisition`, like the operator route, so a refusal
+        comes back to the caller instead of being lost on the assignment thread.
 
-        Treat every line as unverified. Two things in particular are asserted rather than
-        observed: that `assignment.plan` carries `target.ra_hours` / `target.dec_degrees`
-        in the shape read below, and that `run_acquisition` on this thread reaches the
-        SPEC hand-over without the operator step the reachable path relies on. Before this
-        is wired to anything, it wants a hardware pass of its own -- see MAST_unit#156 for
-        the sibling problem that a thread answering `Ok` reports nothing.
+        Not yet observed on sky: that `run_acquisition` reaches the SPEC hand-over
+        unattended, without the operator step the manual path relies on.
         """
-        approach_mode: ApproachMode = ApproachMode.GRADUAL_BY_RATE
-        make_corrections = True
         ra_j2000_hours = assignment.plan.target.ra_hours
         dec_j2000_degs = assignment.plan.target.dec_degrees
 
-        assert self.unit.unit_conf is not None
-        solver_name = self.unit.unit_conf.solving.method
-
         logger.info(
             f"starting acquisition for assignment {assignment.plan.ulid}, "
-            f"approach_mode={approach_mode}, solver_name={solver_name} (from unit config), "
-            f"make_corrections={make_corrections}, "
             f"ra_j2000_hours={ra_j2000_hours}, dec_j2000_degs={dec_j2000_degs}"
         )
 
-        acquisition = Acquisition(
-            unit=self.unit,
-            approach_mode=approach_mode,
-            solver_id=SolverId[solver_name],
-            make_corrections=make_corrections,
-            target_ra=float(ra_j2000_hours),
-            target_dec=float(dec_j2000_degs),
-            # No caller-supplied exposure on this path: the configured one applies.
-            # It previously inherited whatever the HTTP endpoint had last written into
-            # unit_conf.acquisition.exposure (MAST_unit#195).
-            exposure=None,
-            # Unattended assignments auto-hand-over to guiding; the Acquisition default is
-            # False (manual acquisition-tuning), which would stall the assignment at SPEC.
+        acquisition = self.prepare_acquisition(
+            # No caller-supplied exposure on this path: the configured one applies
+            # (MAST_unit#195).
+            seconds=None,
+            ra_j2000_hours=ra_j2000_hours,
+            dec_j2000_degs=dec_j2000_degs,
+            # Unattended assignments auto-hand-over to guiding; without it the assignment
+            # stalls at SPEC waiting for an operator.
             handover_automatically_to_guider=True,
         )
+        if isinstance(acquisition, CanonicalResponse):
+            return acquisition
         Thread(name="acquisition", target=self.run_acquisition, args=[acquisition]).start()
 
         """
@@ -542,6 +524,7 @@ class Acquirer:
                     shared_subpath="acquisition",
                 )
             )
+        return CanonicalResponse_Ok
 
     @staticmethod
     def _coordinate_pair(ra_in, dec_in) -> tuple[float, float] | None:
@@ -551,7 +534,7 @@ class Acquirer:
         Pisces and dec 0 is the celestial equator -- and both are falsy, so the old test
         sent them to the "not supplied" branch and silently acquired wherever the mount
         happened to be pointing. Reachable from Python, not only over HTTP:
-        `unit.py`'s assignment path calls this endpoint directly with plan floats.
+        the assignment path hands plan floats to `prepare_acquisition`.
 
         Both or neither: half a coordinate pair cannot be completed from the other half,
         and mixing one supplied axis with one from the telescope points at neither.
