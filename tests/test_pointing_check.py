@@ -8,9 +8,9 @@ records how far the target sits from the fiber, without touching the guide loop.
 
 What is pinned here:
 
-- a cropped or binned frame is reported **unavailable**, never solved -- the
-  solver's SPEC reference pixel is in full-sensor coordinates, and a crop moves it
-  by the crop origin without failing (#234);
+- a limit-frame crop is solved with the crop origin read from PHD2, so the SPEC
+  reference pixel stays at the fiber (#234); a frame that is not the held limit
+  frame, or is binned, is reported **unavailable**, never solved;
 - a failed solve is a recorded sample, not a dropped one;
 - the frame (94 MB at full size) is deleted on every path;
 - the cadence is read live, and zero means off.
@@ -32,7 +32,7 @@ from astropy.io import fits
 import pointing_check
 from common.asi import ASI_294MM_HEIGHT, ASI_294MM_WIDTH
 from common.interfaces.solving import SolvingResult, SolvingSolution
-from common.models.statuses import PointingCheckStatus, PointingSampleOutcome
+from common.models.statuses import ImagerRoi, PointingCheckStatus, PointingSampleOutcome
 from pointing_check import PointingMonitor
 
 #: 15h 00m 00s, +30 deg -- an arbitrary target away from both RA wrap and the pole.
@@ -89,9 +89,13 @@ class FakeConnector:
         interval: float = 0,
         acquisition: bool = True,
         mirror_in: bool = True,
+        limit_frame: ImagerRoi | None = None,
+        profile_binning: int = 1,
     ):
         self.tmp_path = tmp_path
         self.frame_size = frame_size
+        self.limit_frame = limit_frame
+        self.profile_binning = profile_binning
         self.app_state = "Guiding"
         self.avg_dist = 0.4
         self.saved: list[str] = []
@@ -126,6 +130,9 @@ class FakeConnector:
 
     def get_lock_position(self):
         return (4144.0, 2822.0)
+
+    def get_limit_frame(self) -> ImagerRoi | None:
+        return self.limit_frame
 
 
 @pytest.fixture(autouse=True)
@@ -208,17 +215,54 @@ class TestASample:
         assert not os.path.exists(connector.saved[0])
 
 
+#: The legacy strip on mast01, x 6363..8280: a fixed limit frame PHD2 delivers verbatim.
+STRIP = ImagerRoi.verbatim(x=6363, y=0, width=1917, height=4812)
+
+
+class TestALimitFrame:
+    def test_a_strip_is_solved_from_its_origin(self, tmp_path, journal_dir):
+        backend = FakeBackend(solved(ra_hours=TARGET_RA_HOURS, dec_degs=TARGET_DEC_DEGS - 3.0 / 3600.0))
+        connector = FakeConnector(tmp_path, backend=backend, frame_size=(STRIP.width, STRIP.height), limit_frame=STRIP)
+        monitor = PointingMonitor(connector)
+        monitor.start_session()
+
+        sample = monitor.sample_once()
+
+        assert sample is not None and sample.outcome is PointingSampleOutcome.Solved
+        assert sample.d_dec_arcsec == pytest.approx(3.0, abs=1e-6)
+        assert sample.frame_crop == (STRIP.x, STRIP.y, STRIP.width, STRIP.height)
+        (call,) = backend.calls
+        assert call["frame_origin"] == (STRIP.x, STRIP.y)
+
+    def test_a_full_frame_passes_no_origin(self, tmp_path, journal_dir):
+        backend = FakeBackend(solved())
+        monitor = PointingMonitor(FakeConnector(tmp_path, backend=backend))
+        monitor.start_session()
+
+        sample = monitor.sample_once()
+
+        assert sample is not None and sample.frame_crop is None
+        (call,) = backend.calls
+        assert "frame_origin" not in call
+
+
 class TestUnavailable:
     @pytest.mark.parametrize(
-        "frame_size",
+        ("frame_size", "limit_frame", "profile_binning"),
         [
-            (7760, 4812),  # the derived limit frame
-            (ASI_294MM_WIDTH // 2, ASI_294MM_HEIGHT // 2),  # a binned full frame
+            ((7760, 4812), None, 1),  # cropped, but PHD2 says it holds no limit frame
+            ((7760, 4812), STRIP, 1),  # not the limit frame PHD2 holds
+            ((ASI_294MM_WIDTH // 2, ASI_294MM_HEIGHT // 2), None, 2),  # a binned full frame
+            ((STRIP.width // 2, STRIP.height // 2), STRIP, 2),  # a binned strip
         ],
     )
-    def test_a_frame_that_is_not_the_full_sensor_is_never_solved(self, tmp_path, journal_dir, frame_size):
+    def test_a_frame_that_cannot_be_placed_on_the_sensor_is_never_solved(
+        self, tmp_path, journal_dir, frame_size, limit_frame, profile_binning
+    ):
         backend = FakeBackend(solved())
-        connector = FakeConnector(tmp_path, backend=backend, frame_size=frame_size)
+        connector = FakeConnector(
+            tmp_path, backend=backend, frame_size=frame_size, limit_frame=limit_frame, profile_binning=profile_binning
+        )
         monitor = PointingMonitor(connector)
         monitor.start_session()
 
