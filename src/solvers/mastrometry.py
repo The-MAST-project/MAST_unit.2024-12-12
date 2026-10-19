@@ -16,7 +16,7 @@ from common.const import Const
 from common.filer import Filer, MoveGuardian
 from common.interfaces.solving import SolverInterface, SolvingResult
 from common.mast_logging import get_logger
-from common.models.statuses import ImagerRoi
+from common.models.statuses import ImagerPixel, ImagerRoi
 from common.rois import SkyRoi
 from common.utils import Coord, boxed_log, function_name
 from imagers import ImagerSettings
@@ -90,6 +90,7 @@ class MastrometryDotNet(SolverInterface):
         index_file: str | None = None,
         target: Coord | None = None,
         keep_artifacts: bool = True,
+        frame_origin: tuple[int, int] | None = None,
     ) -> SolvingResult | None:
         """
         MAST specific astrometry.net solver implementation.
@@ -103,6 +104,10 @@ class MastrometryDotNet(SolverInterface):
         the input and follow it to the shared area; without it they are discarded with the
         scratch folder, for callers that solve every few minutes and record the result
         themselves.
+
+        `frame_origin` is where the input sits on the sensor when it is a limit-frame crop
+        rather than the full frame. The phase ROI is then clipped to the frame, and the
+        reference pixel keeps pointing at the same sensor pixel, inside the frame or not.
         """
 
         self.unit: Unit | None = unit
@@ -135,7 +140,9 @@ class MastrometryDotNet(SolverInterface):
         result_file = win_tmp_dir / f"{artifact_stem}-result.txt"
 
         try:
-            return self._solve_in(win_tmp_dir, new_fits_path, result_file, phase, full_frame_input_image_path, target)
+            return self._solve_in(
+                win_tmp_dir, new_fits_path, result_file, phase, full_frame_input_image_path, target, frame_origin
+            )
         finally:
             # The solved frame (it carries the WCS -- MAST_unit#27) and the solver's own
             # output are saved beside the frame they came from, then follow it to the shared
@@ -159,6 +166,7 @@ class MastrometryDotNet(SolverInterface):
         phase: Const.SolvingPhase,
         full_frame_input_image_path: str,
         target: Coord | None,
+        frame_origin: tuple[int, int] | None = None,
     ) -> SolvingResult | None:
         unit = self.unit
 
@@ -224,6 +232,9 @@ class MastrometryDotNet(SolverInterface):
                     # → no crop, refpix stays None, solve-field uses --crpix-center
                     pass
 
+            if imager_roi is not None and frame_origin is not None:
+                imager_roi = _clip_to_frame(imager_roi, frame_origin, width, height)
+
             if imager_roi is not None:
                 if imager_roi.x + imager_roi.width > width or imager_roi.y + imager_roi.height > height:
                     raise Exception(
@@ -278,8 +289,9 @@ class MastrometryDotNet(SolverInterface):
             header["DOWNSAMP"] = (downsample_factor, "Downsampling factor applied to original image")
 
             if imager_roi is not None:
-                header["ROI_X"] = (imager_roi.x, "X coordinate of ROI in original image")
-                header["ROI_Y"] = (imager_roi.y, "Y coordinate of ROI in original image")
+                origin_x, origin_y = frame_origin or (0, 0)
+                header["ROI_X"] = (imager_roi.x + origin_x, "X coordinate of ROI in original image")
+                header["ROI_Y"] = (imager_roi.y + origin_y, "Y coordinate of ROI in original image")
                 header["ROI_W"] = (imager_roi.width, "Width of ROI in original image")
                 header["ROI_H"] = (imager_roi.height, "Height of ROI in original image")
 
@@ -532,3 +544,20 @@ if __name__ == "__main__":
 
     # test_solver()
     test_solver_with_roi()
+
+
+def _clip_to_frame(roi: ImagerRoi, frame_origin: tuple[int, int], width: int, height: int) -> ImagerRoi:
+    """`roi` (sensor pixels) as it falls on a `width` x `height` frame starting at `frame_origin`.
+
+    The rectangle is clipped to the frame; the center moves with the origin but is not
+    clipped, so the reference pixel stays on the same sensor pixel even off the frame.
+    """
+    assert roi._center is not None
+    origin_x, origin_y = frame_origin
+    left, top = max(roi.x - origin_x, 0), max(roi.y - origin_y, 0)
+    right, bottom = min(roi.x + roi.width - origin_x, width), min(roi.y + roi.height - origin_y, height)
+    if right <= left or bottom <= top:
+        raise Exception(f"{function_name()}: ROI {roi} does not overlap the {width}x{height} frame at {frame_origin}")
+    clipped = ImagerRoi.verbatim(x=left, y=top, width=right - left, height=bottom - top)
+    clipped._center = ImagerPixel(x=roi._center.x - origin_x, y=roi._center.y - origin_y)
+    return clipped
