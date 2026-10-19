@@ -26,6 +26,7 @@ import json
 import math
 import os
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from astropy.io import fits
@@ -34,7 +35,7 @@ from common.activities import UnitActivities
 from common.canonical import CanonicalResponse
 from common.config import Config
 from common.config.rois import FcuVersion, SpecRoiConfig
-from common.filer import Filer, MoveGuardian
+from common.filer import Filer, FilerTop, MoveGuardian
 from common.mast_logging import get_logger
 from common.models.statuses import ImagerSettings
 from common.paths import PathMaker
@@ -65,8 +66,9 @@ FINAL_IMAGE = "final.fits"
 RESULT_FILE = "result.json"
 
 #: An abandoned session holds tracking on and an exposure series open. After this long
-#: it is closed WITHOUT a final frame: an hour on, nobody has confirmed the star is
-#: centred, so a shift measured then would look like a result without being one.
+#: with no step it is closed WITHOUT a final frame: an hour on, nobody has confirmed the
+#: star is centred, so a shift measured then would look like a result without being one.
+#: Each step restarts it, so a long walk that is still being driven is not cut short.
 SESSION_TIMEOUT_SECONDS = 3600.0
 
 #: A frame with more trailing blank rows than this did not read out fully. Two, not zero:
@@ -117,6 +119,9 @@ class SpiralSearch:
     def __init__(self, unit: Unit):
         self.unit = unit
         self._lock = threading.RLock()
+        #: Which arming of the timer is current. Not reset by `_clear`, so a timer from a
+        #: closed session can never match a new one's.
+        self._timer_generation = 0
         self._clear()
 
     def _clear(self) -> None:
@@ -374,13 +379,17 @@ class SpiralSearch:
                 f"margins ({self.margin_horizontal}, {self.margin_vertical}) from {self.margin_source}"
             )
             self._log_step(direction="reference", image=REFERENCE_IMAGE)
-
-            self._timer = threading.Timer(SESSION_TIMEOUT_SECONDS, self._on_timeout)
-            self._timer.daemon = True
-            self._timer.start()
+            self._arm_timer()
 
             logger.info(f"{op}: spiral session open in '{self.folder}', steps ({x_step_arcsec}, {y_step_arcsec}) arcsec")
-            return CanonicalResponse(value={"folder": self.folder, "reference_image": REFERENCE_IMAGE})
+            value: dict[str, Any] = {"folder": self.folder, "reference_image": REFERENCE_IMAGE}
+            try:
+                value["shared_folder"] = self._share_relative(self.folder)
+            except SpiralSearchError as ex:
+                logger.error(f"{op}: {ex}")
+                value["shared_folder"] = None
+                value["share_error"] = str(ex)
+            return CanonicalResponse(value=value)
 
     def step(self, forward: bool) -> CanonicalResponse:
         op = function_name()
@@ -395,22 +404,34 @@ class SpiralSearch:
             else:
                 self.unit.mount.pw.mount_spiral_offset_previous()
             self.unit.mount.wait_until_settled(SettleMode.OFFSET_STEP)
+            self._arm_timer()
 
             image = None
+            image_error = None
             if self.save_intermediate_exposures and self.folder:
                 image = "step-" + PathMaker().make_seq(self.folder) + ".fits"
                 try:
                     self._expose(image)
-                except Exception:
+                except Exception as ex:
                     # A lost intermediate frame is a nuisance, not a reason to end the
                     # session: the measurement needs only the reference and the final.
                     logger.exception(f"{op}: intermediate exposure '{image}' failed; continuing")
                     image = None
+                    image_error = str(ex)
 
             entry = self._log_step(direction="next" if forward else "previous", image=image)
             # Not the raw entry: the operator is reading this between presses, and needs
             # where they ARE. The full log of every step is in result.json either way.
-            return CanonicalResponse(value=self._step_message(entry))
+            message = self._step_message(entry)
+            message["image"] = None
+            if image and self.folder:
+                try:
+                    message["image"] = self._share_relative(os.path.join(self.folder, image))
+                except SpiralSearchError as ex:
+                    image_error = str(ex)
+            if image_error is not None:
+                message["image_error"] = image_error
+            return CanonicalResponse(value=message)
 
     def end(self) -> CanonicalResponse:
         """Measure the shift from the reference frame to HERE.
@@ -527,16 +548,18 @@ class SpiralSearch:
         }
         return result
 
-    def _on_timeout(self) -> None:
+    def _on_timeout(self, generation: int) -> None:
         with self._lock:
             if not self.is_active:
                 return  # end() got here first
+            if generation != self._timer_generation:
+                return  # fired while a step held the lock; that step re-armed it
             logger.warning(
-                f"spiral session in '{self.folder}' abandoned: no spiral_end_path within "
+                f"spiral session in '{self.folder}' abandoned: no step or spiral_end_path within "
                 f"{SESSION_TIMEOUT_SECONDS / 3600:.0f}h. Closing WITHOUT a final frame -- nobody confirmed the "
                 "star was centred, so any shift measured now would look like a result without being one."
             )
-            self._abandon(f"no spiral_end_path within {SESSION_TIMEOUT_SECONDS / 3600:.0f}h")
+            self._abandon(f"no step or spiral_end_path within {SESSION_TIMEOUT_SECONDS / 3600:.0f}h")
 
     def _abandon(self, reason: str) -> None:
         """Close the session with no measurement, leaving a result that says so.
@@ -551,10 +574,38 @@ class SpiralSearch:
             logger.exception("could not write the aborted spiral result")
         self._close()
 
+    def _arm_timer(self) -> None:
+        self._cancel_timer()
+        self._timer_generation += 1
+        self._timer = threading.Timer(SESSION_TIMEOUT_SECONDS, self._on_timeout, args=[self._timer_generation])
+        self._timer.daemon = True
+        self._timer.start()
+
     def _cancel_timer(self) -> None:
         if self._timer is not None:
             self._timer.cancel()
             self._timer = None
+
+    @staticmethod
+    def _share_relative(path: str) -> str:
+        """Where the mover puts `path`, relative to the share's MAST root.
+
+        Relative, because the share has a different name on every machine (`Z:/MAST/` here,
+        `/Storage/mast-share/MAST` on the control host), so only the caller can say where its
+        own view of it starts. Raises when the destination is not on the share: with Z:
+        unmapped, Filer's shared area is this unit's own disk, and a caller told otherwise
+        would wait for a frame that never arrives.
+
+        The roots are stored POSIX-style ("D:/MAST/"), so the path is compared in that form.
+        """
+        destination = filer.change_top_to(FilerTop.Shared, Path(path).as_posix())
+        root = filer.share_root.root
+        if destination is None or not destination.startswith(root):
+            raise SpiralSearchError(
+                f"'{destination or path}' is not on the share ('{root}'), so it stays on this unit: "
+                "the shared area falls back to the local disk when Z: is not mapped"
+            )
+        return destination.removeprefix(root)
 
     def _close(self) -> None:
         """Stop tracking, end the series, reap the folder. Caller holds the lock."""
