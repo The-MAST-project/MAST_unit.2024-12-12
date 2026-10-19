@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from common import asi
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config.phd2 import ExcludeRegionMode, LimitFrameMode, PHD2SettleConfig
+from common.config.phd2 import ExcludeRegionMode, HandoverStyle, LimitFrameMode, PHD2SettleConfig
 from common.config.rois import FcuVersion
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
@@ -679,7 +679,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         # target goes into the fiber. Correct the lock onto it now or not at all.
         self._nudge_lock_before_insertion()
 
-        self.pause(full=True)
+        pause = self.conf.handover.pause
+        if pause:
+            self.pause(full=True)
         try:
             unit.required_stage.move_to_preset(StagePresetPosition.Spec)
             with Timeout(stage_timeout) as t:
@@ -691,7 +693,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             unit.end_activity(UnitActivities.PreGuiding)
             return
 
-        self.unpause()
+        if pause:
+            self.unpause()
         unit.end_activity(UnitActivities.PreGuiding)
         unit.start_activity(UnitActivities.Guiding)
         boxed_debug(logger, ["stage at SPEC, guiding resumed", "ready for exposure"])
@@ -709,6 +712,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if self.parent is None or self.parent.unit is None:
             return False
         if self.parent.unit.fcu_version != FcuVersion.v2:
+            return False
+        if self.conf.handover.style == HandoverStyle.LEGACY:
+            logger.info(f"{function_name()}: phd2.handover.style is legacy; the acquirer inserted the fold mirror")
             return False
         if not self.conf.handover.auto_insert:
             # The caller owns the insertion. `PreGuiding` is deliberately NOT raised:

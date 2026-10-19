@@ -12,6 +12,7 @@ from acquisition import Acquisition, ApproachMode
 from common import asi
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from common.config.phd2 import HandoverStyle
 from common.config.rois import FcuVersion, SkyRoiConfig
 from common.endpoints import Tier, endpoint
 from common.filer import Filer, MoveGuardian
@@ -270,6 +271,14 @@ class Acquirer:
         self.unit.end_activity(UnitActivities.Acquiring)
         self.unit.required_mount.stop_tracking()
         return None
+
+    def _position_mirror_for_guiding(self) -> str:
+        """Insert the fold mirror now on the legacy handover; otherwise leave it to the guider."""
+        assert self.unit.unit_conf is not None
+        if self.unit.unit_conf.phd2.handover.style == HandoverStyle.LEGACY:
+            self.unit.required_stage.move_to_preset(StagePresetPosition.Spec)
+            return "moving stage to SPEC (legacy handover)"
+        return "leaving stage at SKY; fold-mirror insertion deferred to the guiding handover"
 
     def _phase_failure(self, phase: str, tries: int) -> str:
         """Why a phase ended without reaching tolerance: `solve_and_correct` returns False
@@ -572,7 +581,7 @@ class Acquirer:
         # and locking stars. v1 has no fold mirror and is already at SPEC from the solve
         # phase; either way, wait for the stage to settle before going on.
         if self.unit.fcu_version == FcuVersion.v2:
-            lines.append("leaving stage at SKY; fold-mirror insertion deferred to the guiding handover")
+            lines.append(self._position_mirror_for_guiding())
         if not self._await_stage():
             self._abandon(op)
             return ACQUISITION_CANCELLED
