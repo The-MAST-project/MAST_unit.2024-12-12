@@ -27,11 +27,14 @@ from astropy.io import fits
 
 import spiral_search
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from common.filer import FilerTop, Location
 from common.models.statuses import ImagerRoi
 from spiral_search import FINAL_IMAGE, REFERENCE_IMAGE, RESULT_FILE, SpiralSearch
 
 SIZE = 300
 CENTER = SIZE // 2
+SHARE_ROOT = "Z:/MAST/"
+SHARED_ROOT = SHARE_ROOT + "mast01/"
 
 
 class FakeRoi:
@@ -170,6 +173,16 @@ def session(tmp_path, monkeypatch):
 
     moved: list[str] = []
     monkeypatch.setattr(spiral_search.filer, "move_ram_to_shared", lambda p: moved.append(str(p)))
+    # tmp_path stands for the RAM area, so the reported share paths are derived for real.
+    monkeypatch.setattr(
+        spiral_search.filer,
+        "tops",
+        {
+            FilerTop.Ram: Location(None, tmp_path.as_posix() + "/"),
+            FilerTop.Shared: Location(None, SHARED_ROOT),
+        },
+    )
+    monkeypatch.setattr(spiral_search.filer, "share_root", Location(None, SHARE_ROOT))
     reaped: list[str] = []
     monkeypatch.setattr(
         spiral_search.MoveGuardian, "release_folder", lambda self, f, logger=None, timeout=None: reaped.append(str(f))
@@ -435,12 +448,103 @@ class TestEndingASession:
         assert result["shift_magnitude_pixels"] > 1.0
 
 
+class TestReportedSharePaths:
+    """A caller off the unit reads the frames from the share, so it is told where they land
+    rather than left to guess `<night>/Spirals/<NNNN>` and `step-NNNN.fits` -- a guess
+    MAST_common#137 makes wrong after a reboot, when the folder numbers restart."""
+
+    def test_start_reports_the_session_folder_on_the_share(self, session):
+        value = session.start(1.0, 1.0, exposure_seconds=1.0).value
+
+        assert value["shared_folder"] == "mast01/Spirals/0001", "relative to the share's MAST root, no drive letter"
+        assert "share_error" not in value
+
+    def test_a_saved_step_frame_is_reported_by_its_share_path(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=True)
+
+        value = session.step(forward=True).value
+
+        name = session.steps[-1]["image"]
+        assert name.startswith("step-")
+        assert value["image"] == f"mast01/Spirals/0001/{name}"
+        assert "image_error" not in value
+
+    def test_a_unit_writing_to_its_local_fallback_reports_no_share_path(self, session, monkeypatch):
+        """With Z: unmapped, Filer's 'shared' area is the unit's own C:/MAST/. A path there
+        is not on the share, and a caller told it was would wait for a file that never
+        arrives -- the frames lost on 2026-07-14."""
+        monkeypatch.setitem(spiral_search.filer.tops, FilerTop.Shared, Location("C:/", "MAST/"))
+        start = session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=True).value
+        step = session.step(forward=True).value
+
+        assert start["shared_folder"] is None
+        assert "not on the share" in start["share_error"]
+        assert step["image"] is None
+        assert "not on the share" in step["image_error"]
+        assert session.is_active, "the frames are still taken, on the unit"
+
+    def test_no_image_is_reported_when_frames_are_not_saved(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=False)
+
+        value = session.step(forward=True).value
+
+        assert value["image"] is None
+        assert "image_error" not in value, "not saving a frame is not an error"
+
+    def test_a_failed_step_frame_is_reported_as_failed(self, session):
+        """Otherwise a lost frame and a slow mover look the same from outside: a file that
+        never arrives."""
+        session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=True)
+        session.unit.imager.fail_next = True
+
+        value = session.step(forward=True).value
+
+        assert value["image"] is None
+        assert "fake imager was told to fail" in value["image_error"]
+
+    def test_the_image_is_reported_even_when_pwi4_reports_no_cell(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=True)
+        session.unit.mount.pw.reports_offset = False
+
+        value = session.step(forward=True).value
+
+        assert "no spiral offset" in value["error"]
+        assert value["image"].startswith("mast01/Spirals/0001/")
+
+
 class TestAbandonedSession:
+    def test_each_step_restarts_the_abandonment_timer(self, session):
+        """The timeout is for a session nobody is driving. Counted from the start, it ended
+        long walks partway -- an automated spiral of six rings takes over an hour -- with
+        no measurement."""
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        first = session._timer
+
+        session.step(forward=True)
+
+        assert session._timer is not first
+        assert not first.is_alive(), "the old timer must be cancelled, not left to fire"
+        assert session._timer.is_alive()
+        session.end()
+
+    def test_a_timer_that_fired_during_a_step_does_not_abandon_the_session(self, session):
+        """`cancel()` cannot stop a timer that has already fired. One that fires while a
+        step holds the lock runs once the step releases it, after the step has re-armed --
+        and must then leave the session alone."""
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        stale = session._timer_generation
+
+        session.step(forward=True)
+        session._on_timeout(stale)
+
+        assert session.is_active, "a step re-armed the timer, so the old one is stale"
+        session.end()
+
     def test_timeout_closes_without_inventing_a_measurement(self, session):
         session.start(1.0, 1.0, exposure_seconds=1.0)
         exposures_before = list(session.unit.imager.exposures)
 
-        session._on_timeout()
+        session._on_timeout(session._timer_generation)
 
         result = read_result(session.test_folder)
         assert result["aborted"] is True
@@ -455,7 +559,7 @@ class TestAbandonedSession:
         session.end()
         tracking_after_end = session.unit.mount.tracking
 
-        session._on_timeout()  # the timer fires late; end() already won
+        session._on_timeout(session._timer_generation)  # the timer fires late; end() already won
 
         assert session.unit.mount.tracking == tracking_after_end
         assert read_result(session.test_folder)["aborted"] is False
