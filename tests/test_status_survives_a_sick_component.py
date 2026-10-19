@@ -81,6 +81,7 @@ class Stub:
         # Read by `status` since opmode/opstate went on the wire (opmode-design 6).
         self.opmode = OpMode.PRODUCTION
         self.opstate = OpState.INITIALIZED
+        self.acquirer = None
         assert not parts, f"unknown parts: {sorted(parts)}"
 
     def _idleness_status(self) -> dict:
