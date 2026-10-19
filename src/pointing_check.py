@@ -8,13 +8,14 @@ no separate exposure -- and records how far the target sits from the fiber.
 
 It is a monitor, not a corrector. Nothing here moves the mount or the lock.
 
-**The frame must be the full sensor.** While a guide session exists the only frame
-there is, is the guide frame, and the solver's SPEC reference pixel is in
-full-sensor coordinates. A limit-frame crop moves that pixel by the crop origin and
-the solve still succeeds (#234), so a frame of any other size is reported
-unavailable rather than solved. Running the check means guiding with
-``phd2.limit_frame.mode: full_frame``, the fold mirror being kept out of star
-selection by the exclusion region instead.
+**The frame is placed on the sensor before it is solved.** While a guide session
+exists the only frame there is, is the guide frame, and the solver's SPEC reference
+pixel is in full-sensor coordinates. A limit-frame crop moves that pixel by the crop
+origin and the solve still succeeds (#234), so a cropped frame is solved with the
+origin of the limit frame PHD2 holds; a frame that is neither the full sensor nor
+that limit frame, unbinned, is reported unavailable rather than solved. With a crop
+the fiber may lie outside the frame, and its position is extrapolated from the
+frame's solution.
 
 See MAST_unit#283.
 """
@@ -35,7 +36,7 @@ from common.asi import ASI_294MM_HEIGHT, ASI_294MM_WIDTH
 from common.filer import Filer, FilerTop
 from common.interfaces.solving import offset_on_sky_arcsec, target_offset_arcsec
 from common.mast_logging import get_logger
-from common.models.statuses import PointingCheckStatus, PointingSample, PointingSampleOutcome
+from common.models.statuses import ImagerRoi, PointingCheckStatus, PointingSample, PointingSampleOutcome
 from common.utils import Coord, function_name, isoformat_zulu
 from stage import StagePresetPosition
 
@@ -172,16 +173,21 @@ class PointingMonitor:
     def _judge(self, image_path: str, target: Coord, context: dict) -> PointingSample:
         header = fits.getheader(image_path)
         width, height = header["NAXIS1"], header["NAXIS2"]
+        crop = None
         if (width, height) != (ASI_294MM_WIDTH, ASI_294MM_HEIGHT):
-            return PointingSample(
-                outcome=PointingSampleOutcome.Unavailable,
-                reason=(
-                    f"guide frame is {width}x{height}, not the {ASI_294MM_WIDTH}x{ASI_294MM_HEIGHT} sensor: "
-                    f"a limit frame or binning is in force"
-                ),
-                **context,
-            )
+            crop = self._limit_frame_of(width, height)
+            if crop is None:
+                return PointingSample(
+                    outcome=PointingSampleOutcome.Unavailable,
+                    reason=(
+                        f"guide frame is {width}x{height}: neither the {ASI_294MM_WIDTH}x{ASI_294MM_HEIGHT} "
+                        f"sensor nor the limit frame PHD2 holds, unbinned"
+                    ),
+                    **context,
+                )
+            context = {**context, "frame_crop": (crop.x, crop.y, crop.width, crop.height)}
 
+        origin = {} if crop is None else {"frame_origin": (crop.x, crop.y)}
         started = time.monotonic()
         try:
             result = self._connector.parent.unit.solver._backend.solve(
@@ -189,6 +195,7 @@ class PointingMonitor:
                 phase=SOLVING_PHASE,
                 full_frame_input_image_path=image_path,
                 target=target,
+                **origin,
             )
         except Exception as ex:
             logger.error(f"{function_name()}: could not solve the guide frame: {ex!r}")
@@ -248,6 +255,20 @@ class PointingMonitor:
             except OSError as ex:
                 logger.error(f"{function_name()}: could not append to {journal}: {ex!r}")
         return sample
+
+    def _limit_frame_of(self, width: int, height: int) -> ImagerRoi | None:
+        """The limit frame a `width` x `height` guide frame was cut from, or None if it was not.
+
+        PHD2 delivers exactly the limit frame it holds, starting at its origin, so a frame
+        of that size, unbinned, sits there on the sensor.
+        """
+        connector = self._connector
+        if connector.profile_binning != 1:
+            return None
+        limit = connector.get_limit_frame()
+        if limit is None or (limit.width, limit.height) != (width, height):
+            return None
+        return limit
 
     def _acquisition(self):
         acquirer = self._connector.parent.unit.acquirer
