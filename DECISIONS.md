@@ -111,6 +111,27 @@ zeroed the stage mid-move; the next move to SPEC then stopped at the end of trav
 **Implications:** a stopgap. Startup can now take up to 150 s longer on a stage that never
 homes, and an expired homing is still left running behind the next move; not leaving it running
 is #311's ask.
+## [2026-10-13] The solver names its artifacts from the input's stem, and a caller may discard them
+
+**Why:** `MastrometryDotNet.solve` built the solved FITS and the result text paths by replacing
+`".fits"` in the input's name. PHD2 guide frames arrive as `sav*.tmp`, so both artifacts got the
+same path, the result text overwrote the solved FITS, and the read-back raised `No SIMPLE card
+found`. The scratch folder was removed only by a thread started after a successful read-back, so
+each failure also left its folder on the RAM disk (mast04, 2026-10-12: 19 folders, 321 MB, #314).
+
+**What:** both paths are built from `Path(input).stem`: `<stem>,solver=<name>.fits` and
+`<stem>,solver=<name>-result.txt`, which leaves a `.fits` input's names unchanged. The cleanup
+thread starts in a `finally`, so a solve that raises still removes its scratch. `solve()` takes
+`keep_artifacts` (default true): with it, the two artifacts are saved beside the input and moved
+to the shared area as before; without it, they are discarded with the scratch. Chosen over a
+caller-chosen artifacts folder and over keeping everything: a caller that solves a guide frame
+every minute would otherwise ship about 1 GB an hour to the share from PHD2's temp folder, and it
+already records each result itself.
+
+**Implications:** acquisition and flux metering keep the default and are unchanged. A caller
+that solves guide frames repeatedly (the pointing check and the lock nudge, on
+`eli/exclude-region`) passes `keep_artifacts=False`, so such a solve leaves no file behind and a
+failed one is diagnosed from the log, not from a kept result text.
 
 ---
 
