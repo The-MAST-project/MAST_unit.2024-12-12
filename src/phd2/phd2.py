@@ -1167,7 +1167,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
             assert imager_settings and imager_settings.roi
             if new_interface:
-                # roi = imager_settings.roi.binned(imager_settings.binning)
                 roi = imager_settings.roi
                 self.call(
                     method="guide",
