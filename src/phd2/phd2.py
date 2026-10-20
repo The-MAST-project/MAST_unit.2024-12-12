@@ -1664,6 +1664,27 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             why_not_operational=self.why_not_operational,
         )
 
+    def _frame_state(self) -> tuple[ImagerRoi | None, ImagerRoi | None, tuple[float, float] | None]:
+        """PHD2's limit frame, exclusion region and lock position, read every time.
+
+        Answering these from anything the connector remembers is what let the limit frame
+        and the exclusion region describe the instrument only until something else touched
+        it (#245). A failed read reports None rather than the last good answer -- "I do not
+        know" is a true statement and a stale rectangle is not. Status is polled, so a PHD2
+        that is down is not read, and a failing read is logged once per streak (#260).
+        """
+        if not self.connected:
+            return None, None, None
+        try:
+            state = self.get_limit_frame(), self.get_exclude_region(), self.get_lock_position()
+        except Exception:  # noqa: BLE001 -- a failed read reports as None, logged once per streak
+            if self._read_failures.begins("frame_state"):
+                logger.exception(f"{function_name()}: could not read PHD2's frame state, not logged again until it succeeds")
+            return None, None, None
+        if self._read_failures.ends("frame_state"):
+            logger.info(f"{function_name()}: PHD2's frame state reads succeed again")
+        return state
+
     def guider_status(self) -> PHD2GuiderStatus:
         """PHD2 in its **guider** role, for embedding under `GuiderStatus.backend`.
 
@@ -1683,19 +1704,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         )
 
         lock = self.lock_supervisor.state
-
-        # Read, every time. Answering these from anything the connector remembers is
-        # what let the limit frame and the exclusion region describe the instrument
-        # only until something else touched it (#245). A failed read reports None
-        # rather than the last good answer -- "I do not know" is a true statement and
-        # a stale rectangle is not.
-        try:
-            limit_frame = self.get_limit_frame()
-            exclude_region = self.get_exclude_region()
-            lock_position = self.get_lock_position()
-        except Exception:
-            logger.exception(f"{function_name()}: could not read PHD2's frame state")
-            limit_frame = exclude_region = lock_position = None
+        limit_frame, exclude_region, lock_position = self._frame_state()
         return PHD2GuiderStatus(
             identifier=self.identifier,
             is_guiding=self.is_guiding,
