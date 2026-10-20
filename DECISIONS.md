@@ -660,7 +660,7 @@ trade against a retry that cannot succeed. No configuration changes and no new f
 acceptance criterion that rejected good solutions on the same night is #237, deliberately
 separate because replacing it touches a required field in `AutofocusConfig`, and the
 unconditional `stop_tracking()` on the exit path is #232.
-## [2026-09-15] An exposure that never started releases its waiter, and the limit frame travels with the capture
+## [2026-10-20] An exposure keeps its frame while guiding, refuses one PHD2 would refuse, and never strands its waiter
 
 **Why:** #225, met on mast01 on 2026-09-08. An exposure requested while PHD2 was guiding never
 completed and the frame it did take was lost; one requested while PHD2 was paused never started
@@ -674,47 +674,39 @@ Three faults, independent of one another:
 - **`save_image` ignores its `path`.** While guiding, PHD2 will not take a separate exposure, so
   `start_exposure` asked for `save_image` instead -- which writes a temp file of its own choosing
   and returns the name in the reply. Nothing on that path emits `SingleFrameComplete`, which is
-  the only thing that ever set `image_saved_event`. Every exposure taken while guiding on this
-  fleet had been going to a temp file unnoticed, because the caller hung before it could look and
-  a hang reads as a slow exposure.
-- **`set_limit_frame` is refused whenever a guide session exists at all**, paused included:
-  *"Cannot set the frame limit ROI while calibrating or guiding."* `_is_guiding` accepts only
-  `Guiding` and `LostLock`, so a paused unit took the capture branch, which opened with
-  `set_limit_frame`; the refusal was caught and logged, and the method fell through without ever
-  calling `capture_single_frame`.
+  the only thing that ever set `image_saved_event`.
+- **PHD2 refuses a single-frame capture while its capture loop runs** -- looping, calibrating, or
+  a guide session that is paused: *"cannot capture single frame when capture is currently
+  active"* (mast01, 2026-10-19). It also refuses `set_limit_frame` whenever a session exists:
+  *"Cannot set the frame limit ROI while calibrating or guiding."* The old code caught the
+  refusal and fell through without capturing.
 - **The wait was unbounded.** Every hang traced that night ended on an event that nothing left
   alive would set.
 
-**What was decided:** three changes, one per fault.
+**What was decided:**
 
-The `save_image` reply is read rather than discarded: the file PHD2 chose is moved where the
-caller asked for it, `image_was_saved` is set, the waiter released and both imager flags ended.
-That is the guiding branch's equivalent of `SingleFrameComplete`, which it never had.
+- The `save_image` reply is read rather than discarded: the file PHD2 chose is moved where the
+  caller asked for it, `image_was_saved` is set, the waiter released and both imager flags ended
+  (`_adopt_saved_image`) -- the guiding branch's equivalent of `SingleFrameComplete`.
+- `start_exposure` refuses up front, before `Exposing` is raised, when PHD2's AppState is
+  `Looping`, `Calibrating` or `Paused` (`CAPTURE_LOOP_STATES`), with a reason that says to resume
+  or stop guiding. The only non-guiding state left is stopped, where `set_limit_frame` is
+  accepted, so that path keeps cropping with it as before.
+- `wait_for_image_saved` takes a timeout (`IMAGE_SAVE_TIMEOUT`, 300 s), and a capture that never
+  started releases its waiter and drops `Exposing`/`Saving` through `_release_unstarted_exposure`
+  -- the lesson #212 drew for abort, applied to the verb that starts: **a caught exception that
+  strands a waiter is worse than an uncaught one.**
 
-The limit frame travels as a parameter of `capture_single_frame` -- which this connector already
-did at one call site and not the other. There is then no ROI to mutate, nothing for PHD2 to
-refuse, and nothing to restore afterwards, which is what makes the paused case work at all.
+**Considered and dropped:** passing the crop inside `capture_single_frame` instead of
+`set_limit_frame`, to make the paused case work. PHD2's `capture_single_frame` takes `subframe`,
+not `limit_frame`, so the inline crop was never read and a stopped exposure would have gone
+uncropped; and PHD2 refuses the paused capture regardless.
 
-`wait_for_image_saved` takes a timeout (`IMAGE_SAVE_TIMEOUT`, 300 s), and a capture that never
-started releases its waiter and drops `Exposing`/`Saving` through `_release_unstarted_exposure`
-rather than leaving them for whoever notices. This is the lesson #212 drew for abort, applied to
-the verb that starts rather than the one that stops: **a caught exception that strands a waiter
-is worse than an uncaught one.**
-
-**Implications:** the bounded wait means a fault on this path now surfaces as an error on one
-frame instead of a stalled run, and `do_expose`'s `finally` always gets to run -- so #219's
-one-run guard stops being a second, delayed symptom of any imager fault. The two acquisition-path
-tests in `test_limit_frame_guiding.py` pinned the mechanism rather than the outcome; their stated
-intent -- `use_set_limit_frame` alone decides, the `phd2.limit_frame` config plays no part -- is
-unchanged and still asserted, and only the wire form moved.
-
-**What this deliberately does not do:** it does not correct `_is_guiding`, which still reads a
-narrower set of states than "a session exists" (#224 owns that). It removes the dependency on
-that predicate for the exposure path rather than fixing the predicate.
-
-**Not yet validated against real PHD2.** Whether `capture_single_frame` succeeds during a full
-pause has never been observed, on any night, because the `set_limit_frame` refusal always aborted
-first. The change is pinned by unit tests; the on-sky confirmation is still owed.
+**Implications:** a fault on this path surfaces as an error on one frame instead of a stalled
+run, and `do_expose`'s `finally` always gets to run. An exposure while guiding returns the guide
+frame (the profile's exposure and gain, not the request's). Observed on sky on 2026-10-12/19:
+the guide frame adopted and on the share; the paused and looping refusals. A stopped exposure is
+unchanged from before.
 
 ---
 

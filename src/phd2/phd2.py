@@ -100,6 +100,11 @@ DEFAULT_RPC_TIMEOUT = 30.0
 #: over USB, and short against a night: the point is that it ends, not that it is tight.
 IMAGE_SAVE_TIMEOUT = 300.0
 
+#: AppStates whose capture loop makes PHD2 refuse `capture_single_frame` ("cannot capture
+#: single frame when capture is currently active"; mast01, 2026-10-19, guiding paused).
+#: Guiding and LostLock are not here: there the guide frame is adopted instead.
+CAPTURE_LOOP_STATES = frozenset({"Looping", "Calibrating", "Paused"})
+
 #: `set_connected` drives the camera and mount connect, the one call here that does real work
 #: before answering. Generous on purpose: this bound exists to catch a lost reply, not a slow
 #: camera.
@@ -1731,6 +1736,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 logger.warning(msg)
                 return CanonicalResponse(errors=[msg])
 
+        if self.app_state in CAPTURE_LOOP_STATES:
+            msg = (
+                f"{function_name()}: PHD2 is {self.app_state} and refuses a single-frame capture while its "
+                "capture loop runs; resume guiding, or stop it, then expose"
+            )
+            logger.warning(msg)
+            return CanonicalResponse(errors=[msg])
+
         if settings.use_set_limit_frame and not self._is_guiding(self.app_state):
             try:
                 self.limit_frame_for_phd2(settings.roi)
@@ -1770,27 +1783,15 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             else:
                 self._adopt_saved_image(response, settings.image_path)
         else:
-            # Not guiding -- which includes PAUSED. The limit frame is passed inline
-            # rather than through `set_limit_frame`, because PHD2 refuses that call
-            # whenever a guide session exists at all:
-            #
-            #   "Cannot set the frame limit ROI while calibrating or guiding."
-            #
-            # measured on mast01 2026-09-08 with app_state=Paused. The refusal used to be
-            # caught and logged here, after which this method fell through without ever
-            # calling `capture_single_frame` -- so no image was taken, no
-            # SingleFrameComplete was emitted, and the caller blocked in
-            # `wait_for_image_saved` for ever (MAST_unit#225).
-            #
-            # `capture_single_frame` carries its own `limit_frame` parameter, so no ROI
-            # mutation is needed and there is nothing to refuse or to restore afterwards.
+            # Stopped: the capture-loop states were refused above, and PHD2 accepts
+            # `set_limit_frame` when nothing is looping or guiding.
             try:
                 assert settings.roi
-                limit = (
-                    settings.roi
-                    if settings.use_set_limit_frame
-                    else ImagerRoi(x=0, y=0, width=self.camera_x_size, height=self.camera_y_size)
-                )
+                if settings.use_set_limit_frame:
+                    self.set_limit_frame(roi=settings.roi)
+                else:
+                    self.set_limit_frame(roi=None)
+
                 self.call(
                     "capture_single_frame",
                     params={
@@ -1801,7 +1802,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                         "binning": settings.binning,
                         "save": True,
                         "path": settings.image_path,
-                        "limit_frame": [limit.x, limit.y, limit.width, limit.height],
                     },
                 )
 

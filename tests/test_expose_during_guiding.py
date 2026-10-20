@@ -79,6 +79,7 @@ def make_connector(app_state: str, tmp_path=None) -> PHD2Connector:
     # wait_for_image_saved also stamps the cooler readings; with no path there is nothing to stamp.
     p._exposure_image_path = None
     p._cooler_before = None
+    p.need_to_reset_limit_frame = False
     p.parent = FakeParent()
     p.call = MagicMock(return_value={"result": {"filename": TEMP_FILE}})
     return p
@@ -141,30 +142,31 @@ class TestWhileGuiding:
         assert ImagerActivities.Exposing not in p.parent.activities
 
 
-class TestWhilePaused:
-    """`_is_guiding` is False when paused, so this takes the capture branch."""
+class TestWhileStopped:
+    """Not guiding and no capture loop: the frame is a fresh capture, cropped by `set_limit_frame`.
 
-    def test_the_limit_frame_rides_on_the_capture(self, tmp_path):
-        p = make_connector("Paused")
+    PHD2 refuses `set_limit_frame` while a guide session exists ("Cannot set the frame limit
+    ROI while calibrating or guiding", mast01 2026-09-08), and refuses `capture_single_frame`
+    while its capture loop runs; both of those states are refused before this branch
+    (test_expose_refused_while_capturing.py), so here the limit frame can be set.
+    """
+
+    def test_the_limit_frame_is_set_and_the_frame_captured(self, tmp_path):
+        p = make_connector("Stopped")
         settings = settings_for(tmp_path / "out.fits")
 
         p.start_exposure(settings)
 
-        assert "set_limit_frame" not in methods(p), "PHD2 refuses that while a session exists"
+        assert methods(p).index("set_limit_frame") < methods(p).index("capture_single_frame")
         params = p.call.call_args_list[-1].kwargs["params"]
-        # The rect as `ImagerRoi` conditioned it -- the ZWO backend wants width % 8 and
-        # height % 2, so the requested 520,0,7760,4812 travels as 527,1,7744,4808. The
-        # old path conditioned it identically, by passing the same object to
-        # `set_limit_frame`, so this is not a change in what PHD2 is told.
-        roi = settings.roi
-        assert params["limit_frame"] == [roi.x, roi.y, roi.width, roi.height]
+        assert "limit_frame" not in params
         # `.as_posix()`, not `str()`: ImagerSettings.model_post_init normalizes
         # image_path to forward slashes, so on Windows the two do not match.
         assert params["path"] == (tmp_path / "out.fits").as_posix()
 
     def test_a_refused_capture_does_not_strand_the_waiter(self, tmp_path):
-        p = make_connector("Paused")
-        p.call = MagicMock(side_effect=PHD2ConnectorError("cannot capture single frame when capture is current"))
+        p = make_connector("Stopped")
+        p.call = MagicMock(side_effect=PHD2ConnectorError("PHD2 refused the capture"))
 
         response = p.start_exposure(settings_for(tmp_path / "out.fits"))
 
