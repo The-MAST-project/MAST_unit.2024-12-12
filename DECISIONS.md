@@ -28,6 +28,23 @@ with the DB change. Guide gain (`guiding.gain`) still does not reach PHD2: its J
 gain setter.
 
 ---
+## [2026-10-20] `ImagerSettings.roi` is unbinned sensor pixels for every writer, `/expose` included
+
+**Why:** `/unit/expose` was the one writer that stored a binned rect. PHD2's `set_limit_frame` and
+`make_file_name` both bin the rect themselves, so at binning 2 it was binned twice: a full-frame
+expose would read out the sensor's upper-left quarter, and the `binned_roi=` tag named a rect at a
+quarter of the real scale. MAST_unit#335.
+
+**What:** `_expose_repeatedly` stores `ImagerRoi.from_other(UnitRoi(...))` with the binning carried
+separately in `binning`, like acquisition, autofocus, guiding, calibration, flux metering, spiral
+search and the fixed limit frame. **Supersedes** the clause of the 2026-10-13 entry "The unit sends
+PHD2 only limit frames its camera accepts" that says the binning-2 `/expose` path hands over binned
+coordinates and is not changed.
+
+**Implications:** at binning 2 PHD2 now gets the rect it divides correctly, and the file name's tag
+matches the frame. The ZWO and ASCOM backends still treat `roi` as binned in places (ZWO's start
+position, ASCOM's `StartX`/`NumX`); no unit runs either, and every other writer already hit them
+this way, so that is left to its own fix.
 
 ## [2026-10-13] The unit sends PHD2 only limit frames its camera accepts; the full sensor goes as none
 
