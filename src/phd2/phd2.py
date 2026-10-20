@@ -1605,6 +1605,16 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 logger.warning(msg)
                 return CanonicalResponse(errors=[msg])
 
+        # Otherwise PHD2 guides at its profile's exposure, which persists across restarts
+        # and changes whenever anyone edits the profile.
+        exposure_ms = round(guiding_settings.seconds * 1000)
+        offered_ms = self.call("get_exposure_durations")["result"]
+        if exposure_ms not in offered_ms:
+            msg = f"{function_name()}: guiding.exposure {exposure_ms} ms is not one PHD2 offers {offered_ms}, cannot guide"
+            logger.warning(msg)
+            return CanonicalResponse(errors=[msg])
+        self.call("set_exposure", params=[exposure_ms])
+
         logger.info(f"{function_name()}: starting guiding")
         self.parent.unit.start_activity(UnitActivities.Guiding)
         self.guide(imager_settings=guiding_settings)

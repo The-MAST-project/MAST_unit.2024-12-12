@@ -148,7 +148,10 @@ def rig(binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1, limit_frame: Limi
     p.errors = []
     p._read_failures = FailureStreaks()
     p.image_saved_event = threading.Event()
-    rpc = MagicMock(name="call", return_value={})
+    rpc = MagicMock(
+        name="call",
+        side_effect=lambda method, params=None: {"result": [3000]} if method == "get_exposure_durations" else {},
+    )
     p.call = rpc
     doc = {
         "profile": f"PWI4+ASI-native,binning={binning},bpp=16",
