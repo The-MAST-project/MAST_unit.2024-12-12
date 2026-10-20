@@ -33,6 +33,7 @@ import pointing_check
 from common.asi import ASI_294MM_HEIGHT, ASI_294MM_WIDTH
 from common.interfaces.solving import SolvingResult, SolvingSolution
 from common.models.statuses import ImagerRoi, PointingCheckStatus, PointingSampleOutcome
+from failure_streaks import FailureStreaks
 from pointing_check import PointingMonitor
 
 #: 15h 00m 00s, +30 deg -- an arbitrary target away from both RA wrap and the pole.
@@ -391,6 +392,7 @@ class TestTheConnector:
         c.start_handover_if_configured = lambda: False
         c.start_activity = lambda *a, **kw: None
         c.end_activity = lambda *a, **kw: None
+        c._read_failures = FailureStreaks()
         c.ra_accumulator = PHD2Accumulator()
         c.dec_accumulator = PHD2Accumulator()
         c.parent = SimpleNamespace(unit=SimpleNamespace(unit_conf=SimpleNamespace(phd2=SimpleNamespace(profile="test"))))
