@@ -2,6 +2,33 @@
 
 ---
 
+## [2026-10-20] start_guiding sets the guide exposure from the config DB
+
+**Why:** `start_guiding` never sent an exposure, so PHD2 guided at its profile's
+`ExposureDurationMs`, which persists across restarts and changes whenever anyone edits it. A
+bench test left mast03's profile at 10 ms, and on the night of 2026-10-19/20 guiding lost or
+never found its star in four of nine starts. Restarting PHD2 re-read the same value.
+`units.<unit>.guiding.exposure` was in the config all along but never reached PHD2.
+MAST_unit#352.
+
+**What:** after the binning and bpp checks, `start_guiding` rounds `guiding.exposure` to
+milliseconds, checks it against PHD2's `get_exposure_durations`, and sends `set_exposure`. A
+value PHD2 does not offer is refused like a binning mismatch, because PHD2 rejects it with an
+RPC error anyway. There is no read-back: a `set_exposure` that succeeds cannot leave a different
+value. The default is 3 s, matching what the PHD2 profiles held. Team decision, 2026-10-20:
+`units.common.guiding.exposure` changed from 5 to 3 that day, before this landed.
+
+**Implications:** editing the exposure in PHD2's GUI no longer sticks. The next `start_guiding`
+overwrites it, and on units with `phd2.validation_interval` set, that is the next validation
+tick. Change `guiding.exposure` in the DB instead, to one of PHD2's offered durations. A value
+PHD2 does not offer stops guiding from starting. Until MAST_unit#351 and #332 land, that refusal
+reaches the log only, and a validation restart that is refused leaves the unit reporting
+`Guiding`. `validate_guiding`'s frame already used `guiding.exposure`, so it went from 5 s to 3 s
+with the DB change. Guide gain (`guiding.gain`) still does not reach PHD2: its JSON-RPC has no
+gain setter.
+
+---
+
 ## [2026-10-13] The unit sends PHD2 only limit frames its camera accepts; the full sensor goes as none
 
 **Why:** PHD2's ZWO driver widens a limit frame to 32-px boundaries, in binned coordinates, and
@@ -61,8 +88,6 @@ A settle timeout is logged by the mount and does not fail the acquisition, as be
 phase. A cancel during the slew is honored only once the settle returns, because
 `wait_until_settled` does not poll a cancel flag. Other `SLEW` callers keep the full grace and
 their own tolerance.
-
----
 
 ## [2026-10-13] Flux metering puts the folding mirror in after the acquisition, not before
 
