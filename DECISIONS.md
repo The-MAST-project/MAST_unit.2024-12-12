@@ -2,6 +2,40 @@
 
 ---
 
+## [2026-10-13] The unit sends PHD2 only limit frames its camera accepts; the full sensor goes as none
+
+**Why:** PHD2's ZWO driver widens a limit frame to 32-px boundaries, in binned coordinates, and
+does not keep the result inside the sensor (`constrain_roi`, upstream `cam_zwo.cpp`). The camera
+rejects a frame widened past the sensor, PHD2 only logs it, and it then copies the camera's rows
+with the rejected frame's stride. mast03's derived frame, 7952x5628@10,14, widened to 7968x5664 on
+a 5644-row sensor and sheared every guide frame of 2026-10-12. A full-sensor frame is rejected the
+same way and came out right only while the camera's last accepted ROI was full width: after
+guiding on a narrower frame it was sheared too (mast03, 2026-10-13). MAST_unit#330.
+
+**What:**
+- `phd2/limit_frame.py` states PHD2's rule once: at binning b a frame must end within the binned
+  sensor floored to 32, which is 8288x5632 at bin 1. It has no connector imports, so the solver
+  uses it too.
+- `derived_guiding_roi` there is the one derivation of the fiber-centered guiding frame, bounded
+  by that extent. `make_guiding_settings` and mastrometry's spec phase both call it. mast03's
+  frame becomes 7952x5604@10,26; frames that already fit are unchanged, and centers are kept.
+- A frame PHD2 would widen to the whole sensor is sent as no limit frame (`roi: None`). That
+  covers the exact sensor and a full frame trimmed by `ImagerRoi` conditioning (MAST_common#17),
+  such as the 8256x5636@14,2 a default `/expose` sends at binning 1. At binning 2 that path hands
+  over binned coordinates, which PHD2 reads as unbinned; that predates this and is not changed. `None` reads out the full 8288x5644 and resets
+  the camera's ROI, so such an image is now the true full frame, a few px larger than its name says.
+- `start_guiding` and `start_exposure` refuse a frame that does not fit, next to their binning and
+  bpp checks and before raising `Guiding` / `Exposing`; `set_limit_frame` raises
+  `PHD2ConnectorError` as a backstop.
+
+**Implications:** the unit now depends on a private PHD2 rounding rule. It can go once PHD2
+keeps the widened frame inside the sensor and that build is deployed (reported upstream). A
+misplaced `fixed` frame no longer guides on sheared frames; the refusal is a WARNING and an error
+in the backend's response, which `Guider.start_guiding` does not pass on, the same as for the
+binning and bpp refusals.
+
+---
+
 ## [2026-10-13] Flux metering puts the folding mirror in after the acquisition, not before
 
 **Why:** the run moved the mirror to SPEC, then the acquisition took it out to solve on FCU v2 and
