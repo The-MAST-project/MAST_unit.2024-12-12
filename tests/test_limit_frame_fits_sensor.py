@@ -136,6 +136,9 @@ class Rig:
         return [c.args[0] for c in self.rpc.call_args_list if c.args]
 
 
+GET_EXPOSURE_DURATIONS = {"get_exposure_durations": {"result": [1000, 2000, 3000, 5000]}}
+
+
 def rig(binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1, limit_frame: LimitFrameConfig | None = None) -> Rig:
     """A real PHD2Connector minus the heavy __init__, recording its RPC calls."""
     p = object.__new__(PHD2Connector)
@@ -148,7 +151,7 @@ def rig(binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1, limit_frame: Limi
     p.errors = []
     p._read_failures = FailureStreaks()
     p.image_saved_event = threading.Event()
-    rpc = MagicMock(name="call", return_value={})
+    rpc = MagicMock(name="call", side_effect=lambda method, params=None: GET_EXPOSURE_DURATIONS.get(method, {}))
     p.call = rpc
     doc = {
         "profile": f"PWI4+ASI-native,binning={binning},bpp=16",
