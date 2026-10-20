@@ -660,6 +660,53 @@ trade against a retry that cannot succeed. No configuration changes and no new f
 acceptance criterion that rejected good solutions on the same night is #237, deliberately
 separate because replacing it touches a required field in `AutofocusConfig`, and the
 unconditional `stop_tracking()` on the exit path is #232.
+## [2026-10-20] An exposure keeps its frame while guiding, refuses one PHD2 would refuse, and never strands its waiter
+
+**Why:** #225, met on mast01 on 2026-09-08. An exposure requested while PHD2 was guiding never
+completed and the frame it did take was lost; one requested while PHD2 was paused never started
+at all. Both ended in the same place -- the caller blocked for ever in `wait_for_image_saved`,
+so `do_expose`'s `finally` never ran, `UnitActivities.Exposing` stayed raised, and #219's
+one-run guard then refused every later frame in the run. One frame that could not start cost
+all of them.
+
+Three faults, independent of one another:
+
+- **`save_image` ignores its `path`.** While guiding, PHD2 will not take a separate exposure, so
+  `start_exposure` asked for `save_image` instead -- which writes a temp file of its own choosing
+  and returns the name in the reply. Nothing on that path emits `SingleFrameComplete`, which is
+  the only thing that ever set `image_saved_event`.
+- **PHD2 refuses a single-frame capture while its capture loop runs** -- looping, calibrating, or
+  a guide session that is paused: *"cannot capture single frame when capture is currently
+  active"* (mast01, 2026-10-19). It also refuses `set_limit_frame` whenever a session exists:
+  *"Cannot set the frame limit ROI while calibrating or guiding."* The old code caught the
+  refusal and fell through without capturing.
+- **The wait was unbounded.** Every hang traced that night ended on an event that nothing left
+  alive would set.
+
+**What was decided:**
+
+- The `save_image` reply is read rather than discarded: the file PHD2 chose is moved where the
+  caller asked for it, `image_was_saved` is set, the waiter released and both imager flags ended
+  (`_adopt_saved_image`) -- the guiding branch's equivalent of `SingleFrameComplete`.
+- `start_exposure` refuses up front, before `Exposing` is raised, when PHD2's AppState is
+  `Looping`, `Calibrating` or `Paused` (`CAPTURE_LOOP_STATES`), with a reason that says to resume
+  or stop guiding. The only non-guiding state left is stopped, where `set_limit_frame` is
+  accepted, so that path keeps cropping with it as before.
+- `wait_for_image_saved` takes a timeout (`IMAGE_SAVE_TIMEOUT`, 300 s), and a capture that never
+  started releases its waiter and drops `Exposing`/`Saving` through `_release_unstarted_exposure`
+  -- the lesson #212 drew for abort, applied to the verb that starts: **a caught exception that
+  strands a waiter is worse than an uncaught one.**
+
+**Considered and dropped:** passing the crop inside `capture_single_frame` instead of
+`set_limit_frame`, to make the paused case work. PHD2's `capture_single_frame` takes `subframe`,
+not `limit_frame`, so the inline crop was never read and a stopped exposure would have gone
+uncropped; and PHD2 refuses the paused capture regardless.
+
+**Implications:** a fault on this path surfaces as an error on one frame instead of a stalled
+run, and `do_expose`'s `finally` always gets to run. An exposure while guiding returns the guide
+frame (the profile's exposure and gain, not the request's). Observed on sky on 2026-10-12/19:
+the guide frame adopted and on the share; the paused and looping refusals. A stopped exposure is
+unchanged from before.
 
 ---
 
