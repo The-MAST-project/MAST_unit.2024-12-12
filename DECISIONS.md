@@ -33,6 +33,34 @@ keeps the widened frame inside the sensor and that build is deployed (reported u
 misplaced `fixed` frame no longer guides on sheared frames; the refusal is a WARNING and an error
 in the backend's response, which `Guider.start_guiding` does not pass on, the same as for the
 binning and bpp refusals.
+## [2026-10-13] An acquisition waits for the slew before its first exposure, on every path
+
+**Why:** the only slew wait in `do_acquire` sat in the FCU v1 `sky` phase. On FCU v2 -- every
+production unit -- and on v1 with `skip_sky`, the `spec` phase waited only for the stage and a
+fixed 5 s, so any longer slew was still moving when the first frame was taken (mast04,
+2026-10-12: a 10 s slew to Markab, exposure started 5 s in). Each acquisition lost one iteration
+to a trailed frame. MAST_unit#315.
+
+**What:** `do_acquire` records when it commanded the goto, and `Acquirer._await_slew` waits on
+`wait_until_settled(SettleMode.SLEW)` after each phase's stage wait, so the slew overlaps the
+stage move and the 5 s sleep. Two arguments make that wait cheap where it would otherwise not be:
+
+- `dist_tolerance_arcsec=SLEW_SETTLE_TOLERANCE_ARCSEC` (10"), the calibration slew's tolerance,
+  now defined in `mount.py` for both. The acquisition asks "did we arrive?"; the 0.5" default
+  asks "is tracking quiet?", which wind can keep answering no until the 120 s timeout.
+- `start_grace_seconds` is only the part of `SETTLE_START_GRACE_SECONDS` not yet spent since the
+  goto. The grace guards a stale `is_slewing` read right after the goto; after the stage wait it
+  has usually run out, and waiting it again cost 3 s and a warning on every acquisition. The
+  slew wait now checks `is_slewing` at least once, so a zero grace still waits out a slew in
+  progress, and logs a slew it never saw as a warning only when a grace was asked for.
+
+A settle timeout is logged by the mount and does not fail the acquisition, as before in the v1
+`sky` phase: the correction loop recovers from a frame taken slightly off.
+
+**Implications:** an acquisition that did not slew no longer waits on the mount at all, in either
+phase. A cancel during the slew is honored only once the settle returns, because
+`wait_until_settled` does not poll a cancel flag. Other `SLEW` callers keep the full grace and
+their own tolerance.
 
 ---
 
