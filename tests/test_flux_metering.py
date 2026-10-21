@@ -500,27 +500,22 @@ def test_a_bad_coordinate_raises_rather_than_being_guessed_at():
 def test_a_moved_frame_is_read_from_the_share(tmp_path, monkeypatch):
     """The fallback is the normal path, not an edge case: frames go to the mover as they
     are written, so the arg-max frame has usually LEFT the ram disk by the time the
-    correlation wants it. A first real run failed here because `change_top_to` compares
+    correlation wants it. A first real run failed here because `change_top_to` compared
     against roots spelled POSIX-style while the folder came from pathlib with backslashes,
-    so the prefix test silently missed."""
+    so the prefix test silently missed. The real `to_top`, on roots spelled as in
+    production, against a folder spelled natively -- the Windows runner's mismatch."""
     import flux_metering.session as session_module
-    from common.filer import FilerTop
+    from common.filer import Location
 
-    ram, shared = tmp_path / "ram" / "run", tmp_path / "shared" / "run"
-    shared.mkdir(parents=True)
-    ram.mkdir(parents=True)
-    fits.PrimaryHDU(data=np.full((8, 8), 7, dtype=np.uint16)).writeto(shared / "step-00000-00.fits")
-
-    def change_top_to(top, path):
-        # As the real one does: a plain prefix test against a posix-spelled root.
-        assert top is FilerTop.Shared
-        posix_ram = ram.as_posix()
-        return path.replace(posix_ram, shared.as_posix()) if path.startswith(posix_ram) else None
-
-    monkeypatch.setattr(session_module.filer, "change_top_to", change_top_to)
+    ram, shared = tmp_path / "ram", tmp_path / "shared"
+    (shared / "run").mkdir(parents=True)
+    (ram / "run").mkdir(parents=True)
+    fits.PrimaryHDU(data=np.full((8, 8), 7, dtype=np.uint16)).writeto(shared / "run" / "step-00000-00.fits")
+    monkeypatch.setattr(session_module.filer, "ram", Location(ram.as_posix()))
+    monkeypatch.setattr(session_module.filer, "shared", Location(shared.as_posix()))
 
     s = FluxMeteringSession.__new__(FluxMeteringSession)
-    s.state = session_module.FluxMeteringStatus(folder=str(ram))  # backslashes on Windows
+    s.state = session_module.FluxMeteringStatus(folder=str(ram / "run"))  # backslashes on Windows
 
     data = s._read_fits("step-00000-00.fits")
 
@@ -531,7 +526,7 @@ def test_a_moved_frame_is_read_from_the_share(tmp_path, monkeypatch):
 def test_a_frame_that_is_nowhere_says_where_it_looked(tmp_path, monkeypatch):
     import flux_metering.session as session_module
 
-    monkeypatch.setattr(session_module.filer, "change_top_to", lambda top, path: None)
+    # tmp_path is under none of the suite's filing areas, so `to_top` raises.
     s = FluxMeteringSession.__new__(FluxMeteringSession)
     s.state = session_module.FluxMeteringStatus(folder=str(tmp_path))
 
