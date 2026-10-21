@@ -42,10 +42,14 @@ if str(_SRC) not in sys.path:
 # one hole in the guard below.
 #
 # fontconfig -- matplotlib's font manager shells out to `fc-list` while importing. That
-# happens on Linux only, so this repo (Windows-only CI) will not hit it, but the entry is
-# kept in step with MAST_common so the two guards cannot drift, and so the suite still
-# runs on a developer's Linux box.
-ALLOWED = {"fc-list", "fc-match"}
+# happens on Linux only, so this repo (Windows-only CI) will not hit it, but the entry
+# matches MAST_common's, and the suite still runs on a developer's Linux box.
+#
+# uname -- importing h5py (catalogs/catshtm.py) calls platform.processor(), which runs
+# `uname -p` off Windows. Without it tests/test_catshtm_reader.py cannot even be collected
+# on macOS or Linux. Reading the processor type is not driving hardware. MAST_common has
+# no such entry: nothing it tests imports h5py.
+ALLOWED = {"fc-list", "fc-match", "uname"}
 
 
 class ProcessLaunchError(RuntimeError):
