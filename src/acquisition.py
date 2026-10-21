@@ -128,4 +128,23 @@ class Acquisition:
         # acquisitions that ran to completion, and the ones worth clearing are the ones that
         # did not. Acquirer.run_acquisition owns the release, in a finally.
         if filer.ram and filer.ram.root is not None:
-            plot_acquisition_corrections(self.folder.replace(filer.ram.root, filer.shared.root))
+            plot_acquisition_corrections(self._folder_on_the_share())
+
+    def _folder_on_the_share(self) -> str:
+        """This acquisition's folder, as moved to the shared area.
+
+        By the path relative to the ram root, not `self.folder.replace(ram.root,
+        shared.root)`: the roots are stored forward-slashed ("D:/MAST/") and PathMaker builds
+        folders with backslashes on Windows, so the replace never matched there and the plot
+        was always pointed at the ram-disk folder (plans/filing-areas-design.md 1.4).
+        `relpath` takes either separator. A folder that is not under the ram root at all is
+        returned unchanged, which is what the replace did, but now only for that case.
+        """
+        assert filer.ram is not None
+        try:
+            relative = os.path.relpath(self.folder, filer.ram.root)
+        except ValueError:  # Windows: on another drive than the ram root
+            return self.folder
+        if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+            return self.folder
+        return os.path.join(filer.shared.root, relative)
