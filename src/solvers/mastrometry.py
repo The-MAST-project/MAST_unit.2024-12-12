@@ -25,6 +25,7 @@ from phd2.limit_frame import derived_guiding_roi
 
 from .astrometry_dot_net import generate_random_string, parse_solver_output, win_to_cygwin
 from .pixel_grid import roi_center_to_crpix
+from .ram_area import index_dir, missing_indexes, scratch_dir
 
 logger = get_logger(__name__)
 if TYPE_CHECKING:
@@ -70,12 +71,12 @@ class MastrometryDotNet(SolverInterface):
 
         ram = Filer().ram
         assert ram is not None, f"{function_name()}: RAM disk is not mounted"
-        if not Path(ram.root).exists():
-            Path(ram.root).mkdir(parents=True, exist_ok=True)
 
-        self.index_dir = Path(str(ram.drive), "mast-indexes")
-        if not self.index_dir.exists():
-            raise Exception(f"{function_name()}: RAM disk path '{self.index_dir.as_posix()}' does not exist")
+        # `ram_area.index_dir()`, not `Path(ram.drive, ...)`: Location has had one canonical
+        # root, and no `drive`, since MAST_common#183 -- the old line raised AttributeError.
+        self.index_dir = index_dir()
+        if (why := missing_indexes(self.index_dir)) is not None:
+            raise Exception(f"{function_name()}: {why}")
 
         # missing = False
         # for i in range(0, 47):
@@ -138,8 +139,13 @@ class MastrometryDotNet(SolverInterface):
         #
         filer = Filer(logger)
         assert filer.ram is not None
-        win_tmp_dir = Path(filer.ram.root, "tmp", generate_random_string(prefix="tmp_"))
-        win_tmp_dir.mkdir(parents=True, exist_ok=True)
+        # Checked per solve as well as at start-up: the RAM disk, and the indexes with it, can
+        # go while the unit runs. Said plainly rather than as the solver's generic failure.
+        if (why := missing_indexes(self.index_dir)) is not None:
+            raise Exception(f"{function_name()}: {why}")
+        # On the RAM area's current root -- its fallback while the disk is gone -- not on the
+        # root the Filer was built with.
+        win_tmp_dir = scratch_dir(generate_random_string(prefix="tmp_"))
 
         # From the stem, not by editing the name: an input that is not *.fits (PHD2's
         # sav*.tmp guide frames) would otherwise give both artifacts the same path.

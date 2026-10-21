@@ -19,6 +19,8 @@ from common.mast_logging import get_logger
 from common.utils import Coord, boxed_log, function_name, generate_random_string
 from imagers import ImagerSettings
 
+from .ram_area import scratch_dir
+
 # from unit import Unit  # type: ignore[import-untyped]
 
 logger = get_logger(__name__)
@@ -35,25 +37,24 @@ class AstrometryDotNetSolverResult:
         }
 
 
+_DRIVE = re.compile(r"^([A-Za-z]):")
+_CYGDRIVE = re.compile(r"^/cygdrive/([A-Za-z])(?=/|$)")
+
+
 def win_to_cygwin(path: str) -> str:
-    if path.startswith("C:") or path.startswith("c:"):
-        path = path.replace("C:", r"/cygdrive/c").replace("c:", r"/cygdrive/c")
-    elif path.startswith("D:") or path.startswith("d:"):
-        path = path.replace("D:", r"/cygdrive/d").replace("d:", r"/cygdrive/d")
-    return path.replace("\\", "/")
+    """``D:\\MAST\\x`` -> ``/cygdrive/d/MAST/x``, for any drive -- the RAM fallback is on C:."""
+    return _DRIVE.sub(lambda m: f"/cygdrive/{m.group(1).lower()}", path.replace("\\", "/"), count=1)
 
 
 def cygwin_to_win(path: str) -> str:
-    # return path.replace('/cygdrive/d', 'D:').replace('/', '\\')
-    return path.replace("/cygdrive/d", "D:")
+    """``/cygdrive/d/MAST/x`` -> ``D:/MAST/x``, for any drive."""
+    return _CYGDRIVE.sub(lambda m: f"{m.group(1).upper()}:", path, count=1)
 
 
 def win_to_wsl(path: str) -> str:
-    if path.startswith("C:") or path.startswith("c:"):
-        path = path.replace("C:", r"/mnt/c").replace("c:", r"/mnt/c")
-    elif path.startswith("C:") or path.startswith("c:"):
-        path = path.replace("D:", r"/mnt/d").replace("d:", r"/mnt/d")
-    return path.replace("\\", "/")
+    """``D:\\MAST\\x`` -> ``/mnt/d/MAST/x``, for any drive. (It tested for C: twice, so a D:
+    path was never converted.)"""
+    return _DRIVE.sub(lambda m: f"/mnt/{m.group(1).lower()}", path.replace("\\", "/"), count=1)
 
 
 class AstrometryDotNet(SolverInterface):
@@ -169,8 +170,11 @@ class AstrometryDotNet(SolverInterface):
         new_fits_path = input_fits_path.replace(".fits", f",solver={solver_name}.fits")
 
         if unix_emulator == "cygwin":
-            tmp_path = r"/cygdrive/d/MAST/tmp/" + tmp_dir
-            os.makedirs(tmp_path, exist_ok=True)
+            # Made as a Windows path on the RAM area's current root -- its fallback while the
+            # disk is gone -- and handed to solve-field in cygwin's spelling. It was made as
+            # "/cygdrive/d/...", which Windows Python reads as C:\\cygdrive\\d\\..., and was
+            # fixed on D: whatever the disk's state.
+            tmp_path = win_to_cygwin(scratch_dir(tmp_dir).as_posix())
 
             cmd = r"C:/cygwin64/usr/local/astrometry/bin/solve-field"
             args += ["--dir", tmp_path]
