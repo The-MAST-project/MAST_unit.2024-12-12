@@ -7,8 +7,9 @@ into the venv, so nothing here needs to place it -- but the tests will fail to
 import it in a venv without that ``.pth``.
 
 ``common.filer.Filer.__init__`` is shimmed to a temp-dir layout on **every**
-platform, because ``common.utils`` builds a module-level ``Filer`` at import,
-so every component module drags one in:
+platform, by MAST_common's ``common.testing.filer.isolate_filer``, because
+``common.utils`` builds a module-level ``Filer`` at import, so every component
+module drags one in:
 
 - On **macOS** the shim is what makes the import possible at all: ``Filer``
   supports Windows/Linux only and raises at import time, and its Linux paths
@@ -28,7 +29,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -124,43 +124,13 @@ def _block_external_processes() -> None:
             setattr(module, name, deny(f"{module.__name__}.{name}", original))
 
 
-def _shim_filer_for_tests() -> None:
-    import common.filer as filer_module
+# One definition of the Filer shim, MAST_common's (`common.testing.filer`): a temporary
+# folder per role, never one for all of them -- with one, the app lifespan's relocation sweep
+# queued a move of a folder onto itself that could never complete, and every lifespan test
+# waited out `Filer.flush()`'s 30 s timeout on it.
+from common.testing import filer as _filer_testing  # noqa: E402 -- installed before collection
 
-    tmp_root = tempfile.mkdtemp(prefix="mast-unit-tests-")
-
-    # One directory per role, as on a real machine. They used to be one and the same, so
-    # the app lifespan's relocation sweep queued a move of a folder onto itself; that move
-    # could never complete, and every lifespan test then waited out `Filer.flush()`'s 30 s
-    # timeout on it -- about two minutes of the suite.
-    def _location(role: str):
-        path = os.path.join(tmp_root, role)
-        os.makedirs(path, exist_ok=True)
-        return filer_module.Location(None, path)
-
-    local, shared, ram = _location("local"), _location("shared"), _location("ram")
-
-    def _tmp_init(self, logger=None):
-        self.local = local
-        self.shared = shared
-        self.ram = ram
-        # Not reached by any test directly: `init_log` builds a `Filer()` and asks it
-        # for `machine_log_root()`, which reads both. Every attribute the real
-        # `__init__` binds has to be here, or importing anything that logs blows up
-        # during collection.
-        self.share_root = shared
-        self.machine = shared
-        self.tops = {
-            filer_module.FilerTop.Local: self.local,
-            filer_module.FilerTop.Shared: self.shared,
-            filer_module.FilerTop.Ram: self.ram,
-        }
-        self.logger = logger
-
-    filer_module.Filer.__init__ = _tmp_init
-
-
-_shim_filer_for_tests()
+_filer_testing.isolate_filer(prefix="mast-unit-tests-")
 
 # Same reason as the Filer shim, and before collection for the same reason: the component
 # modules bind win32com / pyximc / pyzwoasi at module scope, so without these they cannot be
