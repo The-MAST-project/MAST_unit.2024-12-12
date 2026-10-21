@@ -65,8 +65,10 @@ def _solve_field_that_crashes(command, **_kwargs):
 @pytest.fixture
 def solver(tmp_path) -> MastrometryDotNet:
     # __init__ only checks that the RAM disk holds the index set, which a test has no use for.
+    # The folder itself must exist: solve() checks for it before every run.
     backend = MastrometryDotNet.__new__(MastrometryDotNet)
     backend.index_dir = tmp_path / "mast-indexes"
+    backend.index_dir.mkdir()
     return backend
 
 
