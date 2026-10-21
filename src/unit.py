@@ -1747,7 +1747,9 @@ class Unit(Component, OpmodeBase):
                         # Relative to the shared root. This sent `.parent.name` -- the bare
                         # directory name, with no path at all -- so the controller symlinked
                         # something it could never resolve. MAST_spec#39.
-                        shared_top=os.path.relpath(Path(self.imager.latest_settings.image_path).parent, filer.shared.root),
+                        # Within its filing area (the share mirrors it); relpath() from
+                        # shared.root raised ValueError on Windows, D: and Z: being two drives.
+                        shared_top=filer.area_of(Path(self.imager.latest_settings.image_path).parent)[1],
                         shared_subpath="autofocus",
                     )
                 )
@@ -1768,7 +1770,7 @@ class Unit(Component, OpmodeBase):
                         # Relative to the shared root, not the absolute ram path: the
                         # controller symlinks this, and its shared root is spelled
                         # differently from ours. MAST_spec#39.
-                        shared_top=os.path.relpath(self.acquirer.latest_acquisition.folder, filer.shared.root),
+                        shared_top=filer.area_of(self.acquirer.latest_acquisition.folder)[1],
                         shared_subpath="acquisition",
                     )
                 )
