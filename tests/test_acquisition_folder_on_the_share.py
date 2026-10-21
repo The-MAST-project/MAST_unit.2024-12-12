@@ -22,11 +22,9 @@ from common.filer import Location
 @pytest.fixture
 def roots(tmp_path, monkeypatch):
     ram, shared = tmp_path / "ram", tmp_path / "shared"
-    fake = SimpleNamespace(
-        ram=Location(None, f"{ram.as_posix()}/"),
-        shared=Location(None, f"{shared.as_posix()}/"),
-    )
-    monkeypatch.setattr(acquisition_module, "filer", fake)
+    # The real Filer's methods, on roots spelled as in production (forward-slashed).
+    monkeypatch.setattr(acquisition_module.filer, "ram", Location(ram.as_posix()))
+    monkeypatch.setattr(acquisition_module.filer, "shared", Location(shared.as_posix()))
     return ram, shared
 
 

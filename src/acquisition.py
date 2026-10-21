@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from common import asi
 from common.corrections import Corrections
-from common.filer import Filer, MoveGuardian
+from common.filer import Filer, FilingArea, MoveGuardian
 from common.interfaces.solving import SolverId
 from common.mast_logging import get_logger
 from common.paths import PathMaker
@@ -133,18 +133,16 @@ class Acquisition:
     def _folder_on_the_share(self) -> str:
         """This acquisition's folder, as moved to the shared area.
 
-        By the path relative to the ram root, not `self.folder.replace(ram.root,
-        shared.root)`: the roots are stored forward-slashed ("D:/MAST/") and PathMaker builds
-        folders with backslashes on Windows, so the replace never matched there and the plot
-        was always pointed at the ram-disk folder (plans/filing-areas-design.md 1.4).
-        `relpath` takes either separator. A folder that is not under the ram root at all is
-        returned unchanged, which is what the replace did, but now only for that case.
+        Through `Filer.to_top`, not `self.folder.replace(ram.root, shared.root)`: the roots
+        are stored forward-slashed ("D:/MAST/") and PathMaker built folders with backslashes
+        on Windows, so the replace never matched there and the plot was always pointed at
+        the ram-disk folder (plans/filing-areas-design.md 1.4). A folder that is not on the
+        ram area is returned unchanged, which is what the replace did, but now only then.
         """
-        assert filer.ram is not None
         try:
-            relative = os.path.relpath(self.folder, filer.ram.root)
-        except ValueError:  # Windows: on another drive than the ram root
+            area, _ = filer.area_of(self.folder)
+        except ValueError:
             return self.folder
-        if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+        if area is not FilingArea.RAM:
             return self.folder
-        return os.path.join(filer.shared.root, relative)
+        return filer.to_top(FilingArea.SHARE, self.folder)
