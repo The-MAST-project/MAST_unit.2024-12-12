@@ -555,14 +555,13 @@ class Acquirer:
                     # `/Storage/mast-share/MAST/<host>` against our `Z:/MAST/<host>/`.
                     # MAST_spec#39.
                     #
-                    # Measured from `ram.root`, which is where the folder still IS -- not from
-                    # `shared.root`, which is the tempting reading of the line above. The two
-                    # hierarchies mirror each other below their roots (move_ram_to_shared only
-                    # swaps the root), so the ram-relative path is already the shared-relative
-                    # one. Measuring from shared.root instead raises ValueError on Windows,
-                    # where the roots are on different drives: "path is on mount 'D:', start
-                    # on mount 'Z:'".
-                    shared_top=os.path.relpath(acquisition.folder, Filer().ram.root),
+                    # The folder's path within its filing area -- the RAM disk, or its
+                    # fallback while the disk is gone. The share mirrors the RAM area below
+                    # its root (move_ram_to_shared only swaps the root), so that is already
+                    # the shared-relative path. It was relpath() from `ram.root`, wrong for a
+                    # folder on the fallback; from `shared.root` it raises ValueError on
+                    # Windows, where the roots are on different drives.
+                    shared_top=Filer().area_of(acquisition.folder)[1],
                     shared_subpath="acquisition",
                 )
             )
