@@ -8,15 +8,16 @@ not, and whatever the guide loop finally holds is wherever the field drifted to.
 
 The nudge closes that gap. Once guiding has settled it solves the guide frame
 PHD2 is already taking, measures how far the fiber now sits from the target, and
-moves the lock position by that much. The correction is around a pixel against a
-15 px search region, so the lock cannot break.
+puts the lock that far from where the guide star was in that frame. The lock moves
+by the guide error at that moment plus the correction -- a few pixels against a
+15 px search region -- and never by more than ``max_offset_px``.
 
-It runs between settle and the fold-mirror insertion, and nowhere else. That is
-the last moment the target is observable: once the stage reaches SPEC the target
-is being delivered into the fiber. Nothing is nudged after the mirror moves,
-because a mirror-induced change in the guide star's apparent position cannot be
-told from a real pointing change without an independent measurement -- and if the
-shift is optical, correcting it with the mount drives the target off the fiber.
+It runs once per acquisition handover, after settle: on the legacy handover with
+the fold mirror already in, on the bracketed one before the mirror moves. With the
+mirror in, a mirror-induced shift of the image cannot be told from a real pointing
+error -- and if the shift is optical, correcting it with the mount drives the
+target off the fiber. That is why ``phd2.lock_nudge`` is off until the insertion
+has been measured to leave the image in place.
 
 One coordinate note, because the alternative is a trap. PHD2 validates a lock
 position against the image it is currently delivering -- the limit frame when one
@@ -26,10 +27,16 @@ the derived frame) and would *succeed*, because that is a valid image coordinate
 the same full-sensor-versus-cropped confusion as MAST_unit#234, in a place where
 it moves the mount.
 
-This nudge never forms an absolute position. It computes an offset, which is the
-same in both frames because they differ only by origin, and adds it to the lock
-position PHD2 itself reported -- already in PHD2's frame, whatever that is. There
+This nudge never converts a solved position. It computes an offset, which is the
+same in both frames because they differ only by origin, and adds it to the guide
+star's position measured in the very frame that was solved. PHD2 saves the frame
+it delivers, so that position is already in PHD2's frame, whatever that is. There
 is deliberately no sensor-to-image conversion here to get wrong.
+
+The offset goes on the star, not on the lock. The solve says where the fiber sat
+when the frame was taken, and at that moment the star sat wherever the guide error
+had put it -- 0.7-3.2 px off the lock on 2026-10-20. Added to the lock instead,
+that error would stay in the correction.
 
 See MAST_unit#19.
 """
@@ -40,6 +47,9 @@ import math
 import os
 import time
 from dataclasses import dataclass, field
+
+import numpy as np
+from astropy.io import fits
 
 from common.config.phd2 import LockNudgeConfig
 from common.interfaces.solving import (
@@ -57,6 +67,18 @@ logger = get_logger(__name__)
 #: every 4.6-9.1 s depending on the limit frame, so this only decides how promptly a
 #: settled reading is noticed, not how long it takes to arrive.
 CONFIRM_POLL_SECONDS: float = 1.0
+
+#: Half-width of the box the guide star is looked for in, around the lock: PHD2's
+#: default search region, which is as far as the star can be from the lock and
+#: still be the one PHD2 is guiding on.
+STAR_SEARCH_HALF_WIDTH_PX: int = 15
+#: A star is a peak this many sky-noise sigmas above the box's median.
+STAR_MIN_SNR: float = 10.0
+#: Pixels below this fraction of the peak are left out of the centroid, so the
+#: sky's noise does not pull it toward the box's center.
+STAR_CORE_FRACTION: float = 0.2
+#: The median absolute deviation of Gaussian noise times this is its sigma.
+MAD_TO_SIGMA: float = 1.4826
 
 
 @dataclass
@@ -123,6 +145,31 @@ def sky_offset_to_detector_pixels(
     return dx_ds * downsample_factor, dy_ds * downsample_factor
 
 
+def star_position(image_path: str, near: tuple[float, float]) -> tuple[float, float] | None:
+    """The centroid of the star within PHD2's search region around `near`, in the saved
+    frame's pixels; None if there is no star there."""
+    data = np.asarray(fits.getdata(image_path), dtype=float)
+    x0, y0 = round(near[0]), round(near[1])
+    h = STAR_SEARCH_HALF_WIDTH_PX
+    rows = slice(max(y0 - h, 0), min(y0 + h + 1, data.shape[0]))
+    cols = slice(max(x0 - h, 0), min(x0 + h + 1, data.shape[1]))
+    box = data[rows, cols]
+    if box.size == 0:
+        return None
+
+    sky = float(np.median(box))
+    noise = MAD_TO_SIGMA * float(np.median(np.abs(box - sky)))
+    signal = box - sky
+    peak = float(signal.max())
+    if peak <= STAR_MIN_SNR * noise:
+        return None
+
+    weights = np.where(signal >= STAR_CORE_FRACTION * peak, signal, 0.0)
+    ys, xs = np.mgrid[rows, cols]
+    total = float(weights.sum())
+    return float((weights * xs).sum()) / total, float((weights * ys).sum()) / total
+
+
 def _await_confirmation(connector, conf: LockNudgeConfig) -> float | None:
     """Wait for `confirm_frames` guide frames under `confirm_px`; return the last distance.
 
@@ -151,7 +198,7 @@ def _await_confirmation(connector, conf: LockNudgeConfig) -> float | None:
 
 
 def nudge_lock_to_target(unit, connector, target: Coord, conf: LockNudgeConfig) -> NudgeOutcome:
-    """Move the lock position so the fiber sits on `target`. Called only before the mirror insert."""
+    """Move the lock position so the fiber sits on `target`, once guiding has settled."""
     op = function_name()
 
     if not conf.enabled:
@@ -164,6 +211,9 @@ def nudge_lock_to_target(unit, connector, target: Coord, conf: LockNudgeConfig) 
     image_path = None
     try:
         image_path = connector.save_image()
+        star = star_position(image_path, lock_before)
+        if star is None:
+            return NudgeOutcome(applied=False, reason="no star near the lock in the guide frame", lock_before=lock_before)
         solver_backend = unit.solver._backend
         result = solver_backend.solve(
             unit=unit,
@@ -198,16 +248,17 @@ def nudge_lock_to_target(unit, connector, target: Coord, conf: LockNudgeConfig) 
     if offset is None:
         return NudgeOutcome(applied=False, reason="solution carries no usable CD matrix")
 
-    # A star sits at sky = ref + CD * (pixel - refpix). Moving the lock by +D drives the
-    # star to lock+D, i.e. the field shifts by +D in the image, which is a pointing change
-    # of -CD*D. The pointing change wanted is +(target - solved), so D = -CD^-1 * (target
-    # - solved): the lock moves AGAINST the sky offset.
+    # A star sits at sky = ref + CD * (pixel - refpix). A lock at star+D drives the star
+    # there, i.e. the field shifts by +D in the image from where it was solved, which is a
+    # pointing change of -CD*D. The pointing change wanted is +(target - solved), so
+    # D = -CD^-1 * (target - solved): the lock moves AGAINST the sky offset.
     #
     # The sign is the one thing here that cannot be settled by reading: the bench check is
     # that `residual_px` after the nudge is smaller than `offset_px` before it. A flipped
     # sign doubles it instead, which the telemetry below makes obvious on the first run.
     dx, dy = -offset[0], -offset[1]
-    magnitude_px = math.hypot(dx, dy)
+    lock_after = (star[0] + dx, star[1] + dy)
+    move_px = math.hypot(lock_after[0] - lock_before[0], lock_after[1] - lock_before[1])
     magnitude_arcsec = offset_on_sky_arcsec(d_ra_arcsec, d_dec_arcsec, solution.dec_degs)
 
     telemetry = {
@@ -216,28 +267,32 @@ def nudge_lock_to_target(unit, connector, target: Coord, conf: LockNudgeConfig) 
         "d_dec_arcsec": d_dec_arcsec,
         "offset_px": (dx, dy),
         "lock_before": lock_before,
+        "star": star,
         "matched_stars": solution.matched_stars,
         "limit_frame": repr(connector.get_limit_frame()),
     }
 
-    if magnitude_px > conf.max_offset_px:
+    # Bounds what the lock actually does, star term included: a "star" that is a hot
+    # pixel or a cosmic ray in a frame where the guide star dropped out sits anywhere in
+    # the search box.
+    if move_px > conf.max_offset_px:
         logger.warning(
-            f"{op}: refusing a {magnitude_px:.1f} px nudge (max {conf.max_offset_px} px); "
-            f"a residual this large is not a pointing trim -- re-acquire instead"
+            f"{op}: refusing to move the lock {move_px:.1f} px (max {conf.max_offset_px} px); "
+            f"a move this large is not a pointing trim -- re-acquire instead"
         )
         return NudgeOutcome(
             applied=False,
-            reason=f"offset {magnitude_px:.1f} px exceeds max_offset_px {conf.max_offset_px}",
+            reason=f"lock move {move_px:.1f} px exceeds max_offset_px {conf.max_offset_px}",
             offset_arcsec=magnitude_arcsec,
             offset_px=(dx, dy),
             lock_before=lock_before,
             telemetry=telemetry,
         )
 
-    lock_after = (lock_before[0] + dx, lock_before[1] + dy)
     connector.set_lock_position(lock_after[0], lock_after[1])
     logger.info(
-        f'{op}: nudged the lock by ({dx:+.2f}, {dy:+.2f}) px ({magnitude_arcsec:.2f}") from {lock_before} to {lock_after}'
+        f"{op}: moved the lock from {lock_before} to {lock_after}: the star at {star} "
+        f'plus ({dx:+.2f}, {dy:+.2f}) px ({magnitude_arcsec:.2f}")'
     )
 
     residual = _await_confirmation(connector, conf)
