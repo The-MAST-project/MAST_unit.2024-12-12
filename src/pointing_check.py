@@ -33,7 +33,7 @@ from astropy.coordinates import Angle
 from astropy.io import fits
 
 from common.asi import ASI_294MM_HEIGHT, ASI_294MM_WIDTH
-from common.filer import Filer, FilerTop
+from common.filer import Filer, FilingArea
 from common.interfaces.solving import offset_on_sky_arcsec, target_offset_arcsec
 from common.mast_logging import get_logger
 from common.models.statuses import ImagerRoi, PointingCheckStatus, PointingSample, PointingSampleOutcome
@@ -284,7 +284,9 @@ class PointingMonitor:
 
         Not the folder itself: that is on the RAM disk and is released when the
         acquisition thread ends, which is before guiding has even settled.
-        `change_top_to` compares against POSIX-spelled roots, hence `as_posix`.
         """
-        shared = Filer().change_top_to(FilerTop.Shared, Path(acquisition_folder).as_posix())
-        return None if shared is None else Path(shared) / JOURNAL_SUBFOLDER
+        try:
+            shared = Filer().to_top(FilingArea.SHARE, acquisition_folder)
+        except ValueError:
+            return None
+        return Path(shared) / JOURNAL_SUBFOLDER
