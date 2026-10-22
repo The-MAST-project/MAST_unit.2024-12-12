@@ -28,6 +28,47 @@ with the DB change. Guide gain (`guiding.gain`) still does not reach PHD2: its J
 gain setter.
 
 ---
+## [2026-10-22] FCU v2 inserts the fold mirror before guiding, and is ready once guiding has settled
+
+**Why:** The bracketed handover (guide at SKY, settle, pause, insert the mirror, resume) was
+measured against main's legacy one on mast01 over 2026-10-20/21. Its median end-of-arm offset was
+better (0.66" against 1.04", p = 0.26, not significant), but it lost its guide star at insertion
+on 3 of 13 arms: at SKY PHD2 picks from the whole field, and the stage vignettes x >= ~6200 once
+the mirror is in, so a star picked there is gone after the traverse. It also reached ready about
+40 s later. Two further findings: in legacy nothing held the unit not-ready while PHD2 picked a
+star, calibrated and settled -- `Guiding` went up at `start_guiding` and that alone read as ready;
+and the lock nudge added its solved offset to PHD2's lock position, so the guide error at that
+moment (0.7-3.2 px) stayed in the correction.
+
+**What:**
+- `phd2.handover.style` selects the handover: `legacy` (default) or `bracketed`. On legacy the
+  acquirer moves the stage to SPEC at the end of acquisition, so PHD2 picks its star on the field
+  it guides on; `auto_insert: false` still leaves the insertion to the caller and runs no handover.
+- `PreGuiding` goes up with `Guiding` in `start_guiding`, not at PHD2's `StartGuiding` event, so
+  the unit never reads ready before PHD2 has a star. Ready-for-exposure is `Guiding` without
+  `PreGuiding`, for both styles.
+- The legacy handover waits for settle, nudges the lock, and ends `PreGuiding`. A settle that
+  fails or times out ends both flags and stops guiding. The handover starts as soon as `guide`
+  is sent, not on `StartGuiding`, which PHD2 never sends when it fails before guiding (no star,
+  a calibration abort); a guide request refused outright lowers both flags at once.
+- The nudge runs only on the acquirer's own handover (the unit is still `Acquiring`); a manually
+  started session keeps the operator's pointing. It now adds the offset to the guide star's
+  centroid in the solved frame, not to the lock, and `max_offset_px` bounds the lock's whole
+  move, so a hot pixel taken for the star cannot drag it across the search region.
+- `stop_guiding` and `stop_acquisition_and_guiding` end `PreGuiding` too, and a handover whose
+  session was stopped or replaced does nothing more.
+
+**Implications:**
+- `lock_nudge` stays off by default. With the mirror in, a mirror-induced shift of the image
+  cannot be told from a pointing error, so it is enabled on a unit only after a solve before and
+  after the traverse, mount stationary, shows the image does not move.
+- Built on the code as it stands and knowingly misaligned with the control acquisition design
+  (mast-claude-config `plans/control_acquisition_design.md`) and #346: readiness is still read
+  from activity flags, with no published acquisition outcome. To be reworked when those land.
+- "Ready" does not consult the lock-validity verdict, so a star lost after ready is not caught
+  (#278). Inserting the mirror first removes the cause seen on 2026-10-20; the gap itself is open.
+- The bracketed handover's own failure paths are unchanged: a failed settle or insertion there
+  still ends only `PreGuiding`.
 
 ## [2026-10-13] The unit sends PHD2 only limit frames its camera accepts; the full sensor goes as none
 
