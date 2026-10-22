@@ -92,6 +92,9 @@ class Guider(GuiderInterface):
             self._backend.stop_guiding()
             logger.info("guider bakend guiding stopped")
         if self.unit:
+            # PreGuiding too: it is the handover's to end, and the handover gives up once
+            # it is gone, so left up it would read as a handover still running.
+            self.unit.end_activity(UnitActivities.PreGuiding)
             self.unit.end_activity(UnitActivities.Guiding)
             logger.info("unit guiding stopped")
 
@@ -274,6 +277,7 @@ class Guider(GuiderInterface):
             #     return CanonicalResponse(errors=[error])
 
             self.unit.end_activity(UnitActivities.Acquiring)
+            self.unit.end_activity(UnitActivities.PreGuiding)
             self.unit.end_activity(UnitActivities.Guiding)
             # Positioning too. `do_acquire` raises it around the stage moves between
             # phases, so a stop that lands in that window used to leave it set for good --

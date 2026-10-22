@@ -389,7 +389,7 @@ class TestTheConnector:
         c.pointing_monitor = self.Recorder()
         c.lock = threading.Lock()
         c.lock_supervisor = GuideLockSupervisor()
-        c.start_handover_if_configured = lambda: False
+        c._launch_handover = lambda: False
         c.start_activity = lambda *a, **kw: None
         c.end_activity = lambda *a, **kw: None
         c._read_failures = FailureStreaks()

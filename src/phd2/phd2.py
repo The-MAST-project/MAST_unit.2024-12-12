@@ -7,6 +7,7 @@ import shutil
 import socket
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntFlag, StrEnum, auto
 from pathlib import Path
@@ -18,7 +19,7 @@ from pydantic import BaseModel
 from common import asi
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config.phd2 import ExcludeRegionMode, LimitFrameMode, PHD2SettleConfig
+from common.config.phd2 import ExcludeRegionMode, HandoverStyle, LimitFrameMode, PHD2SettleConfig
 from common.config.rois import FcuVersion
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
@@ -46,6 +47,11 @@ from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 from stage import StagePresetPosition
 
 logger = get_logger(__name__)
+
+#: How much longer than PHD2's own settle timeout a handover waits for `SettleDone`:
+#: PHD2 counts its timeout from when settling starts, which is after it has looped,
+#: picked a star and, if it must, calibrated.
+SETTLE_WAIT_GRACE_SECONDS = 60
 
 
 class CoolerStatus(BaseModel):
@@ -409,6 +415,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.dec_accumulator = PHD2Accumulator()
         self.stats = PHD2GuideStats()
         self.settle = None
+        # Lets a handover tell that the guide session it was started for is over.
+        self._guide_session = 0
+        self._nudge_onto_target = False
 
         assert self.parent is not None and self.parent.unit is not None, (
             "PHD2Connector: no parent imager, so no way to reach the unit configuration"
@@ -621,16 +630,19 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         while not stage.at_preset(StagePresetPosition.Spec):
             time.sleep(1)
 
-    def _nudge_lock_before_insertion(self) -> None:
-        """Re-reference the lock to the acquisition target, if configured to.
+    def _nudge_lock_onto_target(self) -> None:
+        """Re-reference the lock to the acquisition target, if configured to and if this
+        session is the acquisition's own handover.
 
-        Failure is never fatal to the handover: guiding is settled and the mirror
-        still has to go in. A nudge that cannot be computed leaves the lock exactly
-        where PHD2 put it, which is today's behavior.
+        A manually started session is never nudged: the operator tuned the pointing by
+        other means, and the nudge would pull it back to the plate-solve target.
+
+        Failure is never fatal to the handover. A nudge that cannot be computed leaves
+        the lock exactly where PHD2 put it.
         """
         op = function_name()
         conf = self.conf.lock_nudge
-        if not conf.enabled:
+        if not conf.enabled or not self._nudge_onto_target:
             return
 
         assert self.parent is not None and self.parent.unit is not None
@@ -653,7 +665,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
         logger.info(f"{op}: {outcome}")
 
-    def do_fcu_v2_spec_handover(self, stage_timeout: int = 60):
+    def do_fcu_v2_spec_handover(self, session: int, stage_timeout: int = 60):
         """Insert the fold mirror only after guiding has locked and settled,
         bracketing the stage travel with a full pause: the lock position
         survives the pause, so open-loop drift during the ~30 s travel is
@@ -668,8 +680,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         assert self.parent is not None and self.parent.unit is not None
         unit = self.parent.unit
 
-        settle_timeout = self.settling_settings.timeout + 60
-        settle = self.wait_for_settle(timeout=settle_timeout)
+        settle = self.wait_for_settle(timeout=self.settling_settings.timeout + SETTLE_WAIT_GRACE_SECONDS)
+        if not self._handover_is_current(session):
+            logger.info(f"{op}: guiding stopped during the handover; abandoning it")
+            return
         if not settle.settled:
             logger.error(f"{op}: {settle}, not inserting the fold mirror")
             unit.end_activity(UnitActivities.PreGuiding)
@@ -677,7 +691,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
         # The last moment the target is observable: from here the stage travels and the
         # target goes into the fiber. Correct the lock onto it now or not at all.
-        self._nudge_lock_before_insertion()
+        self._nudge_lock_onto_target()
 
         self.pause(full=True)
         try:
@@ -696,34 +710,117 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         unit.start_activity(UnitActivities.Guiding)
         boxed_debug(logger, ["stage at SPEC, guiding resumed", "ready for exposure"])
 
-    def start_handover_if_configured(self) -> bool:
-        """Insert the fold mirror now that guiding has locked, unless told not to.
+    def do_legacy_handover(self, session: int) -> None:
+        """Hold the unit not-ready until guiding has settled; the fold mirror is already in.
 
-        Returns whether the handover was launched, which is what a test can assert
-        on without standing up the rest of the `StartGuiding` event.
+        The acquirer inserted the mirror before guiding started, so PHD2 picked its star
+        on the field it guides on. Ready-for-exposure is `Guiding` without `PreGuiding`.
 
-        Only FCU v2 has a fold mirror to insert; v1 is already at SPEC from the
-        solve phase. Beyond that the decision is `phd2.handover.auto_insert`, which
-        defaults to true -- a unit with no entry behaves as it always has.
+        A settle that fails or times out stops guiding and ends both flags: the unit is
+        then visibly not guiding, rather than reading ready on an unsettled lock.
+        """
+        op = function_name()
+        assert self.parent is not None and self.parent.unit is not None
+        unit = self.parent.unit
+
+        settle = self.wait_for_settle(timeout=self.settling_settings.timeout + SETTLE_WAIT_GRACE_SECONDS)
+        if not self._handover_is_current(session):
+            logger.info(f"{op}: guiding stopped during the handover; abandoning it")
+            return
+        if not settle.settled:
+            logger.error(f"{op}: {settle}; stopping guiding, not ready for exposure")
+            # Flags first: a PHD2 that let the settle time out may not answer the stop either.
+            self._end_guide_session()
+            try:
+                self.stop_guiding()
+            except Exception:
+                logger.exception(f"{op}: could not stop PHD2 guiding")
+            return
+
+        self._nudge_lock_onto_target()
+        if not self._handover_is_current(session):
+            logger.info(f"{op}: guiding stopped during the lock nudge; abandoning the handover")
+            return
+
+        unit.end_activity(UnitActivities.PreGuiding)
+        boxed_debug(logger, ["guiding settled, fold mirror in", "ready for exposure"])
+
+    def _handover_is_current(self, session: int) -> bool:
+        """Whether the guide session a handover was started for is still the one running.
+
+        Stopping guiding ends `PreGuiding`, and a new session replaces the counter; either
+        way the handover has nothing left to act on.
+        """
+        assert self.parent is not None and self.parent.unit is not None
+        return session == self._guide_session and self.parent.unit.is_active(UnitActivities.PreGuiding)
+
+    def _handover_for_session(self) -> Callable[[int], None] | None:
+        """The handover a guide session starting now will run, or None.
+
+        Only FCU v2 has a fold mirror; v1 is already at SPEC from the solve phase. With
+        `phd2.handover.auto_insert` off the caller owns the insertion and no handover runs.
         """
         if self.parent is None or self.parent.unit is None:
-            return False
+            return None
         if self.parent.unit.fcu_version != FcuVersion.v2:
-            return False
-        if not self.conf.handover.auto_insert:
-            # The caller owns the insertion. `PreGuiding` is deliberately NOT raised:
-            # the handover is what ends it, so raising it with no handover running
-            # would leave the unit reporting work that is not happening, permanently
-            # not ready for exposure.
-            logger.info(f"{function_name()}: phd2.handover.auto_insert is off; not inserting the fold mirror")
-            return False
+            return None
+        handover = self.conf.handover
+        if not handover.auto_insert:
+            return None
+        match handover.style:
+            case HandoverStyle.LEGACY:
+                return self.do_legacy_handover
+            case HandoverStyle.BRACKETED:
+                return self.do_fcu_v2_spec_handover
 
-        boxed_debug(lines=[f"{function_name()}: settle, then insert the fold mirror"], logger=logger)
-        # guiding has locked but the fold mirror is not in yet: not ready for
-        # exposure until do_fcu_v2_spec_handover ends this and starts Guiding
-        self.parent.unit.start_activity(UnitActivities.PreGuiding)
-        threading.Thread(target=self.do_fcu_v2_spec_handover).start()
-        return True
+    def _begin_guide_session(self) -> Callable[[int], None] | None:
+        """Raise the unit's guiding activities for a session about to start; return its handover.
+
+        `PreGuiding` goes up with `Guiding`, not when PHD2 reports `StartGuiding`: PHD2
+        sends that only after looping, picking a star and calibrating, and until then
+        the unit would read ready for exposure with no star at all. When PHD2 fails
+        before guiding -- no star, a calibration abort -- it never sends it.
+
+        The nudge belongs to the acquirer's own handover, which runs while the unit is
+        still `Acquiring`; a session started any other way keeps its pointing.
+        """
+        assert self.parent is not None and self.parent.unit is not None
+        unit = self.parent.unit
+        self._guide_session += 1
+        handover = self._handover_for_session()
+        self._nudge_onto_target = unit.is_active(UnitActivities.Acquiring)
+        if handover is not None:
+            unit.start_activity(UnitActivities.PreGuiding)
+        unit.start_activity(UnitActivities.Guiding)
+        return handover
+
+    def _end_guide_session(self) -> None:
+        """Lower the guiding activities of a session that will not reach ready."""
+        assert self.parent is not None and self.parent.unit is not None
+        self.parent.unit.end_activity(UnitActivities.PreGuiding)
+        self.parent.unit.end_activity(UnitActivities.Guiding)
+
+    def _run_guide_session(self, guiding_settings: ImagerSettings) -> CanonicalResponse:
+        """Start guiding and the handover that brings the unit to ready.
+
+        The handover starts once `guide` has been sent, not on PHD2's `StartGuiding`: its
+        settle wait consumes the `SettleDone` that ends every guide request, including
+        those that fail before guiding starts.
+        """
+        handover = self._begin_guide_session()
+        try:
+            response = self.guide(imager_settings=guiding_settings)
+        except Exception:
+            self._end_guide_session()
+            raise
+        if response is not None and response.failed:
+            self._end_guide_session()
+            return response
+
+        if handover is not None:
+            boxed_debug(lines=[f"{function_name()}: {handover.__name__}"], logger=logger)
+            threading.Thread(target=handover, args=(self._guide_session,), name=f"mast-{handover.__name__}").start()
+        return CanonicalResponse_Ok
 
     def _handle_event(self, ev):  # noqa: C901
         e = ev["Event"]
@@ -744,8 +841,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 boxed_debug(lines=[f"{function_name()}: {e}, {self.version=}, {self.sub_version=}"], logger=logger)
 
             case "StartGuiding":
-                self.start_handover_if_configured()
-
                 # A new session is a new field and a new brightness scale. Carrying
                 # the old one across a re-guide would judge a faint field against a
                 # bright field's median -- the error an absolute threshold makes.
@@ -1899,9 +1994,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 return CanonicalResponse(errors=[msg])
 
         logger.info(f"{function_name()}: starting guiding")
-        self.parent.unit.start_activity(UnitActivities.Guiding)
-        self.guide(imager_settings=guiding_settings)
-        return CanonicalResponse_Ok
+        return self._run_guide_session(guiding_settings)
 
     def stop_guiding(self) -> CanonicalResponse:
         if not self.connected:

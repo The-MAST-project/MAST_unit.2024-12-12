@@ -66,3 +66,25 @@ def test_refuses_when_not_guiding():
 
 def test_refuses_without_a_unit():
     assert make_guider(FakeBackend(), None).endpoint_stop_guiding().failed
+
+
+def test_stopping_during_the_handover_ends_preguiding_too():
+    """Left up, it reads as a handover still running, and the unit never goes idle."""
+    from common.activities import UnitActivities
+
+    backend, unit = FakeBackend(), FakeUnit()
+    make_guider(backend, unit).endpoint_stop_guiding()
+    assert UnitActivities.PreGuiding in unit.ended
+
+
+def test_stopping_acquisition_and_guiding_ends_preguiding():
+    """`abort` stops guiding through this verb; it waits on PreGuiding like any other work."""
+    from common.activities import UnitActivities
+
+    unit = FakeUnit()
+    unit.imager = None
+    unit.mount = None
+    unit.guider = None
+    unit.was_tracking_before_guiding = True
+    make_guider(FakeBackend(), unit).stop_acquisition_and_guiding()
+    assert UnitActivities.PreGuiding in unit.ended
