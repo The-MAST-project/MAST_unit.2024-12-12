@@ -50,6 +50,20 @@ The cool-down watcher logs the cooler's verdict the same way, once per cool-down
 set point, and `DEGRADED cooler=unreached …` at WARNING when it is still short of it after
 `COOLING_SLOW_WARNING_SECONDS`. The line format is pinned in `tests/test_cooler_verdict.py`.
 
+## Guiding handover (FCU v2)
+
+Starting to guide raises `PreGuiding` together with `Guiding`; the unit is ready for exposure
+when `Guiding` is up and `PreGuiding` is not. `phd2.handover.style` (MAST_common
+`config/phd2.py`) selects what happens in between:
+
+- `legacy` (default): the acquirer inserts the fold mirror before guiding starts; the handover
+  waits for PHD2 to settle and, if `phd2.lock_nudge.enabled`, nudges the lock onto the target.
+  A failed or timed-out settle stops guiding.
+- `bracketed`: the mirror stays out while PHD2 picks a star and settles; the handover then
+  pauses guiding, inserts the mirror and resumes.
+
+With `phd2.handover.auto_insert: false` no handover runs and nothing inserts the mirror.
+
 ## Tests
 
 `tests/` holds a pytest suite that drives the real connector code with mocked
