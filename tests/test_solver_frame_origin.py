@@ -55,8 +55,16 @@ def unit(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _artifacts_stay_put(monkeypatch):
+def _artifacts_stay_put(monkeypatch, tmp_path):
     monkeypatch.setattr(Filer, "move_ram_to_shared", lambda self, paths: None)
+    monkeypatch.setattr(mastrometry_module, "missing_indexes", lambda folder: None)
+
+    def scratch_dir(name):
+        path = tmp_path / name
+        path.mkdir()
+        return path
+
+    monkeypatch.setattr(mastrometry_module, "scratch_dir", scratch_dir)
 
 
 @pytest.fixture
