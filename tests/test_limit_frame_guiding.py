@@ -76,6 +76,8 @@ def make_connector(limit_frame: LimitFrameConfig | None = None) -> PHD2Connector
     p._read_failures = FailureStreaks()
     p.app_state = ""
     p.image_saved_event = threading.Event()
+    p._guide_session = 0
+    p._nudge_onto_target = False
     p.call = MagicMock(name="call", side_effect=fake_rpc)
     doc = dict(LEGACY_PHD2_DOC)
     if limit_frame is not None:
