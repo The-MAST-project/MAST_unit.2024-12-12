@@ -2,6 +2,48 @@
 
 ---
 
+## [2026-10-22] FCU v2 inserts the fold mirror before guiding, and is ready once guiding has settled
+
+**Why:** The bracketed handover (guide at SKY, settle, pause, insert the mirror, resume) was
+measured against main's legacy one on mast01 over 2026-10-20/21. Its median end-of-arm offset was
+better (0.66" against 1.04", p = 0.26, not significant), but it lost its guide star at insertion
+on 3 of 13 arms: at SKY PHD2 picks from the whole field, and the stage vignettes x >= ~6200 once
+the mirror is in, so a star picked there is gone after the traverse. It also reached ready about
+40 s later. Two further findings: in legacy nothing held the unit not-ready while PHD2 picked a
+star, calibrated and settled -- `Guiding` went up at `start_guiding` and that alone read as ready;
+and the lock nudge added its solved offset to PHD2's lock position, so the guide error at that
+moment (0.7-3.2 px) stayed in the correction.
+
+**What:**
+- `phd2.handover.style` selects the handover: `legacy` (default) or `bracketed`. On legacy the
+  acquirer moves the stage to SPEC at the end of acquisition, so PHD2 picks its star on the field
+  it guides on; `auto_insert: false` still leaves the insertion to the caller and runs no handover.
+- `PreGuiding` goes up with `Guiding` in `start_guiding`, not at PHD2's `StartGuiding` event, so
+  the unit never reads ready before PHD2 has a star. Ready-for-exposure is `Guiding` without
+  `PreGuiding`, for both styles.
+- The legacy handover waits for settle, nudges the lock, and ends `PreGuiding`. A settle that
+  fails or times out ends both flags and stops guiding. The handover starts as soon as `guide`
+  is sent, not on `StartGuiding`, which PHD2 never sends when it fails before guiding (no star,
+  a calibration abort); a guide request refused outright lowers both flags at once.
+- The nudge runs only on the acquirer's own handover (the unit is still `Acquiring`); a manually
+  started session keeps the operator's pointing. It now adds the offset to the guide star's
+  centroid in the solved frame, not to the lock, and `max_offset_px` bounds the lock's whole
+  move, so a hot pixel taken for the star cannot drag it across the search region.
+- `stop_guiding` and `stop_acquisition_and_guiding` end `PreGuiding` too, and a handover whose
+  session was stopped or replaced does nothing more.
+
+**Implications:**
+- `lock_nudge` stays off by default. With the mirror in, a mirror-induced shift of the image
+  cannot be told from a pointing error, so it is enabled on a unit only after a solve before and
+  after the traverse, mount stationary, shows the image does not move.
+- Built on the code as it stands and knowingly misaligned with the control acquisition design
+  (mast-claude-config `plans/control_acquisition_design.md`) and #346: readiness is still read
+  from activity flags, with no published acquisition outcome. To be reworked when those land.
+- "Ready" does not consult the lock-validity verdict, so a star lost after ready is not caught
+  (#278). Inserting the mirror first removes the cause seen on 2026-10-20; the gap itself is open.
+- The bracketed handover's own failure paths are unchanged: a failed settle or insertion there
+  still ends only `PreGuiding`.
+
 ## [2026-10-13] The unit sends PHD2 only limit frames its camera accepts; the full sensor goes as none
 
 **Why:** PHD2's ZWO driver widens a limit frame to 32-px boundaries, in binned coordinates, and
@@ -262,6 +304,57 @@ no hardware and no MAST runtime. The solver docs still said the repo had no CI a
   which `tests/conftest.py` blocks. On the runner it would also always skip, and CI runs with
   `-ra` so that a skip stands out.
 - The two tiers now live in different places. `src/solvers/tests/README.md` names both.
+
+---
+
+## [2026-10-04] Guiding is checked against the target by solving the guide frame, without pausing
+
+**Why:** PHD2 reports how well the star holds the lock position. Nothing reported whether the
+lock position was still on the target. A lock on the wrong star, drift between the guide camera
+and the fiber, or a handover that moved the field all read as clean guiding (#283). The previous
+attempt, `validate_guiding`, stopped guiding, took a cropped frame, restarted guiding and solved
+the frame. It was never enabled (`validation_interval` is 0 fleet-wide). It could not have worked
+if enabled: `solve()` was called without its `phase`, hour and degree differences were compared
+against arcsecond tolerances, and a second `StartGuiding` re-started the same timer thread.
+
+**What:** `src/pointing_check.py`'s `PointingMonitor` replaces it.
+
+- Each tick runs `save_image` (the frame PHD2 is already taking) and a SPEC-phase solve, which
+  reports the position at the fiber. It records target minus solved as a `PointingSample`.
+- Nothing pauses, and nothing moves the mount or the lock.
+- One sampling thread per guide session. It starts on PHD2's `StartGuiding` and ends on
+  `GuidingStopped`.
+- The cadence is `phd2.validation_interval`, read on every tick; 0 is off.
+- Samples are taken only while PHD2's state is `Guiding`, because a paused loop hands back its
+  last frame, which can be from before the mirror moved.
+- A frame that is not the full unbinned sensor is recorded **Unavailable** and never solved. The
+  SPEC reference pixel is in full-sensor coordinates, and a crop moves it by the crop origin
+  without the solve failing (#234). The check therefore needs `limit_frame.mode: full_frame`, with
+  the fold mirror kept out of star selection by the exclusion region.
+- A solve that finds no match, or that raises, is recorded as **NotSolved**.
+- The frame is deleted on every path, since it is 94 MB at full size.
+- The record is in `guider_status().pointing_check` (counts plus the last 20 samples) and in
+  `pointing-check.jsonl` under the acquisition's folder **on the share**. The acquisition's
+  RAM-disk folder is released before guiding settles, so it cannot hold the journal.
+- `stop_session` signals the thread and does not join it: it runs on PHD2's event reader, and a
+  solve can take tens of seconds. A sample that finishes after its session has ended is dropped
+  by session number, so it cannot enter the next session's record.
+
+The same change fixes the lock nudge's telemetry. It read `connector.limit_frame_in_force`,
+which #245 removed, so every nudge whose solve succeeded raised before moving the lock. It now
+reads `get_limit_frame()`. The nudge and the monitor share `offset_on_sky_arcsec` (MAST_common)
+for the on-sky angle.
+
+**Implications:**
+
+- Every unit runs `limit_frame.mode: derived` today, so a unit that enables the check reports
+  Unavailable until it is switched to `full_frame`. That is deliberate, and it is another cost of
+  the limit frame, alongside #234 and #245.
+- `PHD2Activities.Validating`, `ExposingForValidation` and `SolvingForValidation` are now
+  unused. They are left declared rather than renumbering the bit flags.
+- The `CONSTRUCTION_TIME` entry for `guiding_verification_timer` is removed with the timer. The
+  2026-09 entry above that counts it among five construction-time bindings is history and is not
+  edited.
 
 ---
 
@@ -1658,6 +1751,82 @@ venv and skips cleanly elsewhere. `requirements-dev.txt` declares pytest.
 add bench one-offs; the labcomp2 bench remains for what needs a live PHD2 or a
 real camera. This executes the unit-side half of the 2026-07-07 bench's
 TEST-MIGRATION plan; the common-side half lives in `src/common/tests/`.
+
+---
+
+## [2026-07-06] The fold mirror is inserted under a full PHD2 pause, after guiding settles
+
+**Why:** The exclusion region keeps guiding off stars the parked mirror covers, but
+not off the corridor it sweeps on the way in: for the ~30 s of stage travel the
+selected star can be transiently occulted. The two pre-existing orderings each cost
+something — mirror first leaves an unguided gap in which tracking slip is *frozen
+into* the lock position, while guide-first-then-insert risks losing the star mid
+travel. PHD2's stock `set_paused(full)` inverts that cost: the star, calibration and
+lock position all survive a pause (verified in `myframe.cpp` / `guider.cpp`), so the
+open-loop travel drift is pulled *back* to the lock on resume rather than frozen in.
+
+**What:** `_wait_for_fcu_v2_at_spec` (a passive wait) became
+`_fcu_v2_spec_handover`, which drives the sequence: wait for settle → `set_paused(true,
+"full")` → command the stage to SPEC → wait for at-SPEC → `set_paused(false)` → flip
+PreGuiding to Guiding. Ready-for-exposure now means *stage at SPEC ∧ guiding resumed*,
+with **no settle gate after resume** — the few-pixel pull-back decays into the science
+integration, and stage-at-SPEC is the earliest physically meaningful shutter time
+anyway. On stage fault or timeout guiding **stays paused** and the handover fails
+loudly: resuming with the mirror mid-field would guide on a half-occulted field. The
+`Resumed` event is handled, and `guide()` refuses outright when the exclusion
+rectangle is stale relative to its `depth`/`pad_px` knobs.
+
+**Implications:** Acquisition serializes where it used to overlap, costing ≈ the stage
+move (~30 s) per mirror-inserting acquisition — accepted, because the concurrency it
+replaces was a selection-timing race. **Operator-facing semantic change:** the handover
+thread now commands the stage itself, so a *manual* `start_guiding` on an fcu_v2 unit
+also inserts the mirror via the bracketed sequence (previously it waited passively and
+stranded PreGuiding on a 60 s timeout). Short exposures keep one noted cost: a larger
+fraction of their light is collected during the pull-back. Both fault paths and the
+happy path are covered by the labcomp2 bench suite (6/6); on-sky validation of the
+1–2 px/30 s drift assumption and the re-lock decay is still pending.
+
+---
+
+## [2026-07-03] Guiding excludes the fold-mirror region via `phd2.exclude_region` (guide-first, then insert mirror)
+
+**Why:** Guiding must lock *before* the FCU fold mirror is inserted: in the gap
+between mirror insertion and guiding lock, tracking can slip enough to move the
+fiber off its calibrated pixel, and with the mirror out the viable guide-star
+candidates (those passing PHD2's selection gates — unsaturated, SNR/mass minimums,
+HFD window — which MAST's strong coma confines to the low-coma center of the frame)
+sit exactly in the zone the mirror covers. The custom PHD2 `set_exclude_region` API
+(build `2.6.14dev1mastbuild4`, branch `eli/exclude-region` off upstream master)
+excludes a configured rectangle from guide-star auto-selection, so stars are
+selected as if the mirror were already in.
+
+**What:** `guide()` now applies the DB-persisted `phd2.exclude_region` section
+(`ExcludeRegionConfig` in common, `mode: off | fixed`, default **`off`** — the
+rectangle is per-unit measured geometry) before every guide RPC, mirroring the
+limit-frame set-or-reset discipline, via `set_exclude_region()` /
+`_apply_configured_exclude_region()`, dispatching on `mode` exactly as
+`start_guiding()` does for `phd2.limit_frame`:
+
+- `fixed` → `set_exclude_region(rect)` **then `deselect_star`** — the exclusion only
+  filters *auto-selection*, and a star already selected (left over from a previous
+  session) survives it; verified live against the mastbuild4 build (guide locked
+  inside the region without the deselect, outside it with). The rectangle is sent
+  through `ImagerRoi.verbatim()`: it is a measured shadow band plus a deliberate pad,
+  and the exclusion is a *selection* filter rather than a sensor readout crop, so no
+  camera alignment constraint applies and conditioning would only shift the placement
+  (the MAST_common#17 reasoning that put the limit frame on `verbatim`).
+- `off` → explicit reset (`roi: null`), tolerating "method not found" from older PHD2
+  builds (nothing to reset there); a *set* on an older build fails loudly. A stored
+  rectangle does not override the mode: "measured but not yet enabled" is the normal
+  per-unit state, so `mode` alone decides.
+
+**Implications:** No behavior change until ops measures the mirror shadow and sets
+the section to `fixed` in Mongo. The exclusion protects against the mirror's
+*destination*, not its ~30 s journey across the field — stars in the swept corridor
+are still transiently occulted — which is what the bracketed SPEC handover
+(2026-07-06 entry above) closes; the two ship together. Validated on the PHD2 camera
+simulator end-to-end (select → calibrate → guide → settle with the region honored);
+real-sky validation on a provisioned unit rig is still pending.
 
 ---
 

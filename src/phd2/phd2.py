@@ -7,9 +7,9 @@ import shutil
 import socket
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from dataclasses import dataclass
-from enum import IntFlag, auto
+from enum import IntFlag, StrEnum, auto
 from pathlib import Path
 from typing import Literal
 
@@ -19,21 +19,39 @@ from pydantic import BaseModel
 from common import asi
 from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config.phd2 import LimitFrameMode, PHD2SettleConfig
+from common.config.phd2 import ExcludeRegionMode, HandoverStyle, LimitFrameMode, PHD2SettleConfig
+from common.config.rois import FcuVersion
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface
 from common.mast_logging import get_logger
-from common.models.statuses import ImagerRoi, ImagerSettings, PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
+from common.models.statuses import (
+    ImagerRoi,
+    ImagerSettings,
+    LockAssessmentStatus,
+    LockValidityStatus,
+    PHD2GuiderStatus,
+    PHD2ImagerStatus,
+    SkyQualityStatus,
+)
 from common.process import WatchedProcess
-from common.utils import Coord, RepeatTimer, boxed_debug, function_name
+from common.utils import Coord, Timeout, boxed_debug, function_name
 from failure_streaks import FailureStreaks
+from lock_nudge import nudge_lock_to_target
 from phd2.fits_header import stamp_cooling
 from phd2.limit_frame import limit_frame_accepted, limit_frame_covers_sensor, limit_frame_extent
 from phd2.phd2_locate import locate_phd2_exe
+from pointing_check import PointingMonitor
+from science.lock_validity import GuideLockSupervisor, LockMetrics
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
+from stage import StagePresetPosition
 
 logger = get_logger(__name__)
+
+#: How much longer than PHD2's own settle timeout a handover waits for `SettleDone`:
+#: PHD2 counts its timeout from when settling starts, which is after it has looped,
+#: picked a star and, if it must, calibrated.
+SETTLE_WAIT_GRACE_SECONDS = 60
 
 
 class CoolerStatus(BaseModel):
@@ -41,6 +59,31 @@ class CoolerStatus(BaseModel):
     coolerOn: bool  # noqa: N815
     setpoint: float
     power: float
+
+
+class SettleOutcome(StrEnum):
+    """How a wait for settle ended."""
+
+    SETTLED = "settled"  # PHD2 reported SettleDone with status 0 and no error
+    FAILED = "failed"  # PHD2 reported SettleDone, and rejected it
+    TIMED_OUT = "timed out"  # a settle was in progress and had not finished when the wait expired
+    NEVER_REPORTED = "never reported"  # nothing was settling for the whole wait
+
+
+@dataclass(frozen=True)
+class SettleResult:
+    """The ending of a wait for settle, and how long the wait actually took."""
+
+    outcome: SettleOutcome
+    elapsed: float
+    detail: str = ""
+
+    @property
+    def settled(self) -> bool:
+        return self.outcome is SettleOutcome.SETTLED
+
+    def __str__(self) -> str:
+        return f"settle {self.outcome} after {self.elapsed:.1f}s" + (f" ({self.detail})" if self.detail else "")
 
 
 class PHD2Activities(IntFlag):
@@ -372,6 +415,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.dec_accumulator = PHD2Accumulator()
         self.stats = PHD2GuideStats()
         self.settle = None
+        # Lets a handover tell that the guide session it was started for is over.
+        self._guide_session = 0
+        self._nudge_onto_target = False
 
         assert self.parent is not None and self.parent.unit is not None, (
             "PHD2Connector: no parent imager, so no way to reach the unit configuration"
@@ -383,10 +429,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.image_was_saved: bool = False
         self.image_saved_event: threading.Event = threading.Event()
 
-        # Read once, deliberately: it fixes a RepeatTimer's period and decides whether the
-        # timer exists at all, so a later edit reaches guiding validation at the next
-        # restart however this is written. A property would advertise otherwise.
-        validation_interval = self.conf.validation_interval
         # Bracketed cooler sampling for the FITS header (see phd2.fits_header).
         # Held between start_exposure and wait_for_image_saved, which run on the
         # SAME caller thread; they must never be sampled from the worker thread,
@@ -395,16 +437,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self._cooler_before: dict | None = None
         self._exposure_image_path: str | None = None
 
-        self.guiding_verification_timer: RepeatTimer | None = None
-        if validation_interval != 0:
-            logger.info(f"{function_name()}: guiding validation every {validation_interval} seconds")
-            self.guiding_verification_timer = RepeatTimer(interval=validation_interval, function=self.validate_guiding)
-        else:
-            logger.info(f"{function_name()}: no guiding validation ({validation_interval=})")
-
         self.restart_event: threading.Event = threading.Event()
 
         self.sky_quality: SeeingQualityWhilePHD2Guiding = SeeingQualityWhilePHD2Guiding()
+        self.lock_supervisor: GuideLockSupervisor = GuideLockSupervisor()
+        self.pointing_monitor: PointingMonitor = PointingMonitor(self)
 
         phd2_exe = locate_phd2_exe()
         if phd2_exe is None:
@@ -430,7 +467,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.watched_process.start()
 
         self._needs_to_resume_guiding = False
-        self.need_to_reset_limit_frame = False
 
         self._connected = False
         try:
@@ -542,99 +578,44 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         response = self.call("get_connected")
         return response["result"]
 
-    def validate_guiding(self):
-        if not self.is_active(PHD2Activities.Guiding):
-            logger.warning(f"{function_name()}: not verifying guiding: not guiding")
-            return
-
-        assert self.parent is not None and self.parent.unit is not None
-        assert self.parent.unit.acquirer.latest_acquisition is not None
-
-        self.start_activity(PHD2Activities.Validating)
-        # self.call("stop_capture")  # stop guiding
-        self.stop_guiding()
-        guiding_settings = self.parent.unit.guider.make_guiding_settings(
-            base_folder=str(Path(self.parent.unit.acquirer.latest_acquisition.folder) / "guiding" / "validation")
-        )
-        assert guiding_settings.roi is not None
-        try:
-            self.start_activity(PHD2Activities.ExposingForValidation)
-            self.call(
-                "capture_single_frame",
-                params={
-                    "exposure": int(guiding_settings.seconds * 1000),  # convert to milliseconds
-                    "gain": int(asi.gain_absolute_to_percent(guiding_settings.gain)),
-                    "binning": (guiding_settings.binning.x if guiding_settings.binning else 1),
-                    "subframe": [
-                        guiding_settings.roi.x,
-                        guiding_settings.roi.y,
-                        guiding_settings.roi.width,
-                        guiding_settings.roi.height,
-                    ],
-                    "save": True,
-                    "path": guiding_settings.image_path,
-                },
-            )
-        except PHD2ConnectorError as ex:
-            self.log_and_append_error(f"{ex=}")
-            self.end_activity(PHD2Activities.ExposingForValidation)
-            self.end_activity(PHD2Activities.Validating)
-            self.start_guiding()
-            return
-
-        self.wait_for_image_saved()
-
-        logger.info(f"{function_name()}: resuming guiding ...")
-        self.start_guiding()
-
-        assert self.parent.unit is not None
-        assert self.parent.unit.acquirer.latest_acquisition is not None
-        assert guiding_settings.image_path is not None
-        target: Coord = Coord(
-            Angle(
-                self.parent.unit.acquirer.latest_acquisition.target_ra,
-                unit="hours",
-            ),
-            Angle(
-                self.parent.unit.acquirer.latest_acquisition.target_dec,
-                unit="degrees",
-            ),
-        )
-
-        tolerance = self.parent.unit.unit_conf.guiding.tolerance
-
-        self.start_activity(PHD2Activities.SolvingForValidation)
-        with ThreadPoolExecutor() as executor:
-            logger.info(f"{function_name()}: starting solving for {target=}")
-            self.parent.start_activity(UnitActivities.Solving)
-            future = executor.submit(self.parent.unit.solver.solve, guiding_settings, target)
-            solving_result = future.result()
-            self.parent.end_activity(UnitActivities.Solving)
-
-        logger.info(f"{function_name()}: solving result: {solving_result=}")
-        if solving_result and solving_result.succeeded and solving_result.solution:
-            delta_ra = solving_result.solution.ra_hours - target.ra.hours  # type: ignore
-            delta_dec = solving_result.solution.dec_degs - target.dec.degrees  # type: ignore
-            within_tolerance = abs(delta_ra) <= tolerance.ra_arcsec and abs(delta_dec) <= tolerance.dec_arcsec
-            boxed_debug(
-                logger=logger,
-                lines=[
-                    f"{delta_ra=}, {delta_dec=}",
-                    f"{tolerance=}",
-                    f"within tolerance: {within_tolerance}",
-                ],
-            )
-
-            if not within_tolerance:
-                # TBD: what to do if the target is not within tolerance?
-                logger.error(f"{function_name()}: OUT OF TOLERANCE!, WHAT TO DO?")
-
-        self.end_activity(PHD2Activities.SolvingForValidation)
-        self.end_activity(PHD2Activities.Validating)
-
     @staticmethod
     def _is_guiding(st):
         return st == "Guiding" or st == "LostLock"
+
+    def _update_lock_validity(self, ev, lost: bool = False) -> None:
+        """Feed one PHD2 event to the lock supervisor and log a change of state.
+
+        `Peak`, `Background` and `BackgroundSigma` arrive only from PHD2
+        2.6.14dev1mastbuild5 onward; on an older build they are absent and the
+        supervisor falls back to the session-scale test alone, which is why they
+        are read with `.get` rather than asserted.
+        """
+        previous = self.lock_supervisor.state.validity
+        state = self.lock_supervisor.update(
+            LockMetrics(
+                star_mass=ev.get("StarMass") or 0.0,
+                snr=ev.get("SNR") or 0.0,
+                hfd_pixels=ev.get("HFD") or 0.0,
+                peak=ev.get("Peak"),
+                background=ev.get("Background"),
+                background_sigma=ev.get("BackgroundSigma"),
+                lost=lost,
+            ),
+            # Read live: a threshold edited in the controller DB must take effect on
+            # the next frame, not at the next restart. Snapshotting configuration is
+            # how a mid-session phd2.settle edit became a silent no-op on 2026-09-02.
+            config=self.conf.lock_validity,
+        )
+        if state.entered_not_a_star:
+            # Once per episode, not once per frame. The lost-star beep of
+            # 2026-09-08 fired 635 times because it keyed on the condition
+            # rather than its onset, and was switched off for being useless.
+            logger.error(
+                f"{function_name()}: guiding is NOT on a star: {'; '.join(state.reasons)} "
+                f"(mass_fraction={state.mass_fraction}, scale={state.session_mass_scale})"
+            )
+        elif state.validity is not previous:
+            logger.info(f"{function_name()}: lock validity {previous} -> {state.validity}")
 
     @staticmethod
     def _get_accumulated_stats(ra, dec):
@@ -644,6 +625,202 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         stats.peak_ra = ra._peak
         stats.peak_dec = dec._peak
         return stats
+
+    def _wait_for_stage_at_spec(self, stage):
+        while not stage.at_preset(StagePresetPosition.Spec):
+            time.sleep(1)
+
+    def _nudge_lock_onto_target(self) -> None:
+        """Re-reference the lock to the acquisition target, if configured to and if this
+        session is the acquisition's own handover.
+
+        A manually started session is never nudged: the operator tuned the pointing by
+        other means, and the nudge would pull it back to the plate-solve target.
+
+        Failure is never fatal to the handover. A nudge that cannot be computed leaves
+        the lock exactly where PHD2 put it.
+        """
+        op = function_name()
+        conf = self.conf.lock_nudge
+        if not conf.enabled or not self._nudge_onto_target:
+            return
+
+        assert self.parent is not None and self.parent.unit is not None
+        unit = self.parent.unit
+
+        acquisition = unit.acquirer.latest_acquisition if unit.acquirer else None
+        if acquisition is None:
+            logger.info(f"{op}: no acquisition on record, leaving the lock where PHD2 put it")
+            return
+
+        try:
+            target = Coord(
+                ra=Angle(acquisition.target_ra, unit="hour"),
+                dec=Angle(acquisition.target_dec, unit="deg"),
+            )
+            outcome = nudge_lock_to_target(unit, self, target, conf)
+        except Exception as ex:
+            logger.error(f"{op}: lock nudge failed, continuing with the handover: {ex!r}")
+            return
+
+        logger.info(f"{op}: {outcome}")
+
+    def do_fcu_v2_spec_handover(self, session: int, stage_timeout: int = 60):
+        """Insert the fold mirror only after guiding has locked and settled,
+        bracketing the stage travel with a full pause: the lock position
+        survives the pause, so open-loop drift during the ~30 s travel is
+        corrected back on resume instead of frozen into the exposure.
+
+        Ready-for-exposure (UnitActivities.Guiding) means stage at SPEC and
+        guiding resumed.  There is deliberately no settle gate after resume -
+        the few-pixel pull-back decays into the science integration
+        (2026-07-03 exclusion-region proposal).
+        """
+        op = f"{function_name()}"
+        assert self.parent is not None and self.parent.unit is not None
+        unit = self.parent.unit
+
+        settle = self.wait_for_settle(timeout=self.settling_settings.timeout + SETTLE_WAIT_GRACE_SECONDS)
+        if not self._handover_is_current(session):
+            logger.info(f"{op}: guiding stopped during the handover; abandoning it")
+            return
+        if not settle.settled:
+            logger.error(f"{op}: {settle}, not inserting the fold mirror")
+            unit.end_activity(UnitActivities.PreGuiding)
+            return
+
+        # The last moment the target is observable: from here the stage travels and the
+        # target goes into the fiber. Correct the lock onto it now or not at all.
+        self._nudge_lock_onto_target()
+
+        self.pause(full=True)
+        try:
+            unit.required_stage.move_to_preset(StagePresetPosition.Spec)
+            with Timeout(stage_timeout) as t:
+                t.run(self._wait_for_stage_at_spec, unit.required_stage)
+        except Exception as ex:
+            # deliberately left paused: resuming with the mirror mid-field
+            # would guide on a half-occulted field
+            logger.error(f"{op}: fold-mirror insertion failed ({ex!r}); guiding stays paused")
+            unit.end_activity(UnitActivities.PreGuiding)
+            return
+
+        self.unpause()
+        unit.end_activity(UnitActivities.PreGuiding)
+        unit.start_activity(UnitActivities.Guiding)
+        boxed_debug(logger, ["stage at SPEC, guiding resumed", "ready for exposure"])
+
+    def do_legacy_handover(self, session: int) -> None:
+        """Hold the unit not-ready until guiding has settled; the fold mirror is already in.
+
+        The acquirer inserted the mirror before guiding started, so PHD2 picked its star
+        on the field it guides on. Ready-for-exposure is `Guiding` without `PreGuiding`.
+
+        A settle that fails or times out stops guiding and ends both flags: the unit is
+        then visibly not guiding, rather than reading ready on an unsettled lock.
+        """
+        op = function_name()
+        assert self.parent is not None and self.parent.unit is not None
+        unit = self.parent.unit
+
+        settle = self.wait_for_settle(timeout=self.settling_settings.timeout + SETTLE_WAIT_GRACE_SECONDS)
+        if not self._handover_is_current(session):
+            logger.info(f"{op}: guiding stopped during the handover; abandoning it")
+            return
+        if not settle.settled:
+            logger.error(f"{op}: {settle}; stopping guiding, not ready for exposure")
+            # Flags first: a PHD2 that let the settle time out may not answer the stop either.
+            self._end_guide_session()
+            try:
+                self.stop_guiding()
+            except Exception:
+                logger.exception(f"{op}: could not stop PHD2 guiding")
+            return
+
+        self._nudge_lock_onto_target()
+        if not self._handover_is_current(session):
+            logger.info(f"{op}: guiding stopped during the lock nudge; abandoning the handover")
+            return
+
+        unit.end_activity(UnitActivities.PreGuiding)
+        boxed_debug(logger, ["guiding settled, fold mirror in", "ready for exposure"])
+
+    def _handover_is_current(self, session: int) -> bool:
+        """Whether the guide session a handover was started for is still the one running.
+
+        Stopping guiding ends `PreGuiding`, and a new session replaces the counter; either
+        way the handover has nothing left to act on.
+        """
+        assert self.parent is not None and self.parent.unit is not None
+        return session == self._guide_session and self.parent.unit.is_active(UnitActivities.PreGuiding)
+
+    def _handover_for_session(self) -> Callable[[int], None] | None:
+        """The handover a guide session starting now will run, or None.
+
+        Only FCU v2 has a fold mirror; v1 is already at SPEC from the solve phase. With
+        `phd2.handover.auto_insert` off the caller owns the insertion and no handover runs.
+        """
+        if self.parent is None or self.parent.unit is None:
+            return None
+        if self.parent.unit.fcu_version != FcuVersion.v2:
+            return None
+        handover = self.conf.handover
+        if not handover.auto_insert:
+            return None
+        match handover.style:
+            case HandoverStyle.LEGACY:
+                return self.do_legacy_handover
+            case HandoverStyle.BRACKETED:
+                return self.do_fcu_v2_spec_handover
+
+    def _begin_guide_session(self) -> Callable[[int], None] | None:
+        """Raise the unit's guiding activities for a session about to start; return its handover.
+
+        `PreGuiding` goes up with `Guiding`, not when PHD2 reports `StartGuiding`: PHD2
+        sends that only after looping, picking a star and calibrating, and until then
+        the unit would read ready for exposure with no star at all. When PHD2 fails
+        before guiding -- no star, a calibration abort -- it never sends it.
+
+        The nudge belongs to the acquirer's own handover, which runs while the unit is
+        still `Acquiring`; a session started any other way keeps its pointing.
+        """
+        assert self.parent is not None and self.parent.unit is not None
+        unit = self.parent.unit
+        self._guide_session += 1
+        handover = self._handover_for_session()
+        self._nudge_onto_target = unit.is_active(UnitActivities.Acquiring)
+        if handover is not None:
+            unit.start_activity(UnitActivities.PreGuiding)
+        unit.start_activity(UnitActivities.Guiding)
+        return handover
+
+    def _end_guide_session(self) -> None:
+        """Lower the guiding activities of a session that will not reach ready."""
+        assert self.parent is not None and self.parent.unit is not None
+        self.parent.unit.end_activity(UnitActivities.PreGuiding)
+        self.parent.unit.end_activity(UnitActivities.Guiding)
+
+    def _run_guide_session(self, guiding_settings: ImagerSettings) -> CanonicalResponse:
+        """Start guiding and the handover that brings the unit to ready.
+
+        The handover starts once `guide` has been sent, not on PHD2's `StartGuiding`: its
+        settle wait consumes the `SettleDone` that ends every guide request, including
+        those that fail before guiding starts.
+        """
+        handover = self._begin_guide_session()
+        try:
+            response = self.guide(imager_settings=guiding_settings)
+        except Exception:
+            self._end_guide_session()
+            raise
+        if response is not None and response.failed:
+            self._end_guide_session()
+            return response
+
+        if handover is not None:
+            boxed_debug(lines=[f"{function_name()}: {handover.__name__}"], logger=logger)
+            threading.Thread(target=handover, args=(self._guide_session,), name=f"mast-{handover.__name__}").start()
+        return CanonicalResponse_Ok
 
     def _handle_event(self, ev):  # noqa: C901
         e = ev["Event"]
@@ -664,9 +841,12 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 boxed_debug(lines=[f"{function_name()}: {e}, {self.version=}, {self.sub_version=}"], logger=logger)
 
             case "StartGuiding":
+                # A new session is a new field and a new brightness scale. Carrying
+                # the old one across a re-guide would judge a faint field against a
+                # bright field's median -- the error an absolute threshold makes.
+                self.lock_supervisor.reset()
                 self.start_activity(PHD2Activities.Guiding)
-                if self.guiding_verification_timer is not None:
-                    self.guiding_verification_timer.start()
+                self.pointing_monitor.start_session()
                 self.accumulators_active = True
                 self.ra_accumulator.reset()
                 self.dec_accumulator.reset()
@@ -735,7 +915,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 if lines:
                     boxed_debug(logger=logger, lines=lines)
 
-                self.sky_quality.update(FrameMetrics(snr=ev["SNR"], hfd_pixels=ev["HFD"]))
+                self.sky_quality.update(FrameMetrics(snr=ev["SNR"], hfd_pixels=ev["HFD"], star_mass=ev.get("StarMass")))
+                self._update_lock_validity(ev)
 
             case "SettleBegin":
                 self.start_activity(PHD2Activities.Settling)
@@ -788,6 +969,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     self.app_state = "Paused"
                 boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
 
+            case "Resumed":
+                with self.lock:
+                    self.app_state = "Guiding"
+                boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
+
             case "StartCalibration":
                 self.start_activity(PHD2Activities.Calibrating)
                 with self.lock:
@@ -833,9 +1019,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             case "LoopingExposuresStopped":
                 activity = PHD2Activities.Looping if e == "LoopingExposuresStopped" else PHD2Activities.Guiding
                 self.end_activity(activity)
-                if activity == PHD2Activities.Guiding and self.guiding_verification_timer is not None:
-                    logger.info(f"{function_name()}: stopping guiding verification timer")
-                    self.guiding_verification_timer.cancel()
+                if activity == PHD2Activities.Guiding:
+                    self.pointing_monitor.stop_session()
                 with self.lock:
                     self.app_state = "Stopped"
                 boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
@@ -843,9 +1028,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             case "GuidingStopped":
                 activity = PHD2Activities.Looping if e == "LoopingExposuresStopped" else PHD2Activities.Guiding
                 self.end_activity(activity)
-                if activity == PHD2Activities.Guiding and self.guiding_verification_timer is not None:
-                    logger.info(f"{function_name()}: stopping guiding verification timer")
-                    self.guiding_verification_timer.cancel()
+                if activity == PHD2Activities.Guiding:
+                    self.pointing_monitor.stop_session()
                 with self.lock:
                     self.app_state = "Stopped"
                 boxed_debug(lines=[f"{function_name()}: {e}"], logger=logger)
@@ -873,6 +1057,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 with self.lock:
                     self.app_state = "LostLock"
                     self.avg_dist = ev["AvgDist"]
+                self._update_lock_validity(ev, lost=True)
                 # | Attribute | Type | Description |
                 # |:----------|:-----|:------------|
                 # | Frame     | number | frame number |
@@ -1110,19 +1295,150 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             )
         return roi
 
+    def _send_limit_frame(self, roi: ImagerRoi | None):
+        """Put a limit frame on PHD2. What is in force afterwards is PHD2's to answer."""
+        if roi is not None:
+            logger.debug(f"{function_name()}: setting {roi=}")
+            self.call("set_limit_frame", params={"roi": [roi.x, roi.y, roi.width, roi.height]})
+        else:
+            logger.debug(f"{function_name()}: resetting ROI")
+            self.call("set_limit_frame", params={"roi": None})
+
     def set_limit_frame(self, roi: ImagerRoi | None = None):
+        """Set the limit frame. What is in force afterwards is PHD2's to answer.
+
+        A caller that means to put something back reads :meth:`get_limit_frame`
+        first rather than relying on a copy kept here, which is what went stale
+        (#245).
+        """
         if not self.connected:
             logger.error(f"{function_name()}: not connected")
 
         roi = self.limit_frame_for_phd2(roi)
+        self._send_limit_frame(roi)
+
+    def set_exclude_region(self, roi: ImagerRoi | None = None):
+        """Set (or reset, with roi=None) the PHD2 guide-star exclusion region.
+
+        The region (unbinned camera pixels) is excluded from guide-star
+        auto-selection so guiding locks only on stars the fold mirror will not
+        occult. Requires the set_exclude_region PHD2 API (2.6.14dev1mastbuild4+);
+        setting a region on an older build fails loudly, but a reset failure is
+        ignored — an older build has no exclusion state to reset.
+        """
+        if not self.connected:
+            logger.error(f"{function_name()}: not connected")
+
         if roi is not None:
-            logger.debug(f"{function_name()}: setting {roi=}")
-            self.call("set_limit_frame", params={"roi": [roi.x, roi.y, roi.width, roi.height]})
-            self.need_to_reset_limit_frame = True
+            logger.info(f"{function_name()}: setting {roi=}")
+            self.call("set_exclude_region", params={"roi": [roi.x, roi.y, roi.width, roi.height]})
         else:
-            logger.debug(f"{function_name()}: resetting ROI")
-            self.call("set_limit_frame", params={"roi": None})
-            self.need_to_reset_limit_frame = False
+            logger.debug(f"{function_name()}: resetting exclusion region")
+            try:
+                self.call("set_exclude_region", params={"roi": None})
+            except PHD2ConnectorError as ex:
+                logger.debug(f"{function_name()}: reset not supported by this PHD2 build (nothing to reset): {ex=}")
+
+    def get_limit_frame(self) -> ImagerRoi | None:
+        """The limit frame PHD2 is holding, or None when it holds none.
+
+        A read, not a recollection. The connector used to answer from what it last
+        sent, which is a different question: a request can be accepted and not yet
+        applied, an operator can change it by hand, and a restart drops it
+        entirely. That copy is gone as of #250; this is what replaces it (#245).
+        """
+        # PHD2 answers {"roi": [x, y, width, height]} or {"roi": null} -- a WRAPPER,
+        # not a bare array, and the wrapper is truthy even when the roi inside it is null.
+        # Reading result[0] off it raised KeyError on mast01 on 2026-09-22; `guider_status`
+        # caught that and reported the field as null, so the status read as "PHD2 holds no
+        # rectangle" when it meant "the read failed" -- the two are not the same answer.
+        roi = (self.call("get_limit_frame")["result"] or {}).get("roi")
+        if not roi:
+            return None
+        # verbatim: this rectangle is what PHD2 already holds. Conditioning it would
+        # move it, and the value would no longer describe the instrument (MAST_common#17).
+        return ImagerRoi.verbatim(x=roi[0], y=roi[1], width=roi[2], height=roi[3])
+
+    def get_exclude_region(self) -> ImagerRoi | None:
+        """The exclusion region PHD2 is holding, or None when it holds none.
+
+        The gate that blocked six cycles on 2026-09-15/16 had no way to ask this,
+        so it read PHD2's `AutoFind` echo instead -- truthful but incidental, and
+        with no counterpart for the limit frame (#245).
+        """
+        # PHD2 answers {"roi": [x, y, width, height]} or {"roi": null} -- a WRAPPER,
+        # not a bare array, and the wrapper is truthy even when the roi inside it is null.
+        # Reading result[0] off it raised KeyError on mast01 on 2026-09-22; `guider_status`
+        # caught that and reported the field as null, so the status read as "PHD2 holds no
+        # rectangle" when it meant "the read failed" -- the two are not the same answer.
+        roi = (self.call("get_exclude_region")["result"] or {}).get("roi")
+        if not roi:
+            return None
+        return ImagerRoi.verbatim(x=roi[0], y=roi[1], width=roi[2], height=roi[3])
+
+    def get_lock_position(self) -> tuple[float, float] | None:
+        """PHD2's lock position, in the coordinates of the image it is delivering.
+
+        That frame is the limit frame when one is in force, while
+        :meth:`get_limit_frame` and :meth:`get_exclude_region` are in unbinned
+        full-sensor pixels. Anything comparing the two must add the crop origin
+        first -- 520 px on the derived frame, 6363 on the strip -- and the
+        comparison does not look wrong when it is (#234, #245).
+        """
+        # Deliberately NOT unwrapped like its two siblings: PHD2 serialises a PHD_Point
+        # as a bare [x, y] array here, while the two rectangle getters wrap theirs in
+        # {"roi": ...}. Three getters, two shapes.
+        result = self.call("get_lock_position")["result"]
+        if not result:
+            return None
+        return float(result[0]), float(result[1])
+
+    def set_lock_position(self, x: float, y: float, exact: bool = True):
+        """Move the lock position, in the coordinates of the image PHD2 is delivering.
+
+        `exact=True` places it at the pixel given; `exact=False` asks PHD2 to snap to
+        a star near it. While guiding, PHD2 reports this to the guide algorithms as a
+        dither, so they treat the step as a commanded move rather than error to smooth
+        away -- the same path as its own Nudge Lock tool. It triggers no settling, so
+        the caller counts its own frames.
+        """
+        self.call("set_lock_position", params={"x": x, "y": y, "exact": exact})
+
+    def _apply_configured_exclude_region(self):
+        """Set-or-reset the exclusion region from phd2.exclude_region before every
+        guide, like the limit frame: the region is runtime-only in PHD2 but survives
+        across guide sessions within one PHD2 process."""
+        exclude_region = self.conf.exclude_region
+        match exclude_region.mode:
+            case ExcludeRegionMode.FIXED:
+                stale = exclude_region.stale_derivation()
+                if stale:
+                    raise PHD2ConnectorError(
+                        f"{function_name()}: stale exclusion region ({stale}) - "
+                        "re-run the shadow measurement instead of guiding with a stale rectangle"
+                    )
+                # verbatim: the rectangle is a measured shadow band plus a deliberate
+                # pad, and the exclusion is a *selection* filter rather than a sensor
+                # readout crop, so no camera alignment constraint applies to it -
+                # ImagerRoi conditioning would only shift the placement
+                # (same reasoning as the limit frame, MAST_common#17)
+                self.set_exclude_region(
+                    roi=ImagerRoi.verbatim(
+                        x=exclude_region.x,
+                        y=exclude_region.y,
+                        width=exclude_region.width,
+                        height=exclude_region.height,
+                    )
+                )
+                # the exclusion only filters *auto-selection*: a star already selected
+                # (e.g. left over from the previous guide session) survives it and the
+                # guide RPC would lock on it without re-selecting. Force a fresh
+                # selection so the region is honored.
+                self.call("deselect_star")
+            case ExcludeRegionMode.OFF:
+                # a measured rectangle may be stored while the region is off (the
+                # per-unit measure-now-enable-later workflow); mode alone decides
+                self.set_exclude_region(roi=None)
 
     def guide(
         self,
@@ -1166,6 +1482,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 self._start_cooling_down()
 
             assert imager_settings and imager_settings.roi
+            self._apply_configured_exclude_region()
             if new_interface:
                 # roi = imager_settings.roi.binned(imager_settings.binning)
                 roi = imager_settings.roi
@@ -1243,6 +1560,31 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             with self.lock:
                 self.settle = None
             raise
+
+    def wait_for_settle(self, timeout: float) -> SettleResult:
+        """Block until the settle started by the latest guide/dither completes.
+
+        Reports which ending it saw and how long it waited. A settle PHD2 rejected,
+        a settle still running when the wait expired, and a settle that never
+        started are three faults with three different fixes, so they are three
+        outcomes rather than one false (#86).
+        """
+        started = time.time()
+        deadline = started + timeout
+        saw_a_settle = False
+        while time.time() < deadline:
+            with self.lock:
+                s = self.settle
+            if s is not None:
+                saw_a_settle = True
+                if s.done:
+                    elapsed = time.time() - started
+                    if s.status == 0 and not s.error:
+                        return SettleResult(SettleOutcome.SETTLED, elapsed)
+                    return SettleResult(SettleOutcome.FAILED, elapsed, f"status={s.status}, error={s.error}")
+            time.sleep(1)
+        outcome = SettleOutcome.TIMED_OUT if saw_a_settle else SettleOutcome.NEVER_REPORTED
+        return SettleResult(outcome, time.time() - started)
 
     def is_settling(self):
         """Check if phd2 is currently in the process of settling after a Guide
@@ -1411,6 +1753,27 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             why_not_operational=self.why_not_operational,
         )
 
+    def _frame_state(self) -> tuple[ImagerRoi | None, ImagerRoi | None, tuple[float, float] | None]:
+        """PHD2's limit frame, exclusion region and lock position, read every time.
+
+        Answering these from anything the connector remembers is what let the limit frame
+        and the exclusion region describe the instrument only until something else touched
+        it (#245). A failed read reports None rather than the last good answer -- "I do not
+        know" is a true statement and a stale rectangle is not. Status is polled, so a PHD2
+        that is down is not read, and a failing read is logged once per streak (#260).
+        """
+        if not self.connected:
+            return None, None, None
+        try:
+            state = self.get_limit_frame(), self.get_exclude_region(), self.get_lock_position()
+        except Exception:  # noqa: BLE001 -- a failed read reports as None, logged once per streak
+            if self._read_failures.begins("frame_state"):
+                logger.exception(f"{function_name()}: could not read PHD2's frame state, not logged again until it succeeds")
+            return None, None, None
+        if self._read_failures.ends("frame_state"):
+            logger.info(f"{function_name()}: PHD2's frame state reads succeed again")
+        return state
+
     def guider_status(self) -> PHD2GuiderStatus:
         """PHD2 in its **guider** role, for embedding under `GuiderStatus.backend`.
 
@@ -1429,6 +1792,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             )
         )
 
+        lock = self.lock_supervisor.state
+        limit_frame, exclude_region, lock_position = self._frame_state()
         return PHD2GuiderStatus(
             identifier=self.identifier,
             is_guiding=self.is_guiding,
@@ -1436,6 +1801,22 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             app_state=self.app_state,
             avg_dist=self.avg_dist,
             sky_quality=sky_quality,
+            limit_frame=limit_frame,
+            exclude_region=exclude_region,
+            lock_position=lock_position,
+            pointing_check=self.pointing_monitor.status(),
+            lock_validity=LockValidityStatus(
+                validity=str(lock.validity),
+                frame_verdict=str(lock.frame_verdict),
+                mass_fraction=lock.mass_fraction,
+                session_mass_scale=lock.session_mass_scale,
+                peak_sigma_over_background=lock.peak_sigma_over_background,
+                mass_over_peak_hfd2=lock.mass_over_peak_hfd2,
+                reasons=lock.reasons,
+                worst_assessment=(
+                    None if lock.worst_assessment is None else LockAssessmentStatus(**lock.worst_assessment.model_dump())
+                ),
+            ),
         )
 
     @property
@@ -1451,9 +1832,13 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         st, _ = self.get_status()
         return self._is_guiding(st)
 
-    def pause(self):
-        """pause guiding (looping exposures continues)"""
-        self.call("set_paused", True)
+    def pause(self, full: bool = False):
+        """Pause guiding; with full=True PHD2 also stops taking guide exposures.
+
+        Pausing keeps the selected star, the calibration and the lock position,
+        so unpause() resumes correcting toward the same lock position.
+        """
+        self.call("set_paused", [True, "full"] if full else True)
 
     def unpause(self):
         """un-pause guiding"""
@@ -1580,6 +1965,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     height=limit_frame.height,
                 )
         logger.info(f"{function_name()}: limit frame: mode={limit_frame.mode}, roi={guiding_settings.roi}")
+        exclude_region = self.conf.exclude_region
+        logger.info(
+            f"{function_name()}: exclusion region: mode={exclude_region.mode}, "
+            f"roi=({exclude_region.x}, {exclude_region.y}, {exclude_region.width}, {exclude_region.height})"
+        )
 
         requested_binning: Literal[1, 2] = guiding_settings.binning if guiding_settings and guiding_settings.binning else 1
         if requested_binning != self.profile_binning:
@@ -1604,9 +1994,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 return CanonicalResponse(errors=[msg])
 
         logger.info(f"{function_name()}: starting guiding")
-        self.parent.unit.start_activity(UnitActivities.Guiding)
-        self.guide(imager_settings=guiding_settings)
-        return CanonicalResponse_Ok
+        return self._run_guide_session(guiding_settings)
 
     def stop_guiding(self) -> CanonicalResponse:
         if not self.connected:
@@ -1922,7 +2310,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     self.parent.end_activity(ImagerActivities.Saving)
                     self.parent.end_activity(ImagerActivities.Exposing)
             self.image_saved_event.clear()
-        self.reset_limit_frame_if_needed()
 
         # The frame is on disk now.  Sample the cooler again -- still on the
         # CALLER's thread, camera idle -- and stamp both readings into the
@@ -1931,25 +2318,6 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         stamp_cooling(self._exposure_image_path, self._cooler_before, self.cooler_status)
         self._cooler_before = None
         self._exposure_image_path = None
-
-    def reset_limit_frame_if_needed(self):
-        """Put PHD2's limit frame back once the exposure that needed it has been saved.
-
-        `need_to_reset_limit_frame` was set in `set_limit_frame` and read nowhere, so a
-        limit frame set for one MAST exposure stayed on PHD2 indefinitely -- including for
-        an operator driving PHD2 by hand afterwards. Found on mast00 on 2026-08-17: PHD2
-        was still holding `[7, 1, 8272, 5640]` from an earlier exposure, and reported its
-        camera frame size as 8272x5640 rather than the sensor's 8288x5644.
-
-        Here rather than in `stop_exposure`: the non-guiding path a single frame takes never
-        calls that, so the reset would never run.
-        """
-        if not self.need_to_reset_limit_frame:
-            return
-        try:
-            self.set_limit_frame(roi=None)
-        except Exception as e:  # noqa: BLE001 -- tidying up must not fail the exposure
-            logger.error(f"{function_name()}: could not reset the limit frame ({e})")
 
     @property
     def cooler_status(self) -> dict | None:

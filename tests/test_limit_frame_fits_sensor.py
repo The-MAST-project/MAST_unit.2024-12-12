@@ -148,6 +148,8 @@ def rig(binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1, limit_frame: Limi
     p.errors = []
     p._read_failures = FailureStreaks()
     p.image_saved_event = threading.Event()
+    p._guide_session = 0
+    p._nudge_onto_target = False
     rpc = MagicMock(name="call", return_value={})
     p.call = rpc
     doc = {

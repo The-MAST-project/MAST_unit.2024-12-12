@@ -11,6 +11,7 @@ from acquisition import Acquisition, ApproachMode
 from common import asi
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from common.config.phd2 import HandoverStyle
 from common.config.rois import FcuVersion, SkyRoiConfig
 from common.endpoints import Tier, endpoint
 from common.filer import Filer, MoveGuardian
@@ -165,6 +166,27 @@ class Acquirer:
         except Exception:  # the unwind must finish even if part of it fails
             logger.exception(f"{op}: error while unwinding a cancelled acquisition")
 
+    def _position_mirror_for_guiding(self) -> str | None:
+        """Insert the fold mirror now if the legacy handover is configured; say what was done.
+
+        On the legacy handover PHD2 picks its star on the field it guides on for the whole
+        exposure. The bracketed handover inserts after settle, from the guider. With
+        `auto_insert` off the caller inserts. FCU v1 has no fold mirror and is already at
+        SPEC from the solve phase.
+        """
+        if self.unit.fcu_version != FcuVersion.v2:
+            return None
+        assert self.unit.unit_conf is not None
+        handover = self.unit.unit_conf.phd2.handover
+        if not handover.auto_insert:
+            return "leaving stage at SKY; phd2.handover.auto_insert is off, the caller inserts the fold mirror"
+        match handover.style:
+            case HandoverStyle.LEGACY:
+                self.unit.required_stage.move_to_preset(StagePresetPosition.Spec)
+                return "moving stage to SPEC: fold mirror in before guiding (legacy handover)"
+            case HandoverStyle.BRACKETED:
+                return "leaving stage at SKY; the guider inserts the fold mirror after settle (bracketed handover)"
+
     def _phase_failure(self, phase: str, tries: int) -> str:
         """Why a phase ended without reaching tolerance: `solve_and_correct` returns False
         for a cancellation too, and the two call for different responses."""
@@ -229,7 +251,10 @@ class Acquirer:
                 x=spec_imager_settings.roi.width // 2, y=spec_imager_settings.roi.height // 2
             )
 
-            # spec_imager_settings.use_set_limit_frame = True
+            # imaging/solving path only (capture_single_frame + astrometry):
+            # acquisition exposures want the full frame, so no limit frame while
+            # solving. The *guiding* limit frame is not governed by this flag -
+            # it comes from the persisted phd2.limit_frame configuration.
             spec_imager_settings.use_set_limit_frame = False
             spec_imager_settings.binning = 1
 
@@ -456,12 +481,8 @@ class Acquirer:
             lines.append(f"camera disconnected imager={type(imager._backend)}, guider={type(guider._backend)}")
             imager.disconnect()
 
-        # Move the stage to SPEC (FCU v2 was left at Sky by the solve; v1 is already there)
-        # and wait for it to settle -- needed by BOTH the auto-handover and the manual
-        # acquisition-tuning paths, so guiding always starts with the stage at SPEC.
-        if self.unit.fcu_version == FcuVersion.v2:
-            self.unit.required_stage.move_to_preset(StagePresetPosition.Spec)
-            lines.append("moving stage to SPEC")
+        if (mirror := self._position_mirror_for_guiding()) is not None:
+            lines.append(mirror)
         if not self._await_stage():
             self._abandon(op)
             return ACQUISITION_CANCELLED

@@ -67,6 +67,8 @@ def make_connector(limit_frame: LimitFrameConfig | None = None) -> PHD2Connector
     p._read_failures = FailureStreaks()
     p.app_state = ""
     p.image_saved_event = threading.Event()
+    p._guide_session = 0
+    p._nudge_onto_target = False
     p.call = MagicMock(name="call", return_value={})
     doc = dict(LEGACY_PHD2_DOC)
     if limit_frame is not None:
@@ -177,17 +179,22 @@ class TestStartGuidingLimitFrame:
 
 
 class TestSetLimitFrameRpc:
-    def test_roi_encodes_as_flat_list_and_arms_reset(self):
+    """What reaches PHD2, and nothing about what the connector remembers of it.
+
+    These used to assert `need_to_reset_limit_frame` too. That flag was armed here
+    and consumed in the exposure path, which is how an unrelated exposure came to
+    clear a guide loop's own crop; it is gone, and so is the reset it armed (#245).
+    """
+
+    def test_roi_encodes_as_flat_list(self):
         p = make_connector()
         p.set_limit_frame(roi=ImagerRoi(**EXPLICIT_RECT))
         assert limit_frame_rois(p) == [wire_form(EXPLICIT_RECT)]
-        assert p.need_to_reset_limit_frame is True
 
-    def test_none_resets_and_disarms(self):
+    def test_none_resets(self):
         p = make_connector()
         p.set_limit_frame(roi=None)
         assert limit_frame_rois(p) == [None]
-        assert p.need_to_reset_limit_frame is False
 
 
 class TestAcquisitionPathUntouched:
