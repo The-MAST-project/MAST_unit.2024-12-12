@@ -11,6 +11,7 @@ from acquisition import Acquisition, ApproachMode
 from common import asi
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from common.config.phd2 import HandoverStyle
 from common.config.rois import FcuVersion, SkyRoiConfig
 from common.endpoints import Tier, endpoint
 from common.filer import Filer, MoveGuardian
@@ -164,6 +165,27 @@ class Acquirer:
                 self.unit.required_imager.end_exposure_series(acquisition_exposure_series)
         except Exception:  # the unwind must finish even if part of it fails
             logger.exception(f"{op}: error while unwinding a cancelled acquisition")
+
+    def _position_mirror_for_guiding(self) -> str | None:
+        """Insert the fold mirror now if the legacy handover is configured; say what was done.
+
+        On the legacy handover PHD2 picks its star on the field it guides on for the whole
+        exposure. The bracketed handover inserts after settle, from the guider. With
+        `auto_insert` off the caller inserts. FCU v1 has no fold mirror and is already at
+        SPEC from the solve phase.
+        """
+        if self.unit.fcu_version != FcuVersion.v2:
+            return None
+        assert self.unit.unit_conf is not None
+        handover = self.unit.unit_conf.phd2.handover
+        if not handover.auto_insert:
+            return "leaving stage at SKY; phd2.handover.auto_insert is off, the caller inserts the fold mirror"
+        match handover.style:
+            case HandoverStyle.LEGACY:
+                self.unit.required_stage.move_to_preset(StagePresetPosition.Spec)
+                return "moving stage to SPEC: fold mirror in before guiding (legacy handover)"
+            case HandoverStyle.BRACKETED:
+                return "leaving stage at SKY; the guider inserts the fold mirror after settle (bracketed handover)"
 
     def _phase_failure(self, phase: str, tries: int) -> str:
         """Why a phase ended without reaching tolerance: `solve_and_correct` returns False
@@ -459,14 +481,8 @@ class Acquirer:
             lines.append(f"camera disconnected imager={type(imager._backend)}, guider={type(guider._backend)}")
             imager.disconnect()
 
-        # FCU v2 is deliberately left at Sky here: its fold mirror is inserted by the
-        # guider's SPEC handover (settle -> pause -> stage to SPEC -> resume), on both
-        # the auto-handover and the manual /start_guiding paths. Inserting it now would
-        # sweep the mirror's shadow across the field while guiding is still selecting
-        # and locking stars. v1 has no fold mirror and is already at SPEC from the solve
-        # phase; either way, wait for the stage to settle before going on.
-        if self.unit.fcu_version == FcuVersion.v2:
-            lines.append("leaving stage at SKY; fold-mirror insertion deferred to the guiding handover")
+        if (mirror := self._position_mirror_for_guiding()) is not None:
+            lines.append(mirror)
         if not self._await_stage():
             self._abandon(op)
             return ACQUISITION_CANCELLED
