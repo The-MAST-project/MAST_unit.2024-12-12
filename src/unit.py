@@ -55,6 +55,7 @@ from common.notifications import Notifier
 from common.parsers import (
     DEC_PATTERN,
     RA_PATTERN,
+    parse_target,
     sexagesimal_degrees_to_decimal,
     sexagesimal_hours_to_decimal,
 )
@@ -64,7 +65,7 @@ from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers
 from expose_params import MAX_OFFSET_ARCSEC, MAX_OFFSET_DEGREES, resolve_exposure_roi, resolve_offsets
 from flux_metering import correlate
-from flux_metering.session import FluxMeteringParams, FluxMeteringSession, parse_target
+from flux_metering.session import FluxMeteringParams, FluxMeteringSession
 from focus_on_star.session import FocusOnStarParams, FocusOnStarSession
 from focuser import Focuser
 from imagers import Imager
@@ -760,6 +761,8 @@ class Unit(Component, OpmodeBase):
             # A new list: `self.errors` is the unit's own standing errors, and a read that
             # failed on this request must not be appended to it.
             errors=self.errors + failures,
+            # The latest acquisition's outcome; None until one has started (and from old units).
+            acquisition=self.acquirer.outcome if self.acquirer is not None else None,
             autofocus=autofocus,
             corrections=all_corrections,
             date=time_stamp(),
