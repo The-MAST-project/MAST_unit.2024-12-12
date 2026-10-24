@@ -727,6 +727,7 @@ class Acquirer:
             handover_automatically_to_guider=handover_automatically_to_guider,
         )
 
+    # How-to: https://github.com/The-MAST-project/MAST/wiki/Observing-night
     @endpoint(tier=Tier.OPERATION)
     def endpoint_start_acquisition_and_guiding(
         self,

@@ -775,6 +775,7 @@ class Calibrator:
         self.errors.append(msg)
 
     # ----------------------------------------------------------------- router
+    # How-to: https://github.com/The-MAST-project/MAST/wiki/Calibration-and-alignment
     @property
     def api_router(self) -> APIRouter:
         base_path = Const.BASE_UNIT_PATH + "/calibrate"
