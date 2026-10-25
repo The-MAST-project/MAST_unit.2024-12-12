@@ -1,10 +1,8 @@
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
-from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -169,12 +167,14 @@ class AstrometryDotNet(SolverInterface):
 
         new_fits_path = input_fits_path.replace(".fits", f",solver={solver_name}.fits")
 
+        scratch: Path | None = None  # cygwin's; under wsl solve-field keeps its own
         if unix_emulator == "cygwin":
             # Made as a Windows path on the RAM area's current root -- its fallback while the
             # disk is gone -- and handed to solve-field in cygwin's spelling. It was made as
             # "/cygdrive/d/...", which Windows Python reads as C:\\cygdrive\\d\\..., and was
             # fixed on D: whatever the disk's state.
-            tmp_path = win_to_cygwin(scratch_dir(tmp_dir).as_posix())
+            scratch = scratch_dir(tmp_dir)
+            tmp_path = win_to_cygwin(scratch.as_posix())
 
             cmd = r"C:/cygwin64/usr/local/astrometry/bin/solve-field"
             args += ["--dir", tmp_path]
@@ -286,10 +286,10 @@ class AstrometryDotNet(SolverInterface):
         #
         # The previous attempt was commented out AND referred to `win_tmp_dir`, which the
         # lines near the top of this method leave commented out too, so it could never have
-        # been simply re-enabled. The directory actually created is the cygwin one below.
-        assert filer.ram is not None
-        with suppress(Exception):
-            shutil.rmtree(Path(filer.ram.root, "tmp", tmp_dir))
+        # been simply re-enabled. The directory removed is the one created, on the RAM
+        # area's root at the time -- not `ram.root`, which is the wrong one on the fallback.
+        if scratch is not None:
+            MoveGuardian().discard_folder(scratch)
 
         return ret
 

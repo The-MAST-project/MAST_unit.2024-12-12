@@ -3,7 +3,6 @@ import os
 import shutil
 import subprocess
 import time
-from contextlib import suppress
 from pathlib import Path
 from threading import Thread
 from typing import TYPE_CHECKING, cast
@@ -77,24 +76,6 @@ class MastrometryDotNet(SolverInterface):
         self.index_dir = index_dir()
         if (why := missing_indexes(self.index_dir)) is not None:
             raise Exception(f"{function_name()}: {why}")
-
-        # missing = False
-        # for i in range(0, 47):
-        #     index_5206_file = self.index_dir / f"index-5206-{i:02d}.fits" # needed
-        #     if not index_5206_file.exists():
-        #         logger.warning(f"{function_name()}: RAM disk is missing index file '{index_5206_file.as_posix()}'")
-        #         missing = True
-
-        #     # index_5205_file = self.index_dir / f"index-5205-{i:02d}.fits" # niced to have
-        #     # if not index_5205_file.exists():
-        #     #     logger.warning(f"{function_name()}: RAM disk is missing index file '{index_5205_file.as_posix()}'")
-        #     #     missing = True
-
-        #     if missing:
-        #         raise Exception(f"{function_name()}: RAM disk is missing some index files")
-
-        # logger.info(f"{function_name()}: RAM disk contains all needed index files")
-        logger.warning(f"{function_name()}: Skipping RAM disk index file check (TODO: remove this after testing)")
 
     @property
     def name(self) -> str:
@@ -510,9 +491,11 @@ class MastrometryDotNet(SolverInterface):
                 filer.move_ram_to_shared(str(destination))
 
         # Only now: the artifacts worth keeping are out, the rest is astrometry.net
-        # intermediates (.axy/.xyls/.wcs and the downsampled frame).
-        with suppress(Exception):
-            shutil.rmtree(tmp_dir)
+        # intermediates (.axy/.xyls/.wcs and the downsampled frame). Discarded, not just
+        # removed: the result was written under protect(), which claimed this folder and
+        # recorded it as a product, and a bare rmtree left the claim's handle, its
+        # `.tmp_<id>.lock` beside the folder and the records behind -- one of each per solve.
+        MoveGuardian().discard_folder(tmp_dir)
 
     def solve_and_correct(self):
         pass

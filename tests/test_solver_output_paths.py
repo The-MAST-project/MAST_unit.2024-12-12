@@ -7,6 +7,7 @@ text were one path, and the read-back found text where the WCS should be.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess
@@ -106,6 +107,15 @@ def _scratch_folders() -> list[Path]:
     return sorted(tmp.glob("tmp_*")) if tmp.exists() else []
 
 
+def _scratch_leftovers() -> list[str]:
+    """Everything in the scratch parent, dot-files included: the claim's `.tmp_<id>.lock`
+    is beside the folder, not in it, and outlived it once per solve (seen on mast00)."""
+    ram = Filer().ram
+    assert ram is not None
+    tmp = Path(ram.root, "tmp")
+    return sorted(p.name for p in tmp.iterdir()) if tmp.exists() else []
+
+
 def _join_cleanup() -> None:
     for thread in threading.enumerate():
         if thread.name == "mastrometry-cleanup":
@@ -119,6 +129,8 @@ def _no_scratch_left_from_other_tests():
         for file in folder.iterdir():
             file.unlink()
         folder.rmdir()
+    for lock in Path(Filer().ram.root, "tmp").glob(".tmp_*.lock"):  # type: ignore[union-attr]
+        lock.unlink()
 
 
 def test_a_non_fits_input_reads_back_its_solution(monkeypatch, solver, unit, tmp_path, moved_to_shared):
@@ -168,7 +180,7 @@ def test_artifacts_not_kept_leave_nothing_behind(monkeypatch, solver, unit, tmp_
     assert result is not None and result.succeeded
     assert sorted(frame.parent.iterdir()) == [frame]
     assert moved_to_shared == []
-    assert _scratch_folders() == []
+    assert _scratch_leftovers() == []
 
 
 def test_the_scratch_folder_goes_when_the_solve_raises(monkeypatch, solver, unit, tmp_path, moved_to_shared):
@@ -179,4 +191,23 @@ def test_the_scratch_folder_goes_when_the_solve_raises(monkeypatch, solver, unit
         solver.solve(unit=unit, phase="sky", full_frame_input_image_path=str(frame), keep_artifacts=False)
     _join_cleanup()
 
-    assert _scratch_folders() == []
+    assert _scratch_leftovers() == []
+
+
+def test_kept_artifacts_leave_no_claim_behind(monkeypatch, solver, unit, tmp_path, moved_to_shared):
+    """The result is written under protect() in the scratch folder, which claims it. Moving
+    the artifacts out and removing the folder used to leave the claim: an open handle, a
+    lock file beside the folder and the product records, once per solve."""
+    from common.filer import MoveGuardian
+
+    monkeypatch.setattr(mastrometry_module.subprocess, "run", _solve_field_that_solves)
+    frame = _guide_frame(tmp_path / "phd2", "savF86B.tmp")
+    claims_before = set(MoveGuardian._folder_claims)
+
+    solver.solve(unit=unit, phase="sky", full_frame_input_image_path=str(frame))
+    _join_cleanup()
+
+    assert _scratch_leftovers() == []
+    tmp = os.path.realpath(Path(Filer().ram.root, "tmp"))  # type: ignore[union-attr]
+    assert not [c for c in set(MoveGuardian._folder_claims) - claims_before if c.startswith(tmp)]
+    assert not [p for p in MoveGuardian._products if p.startswith(tmp)]
