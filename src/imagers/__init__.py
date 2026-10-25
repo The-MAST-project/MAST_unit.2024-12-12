@@ -11,7 +11,7 @@ from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.endpoints import Completion, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, ImagerTypes
 from common.mast_logging import get_logger
-from common.models.statuses import ImagerSettings, ImagerStatus
+from common.models.statuses import COOLING_DOWN_REASON, ImagerSettings, ImagerStatus
 from failure_streaks import FailureStreaks
 from imagers.usb_link import log_usb_link
 
@@ -374,9 +374,9 @@ class Imager(ImagerInterface, SwitchedOutlet):
         if self.is_active(ImagerActivities.CoolingDown):
             reading = self._cooling_reading
             if reading:
-                reasons.append(f"imager: cooling down, {reading[0]:.1f} C, set point {reading[1]:.1f} C")
+                reasons.append(f"{COOLING_DOWN_REASON}, {reading[0]:.1f} C, set point {reading[1]:.1f} C")
             else:
-                reasons.append("imager: cooling down to the set point")
+                reasons.append(f"{COOLING_DOWN_REASON} to the set point")
         return reasons
 
     def abort(self) -> CanonicalResponse:

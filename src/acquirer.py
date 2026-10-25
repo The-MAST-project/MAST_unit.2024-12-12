@@ -1,3 +1,4 @@
+import datetime
 import os
 import time
 from threading import Thread
@@ -16,7 +17,7 @@ from common.endpoints import Tier, endpoint
 from common.filer import MoveGuardian
 from common.mast_logging import get_logger
 from common.models.plans import PlanStage
-from common.models.statuses import ImagerSettings
+from common.models.statuses import AcquisitionOutcome, AcquisitionState, ImagerSettings
 from common.object_resolver import TOTAL_TIMEOUT_SECONDS, ObjectNameError
 
 # RA_PATTERN/DEC_PATTERN are deliberately no longer applied to this endpoint's coordinate
@@ -45,6 +46,33 @@ REQUIRED_COMPONENTS = ("mount", "guider", "imager", "solver", "stage")
 
 ACQUISITION_CANCELLED = "the acquisition was cancelled"
 
+#: The handover's failure when guiding stops before PHD2 ever locked on a star.
+GUIDING_NEVER_LOCKED = "guiding stopped before locking on a star"
+
+
+def _now_iso() -> str:
+    return datetime.datetime.now(datetime.UTC).isoformat()
+
+
+def _settle_outcome(outcome: AcquisitionOutcome | None, failure: str | None) -> None:
+    """Give `outcome` its final state, from how `do_acquire` returned.
+
+    A failure string is `FAILED` (or `ABORTED`, for a cancellation); no failure after a
+    lock is `ENDED`, which the handover has already set. No failure and no lock is the
+    acquisition-tuning path (no handover), which also ends here: `ENDED`, nothing wrong.
+    """
+    if outcome is None:
+        return
+    if failure is None:
+        outcome.state = AcquisitionState.ENDED
+    elif failure == ACQUISITION_CANCELLED:
+        outcome.state = AcquisitionState.ABORTED
+        outcome.errors.append(failure)
+    else:
+        outcome.state = AcquisitionState.FAILED
+        outcome.errors.append(failure)
+    outcome.ended_at = _now_iso()
+
 
 class Acquirer:
     from typing import TYPE_CHECKING
@@ -62,9 +90,27 @@ class Acquirer:
         self.folder: str | None = None
         self.latest_acquisition: Acquisition | None = None
 
+    #: The latest acquisition's outcome, published as `FullUnitStatus.acquisition`. None until
+    #: the first one starts. A class attribute so an Acquirer built without `__init__` (the
+    #: tests) has it too; `start` replaces it on the instance, never mutates this one.
+    outcome: AcquisitionOutcome | None = None
+
     def missing_components(self) -> list[str]:
         """The `REQUIRED_COMPONENTS` this unit did not build, in declaration order."""
         return [name for name in REQUIRED_COMPONENTS if getattr(self.unit, name) is None]
+
+    def start(self, acquisition: Acquisition) -> None:
+        """Publish a fresh `RUNNING` outcome, then run `acquisition` on its own thread.
+
+        The outcome is replaced *before* this returns, so before the endpoint answers: a
+        caller's first status read after a successful PUT describes this acquisition, never
+        the previous one. That ordering is what lets the outcome carry no id
+        (mast-claude-config plans/control_acquisition_design.md, 4.1).
+        """
+        outcome = AcquisitionOutcome(state=AcquisitionState.RUNNING, started_at=_now_iso())
+        acquisition.outcome = outcome
+        self.outcome = outcome
+        Thread(name="acquisition", target=self.run_acquisition, args=[acquisition]).start()
 
     def run_acquisition(self, acquisition: Acquisition):
         """Thread entry point for an acquisition: run it, then always release its folder.
@@ -86,6 +132,9 @@ class Acquirer:
             logger.exception(f"{function_name()}: acquisition failed")
             acquisition.failure = f"the acquisition raised: {ex!r}"
         finally:
+            # Before the folder release, which can wait on artifacts still moving: a caller
+            # polling the outcome should learn how this ended as soon as it has.
+            _settle_outcome(getattr(acquisition, "outcome", None), acquisition.failure)
             # Removed once every protected artifact has reached the shared area, and never
             # before -- so a frame that failed to move keeps its folder instead of being
             # deleted with it.
@@ -161,6 +210,63 @@ class Acquirer:
                 self.unit.required_imager.end_exposure_series(acquisition_exposure_series)
         except Exception:  # the unwind must finish even if part of it fails
             logger.exception(f"{op}: error while unwinding a cancelled acquisition")
+
+    def _hand_over_to_guider(self, op: str, outcome: AcquisitionOutcome | None) -> str | None:
+        """Start guiding and stay with it until it stops. None, or why the handover failed.
+
+        `outcome` becomes `GUIDING` the first time the guider is locked on a star -- for
+        PHD2, its state being exactly "Guiding", not merely told to guide -- and `ENDED`
+        when guiding stops after that.
+
+        Three ways to fail, each unwound as a failed phase is:
+
+        - **the guider refuses** (PHD2 cannot connect, or its profile's binning or bpp do
+          not match). It returns errors without raising `Guiding`, and this used to
+          ignore them: the wait below fell straight through, the mount stopped tracking,
+          and the acquisition reported success.
+        - **cancelled before a lock** (`stop_acquisition_and_guiding`, `unit/abort`).
+        - **guiding stops before a lock**: `GUIDING_NEVER_LOCKED`.
+
+        A guider that is told to guide and never locks keeps this waiting, as before;
+        the caller's timeout is what ends that (control aborts the unit).
+
+        The solving backend (anything not PHD2) has no star lock, and its `start_guiding`
+        blocks for the whole session, so for it `GUIDING` is set as guiding starts and the
+        call is waited out.
+        """
+        guider = self.unit.required_guider
+
+        if not isinstance(guider._backend, PHD2Connector):
+            if outcome is not None:
+                outcome.state = AcquisitionState.GUIDING
+            response = guider.start_guiding()  # blocks until guiding stops
+            if response.failed:
+                self._abandon(op)
+                return f"guiding failed: {'; '.join(response.errors or [])}"
+        else:
+            response = guider.start_guiding()
+            if response.failed:
+                self._abandon(op)
+                return f"handover to guiding failed: {'; '.join(response.errors or [])}"
+
+            locked = False
+            while self.unit.is_active(UnitActivities.Guiding):
+                if not locked and guider.is_locked:
+                    locked = True
+                    if outcome is not None:
+                        outcome.state = AcquisitionState.GUIDING
+                    logger.info(f"{op}: guiding, locked on a star")
+                time.sleep(1)
+
+            if not locked:
+                cancelled = self._cancelled()
+                self._abandon(op)
+                return ACQUISITION_CANCELLED if cancelled else GUIDING_NEVER_LOCKED
+
+        # Guiding was stopped, after a lock
+        self.unit.end_activity(UnitActivities.Acquiring)
+        self.unit.required_mount.stop_tracking()
+        return None
 
     def _phase_failure(self, phase: str, tries: int) -> str:
         """Why a phase ended without reaching tolerance: `solve_and_correct` returns False
@@ -470,14 +576,9 @@ class Acquirer:
         if self.latest_acquisition.handover_automatically_to_guider:
             lines.append("starting PHD2 guiding")
             boxed_log(logger, lines)
-            self.unit.required_guider.start_guiding()
-
-            while self.unit.is_active(UnitActivities.Guiding):
-                time.sleep(1)
-
-            # Guiding was stopped
-            self.unit.end_activity(UnitActivities.Acquiring)
-            self.unit.required_mount.stop_tracking()
+            failure = self._hand_over_to_guider(op, getattr(self.latest_acquisition, "outcome", None))
+            if failure is not None:
+                return failure
         else:
             lines.append("acquisition tuning: guiding must be started manually via /start_guiding")
             boxed_log(logger, lines)
@@ -726,6 +827,6 @@ class Acquirer:
         # The folder exists from here (`Acquisition.__init__` makes it): say where, before
         # anything is written into it, so control's link is there from the start.
         announce_plan_products(plan_ulid, PlanStage.Acquisition, prepared.folder)
-        Thread(name="acquisition", target=self.run_acquisition, args=[prepared]).start()
+        self.start(prepared)
 
         return CanonicalResponse_Ok
