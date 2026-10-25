@@ -450,7 +450,7 @@ def test_the_coordinates_the_operator_actually_types_are_accepted():
     """`RA_PATTERN` accepts space-separated sexagesimal, so `float()` is not enough --
     which is how a real request with `03 08 10.142` blew up. `acquirer.py` carries a
     comment about having fixed this exact defect once already."""
-    from flux_metering.session import parse_target
+    from common.parsers import parse_target
 
     ra, dec = parse_target("03 08 10.142", " +40 57 20.275")
 
@@ -468,7 +468,7 @@ def test_the_coordinates_the_operator_actually_types_are_accepted():
     ],
 )
 def test_every_accepted_coordinate_form_parses(ra, dec):
-    from flux_metering.session import parse_target
+    from common.parsers import parse_target
 
     parsed_ra, parsed_dec = parse_target(ra, dec)
 
@@ -478,20 +478,20 @@ def test_every_accepted_coordinate_form_parses(ra, dec):
 
 def test_absent_coordinates_stay_absent():
     """None means 'take it from the mount', which only the acquirer can do."""
-    from flux_metering.session import parse_target
+    from common.parsers import parse_target
 
     assert parse_target(None, None) == (None, None)
 
 
 def test_an_ra_of_zero_is_a_coordinate_not_a_missing_value():
     """Truthiness would send RA 0h to the mount instead of using it."""
-    from flux_metering.session import parse_target
+    from common.parsers import parse_target
 
     assert parse_target(0.0, 0.0) == (0.0, 0.0)
 
 
 def test_a_bad_coordinate_raises_rather_than_being_guessed_at():
-    from flux_metering.session import parse_target
+    from common.parsers import parse_target
 
     with pytest.raises(ValueError):
         parse_target("not a coordinate", None)
