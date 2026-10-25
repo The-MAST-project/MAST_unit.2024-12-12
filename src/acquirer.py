@@ -18,18 +18,15 @@ from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification, UnitAssignment
 from common.models.statuses import ImagerSettings
 from common.notifications import Notifier
-from common.object_resolver import TOTAL_TIMEOUT_SECONDS, ObjectNameError, resolve_object_name
+from common.object_resolver import TOTAL_TIMEOUT_SECONDS, ObjectNameError
 
 # RA_PATTERN/DEC_PATTERN are deliberately no longer applied to this endpoint's coordinate
 # parameters. A `pattern=` is enforced by FastAPI BEFORE the handler runs, so a malformed
 # coordinate would 422 out and never reach the fallback -- which makes "if either is
 # missing or unusable, resolve `object_name`" unimplementable for half the ways a
-# coordinate can be unusable. Validation moved into `_coordinate_pair`, where both classes
-# of bad input (malformed and out-of-range) are visible and can fall through together.
-from common.parsers import (
-    sexagesimal_degrees_to_decimal,
-    sexagesimal_hours_to_decimal,
-)
+# coordinate can be unusable. Validation is `target_coordinates`', where both classes of
+# bad input (malformed and out-of-range) are visible and can fall through together.
+from common.parsers import target_coordinates
 from common.rois import SkyRoi
 from common.utils import Coord, boxed_log, function_name
 from mount import SETTLE_START_GRACE_SECONDS, SLEW_SETTLE_TOLERANCE_ARCSEC, SettleMode
@@ -566,73 +563,34 @@ class Acquirer:
                 )
             )
 
-    @staticmethod
-    def _coordinate_pair(ra_in, dec_in) -> tuple[float, float] | None:
-        """(ra_hours, dec_degrees) when BOTH were supplied and both convert. Else None.
-
-        `is not None`, never truthiness. `ra_j2000_hours=0` is a real target -- 0h is in
-        Pisces and dec 0 is the celestial equator -- and both are falsy, so the old test
-        sent them to the "not supplied" branch and silently acquired wherever the mount
-        happened to be pointing. Reachable from Python, not only over HTTP:
-        `unit.py`'s assignment path calls this endpoint directly with plan floats.
-
-        Both or neither: half a coordinate pair cannot be completed from the other half,
-        and mixing one supplied axis with one from the telescope points at neither.
-        """
-        if ra_in is None or dec_in is None:
-            return None
-        try:
-            # One call, whatever the form. The old code dispatched on `":" in value` and
-            # sent everything else to float() -- so a space-separated coordinate, which
-            # RA_REGEX explicitly allowed, raised an uncaught ValueError and returned 500.
-            # The parsers take sexagesimal, decimal and surrounding whitespace alike.
-            return sexagesimal_hours_to_decimal(ra_in), sexagesimal_degrees_to_decimal(dec_in)
-        except ValueError:
-            return None
-
     def _target_coordinates(self, op, ra_in, dec_in, object_name, resolve_timeout, pw_status):
         """Where to acquire: (ra_hours, dec_degrees, None), or (None, None, why-not).
 
-        Precedence, and the order is the point:
+        Coordinates first, then `object_name`, by common's `target_coordinates` -- the one
+        place that rule lives, shared with the plans control writes
+        (plans/control_acquisition_design.md 3.8). Only the last rule is the unit's own:
+        with neither, **the telescope's current position**, as before.
 
-        1. **Both coordinates, both valid** -- used as given, and the name is not resolved
-           at all. Explicit coordinates are the most certain thing a caller can supply.
-        2. **Otherwise, `object_name` if there is one.** "Otherwise" covers missing AND
-           unusable: a coordinate that will not convert is not a coordinate.
-        3. **Otherwise the telescope's current position**, as before.
-
-        A name that fails to resolve is an ERROR and never falls through to rule 3.
+        A name that fails to resolve is an ERROR and never falls through to the telescope.
         Quietly acquiring wherever the mount happens to point, having been asked for a
         named object, is the misresolution failure in its purest form -- everything below
-        works perfectly and the spectrum is of the wrong sky.
+        works perfectly and the spectrum is of the wrong sky. Coordinates supplied but
+        unusable, with no name, are an error too, said as such: "no coordinates" would read
+        as an omission, and send the caller hunting for a missing parameter.
         """
-        pair = self._coordinate_pair(ra_in, dec_in)
-        if pair is not None:
-            return pair[0], pair[1], None
-
-        if object_name:
-            try:
-                resolved = resolve_object_name(object_name, total_timeout=resolve_timeout)
-            except ObjectNameError as e:
-                return None, None, f"{op}: could not resolve '{object_name}' -- {e}"
+        try:
+            ra, dec, resolved = target_coordinates(ra_in, dec_in, object_name, resolve_timeout)
+        except ObjectNameError as e:
+            return None, None, f"{op}: could not resolve '{object_name}' -- {e}"
+        except ValueError as e:
+            return None, None, f"{op}: {e}"
+        if resolved is not None:
             logger.info(
                 f"{op}: '{object_name}' resolved to ra={resolved.ra_j2000_hours:.6f}h "
                 f"dec={resolved.dec_j2000_degs:+.6f}d via {resolved.database or resolved.resolver}"
             )
-            return resolved.ra_j2000_hours, resolved.dec_j2000_degs, None
-
-        # Neither usable coordinates nor a name. Say which it was: "no coordinates" reads
-        # as an omission, and a caller who supplied a malformed RA needs to know that is
-        # what happened rather than hunting for a missing parameter.
-        if ra_in is not None or dec_in is not None:
-            return (
-                None,
-                None,
-                (
-                    f"{op}: coordinates were supplied but unusable (ra={ra_in!r}, dec={dec_in!r}); "
-                    "supply both as valid J2000, or an object_name instead"
-                ),
-            )
+        if ra is not None and dec is not None:
+            return ra, dec, None
 
         if not pw_status.mount.is_connected:
             return None, None, "cannot get coordinates from mount (mount not connected)"
