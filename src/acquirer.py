@@ -674,16 +674,10 @@ class Acquirer:
         skip_sky: bool = False,
         use_set_limit_frame: bool = True,
         handover_automatically_to_guider: bool = True,
-        plan_ulid: Annotated[
-            str | None,
-            Query(
-                description=(
-                    "Set by MAST_control when a plan execution drives this acquisition: the unit "
-                    "then tells control where the products are, to link them into the plan's "
-                    "products folder. Leave empty when calling by hand."
-                )
-            ),
-        ] = None,
+        # Internal: set by MAST_control's plan execution, so the unit labels the products
+        # folder with a `plan_id` file and says where it is (plans/control_acquisition_design.md
+        # 5.10, 6.5). Accepted, but kept out of the OpenAPI schema: not for an operator.
+        plan_ulid: Annotated[str | None, Query(include_in_schema=False)] = None,
     ):
         """
         Starts an acquisition

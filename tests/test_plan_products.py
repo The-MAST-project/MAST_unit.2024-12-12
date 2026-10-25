@@ -140,3 +140,52 @@ def test_execute_assignment_is_gone():
     assert not hasattr(Unit, "endpoint_execute_assignment")
     assert not hasattr(Unit, "do_execute_assignment")
     assert not hasattr(Acquirer, "start_acquisition_and_guiding_for_assignment")
+
+
+class TestHiddenFromOperators:
+    """`plan_ulid` is control's, not an operator's: accepted over HTTP, absent from OpenAPI."""
+
+    @pytest.fixture
+    def client(self, monkeypatch, folder):
+        from fastapi import APIRouter, FastAPI
+        from fastapi.testclient import TestClient
+
+        from common.endpoints import add_api_route
+
+        monkeypatch.setattr(Acquirer, "prepare_acquisition", lambda self, **kw: SimpleNamespace(folder=folder))
+        monkeypatch.setattr(Acquirer, "run_acquisition", lambda self, acquisition: None)
+        acquirer = Acquirer.__new__(Acquirer)
+
+        class _Unit(Unit):
+            unit_conf = None  # a property on Unit; the endpoint then uses the default settings
+
+        unit = _Unit.__new__(_Unit)
+        unit.focus_on_star = SimpleNamespace(start=lambda params: SimpleNamespace(folder=folder))  # type: ignore[assignment]
+
+        router = APIRouter()
+        add_api_route(
+            router,
+            "/start_acquisition_and_guiding",
+            endpoint=acquirer.endpoint_start_acquisition_and_guiding,
+            methods=["PUT"],
+        )
+        add_api_route(router, "/focus_on_star", endpoint=unit.endpoint_focus_on_star, methods=["PUT"])
+        app = FastAPI()
+        app.include_router(router)
+        return TestClient(app)
+
+    @pytest.mark.parametrize("path", ["/start_acquisition_and_guiding", "/focus_on_star"])
+    def test_not_in_the_schema(self, client, path):
+        parameters = client.app.openapi()["paths"][path]["put"].get("parameters", [])
+        assert "plan_ulid" not in [p["name"] for p in parameters]
+
+    @pytest.mark.parametrize(
+        ("path", "stage"),
+        [("/start_acquisition_and_guiding", PlanStage.Acquisition), ("/focus_on_star", PlanStage.Autofocus)],
+    )
+    def test_still_accepted(self, client, sent, folder, path, stage):
+        response = client.put(path, params={"plan_ulid": ULID})
+
+        assert response.status_code == 200, response.text
+        assert _label(folder) == ULID
+        assert [n.stage for n in sent] == [stage]
