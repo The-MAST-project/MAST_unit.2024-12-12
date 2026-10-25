@@ -9,7 +9,6 @@ import time
 from collections.abc import Callable
 from enum import Enum, IntFlag
 from itertools import chain
-from pathlib import Path
 from threading import Thread
 from typing import TYPE_CHECKING, Annotated, Any, TypeVar
 
@@ -45,13 +44,12 @@ from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 from common.interfaces.imager import ImagerTypes
 from common.mast_logging import DailyFileHandler, get_logger
-from common.models.assignments import AssignmentNotification, UnitAssignment
+from common.models.plans import PlanStage
 from common.opmode import OpmodeBase, OpState
 
 if TYPE_CHECKING:  # `guiding` imports `unit` back, so this stays type-only
     from guiding import Guider
 from common.models.statuses import FullUnitStatus, ImagerRoi, ImagerSettings, StatusType
-from common.notifications import Notifier
 from common.parsers import (
     DEC_PATTERN,
     RA_PATTERN,
@@ -70,6 +68,7 @@ from focus_on_star.session import FocusOnStarParams, FocusOnStarSession
 from focuser import Focuser
 from imagers import Imager
 from mount import Mount, SettleMode
+from plan_products import announce_plan_products
 from PlaneWave import pwi4_client
 from solving import Solver
 from spiral_search import SpiralSearch, guiding_roi
@@ -1717,81 +1716,6 @@ class Unit(Component, OpmodeBase):
         logger.info(f"{op}: done.")
         return CanonicalResponse_Ok
 
-    def do_execute_assignment(self, assignment: UnitAssignment):
-        """
-        Execute an assignment in a separate Thread
-        :param assignment:
-        :return:
-        """
-        assert self.acquirer is not None
-        assert self.autofocuser is not None
-        assert self.guider is not None
-        assert self.imager is not None
-
-        if assignment.plan.autofocus:
-            self.autofocuser.start_autofocus(
-                ra_j2000_hours=assignment.plan.target.ra_hours,
-                dec_j2000_degs=assignment.plan.target.dec_degrees,
-            )
-
-            while self.is_active(UnitActivities.Autofocusing):
-                time.sleep(10)
-
-            #
-            # If UnitActivities.Autofocusing ends in success, an autofocuser result should
-            #  be available
-            #
-            if not self.autofocuser.latest_result:
-                return  # should propagate errors as well
-
-            if assignment.plan.ulid is not None and self.imager.latest_settings and self.imager.latest_settings.image_path:
-                Notifier().assignment_notification(
-                    AssignmentNotification(
-                        assignment_id=assignment.plan.ulid,
-                        state="in-progress",
-                        # Relative to the shared root. This sent `.parent.name` -- the bare
-                        # directory name, with no path at all -- so the controller symlinked
-                        # something it could never resolve. MAST_spec#39.
-                        # Within its filing area (the share mirrors it); relpath() from
-                        # shared.root raised ValueError on Windows, D: and Z: being two drives.
-                        shared_top=filer.area_of(Path(self.imager.latest_settings.image_path).parent)[1],
-                        shared_subpath="autofocus",
-                    )
-                )
-
-            #
-            # At this point we have autofocused and can start acquisition
-            #
-            self.acquirer.endpoint_start_acquisition_and_guiding(
-                ra_j2000_hours=assignment.plan.target.ra_hours,
-                dec_j2000_degs=assignment.plan.target.dec_degrees,
-            )
-
-            if assignment.plan.ulid is not None and self.acquirer.latest_acquisition is not None:
-                Notifier().assignment_notification(
-                    AssignmentNotification(
-                        assignment_id=assignment.plan.ulid,
-                        state="in-progress",
-                        # Relative to the shared root, not the absolute ram path: the
-                        # controller symlinks this, and its shared root is spelled
-                        # differently from ours. MAST_spec#39.
-                        shared_top=filer.area_of(self.acquirer.latest_acquisition.folder)[1],
-                        shared_subpath="acquisition",
-                    )
-                )
-
-    @endpoint(tier=Tier.CONTRACT)
-    async def endpoint_execute_assignment(self, assignment: UnitAssignment):
-        if not self.operational:
-            return CanonicalResponse(errors=self.why_not_operational)
-
-        if not self.is_idle():
-            return CanonicalResponse(errors=[f"busy ({self.why_busy})"])
-
-        Thread(target=self.do_execute_assignment, args=[assignment]).start()
-
-        return CanonicalResponse_Ok
-
     @endpoint(tier=Tier.DEMO, completion=UnitActivities.Dancing)
     async def endpoint_start_dancing(self, style: str = "foxtrot"):
         logger.info(f"unit.dance: dancing the {style} ...")
@@ -2165,6 +2089,10 @@ class Unit(Component, OpmodeBase):
             int | None,
             Query(gt=0, description="Focuser ticks between images. Default from the configuration."),
         ] = None,
+        # Internal: set by MAST_control's plan execution, so the unit labels the products
+        # folder with a `plan_id` file and says where it is (plans/control_acquisition_design.md
+        # 5.10, 6.5). Accepted, but kept out of the OpenAPI schema: not for an operator.
+        plan_ulid: Annotated[str | None, Query(include_in_schema=False)] = None,
     ):
         """
         Refines focus on **one isolated star at the fibre pixel**, after `/calibrate/focuser`
@@ -2200,6 +2128,8 @@ class Unit(Component, OpmodeBase):
         outcome = self.focus_on_star.start(params)
         if isinstance(outcome, str):
             return CanonicalResponse(errors=[f"{function_name()}: {outcome}"])
+        # The run folder exists once `start` has answered; None for an imager with no files.
+        announce_plan_products(plan_ulid, PlanStage.Autofocus, outcome.folder)
         return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
@@ -2391,12 +2321,6 @@ class Unit(Component, OpmodeBase):
             base_path + "/test_stage_repeatability",
             endpoint=self.endpoint_test_stage_repeatability,
             methods=["PUT"],
-        )
-        add_api_route(
-            router,
-            base_path + "/execute_assignment",
-            methods=["PUT"],
-            endpoint=self.endpoint_execute_assignment,
         )
         add_api_route(
             router,
