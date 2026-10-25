@@ -13,11 +13,10 @@ from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import FcuVersion, SkyRoiConfig
 from common.endpoints import Tier, endpoint
-from common.filer import Filer, MoveGuardian
+from common.filer import MoveGuardian
 from common.mast_logging import get_logger
-from common.models.assignments import AssignmentNotification, UnitAssignment
+from common.models.plans import PlanStage
 from common.models.statuses import ImagerSettings
-from common.notifications import Notifier
 from common.object_resolver import TOTAL_TIMEOUT_SECONDS, ObjectNameError
 
 # RA_PATTERN/DEC_PATTERN are deliberately no longer applied to this endpoint's coordinate
@@ -31,6 +30,7 @@ from common.rois import SkyRoi
 from common.utils import Coord, boxed_log, function_name
 from mount import SETTLE_START_GRACE_SECONDS, SLEW_SETTLE_TOLERANCE_ARCSEC, SettleMode
 from phd2.phd2 import PHD2Connector
+from plan_products import announce_plan_products
 from solving import SolverId, SolvingTolerance
 from stage import StagePresetPosition
 
@@ -489,80 +489,6 @@ class Acquirer:
             self.unit.required_acquirer.latest_acquisition.post_process()
         return None
 
-    def start_acquisition_and_guiding_for_assignment(self, assignment: UnitAssignment):
-        """Acquire and hand over to guiding for a controller-issued assignment.
-
-        **Unreferenced and unexercised.** Nothing in this repository calls it, no route
-        serves it, and no test covers it -- so it has never run, and restoring it does not
-        change any behaviour a caller can reach today. It is kept because it is the only
-        expression of the *unattended* assignment flow: `handover_automatically_to_guider`
-        is `True` here and `False` in every reachable path, and the `in-progress`
-        notification that tells the controller where the products are exists nowhere else.
-
-        Treat every line as unverified. Two things in particular are asserted rather than
-        observed: that `assignment.plan` carries `target.ra_hours` / `target.dec_degrees`
-        in the shape read below, and that `run_acquisition` on this thread reaches the
-        SPEC hand-over without the operator step the reachable path relies on. Before this
-        is wired to anything, it wants a hardware pass of its own -- see MAST_unit#156 for
-        the sibling problem that a thread answering `Ok` reports nothing.
-        """
-        approach_mode: ApproachMode = ApproachMode.GRADUAL_BY_RATE
-        make_corrections = True
-        ra_j2000_hours = assignment.plan.target.ra_hours
-        dec_j2000_degs = assignment.plan.target.dec_degrees
-
-        assert self.unit.unit_conf is not None
-        solver_name = self.unit.unit_conf.solving.method
-
-        logger.info(
-            f"starting acquisition for assignment {assignment.plan.ulid}, "
-            f"approach_mode={approach_mode}, solver_name={solver_name} (from unit config), "
-            f"make_corrections={make_corrections}, "
-            f"ra_j2000_hours={ra_j2000_hours}, dec_j2000_degs={dec_j2000_degs}"
-        )
-
-        acquisition = Acquisition(
-            unit=self.unit,
-            approach_mode=approach_mode,
-            solver_id=SolverId[solver_name],
-            make_corrections=make_corrections,
-            target_ra=float(ra_j2000_hours),
-            target_dec=float(dec_j2000_degs),
-            # No caller-supplied exposure on this path: the configured one applies.
-            # It previously inherited whatever the HTTP endpoint had last written into
-            # unit_conf.acquisition.exposure (MAST_unit#195).
-            exposure=None,
-            # Unattended assignments auto-hand-over to guiding; the Acquisition default is
-            # False (manual acquisition-tuning), which would stall the assignment at SPEC.
-            handover_automatically_to_guider=True,
-        )
-        Thread(name="acquisition", target=self.run_acquisition, args=[acquisition]).start()
-
-        """
-        This acquisition is part of an assignment, tell the controller where
-         the products are.
-        """
-        if assignment.plan.ulid is not None:
-            Notifier().assignment_notification(
-                AssignmentNotification(
-                    assignment_id=assignment.plan.ulid,
-                    state="in-progress",
-                    # Relative to the shared root, not the absolute ram path: the controller
-                    # symlinks this, and its shared root is spelled differently from ours --
-                    # `/Storage/mast-share/MAST/<host>` against our `Z:/MAST/<host>/`.
-                    # MAST_spec#39.
-                    #
-                    # The folder's path within its filing area -- the RAM disk, or its
-                    # fallback while the disk is gone. The share mirrors the RAM area below
-                    # its root (move_ram_to_shared only swaps the root), so that is already
-                    # the shared-relative path. It was relpath() from `ram.root`, wrong for a
-                    # folder on the fallback; from `shared.root` it raises ValueError on
-                    # Windows, where the roots are on different drives.
-                    shared_top=Filer().area_of(acquisition.folder)[1],
-                    shared_subpath="acquisition",
-                )
-            )
-
     def _target_coordinates(self, op, ra_in, dec_in, object_name, resolve_timeout, pw_status):
         """Where to acquire: (ra_hours, dec_degrees, None), or (None, None, why-not).
 
@@ -748,6 +674,16 @@ class Acquirer:
         skip_sky: bool = False,
         use_set_limit_frame: bool = True,
         handover_automatically_to_guider: bool = True,
+        plan_ulid: Annotated[
+            str | None,
+            Query(
+                description=(
+                    "Set by MAST_control when a plan execution drives this acquisition: the unit "
+                    "then tells control where the products are, to link them into the plan's "
+                    "products folder. Leave empty when calling by hand."
+                )
+            ),
+        ] = None,
     ):
         """
         Starts an acquisition
@@ -793,6 +729,9 @@ class Acquirer:
         )
         if isinstance(prepared, CanonicalResponse):
             return prepared
+        # The folder exists from here (`Acquisition.__init__` makes it): say where, before
+        # anything is written into it, so control's link is there from the start.
+        announce_plan_products(plan_ulid, PlanStage.Acquisition, prepared.folder)
         Thread(name="acquisition", target=self.run_acquisition, args=[prepared]).start()
 
         return CanonicalResponse_Ok
