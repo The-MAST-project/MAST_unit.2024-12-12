@@ -11,6 +11,8 @@ mount, covers, focuser and stage were all healthy and answering on their own rou
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from common.models.statuses import ComponentStatus, FullUnitStatus
@@ -78,6 +80,8 @@ class Stub:
         # `Unit.__init__` always builds a FluxMeteringSession -- but `status` reads it, so a
         # Stub without one raises where the real thing cannot.
         self.flux_metering = parts.pop("flux_metering", FluxMetering())
+        # Likewise: `Unit.__init__` always builds an Acquirer, and `status` reads its outcome.
+        self.acquirer = parts.pop("acquirer", SimpleNamespace(outcome=None))
         # Read by `status` since opmode/opstate went on the wire (opmode-design 6).
         self.opmode = OpMode.PRODUCTION
         self.opstate = OpState.INITIALIZED
@@ -191,3 +195,15 @@ def test_every_component_is_guarded(part: str):
 
     assert status.errors is not None
     assert any(e.startswith(f"{part}.status") for e in status.errors)
+
+
+def test_a_sick_acquirer_costs_only_the_acquisition_outcome():
+    class SickAcquirer:
+        @property
+        def outcome(self):
+            raise RuntimeError("acquirer wedged")
+
+    status = status_of(Stub(acquirer=SickAcquirer()))
+
+    assert status.acquisition is None
+    assert any(e.startswith("acquirer.outcome: unavailable") for e in status.errors)

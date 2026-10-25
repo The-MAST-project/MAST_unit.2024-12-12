@@ -757,12 +757,14 @@ class Unit(Component, OpmodeBase):
             flux_metering=(
                 report("flux_metering.status", self.flux_metering.status) if self.flux_metering.has_run else None
             ),
+            # The latest acquisition's outcome; None until one has started (and from old units).
+            # Through `report`, like every other live read here -- and before `errors`, which is
+            # built when its argument is evaluated: a read after it would fail unreported.
+            acquisition=report("acquirer.outcome", lambda: self.acquirer.outcome) if self.acquirer else None,
             # solver= self.solver.status(),
             # A new list: `self.errors` is the unit's own standing errors, and a read that
             # failed on this request must not be appended to it.
             errors=self.errors + failures,
-            # The latest acquisition's outcome; None until one has started (and from old units).
-            acquisition=self.acquirer.outcome if self.acquirer is not None else None,
             autofocus=autofocus,
             corrections=all_corrections,
             date=time_stamp(),
