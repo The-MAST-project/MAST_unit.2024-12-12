@@ -216,7 +216,7 @@ class TestASample:
         assert not os.path.exists(connector.saved[0])
 
 
-#: The legacy strip on mast01, x 6363..8280: a fixed limit frame PHD2 delivers verbatim.
+#: The strip limit frame on mast01, x 6363..8280: a fixed limit frame PHD2 delivers verbatim.
 STRIP = ImagerRoi.verbatim(x=6363, y=0, width=1917, height=4812)
 
 

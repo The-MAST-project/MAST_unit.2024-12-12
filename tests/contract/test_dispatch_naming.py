@@ -51,7 +51,7 @@ OUT_OF_SCOPE = {
     # The dispatch stays auditable -- the thread is named f"mast-{target.__name__}".
     ("calibration/calibrator.py", "run"),
     # The guide session's planned handover: `_handover_for_session` returns one of two
-    # do_-named methods (do_legacy_handover, do_fcu_v2_spec_handover), and the thread is
+    # do_-named methods (do_mirror_first_handover, do_fcu_v2_spec_handover), and the thread is
     # named f"mast-{handover.__name__}".
     ("phd2/phd2.py", "handover"),
 }

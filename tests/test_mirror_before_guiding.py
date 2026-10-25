@@ -1,4 +1,4 @@
-"""On the legacy handover the acquirer inserts the fold mirror before guiding starts (#30).
+"""On the mirror-first handover the acquirer inserts the fold mirror before guiding starts (#30).
 
 PHD2 then picks its star on the field it guides on for the whole exposure. On
 2026-10-20 the bracketed handover, which picks at SKY and inserts afterwards, lost
@@ -22,7 +22,7 @@ except Exception as ex:  # noqa: BLE001 -- the import chain is Windows-and-hardw
     pytest.skip(f"unit import chain unavailable here ({ex!r})", allow_module_level=True)
 
 
-def acquirer(*, style=HandoverStyle.LEGACY, auto_insert=True, fcu=FcuVersion.v2) -> tuple[Acquirer, list]:
+def acquirer(*, style=HandoverStyle.MIRROR_FIRST, auto_insert=True, fcu=FcuVersion.v2) -> tuple[Acquirer, list]:
     moves: list = []
     unit = SimpleNamespace(
         fcu_version=fcu,
@@ -34,7 +34,7 @@ def acquirer(*, style=HandoverStyle.LEGACY, auto_insert=True, fcu=FcuVersion.v2)
     return a, moves
 
 
-def test_legacy_inserts_the_mirror():
+def test_mirror_first_inserts_the_mirror():
     a, moves = acquirer()
     a._position_mirror_for_guiding()
     assert moves == [StagePresetPosition.Spec]

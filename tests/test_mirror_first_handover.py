@@ -1,4 +1,4 @@
-"""The legacy handover: fold mirror in before guiding, ready once guiding has settled (#30).
+"""The mirror-first handover: fold mirror in before guiding, ready once guiding has settled (#30).
 
 Ready-for-exposure is `Guiding` without `PreGuiding`. What is pinned here:
 
@@ -39,7 +39,7 @@ except Exception as ex:  # noqa: BLE001 -- the import chain is Windows-and-hardw
 class FakeUnit:
     """The activity bookkeeping the handover reads and writes, in the order it happened."""
 
-    def __init__(self, *, style=HandoverStyle.LEGACY, auto_insert=True, fcu=FcuVersion.v2, nudge=True):
+    def __init__(self, *, style=HandoverStyle.MIRROR_FIRST, auto_insert=True, fcu=FcuVersion.v2, nudge=True):
         self.fcu_version = fcu
         self.unit_conf = SimpleNamespace(
             phd2=SimpleNamespace(
@@ -91,9 +91,9 @@ def begin(c: PHD2Connector, unit: FakeUnit, *, acquiring: bool) -> None:
 
 
 class TestWhichHandover:
-    def test_legacy_is_the_default(self):
+    def test_mirror_first_is_the_default(self):
         c, _ = connector(FakeUnit())
-        assert c._handover_for_session() == c.do_legacy_handover
+        assert c._handover_for_session() == c.do_mirror_first_handover
 
     def test_bracketed_when_selected(self):
         c, _ = connector(FakeUnit(style=HandoverStyle.BRACKETED))
@@ -130,7 +130,7 @@ class TestReadiness:
         c, calls = connector(unit)
         begin(c, unit, acquiring=True)
         with nudges(calls):
-            c.do_legacy_handover(c._guide_session)
+            c.do_mirror_first_handover(c._guide_session)
         assert UnitActivities.Guiding in unit.active
         assert UnitActivities.PreGuiding not in unit.active
         assert "stop_guiding" not in calls
@@ -141,7 +141,7 @@ class TestReadiness:
         c, calls = connector(unit, SettleResult(outcome, 1.0))
         begin(c, unit, acquiring=True)
         with nudges(calls):
-            c.do_legacy_handover(c._guide_session)
+            c.do_mirror_first_handover(c._guide_session)
         assert calls == ["stop_guiding"]
         assert UnitActivities.Guiding not in unit.active
         assert UnitActivities.PreGuiding not in unit.active
@@ -155,7 +155,7 @@ class TestReadiness:
             raise RuntimeError("solver down")
 
         with patch("phd2.phd2.nudge_lock_to_target", explode):
-            c.do_legacy_handover(c._guide_session)
+            c.do_mirror_first_handover(c._guide_session)
         assert UnitActivities.PreGuiding not in unit.active
         assert UnitActivities.Guiding in unit.active
 
@@ -166,7 +166,7 @@ class TestTheNudge:
         c, calls = connector(unit)
         begin(c, unit, acquiring=True)
         with nudges(calls):
-            c.do_legacy_handover(c._guide_session)
+            c.do_mirror_first_handover(c._guide_session)
         assert calls == ["nudge"]
 
     def test_a_manual_session_is_not_nudged(self):
@@ -175,7 +175,7 @@ class TestTheNudge:
         c, calls = connector(unit)
         begin(c, unit, acquiring=False)
         with nudges(calls):
-            c.do_legacy_handover(c._guide_session)
+            c.do_mirror_first_handover(c._guide_session)
         assert calls == []
         assert UnitActivities.PreGuiding not in unit.active
 
@@ -195,7 +195,7 @@ class TestStopped:
         unit.end_activity(UnitActivities.PreGuiding)  # what stop_acquisition_and_guiding does
         unit.end_activity(UnitActivities.Guiding)
         with nudges(calls):
-            c.do_legacy_handover(session)
+            c.do_mirror_first_handover(session)
         assert calls == []
 
     def test_a_later_session_is_not_touched_by_an_earlier_handover(self):
@@ -205,7 +205,7 @@ class TestStopped:
         stale = c._guide_session
         begin(c, unit, acquiring=True)
         with nudges(calls):
-            c.do_legacy_handover(stale)
+            c.do_mirror_first_handover(stale)
         assert calls == []
         assert UnitActivities.PreGuiding in unit.active
 
@@ -237,7 +237,7 @@ class TestTheSession:
         unit.active.add(UnitActivities.Acquiring)
         result, started = self.run(c, lambda imager_settings: None)
         assert result == CanonicalResponse_Ok
-        assert started == [c.do_legacy_handover]
+        assert started == [c.do_mirror_first_handover]
 
     def test_no_handover_thread_without_a_handover(self):
         unit = FakeUnit(auto_insert=False)
@@ -275,5 +275,5 @@ class TestTheSession:
             raise RuntimeError("no connection to PHD2 server")
 
         c.stop_guiding = dead
-        c.do_legacy_handover(c._guide_session)
+        c.do_mirror_first_handover(c._guide_session)
         assert not unit.active & {UnitActivities.PreGuiding, UnitActivities.Guiding}

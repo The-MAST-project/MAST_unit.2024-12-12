@@ -28,6 +28,24 @@ with the DB change. Guide gain (`guiding.gain`) still does not reach PHD2: its J
 gain setter.
 
 ---
+## [2026-10-25] The mirror-first handover is named for what it does
+
+**Why:** `legacy` read as "deprecated" for the default, and said nothing about the behavior.
+`phd2.handover.style` decides one thing, when the fold mirror goes in relative to guiding; the
+guide frame, the exclusion region and the nudge are separate settings.
+
+**What:** the style is `mirror_first` (was `legacy`) and the handover method
+`do_mirror_first_handover`. **Supersedes** only the naming in the 2026-10-22 entry "FCU v2 inserts
+the fold mirror before guiding, and is ready once guiding has settled". There is no alias. In
+prose the two configurations are "mirror-first, strip" (as on `main`: strip limit frame, no
+exclusion region, no settle gate) and "mirror-first, full-field" (full frame plus exclusion
+region), with "+ nudge" when the nudge is on.
+
+**Implications:** a unit document holding `style: legacy` fails validation on this code, and in
+MAST-control, which validates every deployed unit's document. When a unit gets this code its
+stored `style` key is deleted, so it takes the default; no document may hold `legacy` before
+this reaches `main`.
+
 ## [2026-10-22] FCU v2 inserts the fold mirror before guiding, and is ready once guiding has settled
 
 **Why:** The bracketed handover (guide at SKY, settle, pause, insert the mirror, resume) was
