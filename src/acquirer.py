@@ -291,9 +291,9 @@ class Acquirer:
         return None
 
     def _position_mirror_for_guiding(self) -> str | None:
-        """Insert the fold mirror now if the legacy handover is configured; say what was done.
+        """Insert the fold mirror now if the mirror-first handover is configured; say what was done.
 
-        On the legacy handover PHD2 picks its star on the field it guides on for the whole
+        On the mirror-first handover PHD2 picks its star on the field it guides on for the whole
         exposure. The bracketed handover inserts after settle, from the guider. With
         `auto_insert` off the caller inserts. FCU v1 has no fold mirror and is already at
         SPEC from the solve phase.
@@ -305,9 +305,9 @@ class Acquirer:
         if not handover.auto_insert:
             return "leaving stage at SKY; phd2.handover.auto_insert is off, the caller inserts the fold mirror"
         match handover.style:
-            case HandoverStyle.LEGACY:
+            case HandoverStyle.MIRROR_FIRST:
                 self.unit.required_stage.move_to_preset(StagePresetPosition.Spec)
-                return "moving stage to SPEC: fold mirror in before guiding (legacy handover)"
+                return "moving stage to SPEC: fold mirror in before guiding (mirror-first handover)"
             case HandoverStyle.BRACKETED:
                 return "leaving stage at SKY; the guider inserts the fold mirror after settle (bracketed handover)"
 
