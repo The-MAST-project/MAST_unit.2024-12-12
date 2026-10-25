@@ -75,6 +75,26 @@ class SettleMode(StrEnum):
     OFFSET_GRADUAL = "offset_gradual"  # ra/dec_add_gradual_offset_*
 
 
+#: How long `wait_until_settled` waits for a commanded motion to show up, by default.
+SETTLE_START_GRACE_SECONDS = 3.0
+
+#: Following-distance tolerance for "did the slew arrive?".
+#:
+#: Deliberately far looser than ``wait_until_settled``'s 0.5" default, because
+#: on-target following distance is WIND-DRIVEN, not a fixed offset: sampled on
+#: mast02 over 20s while tracking on target (is_slewing=False), per-axis
+#: ``dist_to_target`` swung between 0.06" and 5.89".  A 0.5" tolerance with
+#: ``stable_samples=2`` cannot survive a gust, so the settle would burn its full
+#: timeout on any breezy night and only pass in a lull.
+#:
+#: Neither calibration nor acquisition needs better -- focus wants the star somewhere
+#: on a full frame, the shadow solve and the acquisition's first frame want a star
+#: field.  This asks "did we arrive?", not "is tracking quiet?", and those are
+#: different questions (the second is what PWI4's green/yellow/red RMS indicator
+#: answers).
+SLEW_SETTLE_TOLERANCE_ARCSEC = 10.0
+
+
 _OFFSET_CHANNELS = ("ra", "dec", "axis0", "axis1", "path", "transverse")
 
 
@@ -547,7 +567,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         channels: tuple[str, ...] = ("ra", "dec"),
         dist_tolerance_arcsec: float = 0.5,
         stable_samples: int = 2,
-        start_grace_seconds: float = 3.0,
+        start_grace_seconds: float = SETTLE_START_GRACE_SECONDS,
         poll_seconds: float = 1.0,
         timeout_seconds: float = 120.0,
     ) -> bool:
@@ -629,11 +649,15 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         op: str,
     ) -> bool:
         # Phase A: confirm the slew actually started (guards stale is_slewing=False).
+        # Checked at least once, so a caller arriving after the grace has run out
+        # (start_grace_seconds=0) still waits out a slew that is in progress.
         grace_end = time.monotonic() + start_grace_seconds
         started = False
-        while time.monotonic() < grace_end:
+        while True:
             if self.pw.status().mount.is_slewing:  # type: ignore
                 started = True
+                break
+            if time.monotonic() >= grace_end:
                 break
             time.sleep(poll_seconds)
         # Phase B: wait for the slew to clear.
@@ -644,6 +668,8 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                     return False
                 time.sleep(poll_seconds)
             logger.info(f"{op}(SLEW): is_slewing cleared")
+        elif start_grace_seconds <= 0:
+            logger.info(f"{op}(SLEW): no slew in progress; proceeding to dist settle")
         else:
             logger.warning(
                 f"{op}(SLEW): slew not observed within {start_grace_seconds:.1f}s grace; proceeding to dist settle"

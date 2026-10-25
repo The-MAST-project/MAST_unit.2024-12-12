@@ -48,14 +48,14 @@ class CorrelationError(Exception):
 
 
 def _run_root() -> Path:
-    """This machine's product tree on the share.
+    """This machine's product tree on the share: `Filer().shared`.
 
-    `Filer().machine.root`, which is documented as already carrying the hostname on both
-    platforms. NOT `shared.root`, which is the share ROOT on Linux and would put one
-    machine's lookups across every machine's folders -- the mistake that filed 89 nights of
-    control's logs at the top of the share.
+    It read `Filer().machine` while `shared` was the share ROOT on Linux, which would have
+    put one machine's lookups across every machine's folders -- the mistake that filed 89
+    nights of control's logs at the top of the share. `shared` is per-machine on every
+    platform since MAST_common#187, and `machine` is going.
     """
-    return Path(Filer().machine.root)
+    return Path(Filer().shared.root)
 
 
 def run_folder(date: str, seq: str) -> Path:

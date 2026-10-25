@@ -41,7 +41,7 @@ from astropy.io import fits
 
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse
-from common.filer import Filer, FilerTop, MoveGuardian
+from common.filer import Filer, FilingArea, MoveGuardian
 from common.mast_logging import get_logger
 from common.models.statuses import (
     FluxMeteringExposure,
@@ -1285,10 +1285,10 @@ class FluxMeteringSession:
         read moments after being written, usually has not. A first real run failed here
         for exactly that reason while the reference had read fine.
 
-        `change_top_to` compares against roots stored POSIX-style ("D:/MAST/"), while
-        this folder comes from pathlib and is spelled with backslashes, so the prefix
-        test silently fails unless the path is converted first. `move_ram_to_shared`
-        documents the same two-spellings problem and converts for the same reason.
+        The share's copy is found with `Filer.to_top`, which takes either spelling. Its
+        predecessor `change_top_to` compared against roots stored POSIX-style ("D:/MAST/")
+        while this folder came from pathlib with backslashes, so the prefix test silently
+        failed unless the path was converted first.
         """
         return np.asarray(fits.getdata(self._frame_path(file_name)), dtype=float)
 
@@ -1304,12 +1304,12 @@ class FluxMeteringSession:
         if os.path.exists(local):
             return local
 
-        shared_folder = filer.change_top_to(FilerTop.Shared, Path(self.state.folder).as_posix())
-        if shared_folder is None:
+        try:
+            moved = filer.to_top(FilingArea.SHARE, local)
+        except ValueError as e:
             raise FluxMeteringError(
                 f"'{file_name}' is neither on the ram disk nor under a known root (folder '{self.state.folder}')"
-            )
-        moved = os.path.join(shared_folder, file_name)
+            ) from e
         if not os.path.exists(moved):
             raise FluxMeteringError(f"'{file_name}' is neither at '{local}' nor at '{moved}'")
         return moved
