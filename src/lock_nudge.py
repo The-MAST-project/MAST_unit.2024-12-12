@@ -12,7 +12,7 @@ puts the lock that far from where the guide star was in that frame. The lock mov
 by the guide error at that moment plus the correction -- a few pixels against a
 15 px search region -- and never by more than ``max_offset_px``.
 
-It runs once per acquisition handover, after settle: on the legacy handover with
+It runs once per acquisition handover, after settle: on the mirror-first handover with
 the fold mirror already in, on the bracketed one before the mirror moves. With the
 mirror in, a mirror-induced shift of the image cannot be told from a real pointing
 error -- and if the shift is optical, correcting it with the mount drives the
