@@ -710,7 +710,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         unit.start_activity(UnitActivities.Guiding)
         boxed_debug(logger, ["stage at SPEC, guiding resumed", "ready for exposure"])
 
-    def do_legacy_handover(self, session: int) -> None:
+    def do_mirror_first_handover(self, session: int) -> None:
         """Hold the unit not-ready until guiding has settled; the fold mirror is already in.
 
         The acquirer inserted the mirror before guiding started, so PHD2 picked its star
@@ -768,8 +768,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if not handover.auto_insert:
             return None
         match handover.style:
-            case HandoverStyle.LEGACY:
-                return self.do_legacy_handover
+            case HandoverStyle.MIRROR_FIRST:
+                return self.do_mirror_first_handover
             case HandoverStyle.BRACKETED:
                 return self.do_fcu_v2_spec_handover
 

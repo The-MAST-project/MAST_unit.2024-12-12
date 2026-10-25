@@ -51,7 +51,7 @@ Starting to guide raises `PreGuiding` together with `Guiding`; the unit is ready
 when `Guiding` is up and `PreGuiding` is not. `phd2.handover.style` (MAST_common
 `config/phd2.py`) selects what happens in between:
 
-- `legacy` (default): the acquirer inserts the fold mirror before guiding starts; the handover
+- `mirror_first` (default): the acquirer inserts the fold mirror before guiding starts; the handover
   waits for PHD2 to settle and, if `phd2.lock_nudge.enabled`, nudges the lock onto the target.
   A failed or timed-out settle stops guiding.
 - `bracketed`: the mirror stays out while PHD2 picks a star and settles; the handover then
