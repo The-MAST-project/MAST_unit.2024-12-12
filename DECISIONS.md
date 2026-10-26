@@ -22,7 +22,7 @@ the first, which is from the frame exposing during the move, so the residual is 
 new lock. The session is checked again just before the lock moves, and the bracketed handover
 re-checks it after the nudge, as the mirror-first one does. The pointing check is not paused: it shares PHD2's
 serialized RPC and its own solve scratch, and the overlap is benign. The outcome is published
-as `status.acquisition.nudge` (MAST_common `LockNudgeOutcome`); the untyped telemetry stays in
+as `status.latest.acquisition.nudge` (MAST_common `LockNudgeOutcome`); the untyped telemetry stays in
 the log.
 
 **Implications:** the nudge stays off by default. Before it is enabled on a unit: rerun

@@ -490,12 +490,12 @@ class TestConfirmation:
 
 
 class TestTheOutcomeIsPublished:
-    """An operator sees a refused nudge in `status.acquisition.nudge`, without the log."""
+    """An operator sees a refused nudge in `status.latest.acquisition.nudge`, without the log."""
 
     def test_a_refusal_and_its_reason_reach_the_acquisition_outcome(self, monkeypatch):
         import phd2.phd2 as phd2_module
         from common.config.phd2 import LockNudgeConfig
-        from common.models.statuses import AcquisitionOutcome, AcquisitionState
+        from common.models.latest import AcquisitionState, LatestAcquisition
         from lock_nudge import NudgeOutcome
         from phd2.phd2 import PHD2Connector
 
@@ -506,18 +506,18 @@ class TestTheOutcomeIsPublished:
         monkeypatch.setattr(
             PHD2Connector, "conf", property(lambda self: SimpleNamespace(lock_nudge=LockNudgeConfig(enabled=True)))
         )
-        outcome = AcquisitionOutcome(state=AcquisitionState.RUNNING, started_at="t")
-        acquisition = SimpleNamespace(target_ra=TARGET_RA_H, target_dec=TARGET_DEC, outcome=outcome)
+        latest = LatestAcquisition(state=AcquisitionState.RUNNING).begin()
+        acquisition = SimpleNamespace(target_ra=TARGET_RA_H, target_dec=TARGET_DEC, latest=latest)
         connector = object.__new__(PHD2Connector)
         connector._nudge_onto_target = True
         connector.parent = SimpleNamespace(unit=SimpleNamespace(acquirer=SimpleNamespace(latest_acquisition=acquisition)))
 
         connector._nudge_lock_onto_target(session=1)
 
-        assert outcome.nudge is not None
-        assert outcome.nudge.applied is False
-        assert outcome.nudge.reason == refusal.reason
-        assert (outcome.nudge.spread_arcsec, outcome.nudge.frames_used) == (1.41, 4)
+        assert latest.nudge is not None
+        assert latest.nudge.applied is False
+        assert latest.nudge.reason == refusal.reason
+        assert (latest.nudge.spread_arcsec, latest.nudge.frames_used) == (1.41, 4)
 
 
 def test_the_connector_counts_guide_steps_with_their_own_distance():
