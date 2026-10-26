@@ -19,7 +19,6 @@ from PIL import Image
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from acquirer import Acquirer
-from acquisition import Acquisition
 from autofocusing import Autofocuser, AutofocusResult
 from calibration.calibrator import Calibrator
 from common import asi
@@ -322,7 +321,6 @@ class Unit(Component, OpmodeBase):
         self.spiral = SpiralSearch(self)
         self.flux_metering = FluxMeteringSession(self)
         self.focus_on_star = FocusOnStarSession(self)
-        self.latest_acquisition: Acquisition | None = None
 
         self._initialized = True
         logger.info("unit: initialized")
