@@ -643,8 +643,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         alone.
 
         Failure is never fatal to the handover. A nudge that cannot be computed leaves
-        the lock exactly where PHD2 put it. What it did goes in the acquisition's outcome,
-        `status.acquisition.nudge`.
+        the lock exactly where PHD2 put it. What it did goes in the acquisition's record,
+        `status.latest.acquisition.nudge`.
         """
         op = function_name()
         conf = self.conf.lock_nudge
@@ -670,8 +670,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             outcome = NudgeOutcome(applied=False, reason=f"nudge failed: {ex!r}")
 
         logger.info(f"{op}: {outcome}")
-        if acquisition.outcome is not None:
-            acquisition.outcome.nudge = outcome.to_status()
+        if acquisition.latest is not None:
+            acquisition.latest.nudge = outcome.to_status()
 
     def do_fcu_v2_spec_handover(self, session: int, stage_timeout: int = 60):
         """Insert the fold mirror only after guiding has locked and settled,

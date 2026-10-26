@@ -70,7 +70,7 @@ frame's lock estimate, the guide star plus the solved offset. It refuses when fe
 ends meanwhile, when the estimates scatter (RMS radial) by more than `max_spread_arcsec` (1.0",
 provisional), or when the lock would move more than `max_offset_px`. Otherwise it moves the lock
 to the mean estimate and confirms the move over `confirm_frames` new guide steps under
-`confirm_px`. What it did is published as `status.acquisition.nudge`. Collecting the frames
+`confirm_px`. What it did is published as `status.latest.acquisition.nudge`. Collecting the frames
 adds about 30-60 s before ready.
 
 ## Tests

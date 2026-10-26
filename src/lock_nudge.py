@@ -65,7 +65,7 @@ from common.interfaces.solving import (
     target_offset_arcsec,
 )
 from common.mast_logging import get_logger
-from common.models.statuses import LockNudgeOutcome
+from common.models.latest import LockNudgeOutcome
 from common.utils import Coord, function_name
 from pointing_check import place_guide_frame, unplaced_frame_reason
 
@@ -117,7 +117,7 @@ class NudgeOutcome:
         )
 
     def to_status(self) -> LockNudgeOutcome:
-        """The part an operator reads in `status.acquisition.nudge`; the telemetry stays in the log."""
+        """The part an operator reads in `status.latest.acquisition.nudge`; the telemetry stays in the log."""
         return LockNudgeOutcome(
             applied=self.applied,
             reason=self.reason,
