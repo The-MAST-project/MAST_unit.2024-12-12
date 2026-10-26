@@ -59,6 +59,20 @@ when `Guiding` is up and `PreGuiding` is not. `phd2.handover.style` (MAST_common
 
 With `phd2.handover.auto_insert: false` no handover runs and nothing inserts the mirror.
 
+### Lock nudge (`phd2.lock_nudge`, off by default)
+
+On the acquirer's own handover only, after settle, the nudge moves PHD2's lock so the fiber
+sits on the target (`src/lock_nudge.py`). It collects `solve_frames` (4) distinct guide frames
+(one per new GuideStep; a repeated `DATE-OBS` does not count), plate-solves each in its own
+coordinates (a limit-frame crop with its origin, as the pointing check does), and takes each
+frame's lock estimate, the guide star plus the solved offset. It refuses when fewer than
+`solve_frames` frames give an estimate within `frames_timeout` (90 s), when the guide session
+ends meanwhile, when the estimates scatter (RMS radial) by more than `max_spread_arcsec` (1.0",
+provisional), or when the lock would move more than `max_offset_px`. Otherwise it moves the lock
+to the mean estimate and confirms the move over `confirm_frames` new guide steps under
+`confirm_px`. What it did is published as `status.latest.acquisition.nudge`. Collecting the frames
+adds about 30-60 s before ready.
+
 ## Tests
 
 `tests/` holds a pytest suite that drives the real connector code with mocked

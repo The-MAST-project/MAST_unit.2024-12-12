@@ -27,6 +27,7 @@ import os
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 
 from astropy.coordinates import Angle
@@ -60,6 +61,41 @@ GUIDING_STATE = "Guiding"
 #: The SPEC phase puts the solved position at the fiber, which is what the target
 #: has to stay on.
 SOLVING_PHASE = "spec"
+
+
+@dataclass(frozen=True)
+class GuideFramePlacement:
+    """Where a guide frame PHD2 saved sits on the sensor: `crop` is the limit frame it was
+    cut from, or None for the whole sensor."""
+
+    crop: ImagerRoi | None
+
+    def solve_kwargs(self) -> dict[str, tuple[int, int]]:
+        """What the solver needs to place its sensor-pixel ROI on this frame."""
+        return {} if self.crop is None else {"frame_origin": (self.crop.x, self.crop.y)}
+
+
+def place_guide_frame(connector, width: int, height: int) -> GuideFramePlacement | None:
+    """Where a `width` x `height` guide frame sits on the sensor, or None if it cannot be told.
+
+    PHD2 delivers exactly the limit frame it holds, starting at its origin, so a frame
+    of that size, unbinned, sits there on the sensor.
+    """
+    if (width, height) == (ASI_294MM_WIDTH, ASI_294MM_HEIGHT):
+        return GuideFramePlacement(crop=None)
+    if connector.profile_binning != 1:
+        return None
+    limit = connector.get_limit_frame()
+    if limit is None or (limit.width, limit.height) != (width, height):
+        return None
+    return GuideFramePlacement(crop=limit)
+
+
+def unplaced_frame_reason(width: int, height: int) -> str:
+    return (
+        f"guide frame is {width}x{height}: neither the {ASI_294MM_WIDTH}x{ASI_294MM_HEIGHT} "
+        f"sensor nor the limit frame PHD2 holds, unbinned"
+    )
 
 
 class PointingMonitor:
@@ -173,21 +209,14 @@ class PointingMonitor:
     def _judge(self, image_path: str, target: Coord, context: dict) -> PointingSample:
         header = fits.getheader(image_path)
         width, height = header["NAXIS1"], header["NAXIS2"]
-        crop = None
-        if (width, height) != (ASI_294MM_WIDTH, ASI_294MM_HEIGHT):
-            crop = self._limit_frame_of(width, height)
-            if crop is None:
-                return PointingSample(
-                    outcome=PointingSampleOutcome.Unavailable,
-                    reason=(
-                        f"guide frame is {width}x{height}: neither the {ASI_294MM_WIDTH}x{ASI_294MM_HEIGHT} "
-                        f"sensor nor the limit frame PHD2 holds, unbinned"
-                    ),
-                    **context,
-                )
+        placement = place_guide_frame(self._connector, width, height)
+        if placement is None:
+            return PointingSample(
+                outcome=PointingSampleOutcome.Unavailable, reason=unplaced_frame_reason(width, height), **context
+            )
+        if (crop := placement.crop) is not None:
             context = {**context, "frame_crop": (crop.x, crop.y, crop.width, crop.height)}
 
-        origin = {} if crop is None else {"frame_origin": (crop.x, crop.y)}
         started = time.monotonic()
         try:
             result = self._connector.parent.unit.solver._backend.solve(
@@ -196,7 +225,7 @@ class PointingMonitor:
                 full_frame_input_image_path=image_path,
                 keep_artifacts=False,
                 target=target,
-                **origin,
+                **placement.solve_kwargs(),
             )
         except Exception as ex:
             logger.error(f"{function_name()}: could not solve the guide frame: {ex!r}")
@@ -256,20 +285,6 @@ class PointingMonitor:
             except OSError as ex:
                 logger.error(f"{function_name()}: could not append to {journal}: {ex!r}")
         return sample
-
-    def _limit_frame_of(self, width: int, height: int) -> ImagerRoi | None:
-        """The limit frame a `width` x `height` guide frame was cut from, or None if it was not.
-
-        PHD2 delivers exactly the limit frame it holds, starting at its origin, so a frame
-        of that size, unbinned, sits there on the sensor.
-        """
-        connector = self._connector
-        if connector.profile_binning != 1:
-            return None
-        limit = connector.get_limit_frame()
-        if limit is None or (limit.width, limit.height) != (width, height):
-            return None
-        return limit
 
     def _acquisition(self):
         acquirer = self._connector.parent.unit.acquirer
