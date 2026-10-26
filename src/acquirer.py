@@ -778,7 +778,7 @@ class Acquirer:
         # Internal: set by MAST_control's plan execution, so the unit labels the products
         # folder with a `plan_id` file and says where it is (plans/control_acquisition_design.md
         # 5.10, 6.5). Accepted, but kept out of the OpenAPI schema: not for an operator.
-        plan_ulid: Annotated[str | None, Query(include_in_schema=False)] = None,
+        plan_id: Annotated[str | None, Query(include_in_schema=False)] = None,
     ):
         """
         Starts an acquisition
@@ -826,7 +826,8 @@ class Acquirer:
             return prepared
         # The folder exists from here (`Acquisition.__init__` makes it): say where, before
         # anything is written into it, so control's link is there from the start.
-        announce_plan_products(plan_ulid, PlanStage.Acquisition, prepared.folder)
+        self.unit.claim_plan(plan_id)  # accepted: the unit works for the plan from here
+        announce_plan_products(plan_id, PlanStage.Acquisition, prepared.folder)
         self.start(prepared)
 
         return CanonicalResponse_Ok

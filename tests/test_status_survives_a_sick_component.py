@@ -82,6 +82,8 @@ class Stub:
         self.flux_metering = parts.pop("flux_metering", FluxMetering())
         # Likewise: `Unit.__init__` always builds an Acquirer, and `status` reads its outcome.
         self.acquirer = parts.pop("acquirer", SimpleNamespace(outcome=None))
+        # Read by `status` since the plan token (control acquisition 6.6).
+        self.plan_owner = None
         # Read by `status` since opmode/opstate went on the wire (opmode-design 6).
         self.opmode = OpMode.PRODUCTION
         self.opstate = OpState.INITIALIZED
