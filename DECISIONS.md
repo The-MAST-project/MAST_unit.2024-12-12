@@ -2,6 +2,34 @@
 
 ---
 
+## [2026-10-26] The lock nudge solves several guide frames, and refuses when they disagree
+
+**Why:** the nudge moved the lock on one plate solve of one guide frame, and one solve places
+the fiber to 0.56" radial (1 sigma; 280 frames, 2026-10-20), about the size of the ~0.6" error
+the nudge is there to remove. It also solved a limit-frame crop without its origin, so
+mastrometry raised on every limit-frame nudge, and it confirmed the move by counting 1 s polls
+of the smoothed `AvgDist`, which changes only on a GuideStep: it confirmed about 2 s after the
+move, on the old lock's distance.
+
+**What:** team decision, 2026-10-25 (plan vetted that day). `solve_frames` distinct guide frames
+(one per new GuideStep, de-duplicated on `DATE-OBS`), each solved in its own coordinates through
+the pointing check's `place_guide_frame`; the lock goes to the mean of the per-frame estimates
+(star plus solved offset), refused when their RMS radial scatter exceeds `max_spread_arcsec`,
+when fewer than `solve_frames` arrive within `frames_timeout`, or when the guide session ends
+between frames. `max_offset_px` still bounds the whole move. The confirmation counts new guide
+steps, each with its own distance `hypot(dx, dy)` (`PHD2Connector.latest_guide_step`), skipping
+the first, which is from the frame exposing during the move, so the residual is measured on the
+new lock. The session is checked again just before the lock moves, and the bracketed handover
+re-checks it after the nudge, as the mirror-first one does. The pointing check is not paused: it shares PHD2's
+serialized RPC and its own solve scratch, and the overlap is benign. The outcome is published
+as `status.acquisition.nudge` (MAST_common `LockNudgeOutcome`); the untyped telemetry stays in
+the log.
+
+**Implications:** the nudge stays off by default. Before it is enabled on a unit: rerun
+`solve_precision.py` with mastrometry and `star_position` on cropped frames to set
+`solve_frames` and `max_spread_arcsec` (1.0" is provisional), and a second clean traverse
+pointing. Collection adds about 30-60 s to the time to ready.
+
 ## [2026-10-26] The acquisition outcome is GUIDING only once the unit is ready
 
 **Why:** rebasing the fold-mirror handover branch onto `main` brought in #346, which sets

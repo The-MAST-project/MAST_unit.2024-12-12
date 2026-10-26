@@ -51,7 +51,7 @@ class FakeUnit:
         self.active: set = set()
         self.events: list[tuple[str, UnitActivities]] = []
         self.acquirer = SimpleNamespace(
-            latest_acquisition=SimpleNamespace(target_ra=1.0, target_dec=2.0),
+            latest_acquisition=SimpleNamespace(target_ra=1.0, target_dec=2.0, outcome=None),
         )
 
     def start_activity(self, activity):
@@ -187,6 +187,25 @@ class TestTheNudge:
 
 
 class TestStopped:
+    def test_a_stop_during_the_bracketed_nudge_leaves_the_mirror_and_flags_alone(self):
+        """The nudge can take up to `frames_timeout` + `confirm_timeout`; a session stopped
+        meanwhile must not get the stage moved or `Guiding` raised again."""
+        unit = FakeUnit(style=HandoverStyle.BRACKETED)
+        c, calls = connector(unit)
+        c.pause = lambda full=False: calls.append("pause")
+        unit.required_stage = SimpleNamespace(move_to_preset=lambda preset: calls.append("stage"))
+        begin(c, unit, acquiring=True)
+
+        def stopped_meanwhile(*a, **kw):
+            calls.append("nudge")
+            unit.end_activity(UnitActivities.PreGuiding)  # what stop_acquisition_and_guiding does
+            unit.end_activity(UnitActivities.Guiding)
+
+        with patch("phd2.phd2.nudge_lock_to_target", stopped_meanwhile):
+            c.do_fcu_v2_spec_handover(c._guide_session)
+        assert calls == ["nudge"]
+        assert UnitActivities.Guiding not in unit.active
+
     def test_a_stop_during_the_settle_is_final(self):
         unit = FakeUnit()
         c, calls = connector(unit, SettleResult(SettleOutcome.FAILED, 1.0))
