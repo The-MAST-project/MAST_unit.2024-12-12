@@ -23,6 +23,7 @@ import solvers.mastrometry as mastrometry_module
 from common.config.rois import FcuVersion
 from common.filer import Filer
 from common.models.statuses import ImagerPixel, ImagerRoi
+from solvers.astrometry_dot_net import cygwin_to_win
 from solvers.mastrometry import DOWNSAMPLE_FACTOR, MastrometryDotNet
 from solvers.pixel_grid import roi_center_to_crpix
 
@@ -75,8 +76,10 @@ def solve_field(monkeypatch) -> dict:
     def run(command, **_kwargs):
         tokens = shlex.split(command)
         seen["crpix"] = (float(tokens[tokens.index("--crpix-x") + 1]), float(tokens[tokens.index("--crpix-y") + 1]))
-        seen["shape"] = fits.getdata(Path(tokens[-1])).shape
-        seen["header"] = fits.getheader(Path(tokens[-1]))
+        # solve-field is given cygwin paths; on Windows, open the input as this process names it
+        image = Path(cygwin_to_win(tokens[-1]))
+        seen["shape"] = fits.getdata(image).shape
+        seen["header"] = fits.getheader(image)
         return subprocess.CompletedProcess(command, 1, b"", b"did not solve")
 
     monkeypatch.setattr(mastrometry_module.subprocess, "run", run)
