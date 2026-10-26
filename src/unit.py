@@ -260,6 +260,8 @@ class Unit(Component, OpmodeBase):
         self.solver: Solver | None = _try_init("solver", lambda: Solver(self))
         self.acquirer: Acquirer | None = _try_init("acquirer", lambda: Acquirer(self))
         self.guider: Guider | None = _try_init("guider", lambda: Guider(self))
+        #: The plan this unit works for, under `UnitActivities.ExecutingPlan` (claim_plan).
+        self.plan_id: str | None = None
 
         self.components: list[Component] = [
             c
@@ -760,6 +762,7 @@ class Unit(Component, OpmodeBase):
             # Through `report`, like every other live read here -- and before `errors`, which is
             # built when its argument is evaluated: a read after it would fail unreported.
             acquisition=report("acquirer.outcome", lambda: self.acquirer.outcome) if self.acquirer else None,
+            plan_id=self.plan_owner,
             # solver= self.solver.status(),
             # A new list: `self.errors` is the unit's own standing errors, and a read that
             # failed on this request must not be appended to it.
@@ -863,9 +866,36 @@ class Unit(Component, OpmodeBase):
         for comp in self.components:
             attempt(f"component {type(comp).__name__}", comp.abort)
 
+        # Last, after every specific activity was asked to stop: the unit no longer works for
+        # the plan, and takes requests from anyone again (plans/control_acquisition_design.md 6.6).
+        self.release_plan()
+
         if errors:
             return CanonicalResponse(errors=errors)
         return CanonicalResponse_Ok
+
+    # ------------------------------------------------------------------- the plan token
+    # Design: mast-claude-config plans/control_acquisition_design.md 6.6.
+
+    @property
+    def plan_owner(self) -> str | None:
+        """The plan the unit works for, or None. What `common.plan_token`'s middleware asks."""
+        return self.plan_id if self.is_active(UnitActivities.ExecutingPlan) else None
+
+    def claim_plan(self, plan_id: str | None) -> None:
+        """Work for ``plan_id`` from now on: raise `ExecutingPlan` and keep the token, until an
+        abort releases it. Called by an endpoint once it has accepted a request carrying the
+        token. A request carrying another plan's never gets this far: the middleware refuses it."""
+        if plan_id is None:
+            return
+        self.plan_id = plan_id
+        if not self.is_active(UnitActivities.ExecutingPlan):
+            self.start_activity(UnitActivities.ExecutingPlan, details=[plan_id])
+
+    def release_plan(self) -> None:
+        if self.is_active(UnitActivities.ExecutingPlan):
+            self.end_activity(UnitActivities.ExecutingPlan)
+        self.plan_id = None
 
     # ------------------------------------------------------------------- idleness
     # Design: mast-claude-config plans/unit_idleness_design.md (rev. 2026-10-13).
@@ -2092,7 +2122,7 @@ class Unit(Component, OpmodeBase):
         # Internal: set by MAST_control's plan execution, so the unit labels the products
         # folder with a `plan_id` file and says where it is (plans/control_acquisition_design.md
         # 5.10, 6.5). Accepted, but kept out of the OpenAPI schema: not for an operator.
-        plan_ulid: Annotated[str | None, Query(include_in_schema=False)] = None,
+        plan_id: Annotated[str | None, Query(include_in_schema=False)] = None,
     ):
         """
         Refines focus on **one isolated star at the fibre pixel**, after `/calibrate/focuser`
@@ -2128,8 +2158,10 @@ class Unit(Component, OpmodeBase):
         outcome = self.focus_on_star.start(params)
         if isinstance(outcome, str):
             return CanonicalResponse(errors=[f"{function_name()}: {outcome}"])
-        # The run folder exists once `start` has answered; None for an imager with no files.
-        announce_plan_products(plan_ulid, PlanStage.Autofocus, outcome.folder)
+        # Accepted: the unit works for the plan from here. The run folder exists once `start`
+        # has answered; None for an imager with no files.
+        self.claim_plan(plan_id)
+        announce_plan_products(plan_id, PlanStage.Autofocus, outcome.folder)
         return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)

@@ -1,7 +1,7 @@
 """Telling control where a plan's products are (plans/control_acquisition_design.md 5.10, 6.5).
 
 A unit endpoint that a plan execution drives -- `start_acquisition_and_guiding`,
-`focus_on_star` -- takes an optional `plan_ulid`. With it, as soon as the unit has created its
+`focus_on_star` -- takes an optional `plan_id`. With it, as soon as the unit has created its
 products folder, it writes the plan's ULID into a `plan_id` file there, and tells control which
 stage the folder belongs to and where it is relative to this machine's folder on the share;
 control links it into the execution's products folder. Without it (an operator's call)
@@ -28,24 +28,24 @@ LEGACY_SUBPATH = {
 }
 
 
-def announce_plan_products(plan_ulid: str | None, stage: PlanStage, folder: str | None) -> bool:
+def announce_plan_products(plan_id: str | None, stage: PlanStage, folder: str | None) -> bool:
     """Label ``folder`` with the plan and tell control where it is; True if notified.
 
     Never raises: neither may fail the operation it announces. Nothing without a ULID or a
     folder. The notification also needs a folder under one of the filing areas -- a path
     the share does not mirror means nothing to control -- but the label is written anyway.
     """
-    if plan_ulid is None or folder is None:
+    if plan_id is None or folder is None:
         return False
-    write_plan_id_file(folder, plan_ulid)
+    write_plan_id_file(folder, plan_id)
     try:
         _area, relative = Filer().area_of(folder)
     except ValueError:
-        logger.warning(f"plan {plan_ulid}: {stage} products in '{folder}' are under no filing area; not reported")
+        logger.warning(f"plan {plan_id}: {stage} products in '{folder}' are under no filing area; not reported")
         return False
     Notifier().assignment_notification(
         AssignmentNotification(
-            assignment_id=plan_ulid,
+            assignment_id=plan_id,
             state="in-progress",
             # Relative to this machine's folder on the share: control joins it with the
             # producer's hostname, in its own spelling of the share (MAST_spec#39).

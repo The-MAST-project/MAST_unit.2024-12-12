@@ -224,6 +224,10 @@ class TestAbortReachesTheRun:
         def start_activity(self, activity, **_):
             self.activities.add(activity)
 
+        # abort() ends by releasing the unit from any plan it works for (control acquisition 6.6).
+        def release_plan(self):
+            pass
+
         def end_activity(self, activity, **_):
             self.activities.discard(activity)
 
