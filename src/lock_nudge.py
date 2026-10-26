@@ -12,6 +12,11 @@ puts the lock that far from where the guide star was in that frame. The lock mov
 by the guide error at that moment plus the correction -- a few pixels against a
 15 px search region -- and never by more than ``max_offset_px``.
 
+One solve places the fiber to 0.56" radial (1 sigma, 280 frames on 2026-10-20), about
+the size of the error being corrected, so the nudge solves ``solve_frames`` distinct
+guide frames, moves the lock to the mean of their estimates, and refuses when they
+scatter by more than ``max_spread_arcsec``.
+
 It runs once per acquisition handover, after settle: on the mirror-first handover with
 the fold mirror already in, on the bracketed one before the mirror moves. With the
 mirror in, a mirror-induced shift of the image cannot be told from a real pointing
@@ -46,6 +51,7 @@ from __future__ import annotations
 import math
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -59,14 +65,19 @@ from common.interfaces.solving import (
     target_offset_arcsec,
 )
 from common.mast_logging import get_logger
+from common.models.statuses import LockNudgeOutcome
 from common.utils import Coord, function_name
+from pointing_check import place_guide_frame, unplaced_frame_reason
 
 logger = get_logger(__name__)
 
-#: How often the confirmation loop looks at the guide distance. A guide frame arrives
+#: How often the confirmation loop looks for a new guide step. A guide frame arrives
 #: every 4.6-9.1 s depending on the limit frame, so this only decides how promptly a
-#: settled reading is noticed, not how long it takes to arrive.
+#: new one is noticed, not how long it takes to arrive.
 CONFIRM_POLL_SECONDS: float = 1.0
+#: How often frame collection looks for a new guide step before asking for the frame.
+#: Asked sooner, `save_image` hands back the frame already used -- 94 MB at full size.
+FRAME_POLL_SECONDS: float = 0.5
 
 #: Half-width of the box the guide star is looked for in, around the lock: PHD2's
 #: default search region, which is as far as the star can be from the lock and
@@ -92,15 +103,52 @@ class NudgeOutcome:
     lock_before: tuple[float, float] | None = None
     lock_after: tuple[float, float] | None = None
     residual_px: float | None = None
+    spread_arcsec: float | None = None
+    frames_used: int | None = None
     telemetry: dict = field(default_factory=dict)
 
     def __repr__(self) -> str:
         return (
             f"NudgeOutcome(applied={self.applied}, reason={self.reason!r}, "
             f"offset_arcsec={self.offset_arcsec}, offset_px={self.offset_px}, "
+            f"spread_arcsec={self.spread_arcsec}, frames_used={self.frames_used}, "
             f"lock_before={self.lock_before}, lock_after={self.lock_after}, "
             f"residual_px={self.residual_px})"
         )
+
+    def to_status(self) -> LockNudgeOutcome:
+        """The part an operator reads in `status.acquisition.nudge`; the telemetry stays in the log."""
+        return LockNudgeOutcome(
+            applied=self.applied,
+            reason=self.reason,
+            offset_arcsec=self.offset_arcsec,
+            offset_px=self.offset_px,
+            spread_arcsec=self.spread_arcsec,
+            frames_used=self.frames_used,
+            residual_px=self.residual_px,
+        )
+
+
+class NudgeRefusedError(Exception):
+    """The nudge cannot go on with this guide session; the lock stays where PHD2 put it."""
+
+
+class FrameUnusableError(Exception):
+    """One guide frame gives no estimate; the collection moves on to the next."""
+
+
+@dataclass(frozen=True)
+class FrameEstimate:
+    """One guide frame's say on where the lock should go, in that frame's pixels."""
+
+    lock: tuple[float, float]
+    star: tuple[float, float]
+    offset_px: tuple[float, float]
+    d_ra_arcsec: float
+    d_dec_arcsec: float
+    dec_degs: float
+    arcsec_per_px: float
+    matched_stars: int | None
 
 
 def sky_offset_to_detector_pixels(
@@ -145,6 +193,14 @@ def sky_offset_to_detector_pixels(
     return dx_ds * downsample_factor, dy_ds * downsample_factor
 
 
+def detector_pixel_scale_arcsec(solution: SolvingSolution, downsample_factor: int) -> float | None:
+    """Arcseconds per detector pixel, from the solved CD matrix (per DOWNSAMPLED pixel)."""
+    if solution.cd1_1 is None or solution.cd1_2 is None or solution.cd2_1 is None or solution.cd2_2 is None:
+        return None
+    det = solution.cd1_1 * solution.cd2_2 - solution.cd1_2 * solution.cd2_1
+    return math.sqrt(abs(det)) * ARCSEC_PER_DEGREE / downsample_factor
+
+
 def star_position(image_path: str, near: tuple[float, float]) -> tuple[float, float] | None:
     """The centroid of the star within PHD2's search region around `near`, in the saved
     frame's pixels; None if there is no star there."""
@@ -171,25 +227,33 @@ def star_position(image_path: str, near: tuple[float, float]) -> tuple[float, fl
 
 
 def _await_confirmation(connector, conf: LockNudgeConfig) -> float | None:
-    """Wait for `confirm_frames` guide frames under `confirm_px`; return the last distance.
+    """Wait for `confirm_frames` guide steps under `confirm_px`; return the last step's distance.
 
     `set_lock_position` starts no settling of its own, so there is no SettleDone
     to wait on -- PHD2 skips the state machine's settle bookkeeping entirely for a
-    lock move. Counting frames here is the substitute, and it is deliberately
-    cheap: the nudge is about a pixel against a residual several times that.
+    lock move. Counting guide steps here is the substitute. Each step counts once.
+    The first one after the move does not count: it is from the frame that was
+    exposing during the move, the unmoved star against the new lock. So the residual
+    is measured on the new lock. (Counting polls of the smoothed `AvgDist` instead
+    confirmed about 2 s after the move, on the old lock's distance.)
     """
     if conf.confirm_frames <= 0:
         return None
 
-    deadline = time.time() + conf.confirm_timeout
+    deadline = time.monotonic() + conf.confirm_timeout
+    step, _ = connector.latest_guide_step
+    in_flight = step + 1
     seen = 0
     last = None
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         time.sleep(CONFIRM_POLL_SECONDS)
-        distance = connector.avg_dist
-        if distance is None:
+        latest, distance = connector.latest_guide_step
+        if latest == step:
             continue
-        last = float(distance)
+        step = latest
+        if step <= in_flight:
+            continue
+        last = distance
         seen = seen + 1 if last <= conf.confirm_px else 0
         if seen >= conf.confirm_frames:
             return last
@@ -197,8 +261,128 @@ def _await_confirmation(connector, conf: LockNudgeConfig) -> float | None:
     return last
 
 
-def nudge_lock_to_target(unit, connector, target: Coord, conf: LockNudgeConfig) -> NudgeOutcome:
-    """Move the lock position so the fiber sits on `target`, once guiding has settled."""
+def _estimate_from_frame(unit, connector, image_path: str, near: tuple[float, float], target: Coord) -> FrameEstimate:
+    """Where the lock should go according to one saved guide frame, in its own pixels.
+
+    The frame is solved in its own coordinates: a limit-frame crop carries its origin,
+    found as the pointing check finds it, or mastrometry places its sensor-pixel ROI on
+    the crop and raises.
+    """
+    header = fits.getheader(image_path)
+    width, height = header["NAXIS1"], header["NAXIS2"]
+    placement = place_guide_frame(connector, width, height)
+    if placement is None:
+        raise NudgeRefusedError(unplaced_frame_reason(width, height))
+
+    star = star_position(image_path, near)
+    if star is None:
+        raise FrameUnusableError("no star near the lock in the guide frame")
+
+    try:
+        result = unit.solver._backend.solve(
+            unit=unit,
+            phase="spec",
+            full_frame_input_image_path=image_path,
+            keep_artifacts=False,
+            target=target,
+            **placement.solve_kwargs(),
+        )
+    except Exception as ex:
+        logger.exception(f"{function_name()}: could not solve the guide frame")
+        raise FrameUnusableError(f"solve raised: {ex!r}") from ex
+    if not result or not result.succeeded or result.solution is None:
+        raise FrameUnusableError("guide frame did not solve")
+
+    solution = result.solution
+    # The same helper solve_and_correct uses, so the two cannot disagree about what
+    # "off target" means.
+    d_ra_arcsec, d_dec_arcsec = target_offset_arcsec(target, solution)
+
+    from solvers.mastrometry import DOWNSAMPLE_FACTOR
+
+    offset = sky_offset_to_detector_pixels(solution, d_ra_arcsec, d_dec_arcsec, solution.dec_degs, DOWNSAMPLE_FACTOR)
+    arcsec_per_px = detector_pixel_scale_arcsec(solution, DOWNSAMPLE_FACTOR)
+    if offset is None or arcsec_per_px is None:
+        raise FrameUnusableError("solution carries no usable CD matrix")
+
+    # A star sits at sky = ref + CD * (pixel - refpix). A lock at star+D drives the star
+    # there, i.e. the field shifts by +D in the image from where it was solved, which is a
+    # pointing change of -CD*D. The pointing change wanted is +(target - solved), so
+    # D = -CD^-1 * (target - solved): the lock moves AGAINST the sky offset.
+    #
+    # The sign is the one thing here that cannot be settled by reading: the bench check is
+    # that `residual_px` after the nudge is smaller than `offset_px` before it. A flipped
+    # sign doubles it instead, which the telemetry makes obvious on the first run.
+    dx, dy = -offset[0], -offset[1]
+    return FrameEstimate(
+        lock=(star[0] + dx, star[1] + dy),
+        star=star,
+        offset_px=(dx, dy),
+        d_ra_arcsec=d_ra_arcsec,
+        d_dec_arcsec=d_dec_arcsec,
+        dec_degs=solution.dec_degs,
+        arcsec_per_px=arcsec_per_px,
+        matched_stars=solution.matched_stars,
+    )
+
+
+def _collect_estimates(
+    unit, connector, target: Coord, conf: LockNudgeConfig, near: tuple[float, float], is_current: Callable[[], bool]
+) -> list[FrameEstimate]:
+    """`solve_frames` estimates from distinct guide frames, or NudgeRefusedError.
+
+    While guiding, `save_image` returns the most recent guide frame, so it is asked once
+    per new guide step, and a frame whose `DATE-OBS` was already used does not count.
+    The guide session is checked between frames: a session stopped or replaced mid-way
+    -- a manual one, say -- is never nudged.
+    """
+    op = function_name()
+    deadline = time.monotonic() + conf.frames_timeout
+    estimates: list[FrameEstimate] = []
+    used: set[str] = set()
+    step: int | None = None
+    skipped = ""
+    while len(estimates) < conf.solve_frames:
+        if not is_current():
+            raise NudgeRefusedError("the guide session ended while guide frames were being collected")
+        if time.monotonic() >= deadline:
+            raise NudgeRefusedError(
+                f"only {len(estimates)} of {conf.solve_frames} guide frames gave an estimate "
+                f"in {conf.frames_timeout:.0f} s" + (f" (last skipped: {skipped})" if skipped else "")
+            )
+        latest, _ = connector.latest_guide_step
+        if latest == step:
+            time.sleep(FRAME_POLL_SECONDS)
+            continue
+        step = latest
+
+        image_path = connector.save_image()
+        try:
+            taken = fits.getheader(image_path)["DATE-OBS"]
+            if taken in used:
+                continue
+            used.add(taken)
+            estimates.append(_estimate_from_frame(unit, connector, image_path, near, target))
+        except FrameUnusableError as ex:
+            skipped = str(ex)
+            logger.info(f"{op}: skipping the guide frame of {taken}: {ex}")
+        finally:
+            # save_image() hands the caller a file it owns
+            try:
+                os.remove(image_path)
+            except OSError as ex:
+                logger.debug(f"{op}: could not remove {image_path}: {ex!r}")
+    return estimates
+
+
+def nudge_lock_to_target(
+    unit, connector, target: Coord, conf: LockNudgeConfig, is_current: Callable[[], bool]
+) -> NudgeOutcome:
+    """Move the lock position so the fiber sits on `target`, once guiding has settled.
+
+    `is_current` says whether the guide session the nudge was started for is still the
+    one running.
+    """
     op = function_name()
 
     if not conf.enabled:
@@ -208,69 +392,52 @@ def nudge_lock_to_target(unit, connector, target: Coord, conf: LockNudgeConfig) 
     if lock_before is None:
         return NudgeOutcome(applied=False, reason="PHD2 holds no lock position")
 
-    image_path = None
     try:
-        image_path = connector.save_image()
-        star = star_position(image_path, lock_before)
-        if star is None:
-            return NudgeOutcome(applied=False, reason="no star near the lock in the guide frame", lock_before=lock_before)
-        solver_backend = unit.solver._backend
-        result = solver_backend.solve(
-            unit=unit,
-            phase="spec",
-            full_frame_input_image_path=image_path,
-            keep_artifacts=False,
-            target=target,
-        )
-    except Exception as ex:
-        logger.error(f"{op}: could not solve the guide frame: {ex!r}")
-        return NudgeOutcome(applied=False, reason=f"solve raised: {ex!r}")
-    finally:
-        # save_image() hands the caller a file it owns
-        if image_path and os.path.exists(image_path):
-            try:
-                os.remove(image_path)
-            except OSError as ex:
-                logger.debug(f"{op}: could not remove {image_path}: {ex!r}")
+        estimates = _collect_estimates(unit, connector, target, conf, lock_before, is_current)
+    except NudgeRefusedError as ex:
+        logger.warning(f"{op}: not nudging: {ex}")
+        return NudgeOutcome(applied=False, reason=str(ex), lock_before=lock_before)
 
-    if not result or not result.succeeded or result.solution is None:
-        return NudgeOutcome(applied=False, reason="guide frame did not solve")
-
-    solution = result.solution
-
-    # The same helper solve_and_correct uses, so the two cannot disagree about what
-    # "off target" means.
-    d_ra_arcsec, d_dec_arcsec = target_offset_arcsec(target, solution)
-
-    from solvers.mastrometry import DOWNSAMPLE_FACTOR
-
-    offset = sky_offset_to_detector_pixels(solution, d_ra_arcsec, d_dec_arcsec, solution.dec_degs, DOWNSAMPLE_FACTOR)
-    if offset is None:
-        return NudgeOutcome(applied=False, reason="solution carries no usable CD matrix")
-
-    # A star sits at sky = ref + CD * (pixel - refpix). A lock at star+D drives the star
-    # there, i.e. the field shifts by +D in the image from where it was solved, which is a
-    # pointing change of -CD*D. The pointing change wanted is +(target - solved), so
-    # D = -CD^-1 * (target - solved): the lock moves AGAINST the sky offset.
-    #
-    # The sign is the one thing here that cannot be settled by reading: the bench check is
-    # that `residual_px` after the nudge is smaller than `offset_px` before it. A flipped
-    # sign doubles it instead, which the telemetry below makes obvious on the first run.
-    dx, dy = -offset[0], -offset[1]
-    lock_after = (star[0] + dx, star[1] + dy)
+    count = len(estimates)
+    lock_after = (sum(e.lock[0] for e in estimates) / count, sum(e.lock[1] for e in estimates) / count)
+    offset_px = (sum(e.offset_px[0] for e in estimates) / count, sum(e.offset_px[1] for e in estimates) / count)
+    d_ra_arcsec = sum(e.d_ra_arcsec for e in estimates) / count
+    d_dec_arcsec = sum(e.d_dec_arcsec for e in estimates) / count
+    dec_degs = sum(e.dec_degs for e in estimates) / count
+    arcsec_per_px = sum(e.arcsec_per_px for e in estimates) / count
+    spread_px = math.sqrt(
+        sum((e.lock[0] - lock_after[0]) ** 2 + (e.lock[1] - lock_after[1]) ** 2 for e in estimates) / count
+    )
+    spread_arcsec = spread_px * arcsec_per_px
     move_px = math.hypot(lock_after[0] - lock_before[0], lock_after[1] - lock_before[1])
-    magnitude_arcsec = offset_on_sky_arcsec(d_ra_arcsec, d_dec_arcsec, solution.dec_degs)
+    magnitude_arcsec = offset_on_sky_arcsec(d_ra_arcsec, d_dec_arcsec, dec_degs)
 
     telemetry = {
         "offset_arcsec": magnitude_arcsec,
         "d_ra_arcsec": d_ra_arcsec,
         "d_dec_arcsec": d_dec_arcsec,
-        "offset_px": (dx, dy),
+        "offset_px": offset_px,
+        "spread_arcsec": spread_arcsec,
         "lock_before": lock_before,
-        "star": star,
-        "matched_stars": solution.matched_stars,
+        "estimates": [(e.lock, e.star, e.d_ra_arcsec, e.d_dec_arcsec, e.matched_stars) for e in estimates],
         "limit_frame": repr(connector.get_limit_frame()),
     }
+    measured = {
+        "offset_arcsec": magnitude_arcsec,
+        "offset_px": offset_px,
+        "spread_arcsec": spread_arcsec,
+        "frames_used": count,
+        "lock_before": lock_before,
+        "telemetry": telemetry,
+    }
+
+    if spread_arcsec > conf.max_spread_arcsec:
+        logger.warning(f'{op}: the {count} estimates scatter by {spread_arcsec:.2f}"; leaving the lock alone')
+        return NudgeOutcome(
+            applied=False,
+            reason=f'spread {spread_arcsec:.2f}" exceeds max_spread_arcsec {conf.max_spread_arcsec}',
+            **measured,
+        )
 
     # Bounds what the lock actually does, star term included: a "star" that is a hot
     # pixel or a cosmic ray in a frame where the guide star dropped out sits anywhere in
@@ -281,30 +448,20 @@ def nudge_lock_to_target(unit, connector, target: Coord, conf: LockNudgeConfig) 
             f"a move this large is not a pointing trim -- re-acquire instead"
         )
         return NudgeOutcome(
-            applied=False,
-            reason=f"lock move {move_px:.1f} px exceeds max_offset_px {conf.max_offset_px}",
-            offset_arcsec=magnitude_arcsec,
-            offset_px=(dx, dy),
-            lock_before=lock_before,
-            telemetry=telemetry,
+            applied=False, reason=f"lock move {move_px:.1f} px exceeds max_offset_px {conf.max_offset_px}", **measured
         )
+
+    # The last solve can take long enough for the session to end under it.
+    if not is_current():
+        return NudgeOutcome(applied=False, reason="the guide session ended before the lock was moved", **measured)
 
     connector.set_lock_position(lock_after[0], lock_after[1])
     logger.info(
-        f"{op}: moved the lock from {lock_before} to {lock_after}: the star at {star} "
-        f'plus ({dx:+.2f}, {dy:+.2f}) px ({magnitude_arcsec:.2f}")'
+        f"{op}: moved the lock from {lock_before} to {lock_after}, the mean of {count} guide frames "
+        f'(offset ({offset_px[0]:+.2f}, {offset_px[1]:+.2f}) px, {magnitude_arcsec:.2f}"; spread {spread_arcsec:.2f}")'
     )
 
     residual = _await_confirmation(connector, conf)
     telemetry["lock_after"] = lock_after
     telemetry["residual_px"] = residual
-    return NudgeOutcome(
-        applied=True,
-        reason="nudged",
-        offset_arcsec=magnitude_arcsec,
-        offset_px=(dx, dy),
-        lock_before=lock_before,
-        lock_after=lock_after,
-        residual_px=residual,
-        telemetry=telemetry,
-    )
+    return NudgeOutcome(applied=True, reason="nudged", lock_after=lock_after, residual_px=residual, **measured)
