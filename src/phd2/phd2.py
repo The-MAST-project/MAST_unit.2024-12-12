@@ -37,7 +37,7 @@ from common.models.statuses import (
 from common.process import WatchedProcess
 from common.utils import Coord, Timeout, boxed_debug, function_name
 from failure_streaks import FailureStreaks
-from lock_nudge import nudge_lock_to_target
+from lock_nudge import NudgeOutcome, nudge_lock_to_target
 from phd2.fits_header import stamp_cooling
 from phd2.limit_frame import limit_frame_accepted, limit_frame_covers_sensor, limit_frame_extent
 from phd2.phd2_locate import locate_phd2_exe
@@ -407,6 +407,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self._pending: dict[int, queue.SimpleQueue] = {}
         self.app_state = ""
         self.avg_dist = 0
+        #: GuideSteps seen so far, and the latest one's own guide distance in pixels: what
+        #: the lock nudge waits on for a new frame, and counts to confirm a lock move.
+        self.latest_guide_step: tuple[int, float] = (0, 0.0)
         self.version = ""
         self.sub_version = ""
         self.accumulators_active = False
@@ -630,15 +633,18 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         while not stage.at_preset(StagePresetPosition.Spec):
             time.sleep(1)
 
-    def _nudge_lock_onto_target(self) -> None:
+    def _nudge_lock_onto_target(self, session: int) -> None:
         """Re-reference the lock to the acquisition target, if configured to and if this
         session is the acquisition's own handover.
 
         A manually started session is never nudged: the operator tuned the pointing by
-        other means, and the nudge would pull it back to the plate-solve target.
+        other means, and the nudge would pull it back to the plate-solve target. That
+        holds mid-nudge too: a session that ends while the nudge collects frames is left
+        alone.
 
         Failure is never fatal to the handover. A nudge that cannot be computed leaves
-        the lock exactly where PHD2 put it.
+        the lock exactly where PHD2 put it. What it did goes in the acquisition's outcome,
+        `status.acquisition.nudge`.
         """
         op = function_name()
         conf = self.conf.lock_nudge
@@ -658,12 +664,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 ra=Angle(acquisition.target_ra, unit="hour"),
                 dec=Angle(acquisition.target_dec, unit="deg"),
             )
-            outcome = nudge_lock_to_target(unit, self, target, conf)
+            outcome = nudge_lock_to_target(unit, self, target, conf, is_current=lambda: self._handover_is_current(session))
         except Exception as ex:
-            logger.error(f"{op}: lock nudge failed, continuing with the handover: {ex!r}")
-            return
+            logger.exception(f"{op}: lock nudge failed, continuing with the handover")
+            outcome = NudgeOutcome(applied=False, reason=f"nudge failed: {ex!r}")
 
         logger.info(f"{op}: {outcome}")
+        if acquisition.outcome is not None:
+            acquisition.outcome.nudge = outcome.to_status()
 
     def do_fcu_v2_spec_handover(self, session: int, stage_timeout: int = 60):
         """Insert the fold mirror only after guiding has locked and settled,
@@ -691,7 +699,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
         # The last moment the target is observable: from here the stage travels and the
         # target goes into the fiber. Correct the lock onto it now or not at all.
-        self._nudge_lock_onto_target()
+        self._nudge_lock_onto_target(session)
+        if not self._handover_is_current(session):
+            logger.info(f"{op}: guiding stopped during the lock nudge; abandoning the handover")
+            return
 
         self.pause(full=True)
         try:
@@ -737,7 +748,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 logger.exception(f"{op}: could not stop PHD2 guiding")
             return
 
-        self._nudge_lock_onto_target()
+        self._nudge_lock_onto_target(session)
         if not self._handover_is_current(session):
             logger.info(f"{op}: guiding stopped during the lock nudge; abandoning the handover")
             return
@@ -899,6 +910,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     self.app_state = "Guiding"
                     self.start_activity(PHD2Activities.Guiding, existing_ok=True)
                     self.avg_dist = ev["AvgDist"]
+                    self.latest_guide_step = (self.latest_guide_step[0] + 1, math.hypot(ev["dx"], ev["dy"]))
                     if self.accumulators_active:
                         self.stats = stats
                 lines = []
