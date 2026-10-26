@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 import acquirer as acquirer_module
-from acquirer import ACQUISITION_CANCELLED, GUIDING_NEVER_LOCKED, Acquirer
+from acquirer import ACQUISITION_CANCELLED, GUIDING_NEVER_LOCKED, GUIDING_NEVER_READY, Acquirer
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.models.latest import AcquisitionState, LatestAcquisition
@@ -68,6 +68,8 @@ class _Unit:
     Each `is_active(Guiding)` -- the loop's condition -- moves to the next state. When the
     script runs out, guiding stops, as `stop_guiding()` would stop it. `"<cancelled>"`
     ends `Acquiring` and then `Guiding`, as `stop_acquisition_and_guiding()` does.
+    `"<settled>"` ends `PreGuiding`, as a handover reaching ready does, and takes the
+    next state in the same pass.
     """
 
     def __init__(self, script: list[str]):
@@ -89,6 +91,9 @@ class _Unit:
                 self.end_activity(UnitActivities.Acquiring)
                 self.end_activity(UnitActivities.Guiding)
             else:
+                if self.script[0] == "<settled>":
+                    self.script.pop(0)
+                    self.end_activity(UnitActivities.PreGuiding)
                 self.phd2_state = self.script.pop(0)
                 self.observed.append(self.phd2_state)
         return activity in self.active
@@ -121,6 +126,47 @@ def test_a_lock_makes_the_outcome_guiding_and_guiding_ending_is_not_a_failure():
     # GUIDING from the first lock; a later LostLock does not take it back.
     assert outcome.state == AcquisitionState.GUIDING
     assert UnitActivities.Acquiring not in unit.active
+
+
+def test_a_lock_short_of_ready_is_still_running():
+    # The mirror-first handover holds PreGuiding through settle and the lock nudge, and
+    # ready is Guiding without PreGuiding; GUIDING must not tell control any sooner.
+    unit = _Unit(["Guiding", "Guiding", "<settled>", "Guiding"])
+    unit.active.add(UnitActivities.PreGuiding)
+    unit.required_guider = _Guider(unit, CanonicalResponse_Ok)
+    acquirer = object.__new__(Acquirer)
+    acquirer.unit = unit
+    outcome = LatestAcquisition(state=AcquisitionState.RUNNING).begin()
+    seen: list[AcquisitionState] = []
+    is_active = unit.is_active
+
+    def watching(activity) -> bool:
+        active = is_active(activity)
+        if activity == UnitActivities.Guiding and UnitActivities.PreGuiding in unit.active:
+            seen.append(outcome.state)
+        return active
+
+    unit.is_active = watching
+    failure = acquirer._hand_over_to_guider("test", outcome)
+
+    assert failure is None
+    assert seen == [AcquisitionState.RUNNING, AcquisitionState.RUNNING]
+    assert outcome.state == AcquisitionState.GUIDING
+
+
+def test_a_handover_that_never_reaches_ready_never_guides():
+    # A settle that fails stops guiding with PreGuiding still up: locked, never ready.
+    unit = _Unit(["Guiding", "Guiding"])
+    unit.active.add(UnitActivities.PreGuiding)
+    unit.required_guider = _Guider(unit, CanonicalResponse_Ok)
+    acquirer = object.__new__(Acquirer)
+    acquirer.unit = unit
+    outcome = LatestAcquisition(state=AcquisitionState.RUNNING).begin()
+
+    failure = acquirer._hand_over_to_guider("test", outcome)
+
+    assert failure == GUIDING_NEVER_READY
+    assert outcome.state == AcquisitionState.RUNNING
 
 
 def test_still_calibrating_is_still_running():
