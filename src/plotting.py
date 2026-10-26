@@ -199,9 +199,9 @@ def plot_phase_corrections(  # noqa: C901
         sequence.append(corrections.last_delta)
 
     file_name_pattern = (
-        r".*(?P<date>\d{4}-\d{2}-\d{2})\\Acquisitions\\"
+        r".*(?P<date>\d{4}-\d{2}-\d{2})[\\/]Acquisitions[\\/]"
         + r"seq=(?P<seq_number>\d+),time=(?P<start_time>\d{2}-\d{2}-\d{2}_\d{3}+),"
-        + r"target=(?P<target>[^\\]+)"
+        + r"target=(?P<target>[^\\/]+)"
     )
     match = re.search(file_name_pattern, file)
     if match:

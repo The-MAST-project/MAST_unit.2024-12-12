@@ -5,9 +5,10 @@ from typing import TYPE_CHECKING, Any
 
 from common import asi
 from common.corrections import Corrections
-from common.filer import Filer, MoveGuardian
+from common.filer import Filer, FilingArea, MoveGuardian
 from common.interfaces.solving import SolverId
 from common.mast_logging import get_logger
+from common.models.latest import LatestAcquisition
 from common.paths import PathMaker
 from plotting import plot_acquisition_corrections, plot_phase_corrections
 
@@ -98,6 +99,8 @@ class Acquisition:
         #: Set by `Acquirer.run_acquisition` when the acquisition ends: None when it
         #: reached tolerance, otherwise why it did not. `Acquiring` clears either way.
         self.failure: str | None = None
+        #: Set by `Acquirer.start`: what `FullUnitStatus.latest.acquisition` reports for this run.
+        self.latest: LatestAcquisition | None = None
 
     def save_corrections(self, phase: str):
         if phase in self.corrections:
@@ -128,4 +131,21 @@ class Acquisition:
         # acquisitions that ran to completion, and the ones worth clearing are the ones that
         # did not. Acquirer.run_acquisition owns the release, in a finally.
         if filer.ram and filer.ram.root is not None:
-            plot_acquisition_corrections(self.folder.replace(filer.ram.root, filer.shared.root))
+            plot_acquisition_corrections(self._folder_on_the_share())
+
+    def _folder_on_the_share(self) -> str:
+        """This acquisition's folder, as moved to the shared area.
+
+        Through `Filer.to_top`, not `self.folder.replace(ram.root, shared.root)`: the roots
+        are stored forward-slashed ("D:/MAST/") and PathMaker built folders with backslashes
+        on Windows, so the replace never matched there and the plot was always pointed at
+        the ram-disk folder (plans/filing-areas-design.md 1.4). A folder that is not on the
+        ram area is returned unchanged, which is what the replace did, but now only then.
+        """
+        try:
+            area, _ = filer.area_of(self.folder)
+        except ValueError:
+            return self.folder
+        if area is not FilingArea.RAM:
+            return self.folder
+        return filer.to_top(FilingArea.SHARE, self.folder)

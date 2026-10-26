@@ -11,6 +11,8 @@ mount, covers, focuser and stage were all healthy and answering on their own rou
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from common.models.statuses import ComponentStatus, FullUnitStatus
@@ -78,6 +80,13 @@ class Stub:
         # `Unit.__init__` always builds a FluxMeteringSession -- but `status` reads it, so a
         # Stub without one raises where the real thing cannot.
         self.flux_metering = parts.pop("flux_metering", FluxMetering())
+        # Likewise: `Unit.__init__` always builds an Acquirer and a FocusOnStarSession, and
+        # `status` reads their latest records.
+        self.acquirer = parts.pop("acquirer", SimpleNamespace(latest=None))
+        self.focus_on_star = SimpleNamespace(latest=None)
+        self.latest_exposure = None
+        # Read by `status` since the plan token (control acquisition 6.6).
+        self.plan_owner = None
         # Read by `status` since opmode/opstate went on the wire (opmode-design 6).
         self.opmode = OpMode.PRODUCTION
         self.opstate = OpState.INITIALIZED
@@ -85,6 +94,9 @@ class Stub:
 
     def _idleness_status(self) -> dict:
         return Unit._idleness_status(self)  # type: ignore[arg-type]
+
+    def _latest_records(self):
+        return Unit._latest_records(self)  # type: ignore[arg-type]
 
     def component_status(self) -> ComponentStatus:
         return ComponentStatus(
@@ -191,3 +203,15 @@ def test_every_component_is_guarded(part: str):
 
     assert status.errors is not None
     assert any(e.startswith(f"{part}.status") for e in status.errors)
+
+
+def test_a_sick_acquirer_costs_only_the_latest_records():
+    class SickAcquirer:
+        @property
+        def latest(self):
+            raise RuntimeError("acquirer wedged")
+
+    status = status_of(Stub(acquirer=SickAcquirer()))
+
+    assert status.latest is None
+    assert any(e.startswith("latest: unavailable") for e in status.errors)

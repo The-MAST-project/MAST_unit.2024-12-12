@@ -237,14 +237,15 @@ class SpiralSearch:
         +41 as 7.44" for 10" commanded). Without it the estimate reads 25% high there and
         invites an operator to distrust a correct measurement.
 
-        None -- so the caller can omit the clause -- when the plate scale is unset or the
-        declination is unknown. ``pixel_scale_at_bin1`` is 0.0 in the config DB today
-        (MAST_unit#138), so that is the live path, and no estimate at all beats "0 px".
+        None -- so the caller can omit the clause -- when there is no configuration to give
+        the plate scale, or the declination is unknown: no estimate at all beats "0 px".
+        With a configuration the scale is positive, the model refusing anything else
+        (MAST_common `ImagerConfig.pixel_scale_at_bin1`, after MAST_unit#138 found 0.0 there).
         """
         conf = self.unit.unit_conf
-        scale = conf.imager.pixel_scale_at_bin1 if conf is not None else 0.0
-        if not scale or scale <= 0.0 or self._dec_degrees is None:
+        if conf is None or self._dec_degrees is None:
             return None
+        scale = conf.imager.pixel_scale_at_bin1
         dx = x * self.x_step_arcsec * math.cos(math.radians(self._dec_degrees))
         dy = y * self.y_step_arcsec
         return math.hypot(dx, dy) / scale

@@ -3,7 +3,6 @@ import os
 import shutil
 import subprocess
 import time
-from contextlib import suppress
 from pathlib import Path
 from threading import Thread
 from typing import TYPE_CHECKING, cast
@@ -18,12 +17,14 @@ from common.filer import Filer, MoveGuardian
 from common.interfaces.solving import SolverInterface, SolvingResult
 from common.mast_logging import get_logger
 from common.models.statuses import ImagerRoi
-from common.rois import SkyRoi, SpecRoi
+from common.rois import SkyRoi
 from common.utils import Coord, boxed_log, function_name
 from imagers import ImagerSettings
+from phd2.limit_frame import derived_guiding_roi
 
-from .astrometry_dot_net import cygwin_to_win, generate_random_string, parse_solver_output, win_to_cygwin
+from .astrometry_dot_net import generate_random_string, parse_solver_output, win_to_cygwin
 from .pixel_grid import roi_center_to_crpix
+from .ram_area import index_dir, missing_indexes, scratch_dir
 
 logger = get_logger(__name__)
 if TYPE_CHECKING:
@@ -69,36 +70,18 @@ class MastrometryDotNet(SolverInterface):
 
         ram = Filer().ram
         assert ram is not None, f"{function_name()}: RAM disk is not mounted"
-        if not Path(ram.root).exists():
-            Path(ram.root).mkdir(parents=True, exist_ok=True)
 
-        self.index_dir = Path(str(ram.drive), "mast-indexes")
-        if not self.index_dir.exists():
-            raise Exception(f"{function_name()}: RAM disk path '{self.index_dir.as_posix()}' does not exist")
-
-        # missing = False
-        # for i in range(0, 47):
-        #     index_5206_file = self.index_dir / f"index-5206-{i:02d}.fits" # needed
-        #     if not index_5206_file.exists():
-        #         logger.warning(f"{function_name()}: RAM disk is missing index file '{index_5206_file.as_posix()}'")
-        #         missing = True
-
-        #     # index_5205_file = self.index_dir / f"index-5205-{i:02d}.fits" # niced to have
-        #     # if not index_5205_file.exists():
-        #     #     logger.warning(f"{function_name()}: RAM disk is missing index file '{index_5205_file.as_posix()}'")
-        #     #     missing = True
-
-        #     if missing:
-        #         raise Exception(f"{function_name()}: RAM disk is missing some index files")
-
-        # logger.info(f"{function_name()}: RAM disk contains all needed index files")
-        logger.warning(f"{function_name()}: Skipping RAM disk index file check (TODO: remove this after testing)")
+        # `ram_area.index_dir()`, not `Path(ram.drive, ...)`: Location has had one canonical
+        # root, and no `drive`, since MAST_common#183 -- the old line raised AttributeError.
+        self.index_dir = index_dir()
+        if (why := missing_indexes(self.index_dir)) is not None:
+            raise Exception(f"{function_name()}: {why}")
 
     @property
     def name(self) -> str:
         return "mastrometry.net"
 
-    def solve(  # noqa: C901
+    def solve(
         self,
         unit,
         phase: Const.SolvingPhase,
@@ -106,6 +89,7 @@ class MastrometryDotNet(SolverInterface):
         full_frame_input_image_path: str | None = None,
         index_file: str | None = None,
         target: Coord | None = None,
+        keep_artifacts: bool = True,
     ) -> SolvingResult | None:
         """
         MAST specific astrometry.net solver implementation.
@@ -113,19 +97,70 @@ class MastrometryDotNet(SolverInterface):
         The caller is expected to pass an input image that is full frame, unbinned, which gets
           downsampled by a factor 2 (2x2 binning) and cropped to the ROI (if any)
           before being sent to astrometry.net for solving.
+
+        The solved FITS and the result text are named `<input stem>,solver=<name>.fits` and
+        `<input stem>,solver=<name>-result.txt`. With `keep_artifacts` they are saved beside
+        the input and follow it to the shared area; without it they are discarded with the
+        scratch folder, for callers that solve every few minutes and record the result
+        themselves.
         """
 
         self.unit: Unit | None = unit
-        filer = Filer(logger)
+
+        if full_frame_input_image_path is None:  # noqa: SIM102
+            if settings is not None:
+                assert settings.image_path is not None, f"{function_name()}: settings.image_path is None"
+                full_frame_input_image_path = settings.image_path
+
+        assert full_frame_input_image_path is not None, f"{function_name()}: full_frame_input_image_path is None"
 
         #
         # A temporary folder is created on the RAM disk for the solving process, and deleted afterwards.
         # This is needed to speed up the solving process by using the RAM disk.
         #
-        tmp_dir = generate_random_string(prefix="tmp_")
+        filer = Filer(logger)
         assert filer.ram is not None
-        win_tmp_dir = Path(filer.ram.root, "tmp", tmp_dir)
-        win_tmp_dir.mkdir(parents=True, exist_ok=True)
+        # Checked per solve as well as at start-up: the RAM disk, and the indexes with it, can
+        # go while the unit runs. Said plainly rather than as the solver's generic failure.
+        if (why := missing_indexes(self.index_dir)) is not None:
+            raise Exception(f"{function_name()}: {why}")
+        # On the RAM area's current root -- its fallback while the disk is gone -- not on the
+        # root the Filer was built with.
+        win_tmp_dir = scratch_dir(generate_random_string(prefix="tmp_"))
+
+        # From the stem, not by editing the name: an input that is not *.fits (PHD2's
+        # sav*.tmp guide frames) would otherwise give both artifacts the same path.
+        artifact_stem = f"{Path(full_frame_input_image_path).stem},solver={self.name}"
+        new_fits_path = win_tmp_dir / f"{artifact_stem}.fits"
+        result_file = win_tmp_dir / f"{artifact_stem}-result.txt"
+
+        try:
+            return self._solve_in(win_tmp_dir, new_fits_path, result_file, phase, full_frame_input_image_path, target)
+        finally:
+            # The solved frame (it carries the WCS -- MAST_unit#27) and the solver's own
+            # output are saved beside the frame they came from, then follow it to the shared
+            # area. In `finally`, so a solve or read-back that raises still removes the scratch.
+            Thread(
+                target=self._run_logged,
+                name="mastrometry-cleanup",
+                args=(
+                    self.cleanup,
+                    [result_file, new_fits_path] if keep_artifacts else [],
+                    Path(full_frame_input_image_path).parent,
+                    win_tmp_dir,
+                ),
+            ).start()
+
+    def _solve_in(  # noqa: C901
+        self,
+        win_tmp_dir: Path,
+        new_fits_path: Path,
+        result_file: Path,
+        phase: Const.SolvingPhase,
+        full_frame_input_image_path: str,
+        target: Coord | None,
+    ) -> SolvingResult | None:
+        unit = self.unit
 
         # solve-field.exe is a cygwin binary:
         #  - C:\cygwin64\bin is needed so Windows can load cygwin1.dll
@@ -134,13 +169,6 @@ class MastrometryDotNet(SolverInterface):
         # Pass via env= so we don't mutate the parent process's PATH.
         env = os.environ.copy()
         env["PATH"] = r"C:\cygwin64\bin" + os.pathsep + "/usr/lib/lapack" + os.pathsep + env.get("PATH", "")
-
-        if full_frame_input_image_path is None:  # noqa: SIM102
-            if settings is not None:
-                assert settings.image_path is not None, f"{function_name()}: settings.image_path is None"
-                full_frame_input_image_path = settings.image_path
-
-        assert full_frame_input_image_path is not None, f"{function_name()}: full_frame_input_image_path is None"
 
         #
         # Read the full frame FITS file we got from te imager
@@ -189,16 +217,7 @@ class MastrometryDotNet(SolverInterface):
                     assert fcu_version in unit_conf.guiding.rois
                     cfg = cast(SpecRoiConfig, unit_conf.guiding.rois[fcu_version])
 
-                    half_width = min(
-                        cfg.fiber_x - cfg.margin_horizontal, camera_x_size - cfg.margin_horizontal - cfg.fiber_x
-                    )
-                    half_height = min(cfg.fiber_y - cfg.margin_vertical, camera_y_size - cfg.margin_vertical - cfg.fiber_y)
-
-                    spec_roi = SpecRoi(
-                        fiber_x=cfg.fiber_x, fiber_y=cfg.fiber_y, width=half_width * 2, height=half_height * 2
-                    )
-
-                    imager_roi = ImagerRoi.from_other(spec_roi)
+                    imager_roi = derived_guiding_roi(cfg, camera_x_size, camera_y_size, unit_conf.guiding.binning)
 
                 case _:
                     # No ROI and no recognized phase: leave imager_roi=None
@@ -338,9 +357,6 @@ class MastrometryDotNet(SolverInterface):
                     str(refpix[1]),
                 ]
 
-            new_fits_path = Path(
-                str(downsampled_image_path).replace(".fits", f",solver={self.name}.fits").replace("downsampled_", "")
-            )
             args += [
                 "--new-fits",
                 win_to_cygwin(str(new_fits_path)),
@@ -368,10 +384,9 @@ class MastrometryDotNet(SolverInterface):
             + f" in {elapsed:.2f} seconds"
         )
 
-        result_file = cygwin_to_win(str(new_fits_path)).replace(".fits", "-result.txt")
         # Protected for the same two reasons as new_fits_path above: no half-written file
         # for the mover, and it counts as a product rather than as scratch.
-        with MoveGuardian().protect(result_file), open(result_file, "w") as file:
+        with MoveGuardian().protect(str(result_file)), open(result_file, "w") as file:
             file.write("--- command ---\n")
             file.write(f"{command}\n")
 
@@ -439,26 +454,6 @@ class MastrometryDotNet(SolverInterface):
                 ],
             )
 
-        # The solved frame (it carries the WCS -- MAST_unit#27) and the solver's own output
-        # are saved beside the frame they came from, then follow it to the shared area.
-        #
-        # This call used to pass two arguments to a three-parameter cleanup(), so every
-        # solve raised TypeError *inside the thread* -- where the default excepthook writes
-        # to stderr and never to the log. Result: both artifacts were discarded and the
-        # scratch dir was never removed (1.1GB across 28 of them by 2026-08-06). Note the
-        # missing argument was the middle one: target_folder was binding to win_tmp_dir, so
-        # merely fixing the arity would have "saved" the files into the directory the last
-        # line then deletes.
-        Thread(
-            target=self._run_logged,
-            name="mastrometry-cleanup",
-            args=(
-                self.cleanup,
-                [Path(result_file), Path(new_fits_path)],
-                Path(full_frame_input_image_path).parent,
-                win_tmp_dir,
-            ),
-        ).start()
         return ret
 
     @staticmethod
@@ -496,9 +491,11 @@ class MastrometryDotNet(SolverInterface):
                 filer.move_ram_to_shared(str(destination))
 
         # Only now: the artifacts worth keeping are out, the rest is astrometry.net
-        # intermediates (.axy/.xyls/.wcs and the downsampled frame).
-        with suppress(Exception):
-            shutil.rmtree(tmp_dir)
+        # intermediates (.axy/.xyls/.wcs and the downsampled frame). Discarded, not just
+        # removed: the result was written under protect(), which claimed this folder and
+        # recorded it as a product, and a bare rmtree left the claim's handle, its
+        # `.tmp_<id>.lock` beside the folder and the records behind -- one of each per solve.
+        MoveGuardian().discard_folder(tmp_dir)
 
     def solve_and_correct(self):
         pass

@@ -58,7 +58,7 @@ class FakeImager:
 
 class FakeMount:
     def __init__(self):
-        self.tracking = False
+        self.is_tracking = False
         self.stop_calls = 0
         self.slews = []
         self.start_tracking_raises = False
@@ -72,10 +72,10 @@ class FakeMount:
     def start_tracking(self):
         if self.start_tracking_raises:
             raise RuntimeError("the mount would not start tracking")
-        self.tracking = True
+        self.is_tracking = True
 
     def stop_tracking(self):
-        self.tracking = False
+        self.is_tracking = False
         self.stop_calls += 1
 
 
@@ -88,6 +88,7 @@ class Stub(FakeActivities):
         self.mount = FakeMount()
         self.raised = False
         self._expose_cancelled = threading.Event()
+        self.plan_owner = None  # read by `expose`, for its latest record
 
     def _expose_repeatedly(self, *args, **kwargs):
         if self.raised:
@@ -112,8 +113,10 @@ class FakeThread:
 
 
 @pytest.fixture
-def dispatched(monkeypatch):
+def dispatched(monkeypatch, tmp_path):
     """The threads `expose` started during one test."""
+    # `expose` makes its products folder before it answers: keep it off the real disk.
+    monkeypatch.setattr(unit_module.PathMaker, "make_exposures_folder", lambda self: tmp_path.as_posix())
     monkeypatch.setattr(FakeThread, "started", [])
     monkeypatch.setattr(unit_module, "Thread", FakeThread)
     return FakeThread.started
@@ -130,7 +133,7 @@ class TestCleanupOnFailure:
 
         assert response == CanonicalResponse_Ok
         assert stub.imager.ended == stub.imager.series, "the series must be closed"
-        assert not stub.mount.tracking
+        assert not stub.mount.is_tracking
         assert stub.mount.stop_calls == 1
 
     def test_a_failing_run_still_closes_the_series_and_stops_tracking(self):
@@ -141,7 +144,7 @@ class TestCleanupOnFailure:
 
         assert response.failed, "the failure must be reported, not swallowed"
         assert stub.imager.ended == stub.imager.series, "the series must be closed even on failure"
-        assert not stub.mount.tracking, "the mount must not be left tracking forever"
+        assert not stub.mount.is_tracking, "the mount must not be left tracking forever"
         assert stub.mount.stop_calls == 1
 
 

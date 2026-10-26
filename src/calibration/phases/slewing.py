@@ -37,25 +37,10 @@ from __future__ import annotations
 import logging
 
 from calibration.logging_context import init_calibration_log
-from mount import SettleMode
+from mount import SLEW_SETTLE_TOLERANCE_ARCSEC, SettleMode
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_calibration_log(logger)
-
-#: Following-distance tolerance for a calibration slew.
-#:
-#: Deliberately far looser than ``wait_until_settled``'s 0.5" default, because
-#: on-target following distance is WIND-DRIVEN, not a fixed offset: sampled on
-#: mast02 over 20s while tracking on target (is_slewing=False), per-axis
-#: ``dist_to_target`` swung between 0.06" and 5.89".  A 0.5" tolerance with
-#: ``stable_samples=2`` cannot survive a gust, so the settle would burn its full
-#: timeout on any breezy night and only pass in a lull.
-#:
-#: No calibration phase needs better -- focus wants the star somewhere on a full
-#: frame, the shadow solve wants a star field.  This asks "did we arrive?", not
-#: "is tracking quiet?", and those are different questions (the second is what
-#: PWI4's green/yellow/red RMS indicator answers).
-SLEW_SETTLE_TOLERANCE_ARCSEC = 10.0
 
 #: Cap on a calibration slew, so a mount that never settles costs one timeout
 #: and a warning instead of hanging the phase forever.

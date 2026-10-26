@@ -2,6 +2,93 @@
 
 ---
 
+## [2026-10-20] start_guiding sets the guide exposure from the config DB
+
+**Why:** `start_guiding` never sent an exposure, so PHD2 guided at its profile's
+`ExposureDurationMs`, which persists across restarts and changes whenever anyone edits it. A
+bench test left mast03's profile at 10 ms, and on the night of 2026-10-19/20 guiding lost or
+never found its star in four of nine starts. Restarting PHD2 re-read the same value.
+`units.<unit>.guiding.exposure` was in the config all along but never reached PHD2.
+MAST_unit#352.
+
+**What:** after the binning and bpp checks, `start_guiding` rounds `guiding.exposure` to
+milliseconds, checks it against PHD2's `get_exposure_durations`, and sends `set_exposure`. A
+value PHD2 does not offer is refused like a binning mismatch, because PHD2 rejects it with an
+RPC error anyway. There is no read-back: a `set_exposure` that succeeds cannot leave a different
+value. The default is 3 s, matching what the PHD2 profiles held. Team decision, 2026-10-20:
+`units.common.guiding.exposure` changed from 5 to 3 that day, before this landed.
+
+**Implications:** editing the exposure in PHD2's GUI no longer sticks. The next `start_guiding`
+overwrites it, and on units with `phd2.validation_interval` set, that is the next validation
+tick. Change `guiding.exposure` in the DB instead, to one of PHD2's offered durations. A value
+PHD2 does not offer stops guiding from starting. Until MAST_unit#351 and #332 land, that refusal
+reaches the log only, and a validation restart that is refused leaves the unit reporting
+`Guiding`. `validate_guiding`'s frame already used `guiding.exposure`, so it went from 5 s to 3 s
+with the DB change. Guide gain (`guiding.gain`) still does not reach PHD2: its JSON-RPC has no
+gain setter.
+
+---
+
+## [2026-10-13] The unit sends PHD2 only limit frames its camera accepts; the full sensor goes as none
+
+**Why:** PHD2's ZWO driver widens a limit frame to 32-px boundaries, in binned coordinates, and
+does not keep the result inside the sensor (`constrain_roi`, upstream `cam_zwo.cpp`). The camera
+rejects a frame widened past the sensor, PHD2 only logs it, and it then copies the camera's rows
+with the rejected frame's stride. mast03's derived frame, 7952x5628@10,14, widened to 7968x5664 on
+a 5644-row sensor and sheared every guide frame of 2026-10-12. A full-sensor frame is rejected the
+same way and came out right only while the camera's last accepted ROI was full width: after
+guiding on a narrower frame it was sheared too (mast03, 2026-10-13). MAST_unit#330.
+
+**What:**
+- `phd2/limit_frame.py` states PHD2's rule once: at binning b a frame must end within the binned
+  sensor floored to 32, which is 8288x5632 at bin 1. It has no connector imports, so the solver
+  uses it too.
+- `derived_guiding_roi` there is the one derivation of the fiber-centered guiding frame, bounded
+  by that extent. `make_guiding_settings` and mastrometry's spec phase both call it. mast03's
+  frame becomes 7952x5604@10,26; frames that already fit are unchanged, and centers are kept.
+- A frame PHD2 would widen to the whole sensor is sent as no limit frame (`roi: None`). That
+  covers the exact sensor and a full frame trimmed by `ImagerRoi` conditioning (MAST_common#17),
+  such as the 8256x5636@14,2 a default `/expose` sends at binning 1. At binning 2 that path hands
+  over binned coordinates, which PHD2 reads as unbinned; that predates this and is not changed. `None` reads out the full 8288x5644 and resets
+  the camera's ROI, so such an image is now the true full frame, a few px larger than its name says.
+- `start_guiding` and `start_exposure` refuse a frame that does not fit, next to their binning and
+  bpp checks and before raising `Guiding` / `Exposing`; `set_limit_frame` raises
+  `PHD2ConnectorError` as a backstop.
+
+**Implications:** the unit now depends on a private PHD2 rounding rule. It can go once PHD2
+keeps the widened frame inside the sensor and that build is deployed (reported upstream). A
+misplaced `fixed` frame no longer guides on sheared frames; the refusal is a WARNING and an error
+in the backend's response, which `Guider.start_guiding` does not pass on, the same as for the
+binning and bpp refusals.
+## [2026-10-13] An acquisition waits for the slew before its first exposure, on every path
+
+**Why:** the only slew wait in `do_acquire` sat in the FCU v1 `sky` phase. On FCU v2 -- every
+production unit -- and on v1 with `skip_sky`, the `spec` phase waited only for the stage and a
+fixed 5 s, so any longer slew was still moving when the first frame was taken (mast04,
+2026-10-12: a 10 s slew to Markab, exposure started 5 s in). Each acquisition lost one iteration
+to a trailed frame. MAST_unit#315.
+
+**What:** `do_acquire` records when it commanded the goto, and `Acquirer._await_slew` waits on
+`wait_until_settled(SettleMode.SLEW)` after each phase's stage wait, so the slew overlaps the
+stage move and the 5 s sleep. Two arguments make that wait cheap where it would otherwise not be:
+
+- `dist_tolerance_arcsec=SLEW_SETTLE_TOLERANCE_ARCSEC` (10"), the calibration slew's tolerance,
+  now defined in `mount.py` for both. The acquisition asks "did we arrive?"; the 0.5" default
+  asks "is tracking quiet?", which wind can keep answering no until the 120 s timeout.
+- `start_grace_seconds` is only the part of `SETTLE_START_GRACE_SECONDS` not yet spent since the
+  goto. The grace guards a stale `is_slewing` read right after the goto; after the stage wait it
+  has usually run out, and waiting it again cost 3 s and a warning on every acquisition. The
+  slew wait now checks `is_slewing` at least once, so a zero grace still waits out a slew in
+  progress, and logs a slew it never saw as a warning only when a grace was asked for.
+
+A settle timeout is logged by the mount and does not fail the acquisition, as before in the v1
+`sky` phase: the correction loop recovers from a frame taken slightly off.
+
+**Implications:** an acquisition that did not slew no longer waits on the mount at all, in either
+phase. A cancel during the slew is honored only once the settle returns, because
+`wait_until_settled` does not poll a cancel flag. Other `SLEW` callers keep the full grace and
+their own tolerance.
+
 ## [2026-10-13] Flux metering puts the folding mirror in after the acquisition, not before
 
 **Why:** the run moved the mirror to SPEC, then the acquisition took it out to solve on FCU v2 and
@@ -37,6 +124,61 @@ acquisition is bounded by its own tries, and an abort clears `Acquiring`, which 
 
 **Implications:** the HTTP endpoint behaves as before. An outside caller still cannot see
 `failure`; exposing it in status is left for the flux orchestrator work.
+## [2026-10-13] Stage homing waits 150 s, enough for a homing from the far end
+
+**Why:** `Stage.home` gave `command_homezero` 60 s. From the SPEC end of travel homing takes
+longer (mast03, 2026-10-12: still running at 60 s, at 68058 and 59475). `Timeout` abandons the
+wait but not the call, so startup's move to SKY took over the motor and the late-returning call
+zeroed the stage mid-move; the next move to SPEC then stopped at the end of travel. MAST_unit#311.
+
+**What:** `HOMING_TIMEOUT_SECONDS = 150.0`, used by `home`.
+
+**Implications:** a stopgap. Startup can now take up to 150 s longer on a stage that never
+homes, and an expired homing is still left running behind the next move; not leaving it running
+is #311's ask.
+## [2026-10-13] The solver names its artifacts from the input's stem, and a caller may discard them
+
+**Why:** `MastrometryDotNet.solve` built the solved FITS and the result text paths by replacing
+`".fits"` in the input's name. PHD2 guide frames arrive as `sav*.tmp`, so both artifacts got the
+same path, the result text overwrote the solved FITS, and the read-back raised `No SIMPLE card
+found`. The scratch folder was removed only by a thread started after a successful read-back, so
+each failure also left its folder on the RAM disk (mast04, 2026-10-12: 19 folders, 321 MB, #314).
+
+**What:** both paths are built from `Path(input).stem`: `<stem>,solver=<name>.fits` and
+`<stem>,solver=<name>-result.txt`, which leaves a `.fits` input's names unchanged. The cleanup
+thread starts in a `finally`, so a solve that raises still removes its scratch. `solve()` takes
+`keep_artifacts` (default true): with it, the two artifacts are saved beside the input and moved
+to the shared area as before; without it, they are discarded with the scratch. Chosen over a
+caller-chosen artifacts folder and over keeping everything: a caller that solves a guide frame
+every minute would otherwise ship about 1 GB an hour to the share from PHD2's temp folder, and it
+already records each result itself.
+
+**Implications:** acquisition and flux metering keep the default and are unchanged. A caller
+that solves guide frames repeatedly (the pointing check and the lock nudge, on
+`eli/exclude-region`) passes `keep_artifacts=False`, so such a solve leaves no file behind and a
+failed one is diagnosed from the log, not from a kept result text.
+## [2026-10-11] `expose` leaves the mount's tracking as it found it
+
+**Why:** `do_expose` started tracking before a run and stopped it afterwards, in both directions
+unconditionally. The stop meant two exposures could not share a field: on 2026-09-02 a mirror-in /
+mirror-out pair landed on different fields. It also stopped the mount under a frame taken while
+guiding. The start was not free either: `Mount.start_tracking` re-issues `mount_tracking_on`,
+which resets a non-sidereal rate, and waits at least a second. A first fix added
+`start_tracking` / `stop_tracking` query flags. That made every caller learn the side effect, and
+it did not nest.
+
+**What:** team decision, 2026-10-11. `expose` reads `mount.is_tracking` and passes it to
+`do_expose`. If the mount was tracking, `expose` neither starts nor stops it. Otherwise it starts
+tracking for the run and stops it afterwards, also on failure. The read happens before the slew,
+because PWI4 engages tracking at the end of an equatorial goto. No query flags. `guiding.py`
+already followed this rule.
+
+**Implications:** whoever starts tracking owns stopping it. A caller that turns tracking on and
+then goes away leaves the mount tracking until park, shutdown or another operation stops it. The
+open-loop tracking grid's `goto_alt_az` -> `expose` sequence is unchanged: `goto_alt_az` stops
+tracking, so `expose` finds it off and starts it from the commanded alt/az. The rule composes
+only when operations nest. Overlapping operations are not refused yet (#303). Extending the rule
+to autofocus, calibration, acquisition and spiral search is #304.
 
 ---
 
@@ -543,6 +685,53 @@ trade against a retry that cannot succeed. No configuration changes and no new f
 acceptance criterion that rejected good solutions on the same night is #237, deliberately
 separate because replacing it touches a required field in `AutofocusConfig`, and the
 unconditional `stop_tracking()` on the exit path is #232.
+## [2026-10-20] An exposure keeps its frame while guiding, refuses one PHD2 would refuse, and never strands its waiter
+
+**Why:** #225, met on mast01 on 2026-09-08. An exposure requested while PHD2 was guiding never
+completed and the frame it did take was lost; one requested while PHD2 was paused never started
+at all. Both ended in the same place -- the caller blocked for ever in `wait_for_image_saved`,
+so `do_expose`'s `finally` never ran, `UnitActivities.Exposing` stayed raised, and #219's
+one-run guard then refused every later frame in the run. One frame that could not start cost
+all of them.
+
+Three faults, independent of one another:
+
+- **`save_image` ignores its `path`.** While guiding, PHD2 will not take a separate exposure, so
+  `start_exposure` asked for `save_image` instead -- which writes a temp file of its own choosing
+  and returns the name in the reply. Nothing on that path emits `SingleFrameComplete`, which is
+  the only thing that ever set `image_saved_event`.
+- **PHD2 refuses a single-frame capture while its capture loop runs** -- looping, calibrating, or
+  a guide session that is paused: *"cannot capture single frame when capture is currently
+  active"* (mast01, 2026-10-19). It also refuses `set_limit_frame` whenever a session exists:
+  *"Cannot set the frame limit ROI while calibrating or guiding."* The old code caught the
+  refusal and fell through without capturing.
+- **The wait was unbounded.** Every hang traced that night ended on an event that nothing left
+  alive would set.
+
+**What was decided:**
+
+- The `save_image` reply is read rather than discarded: the file PHD2 chose is moved where the
+  caller asked for it, `image_was_saved` is set, the waiter released and both imager flags ended
+  (`_adopt_saved_image`) -- the guiding branch's equivalent of `SingleFrameComplete`.
+- `start_exposure` refuses up front, before `Exposing` is raised, when PHD2's AppState is
+  `Looping`, `Calibrating` or `Paused` (`CAPTURE_LOOP_STATES`), with a reason that says to resume
+  or stop guiding. The only non-guiding state left is stopped, where `set_limit_frame` is
+  accepted, so that path keeps cropping with it as before.
+- `wait_for_image_saved` takes a timeout (`IMAGE_SAVE_TIMEOUT`, 300 s), and a capture that never
+  started releases its waiter and drops `Exposing`/`Saving` through `_release_unstarted_exposure`
+  -- the lesson #212 drew for abort, applied to the verb that starts: **a caught exception that
+  strands a waiter is worse than an uncaught one.**
+
+**Considered and dropped:** passing the crop inside `capture_single_frame` instead of
+`set_limit_frame`, to make the paused case work. PHD2's `capture_single_frame` takes `subframe`,
+not `limit_frame`, so the inline crop was never read and a stopped exposure would have gone
+uncropped; and PHD2 refuses the paused capture regardless.
+
+**Implications:** a fault on this path surfaces as an error on one frame instead of a stalled
+run, and `do_expose`'s `finally` always gets to run. An exposure while guiding returns the guide
+frame (the profile's exposure and gain, not the request's). Observed on sky on 2026-10-12/19:
+the guide frame adopted and on the share; the paused and looping refusals. A stopped exposure is
+unchanged from before.
 
 ---
 

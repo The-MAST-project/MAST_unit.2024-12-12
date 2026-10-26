@@ -13,27 +13,25 @@ from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import FcuVersion, SkyRoiConfig
 from common.endpoints import Tier, endpoint
-from common.filer import Filer, MoveGuardian
+from common.filer import MoveGuardian
 from common.mast_logging import get_logger
-from common.models.assignments import AssignmentNotification, UnitAssignment
+from common.models.latest import AcquisitionState, LatestAcquisition, LatestAcquisitionPhase
+from common.models.plans import PlanStage
 from common.models.statuses import ImagerSettings
-from common.notifications import Notifier
-from common.object_resolver import TOTAL_TIMEOUT_SECONDS, ObjectNameError, resolve_object_name
+from common.object_resolver import TOTAL_TIMEOUT_SECONDS, ObjectNameError
 
 # RA_PATTERN/DEC_PATTERN are deliberately no longer applied to this endpoint's coordinate
 # parameters. A `pattern=` is enforced by FastAPI BEFORE the handler runs, so a malformed
 # coordinate would 422 out and never reach the fallback -- which makes "if either is
 # missing or unusable, resolve `object_name`" unimplementable for half the ways a
-# coordinate can be unusable. Validation moved into `_coordinate_pair`, where both classes
-# of bad input (malformed and out-of-range) are visible and can fall through together.
-from common.parsers import (
-    sexagesimal_degrees_to_decimal,
-    sexagesimal_hours_to_decimal,
-)
+# coordinate can be unusable. Validation is `target_coordinates`', where both classes of
+# bad input (malformed and out-of-range) are visible and can fall through together.
+from common.parsers import target_coordinates
 from common.rois import SkyRoi
 from common.utils import Coord, boxed_log, function_name
-from mount import SettleMode
+from mount import SETTLE_START_GRACE_SECONDS, SLEW_SETTLE_TOLERANCE_ARCSEC, SettleMode
 from phd2.phd2 import PHD2Connector
+from plan_products import announce_plan_products
 from solving import SolverId, SolvingTolerance
 from stage import StagePresetPosition
 
@@ -47,6 +45,47 @@ logger = get_logger(__name__)
 REQUIRED_COMPONENTS = ("mount", "guider", "imager", "solver", "stage")
 
 ACQUISITION_CANCELLED = "the acquisition was cancelled"
+
+#: The handover's failure when guiding stops before PHD2 ever locked on a star.
+GUIDING_NEVER_LOCKED = "guiding stopped before locking on a star"
+
+
+def _phases_of(acquisition) -> dict[str, LatestAcquisitionPhase]:
+    """Each phase's corrections, summarised: steps applied, and the last offset against tolerance."""
+    phases: dict[str, LatestAcquisitionPhase] = {}
+    for phase, corrections in (getattr(acquisition, "corrections", None) or {}).items():
+        last = corrections.last_delta or (corrections.sequence[-1] if corrections.sequence else None)
+        phases[phase] = LatestAcquisitionPhase(
+            steps=len(corrections.sequence),
+            tolerance_ra=corrections.tolerance_ra,
+            tolerance_dec=corrections.tolerance_dec,
+            last_ra_delta=last.ra_delta if last is not None else None,
+            last_dec_delta=last.dec_delta if last is not None else None,
+        )
+    return phases
+
+
+def _settle(latest: LatestAcquisition | None, acquisition, failure: str | None) -> None:
+    """Give the record its final state, from how `do_acquire` returned, and write it out.
+
+    A failure string is `FAILED` (or `ABORTED`, for a cancellation); no failure after a
+    lock is `ENDED`, which the handover has already reached. No failure and no lock is the
+    acquisition-tuning path (no handover), which also ends here: `ENDED`, nothing wrong.
+    Succeeded: it locked, or (tuning) it ended without a failure.
+    """
+    if latest is None:
+        return
+    latest.phases = _phases_of(acquisition)
+    if failure is None:
+        latest.state = AcquisitionState.ENDED
+        latest.finish(True)
+    elif failure == ACQUISITION_CANCELLED:
+        latest.state = AcquisitionState.ABORTED
+        latest.finish(False, [failure])
+    else:
+        latest.state = AcquisitionState.FAILED
+        latest.finish(False, [failure])
+    latest.write()  # latest.json in the acquisition's folder
 
 
 class Acquirer:
@@ -65,9 +104,32 @@ class Acquirer:
         self.folder: str | None = None
         self.latest_acquisition: Acquisition | None = None
 
+    #: The latest acquisition's record, published as `FullUnitStatus.latest.acquisition`. None
+    #: until the first one starts. A class attribute so an Acquirer built without `__init__`
+    #: (the tests) has it too; `start` replaces it on the instance, never mutates this one.
+    latest: LatestAcquisition | None = None
+
     def missing_components(self) -> list[str]:
         """The `REQUIRED_COMPONENTS` this unit did not build, in declaration order."""
         return [name for name in REQUIRED_COMPONENTS if getattr(self.unit, name) is None]
+
+    def start(self, acquisition: Acquisition, plan_id: str | None = None) -> None:
+        """Publish a fresh `RUNNING` record, then run `acquisition` on its own thread.
+
+        The record is replaced *before* this returns, so before the endpoint answers: a
+        caller's first status read after a successful PUT describes this acquisition, never
+        the previous one. That ordering is what lets it carry no id
+        (mast-claude-config plans/control_acquisition_design.md, 4.1).
+        """
+        latest = LatestAcquisition(
+            target_ra_hours=getattr(acquisition, "target_ra", None),
+            target_dec_degrees=getattr(acquisition, "target_dec", None),
+            handed_over=bool(getattr(acquisition, "handover_automatically_to_guider", False)),
+            solver=str(getattr(acquisition, "solver_id", None) or "") or None,
+        ).begin(getattr(acquisition, "folder", None), plan_id)
+        acquisition.latest = latest
+        self.latest = latest
+        Thread(name="acquisition", target=self.run_acquisition, args=[acquisition]).start()
 
     def run_acquisition(self, acquisition: Acquisition):
         """Thread entry point for an acquisition: run it, then always release its folder.
@@ -89,6 +151,9 @@ class Acquirer:
             logger.exception(f"{function_name()}: acquisition failed")
             acquisition.failure = f"the acquisition raised: {ex!r}"
         finally:
+            # Before the folder release, which can wait on artifacts still moving: a caller
+            # polling the outcome should learn how this ended as soon as it has.
+            _settle(getattr(acquisition, "latest", None), acquisition, acquisition.failure)
             # Removed once every protected artifact has reached the shared area, and never
             # before -- so a frame that failed to move keeps its folder instead of being
             # deleted with it.
@@ -125,6 +190,26 @@ class Acquirer:
             time.sleep(0.2)
         return True
 
+    def _await_slew(self, slew_commanded_at: float | None) -> bool:
+        """Wait out the slew commanded at `slew_commanded_at` (monotonic; None if there was
+        none), returning False if cancelled while it ran.
+
+        Only the part of the start grace not yet spent since the goto is passed on: the
+        grace guards a stale `is_slewing` read just after the goto, and by the time the
+        stage has been waited on it has usually run out.
+
+        A settle timeout is logged by the mount and does not fail the acquisition: the
+        correction loop recovers from a frame taken slightly off.
+        """
+        if slew_commanded_at is not None:
+            elapsed = time.monotonic() - slew_commanded_at
+            self.unit.required_mount.wait_until_settled(
+                SettleMode.SLEW,
+                dist_tolerance_arcsec=SLEW_SETTLE_TOLERANCE_ARCSEC,
+                start_grace_seconds=max(0.0, SETTLE_START_GRACE_SECONDS - elapsed),
+            )
+        return not self._cancelled()
+
     def _abandon(self, op: str, acquisition_exposure_series=None) -> None:
         """Unwind exactly as a failed phase does.
 
@@ -144,6 +229,65 @@ class Acquirer:
                 self.unit.required_imager.end_exposure_series(acquisition_exposure_series)
         except Exception:  # the unwind must finish even if part of it fails
             logger.exception(f"{op}: error while unwinding a cancelled acquisition")
+
+    def _hand_over_to_guider(self, op: str, outcome: LatestAcquisition | None) -> str | None:
+        """Start guiding and stay with it until it stops. None, or why the handover failed.
+
+        `outcome` becomes `GUIDING` the first time the guider is locked on a star -- for
+        PHD2, its state being exactly "Guiding", not merely told to guide -- and `ENDED`
+        when guiding stops after that.
+
+        Three ways to fail, each unwound as a failed phase is:
+
+        - **the guider refuses** (PHD2 cannot connect, or its profile's binning or bpp do
+          not match). It returns errors without raising `Guiding`, and this used to
+          ignore them: the wait below fell straight through, the mount stopped tracking,
+          and the acquisition reported success.
+        - **cancelled before a lock** (`stop_acquisition_and_guiding`, `unit/abort`).
+        - **guiding stops before a lock**: `GUIDING_NEVER_LOCKED`.
+
+        A guider that is told to guide and never locks keeps this waiting, as before;
+        the caller's timeout is what ends that (control aborts the unit).
+
+        The solving backend (anything not PHD2) has no star lock, and its `start_guiding`
+        blocks for the whole session, so for it `GUIDING` is set as guiding starts and the
+        call is waited out.
+        """
+        guider = self.unit.required_guider
+
+        if not isinstance(guider._backend, PHD2Connector):
+            if outcome is not None:
+                outcome.state = AcquisitionState.GUIDING
+                outcome.succeeded = True  # its goal; the run goes on, guiding
+            response = guider.start_guiding()  # blocks until guiding stops
+            if response.failed:
+                self._abandon(op)
+                return f"guiding failed: {'; '.join(response.errors or [])}"
+        else:
+            response = guider.start_guiding()
+            if response.failed:
+                self._abandon(op)
+                return f"handover to guiding failed: {'; '.join(response.errors or [])}"
+
+            locked = False
+            while self.unit.is_active(UnitActivities.Guiding):
+                if not locked and guider.is_locked:
+                    locked = True
+                    if outcome is not None:
+                        outcome.state = AcquisitionState.GUIDING
+                        outcome.succeeded = True  # its goal; the run goes on, guiding
+                    logger.info(f"{op}: guiding, locked on a star")
+                time.sleep(1)
+
+            if not locked:
+                cancelled = self._cancelled()
+                self._abandon(op)
+                return ACQUISITION_CANCELLED if cancelled else GUIDING_NEVER_LOCKED
+
+        # Guiding was stopped, after a lock
+        self.unit.end_activity(UnitActivities.Acquiring)
+        self.unit.required_mount.stop_tracking()
+        return None
 
     def _phase_failure(self, phase: str, tries: int) -> str:
         """Why a phase ended without reaching tolerance: `solve_and_correct` returns False
@@ -286,8 +430,10 @@ class Acquirer:
 
         self.unit.required_mount.start_tracking()
         self.unit.start_activity(UnitActivities.Positioning)
+        slew_commanded_at: float | None = None
         if self.latest_acquisition.slew_to_target:
             self.unit.required_mount.goto_ra_dec_j2000(target_ra_j2000_hours, target_dec_j2000_degs)
+            slew_commanded_at = time.monotonic()
 
         acquisition_exposure_series = self.unit.required_imager.start_exposure_series(purpose="acquisition")
 
@@ -300,10 +446,9 @@ class Acquirer:
             #
             self.unit.required_stage.move_to_preset(StagePresetPosition.Sky)
 
-            if not self._await_stage():
+            if not self._await_stage() or not self._await_slew(slew_commanded_at):
                 self._abandon(op)
                 return ACQUISITION_CANCELLED
-            self.unit.required_mount.wait_until_settled(SettleMode.SLEW)
 
             self.unit.end_activity(UnitActivities.Positioning)
 
@@ -389,6 +534,9 @@ class Acquirer:
             self._abandon(op, acquisition_exposure_series)
             return ACQUISITION_CANCELLED
         logger.info(f"stage now at {self.unit.required_stage.position}")
+        if not self._await_slew(slew_commanded_at):
+            self._abandon(op, acquisition_exposure_series)
+            return ACQUISITION_CANCELLED
 
         if self.unit.is_active(UnitActivities.Positioning):
             self.unit.end_activity(UnitActivities.Positioning)
@@ -449,14 +597,9 @@ class Acquirer:
         if self.latest_acquisition.handover_automatically_to_guider:
             lines.append("starting PHD2 guiding")
             boxed_log(logger, lines)
-            self.unit.required_guider.start_guiding()
-
-            while self.unit.is_active(UnitActivities.Guiding):
-                time.sleep(1)
-
-            # Guiding was stopped
-            self.unit.end_activity(UnitActivities.Acquiring)
-            self.unit.required_mount.stop_tracking()
+            failure = self._hand_over_to_guider(op, getattr(self.latest_acquisition, "latest", None))
+            if failure is not None:
+                return failure
         else:
             lines.append("acquisition tuning: guiding must be started manually via /start_guiding")
             boxed_log(logger, lines)
@@ -468,148 +611,34 @@ class Acquirer:
             self.unit.required_acquirer.latest_acquisition.post_process()
         return None
 
-    def start_acquisition_and_guiding_for_assignment(self, assignment: UnitAssignment):
-        """Acquire and hand over to guiding for a controller-issued assignment.
-
-        **Unreferenced and unexercised.** Nothing in this repository calls it, no route
-        serves it, and no test covers it -- so it has never run, and restoring it does not
-        change any behaviour a caller can reach today. It is kept because it is the only
-        expression of the *unattended* assignment flow: `handover_automatically_to_guider`
-        is `True` here and `False` in every reachable path, and the `in-progress`
-        notification that tells the controller where the products are exists nowhere else.
-
-        Treat every line as unverified. Two things in particular are asserted rather than
-        observed: that `assignment.plan` carries `target.ra_hours` / `target.dec_degrees`
-        in the shape read below, and that `run_acquisition` on this thread reaches the
-        SPEC hand-over without the operator step the reachable path relies on. Before this
-        is wired to anything, it wants a hardware pass of its own -- see MAST_unit#156 for
-        the sibling problem that a thread answering `Ok` reports nothing.
-        """
-        approach_mode: ApproachMode = ApproachMode.GRADUAL_BY_RATE
-        make_corrections = True
-        ra_j2000_hours = assignment.plan.target.ra_hours
-        dec_j2000_degs = assignment.plan.target.dec_degrees
-
-        assert self.unit.unit_conf is not None
-        solver_name = self.unit.unit_conf.solving.method
-
-        logger.info(
-            f"starting acquisition for assignment {assignment.plan.ulid}, "
-            f"approach_mode={approach_mode}, solver_name={solver_name} (from unit config), "
-            f"make_corrections={make_corrections}, "
-            f"ra_j2000_hours={ra_j2000_hours}, dec_j2000_degs={dec_j2000_degs}"
-        )
-
-        acquisition = Acquisition(
-            unit=self.unit,
-            approach_mode=approach_mode,
-            solver_id=SolverId[solver_name],
-            make_corrections=make_corrections,
-            target_ra=float(ra_j2000_hours),
-            target_dec=float(dec_j2000_degs),
-            # No caller-supplied exposure on this path: the configured one applies.
-            # It previously inherited whatever the HTTP endpoint had last written into
-            # unit_conf.acquisition.exposure (MAST_unit#195).
-            exposure=None,
-            # Unattended assignments auto-hand-over to guiding; the Acquisition default is
-            # False (manual acquisition-tuning), which would stall the assignment at SPEC.
-            handover_automatically_to_guider=True,
-        )
-        Thread(name="acquisition", target=self.run_acquisition, args=[acquisition]).start()
-
-        """
-        This acquisition is part of an assignment, tell the controller where
-         the products are.
-        """
-        if assignment.plan.ulid is not None:
-            Notifier().assignment_notification(
-                AssignmentNotification(
-                    assignment_id=assignment.plan.ulid,
-                    state="in-progress",
-                    # Relative to the shared root, not the absolute ram path: the controller
-                    # symlinks this, and its shared root is spelled differently from ours --
-                    # `/Storage/mast-share/MAST/<host>` against our `Z:/MAST/<host>/`.
-                    # MAST_spec#39.
-                    #
-                    # Measured from `ram.root`, which is where the folder still IS -- not from
-                    # `shared.root`, which is the tempting reading of the line above. The two
-                    # hierarchies mirror each other below their roots (move_ram_to_shared only
-                    # swaps the root), so the ram-relative path is already the shared-relative
-                    # one. Measuring from shared.root instead raises ValueError on Windows,
-                    # where the roots are on different drives: "path is on mount 'D:', start
-                    # on mount 'Z:'".
-                    shared_top=os.path.relpath(acquisition.folder, Filer().ram.root),
-                    shared_subpath="acquisition",
-                )
-            )
-
-    @staticmethod
-    def _coordinate_pair(ra_in, dec_in) -> tuple[float, float] | None:
-        """(ra_hours, dec_degrees) when BOTH were supplied and both convert. Else None.
-
-        `is not None`, never truthiness. `ra_j2000_hours=0` is a real target -- 0h is in
-        Pisces and dec 0 is the celestial equator -- and both are falsy, so the old test
-        sent them to the "not supplied" branch and silently acquired wherever the mount
-        happened to be pointing. Reachable from Python, not only over HTTP:
-        `unit.py`'s assignment path calls this endpoint directly with plan floats.
-
-        Both or neither: half a coordinate pair cannot be completed from the other half,
-        and mixing one supplied axis with one from the telescope points at neither.
-        """
-        if ra_in is None or dec_in is None:
-            return None
-        try:
-            # One call, whatever the form. The old code dispatched on `":" in value` and
-            # sent everything else to float() -- so a space-separated coordinate, which
-            # RA_REGEX explicitly allowed, raised an uncaught ValueError and returned 500.
-            # The parsers take sexagesimal, decimal and surrounding whitespace alike.
-            return sexagesimal_hours_to_decimal(ra_in), sexagesimal_degrees_to_decimal(dec_in)
-        except ValueError:
-            return None
-
     def _target_coordinates(self, op, ra_in, dec_in, object_name, resolve_timeout, pw_status):
         """Where to acquire: (ra_hours, dec_degrees, None), or (None, None, why-not).
 
-        Precedence, and the order is the point:
+        Coordinates first, then `object_name`, by common's `target_coordinates` -- the one
+        place that rule lives, shared with the plans control writes
+        (plans/control_acquisition_design.md 3.8). Only the last rule is the unit's own:
+        with neither, **the telescope's current position**, as before.
 
-        1. **Both coordinates, both valid** -- used as given, and the name is not resolved
-           at all. Explicit coordinates are the most certain thing a caller can supply.
-        2. **Otherwise, `object_name` if there is one.** "Otherwise" covers missing AND
-           unusable: a coordinate that will not convert is not a coordinate.
-        3. **Otherwise the telescope's current position**, as before.
-
-        A name that fails to resolve is an ERROR and never falls through to rule 3.
+        A name that fails to resolve is an ERROR and never falls through to the telescope.
         Quietly acquiring wherever the mount happens to point, having been asked for a
         named object, is the misresolution failure in its purest form -- everything below
-        works perfectly and the spectrum is of the wrong sky.
+        works perfectly and the spectrum is of the wrong sky. Coordinates supplied but
+        unusable, with no name, are an error too, said as such: "no coordinates" would read
+        as an omission, and send the caller hunting for a missing parameter.
         """
-        pair = self._coordinate_pair(ra_in, dec_in)
-        if pair is not None:
-            return pair[0], pair[1], None
-
-        if object_name:
-            try:
-                resolved = resolve_object_name(object_name, total_timeout=resolve_timeout)
-            except ObjectNameError as e:
-                return None, None, f"{op}: could not resolve '{object_name}' -- {e}"
+        try:
+            ra, dec, resolved = target_coordinates(ra_in, dec_in, object_name, resolve_timeout)
+        except ObjectNameError as e:
+            return None, None, f"{op}: could not resolve '{object_name}' -- {e}"
+        except ValueError as e:
+            return None, None, f"{op}: {e}"
+        if resolved is not None:
             logger.info(
                 f"{op}: '{object_name}' resolved to ra={resolved.ra_j2000_hours:.6f}h "
                 f"dec={resolved.dec_j2000_degs:+.6f}d via {resolved.database or resolved.resolver}"
             )
-            return resolved.ra_j2000_hours, resolved.dec_j2000_degs, None
-
-        # Neither usable coordinates nor a name. Say which it was: "no coordinates" reads
-        # as an omission, and a caller who supplied a malformed RA needs to know that is
-        # what happened rather than hunting for a missing parameter.
-        if ra_in is not None or dec_in is not None:
-            return (
-                None,
-                None,
-                (
-                    f"{op}: coordinates were supplied but unusable (ra={ra_in!r}, dec={dec_in!r}); "
-                    "supply both as valid J2000, or an object_name instead"
-                ),
-            )
+        if ra is not None and dec is not None:
+            return ra, dec, None
 
         if not pw_status.mount.is_connected:
             return None, None, "cannot get coordinates from mount (mount not connected)"
@@ -767,6 +796,10 @@ class Acquirer:
         skip_sky: bool = False,
         use_set_limit_frame: bool = True,
         handover_automatically_to_guider: bool = True,
+        # Internal: set by MAST_control's plan execution, so the unit labels the products
+        # folder with a `plan_id` file and says where it is (plans/control_acquisition_design.md
+        # 5.10, 6.5). Accepted, but kept out of the OpenAPI schema: not for an operator.
+        plan_id: Annotated[str | None, Query(include_in_schema=False)] = None,
     ):
         """
         Starts an acquisition
@@ -812,6 +845,10 @@ class Acquirer:
         )
         if isinstance(prepared, CanonicalResponse):
             return prepared
-        Thread(name="acquisition", target=self.run_acquisition, args=[prepared]).start()
+        # The folder exists from here (`Acquisition.__init__` makes it): say where, before
+        # anything is written into it, so control's link is there from the start.
+        self.unit.claim_plan(plan_id)  # accepted: the unit works for the plan from here
+        announce_plan_products(plan_id, PlanStage.Acquisition, prepared.folder)
+        self.start(prepared, plan_id)
 
         return CanonicalResponse_Ok

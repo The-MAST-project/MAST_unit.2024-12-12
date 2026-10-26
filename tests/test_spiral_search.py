@@ -146,9 +146,8 @@ class FakeImager:
 class FakeConf:
     def __init__(self):
         self.acquisition = SimpleNamespace(gain=170)
-        # 0.0 is what the config DB actually holds today (MAST_unit#138), so it is the
-        # default here too -- the omit-the-estimate path is the one running on sky.
-        self.imager = SimpleNamespace(pixel_scale_at_bin1=0.0)
+        # What the config DB holds for every unit (0.2616 arcsec/px, COORDINATE_SURFACE.md).
+        self.imager = SimpleNamespace(pixel_scale_at_bin1=0.2616)
 
 
 class FakeUnit:
@@ -290,7 +289,8 @@ class TestTheStepMessage:
         assert message["step#"] == 1
         assert message["cell"] == (1, 0), "the cell is the position; the counter is not"
         assert message["ring"] == 1
-        assert message["offset"] == "+10.0arcsec RA, +0.0arcsec Dec", "one cell at a 10-arcsec step is 10 arcsec"
+        # With the plate scale every unit has, the pixel estimate follows (TestThePixelEstimate).
+        assert message["offset"].startswith("+10.0arcsec RA, +0.0arcsec Dec"), "one cell at a 10-arcsec step is 10 arcsec"
         assert message["revisit"] == "new position"
 
     def test_the_cell_is_a_pair_of_numbers_not_a_pair_of_sets(self, session):
@@ -342,11 +342,17 @@ class TestTheStepMessage:
 class TestThePixelEstimate:
     SCALE = 0.2616  # arcsec/px, per COORDINATE_SURFACE.md
 
-    def test_it_is_omitted_when_the_plate_scale_is_unset(self, session):
-        """`pixel_scale_at_bin1` is 0.0 in the config DB today (MAST_unit#138). Saying
-        nothing beats reporting a confident '0 px'."""
+    def test_it_is_omitted_without_a_configuration(self, session):
+        """No configuration, no plate scale: saying nothing beats a confident '0 px'."""
         session.start(10.0, 10.0, exposure_seconds=1.0)
-        assert session.unit.unit_conf.imager.pixel_scale_at_bin1 == 0.0
+        session.unit.unit_conf = None
+
+        assert "px" not in session.step(forward=True).value["offset"]
+
+    def test_it_is_omitted_when_the_declination_is_unknown(self, session, monkeypatch):
+        # Read from PWI4 on every step: PWI4 reporting none is what makes it unknown.
+        monkeypatch.setattr(FakePw, "DEC_DEGREES", None)
+        session.start(10.0, 10.0, exposure_seconds=1.0)
 
         assert "px" not in session.step(forward=True).value["offset"]
 

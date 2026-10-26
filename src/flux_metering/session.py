@@ -41,7 +41,7 @@ from astropy.io import fits
 
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse
-from common.filer import Filer, FilerTop, MoveGuardian
+from common.filer import Filer, FilingArea, MoveGuardian
 from common.mast_logging import get_logger
 from common.models.statuses import (
     FluxMeteringExposure,
@@ -50,7 +50,6 @@ from common.models.statuses import (
     FluxMeteringStep,
     ImagerSettings,
 )
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
 from common.utils import function_name
 from flux_metering.aperture_photometry_single import SATURATION_ADU
@@ -1286,10 +1285,10 @@ class FluxMeteringSession:
         read moments after being written, usually has not. A first real run failed here
         for exactly that reason while the reference had read fine.
 
-        `change_top_to` compares against roots stored POSIX-style ("D:/MAST/"), while
-        this folder comes from pathlib and is spelled with backslashes, so the prefix
-        test silently fails unless the path is converted first. `move_ram_to_shared`
-        documents the same two-spellings problem and converts for the same reason.
+        The share's copy is found with `Filer.to_top`, which takes either spelling. Its
+        predecessor `change_top_to` compared against roots stored POSIX-style ("D:/MAST/")
+        while this folder came from pathlib with backslashes, so the prefix test silently
+        failed unless the path was converted first.
         """
         return np.asarray(fits.getdata(self._frame_path(file_name)), dtype=float)
 
@@ -1305,12 +1304,12 @@ class FluxMeteringSession:
         if os.path.exists(local):
             return local
 
-        shared_folder = filer.change_top_to(FilerTop.Shared, Path(self.state.folder).as_posix())
-        if shared_folder is None:
+        try:
+            moved = filer.to_top(FilingArea.SHARE, local)
+        except ValueError as e:
             raise FluxMeteringError(
                 f"'{file_name}' is neither on the ram disk nor under a known root (folder '{self.state.folder}')"
-            )
-        moved = os.path.join(shared_folder, file_name)
+            ) from e
         if not os.path.exists(moved):
             raise FluxMeteringError(f"'{file_name}' is neither at '{local}' nor at '{moved}'")
         return moved
@@ -1407,26 +1406,6 @@ class FluxMeteringSession:
         with MoveGuardian().protect(path), open(path, "w") as fp:
             json.dump(result, fp, indent=2, default=str)
         filer.move_ram_to_shared(path)
-
-
-def parse_target(
-    ra_j2000_hours: str | float | None, dec_j2000_degs: str | float | None
-) -> tuple[float | None, float | None]:
-    """Target coordinates as decimal hours and degrees, in whatever form they arrive.
-
-    One call, whatever the form. `float()` is NOT enough and never was: `RA_PATTERN`
-    deliberately accepts space-separated sexagesimal, so `"03 08 10.142"` passes the
-    query validation and then fails conversion -- the same defect `acquirer.py` records
-    having already fixed once, in the comment above its own parsing block. The parsers
-    take sexagesimal, decimal and surrounding whitespace alike.
-
-    None is passed through rather than defaulted: it means "take it from the mount", and
-    only the acquirer can do that. Note the emptiness test is explicit rather than
-    truthiness, so an RA of exactly 0 hours is a coordinate and not a missing value.
-    """
-    ra = None if ra_j2000_hours is None or ra_j2000_hours == "" else sexagesimal_hours_to_decimal(ra_j2000_hours)
-    dec = None if dec_j2000_degs is None or dec_j2000_degs == "" else sexagesimal_degrees_to_decimal(dec_j2000_degs)
-    return ra, dec
 
 
 def isoformat_utc() -> str:
