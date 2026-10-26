@@ -11,6 +11,7 @@ from acquisition import Acquisition, ApproachMode
 from common import asi
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from common.config.phd2 import HandoverStyle
 from common.config.rois import FcuVersion, SkyRoiConfig
 from common.endpoints import Tier, endpoint
 from common.filer import MoveGuardian
@@ -48,6 +49,8 @@ ACQUISITION_CANCELLED = "the acquisition was cancelled"
 
 #: The handover's failure when guiding stops before PHD2 ever locked on a star.
 GUIDING_NEVER_LOCKED = "guiding stopped before locking on a star"
+#: ... and when it stops after a lock but before the handover made the unit ready (a failed settle).
+GUIDING_NEVER_READY = "guiding stopped after locking on a star, before it was ready for exposure"
 
 
 def _phases_of(acquisition) -> dict[str, LatestAcquisitionPhase]:
@@ -234,8 +237,9 @@ class Acquirer:
         """Start guiding and stay with it until it stops. None, or why the handover failed.
 
         `outcome` becomes `GUIDING` the first time the guider is locked on a star -- for
-        PHD2, its state being exactly "Guiding", not merely told to guide -- and `ENDED`
-        when guiding stops after that.
+        PHD2, its state being exactly "Guiding", not merely told to guide -- with the
+        handover's `PreGuiding` (settle, lock nudge) over, so `GUIDING` means ready for
+        exposure; and `ENDED` when guiding stops after that.
 
         Three ways to fail, each unwound as a failed phase is:
 
@@ -245,6 +249,7 @@ class Acquirer:
           and the acquisition reported success.
         - **cancelled before a lock** (`stop_acquisition_and_guiding`, `unit/abort`).
         - **guiding stops before a lock**: `GUIDING_NEVER_LOCKED`.
+        - **guiding stops after a lock, before ready** (a failed settle): `GUIDING_NEVER_READY`.
 
         A guider that is told to guide and never locks keeps this waiting, as before;
         the caller's timeout is what ends that (control aborts the unit).
@@ -269,25 +274,50 @@ class Acquirer:
                 self._abandon(op)
                 return f"handover to guiding failed: {'; '.join(response.errors or [])}"
 
-            locked = False
+            locked = ready = False
             while self.unit.is_active(UnitActivities.Guiding):
-                if not locked and guider.is_locked:
+                if not ready and guider.is_locked:
                     locked = True
-                    if outcome is not None:
-                        outcome.state = AcquisitionState.GUIDING
-                        outcome.succeeded = True  # its goal; the run goes on, guiding
-                    logger.info(f"{op}: guiding, locked on a star")
+                    if not self.unit.is_active(UnitActivities.PreGuiding):
+                        ready = True
+                        if outcome is not None:
+                            outcome.state = AcquisitionState.GUIDING
+                            outcome.succeeded = True  # its goal; the run goes on, guiding
+                        logger.info(f"{op}: guiding, locked on a star and ready for exposure")
                 time.sleep(1)
 
-            if not locked:
+            if not ready:
                 cancelled = self._cancelled()
                 self._abandon(op)
-                return ACQUISITION_CANCELLED if cancelled else GUIDING_NEVER_LOCKED
+                if cancelled:
+                    return ACQUISITION_CANCELLED
+                return GUIDING_NEVER_READY if locked else GUIDING_NEVER_LOCKED
 
-        # Guiding was stopped, after a lock
+        # Guiding was stopped, after it was ready
         self.unit.end_activity(UnitActivities.Acquiring)
         self.unit.required_mount.stop_tracking()
         return None
+
+    def _position_mirror_for_guiding(self) -> str | None:
+        """Insert the fold mirror now if the mirror-first handover is configured; say what was done.
+
+        On the mirror-first handover PHD2 picks its star on the field it guides on for the whole
+        exposure. The bracketed handover inserts after settle, from the guider. With
+        `auto_insert` off the caller inserts. FCU v1 has no fold mirror and is already at
+        SPEC from the solve phase.
+        """
+        if self.unit.fcu_version != FcuVersion.v2:
+            return None
+        assert self.unit.unit_conf is not None
+        handover = self.unit.unit_conf.phd2.handover
+        if not handover.auto_insert:
+            return "leaving stage at SKY; phd2.handover.auto_insert is off, the caller inserts the fold mirror"
+        match handover.style:
+            case HandoverStyle.MIRROR_FIRST:
+                self.unit.required_stage.move_to_preset(StagePresetPosition.Spec)
+                return "moving stage to SPEC: fold mirror in before guiding (mirror-first handover)"
+            case HandoverStyle.BRACKETED:
+                return "leaving stage at SKY; the guider inserts the fold mirror after settle (bracketed handover)"
 
     def _phase_failure(self, phase: str, tries: int) -> str:
         """Why a phase ended without reaching tolerance: `solve_and_correct` returns False
@@ -353,7 +383,10 @@ class Acquirer:
                 x=spec_imager_settings.roi.width // 2, y=spec_imager_settings.roi.height // 2
             )
 
-            # spec_imager_settings.use_set_limit_frame = True
+            # imaging/solving path only (capture_single_frame + astrometry):
+            # acquisition exposures want the full frame, so no limit frame while
+            # solving. The *guiding* limit frame is not governed by this flag -
+            # it comes from the persisted phd2.limit_frame configuration.
             spec_imager_settings.use_set_limit_frame = False
             spec_imager_settings.binning = 1
 
@@ -580,12 +613,8 @@ class Acquirer:
             lines.append(f"camera disconnected imager={type(imager._backend)}, guider={type(guider._backend)}")
             imager.disconnect()
 
-        # Move the stage to SPEC (FCU v2 was left at Sky by the solve; v1 is already there)
-        # and wait for it to settle -- needed by BOTH the auto-handover and the manual
-        # acquisition-tuning paths, so guiding always starts with the stage at SPEC.
-        if self.unit.fcu_version == FcuVersion.v2:
-            self.unit.required_stage.move_to_preset(StagePresetPosition.Spec)
-            lines.append("moving stage to SPEC")
+        if (mirror := self._position_mirror_for_guiding()) is not None:
+            lines.append(mirror)
         if not self._await_stage():
             self._abandon(op)
             return ACQUISITION_CANCELLED
