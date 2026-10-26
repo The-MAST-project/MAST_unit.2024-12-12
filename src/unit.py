@@ -322,7 +322,6 @@ class Unit(Component, OpmodeBase):
         self.spiral = SpiralSearch(self)
         self.flux_metering = FluxMeteringSession(self)
         self.focus_on_star = FocusOnStarSession(self)
-        self.latest_acquisition: Acquisition | None = None
 
         self._initialized = True
         logger.info("unit: initialized")
