@@ -49,6 +49,8 @@ ACQUISITION_CANCELLED = "the acquisition was cancelled"
 
 #: The handover's failure when guiding stops before PHD2 ever locked on a star.
 GUIDING_NEVER_LOCKED = "guiding stopped before locking on a star"
+#: ... and when it stops after a lock but before the handover made the unit ready (a failed settle).
+GUIDING_NEVER_READY = "guiding stopped after locking on a star, before it was ready for exposure"
 
 
 def _phases_of(acquisition) -> dict[str, LatestAcquisitionPhase]:
@@ -235,8 +237,9 @@ class Acquirer:
         """Start guiding and stay with it until it stops. None, or why the handover failed.
 
         `outcome` becomes `GUIDING` the first time the guider is locked on a star -- for
-        PHD2, its state being exactly "Guiding", not merely told to guide -- and `ENDED`
-        when guiding stops after that.
+        PHD2, its state being exactly "Guiding", not merely told to guide -- with the
+        handover's `PreGuiding` (settle, lock nudge) over, so `GUIDING` means ready for
+        exposure; and `ENDED` when guiding stops after that.
 
         Three ways to fail, each unwound as a failed phase is:
 
@@ -246,6 +249,7 @@ class Acquirer:
           and the acquisition reported success.
         - **cancelled before a lock** (`stop_acquisition_and_guiding`, `unit/abort`).
         - **guiding stops before a lock**: `GUIDING_NEVER_LOCKED`.
+        - **guiding stops after a lock, before ready** (a failed settle): `GUIDING_NEVER_READY`.
 
         A guider that is told to guide and never locks keeps this waiting, as before;
         the caller's timeout is what ends that (control aborts the unit).
@@ -270,22 +274,26 @@ class Acquirer:
                 self._abandon(op)
                 return f"handover to guiding failed: {'; '.join(response.errors or [])}"
 
-            locked = False
+            locked = ready = False
             while self.unit.is_active(UnitActivities.Guiding):
-                if not locked and guider.is_locked:
+                if not ready and guider.is_locked:
                     locked = True
-                    if outcome is not None:
-                        outcome.state = AcquisitionState.GUIDING
-                        outcome.succeeded = True  # its goal; the run goes on, guiding
-                    logger.info(f"{op}: guiding, locked on a star")
+                    if not self.unit.is_active(UnitActivities.PreGuiding):
+                        ready = True
+                        if outcome is not None:
+                            outcome.state = AcquisitionState.GUIDING
+                            outcome.succeeded = True  # its goal; the run goes on, guiding
+                        logger.info(f"{op}: guiding, locked on a star and ready for exposure")
                 time.sleep(1)
 
-            if not locked:
+            if not ready:
                 cancelled = self._cancelled()
                 self._abandon(op)
-                return ACQUISITION_CANCELLED if cancelled else GUIDING_NEVER_LOCKED
+                if cancelled:
+                    return ACQUISITION_CANCELLED
+                return GUIDING_NEVER_READY if locked else GUIDING_NEVER_LOCKED
 
-        # Guiding was stopped, after a lock
+        # Guiding was stopped, after it was ready
         self.unit.end_activity(UnitActivities.Acquiring)
         self.unit.required_mount.stop_tracking()
         return None
