@@ -19,6 +19,7 @@ from common.models.statuses import ImagerSettings
 from common.safety import safety_get_sensor
 from common.utils import Coord, boxed_log, function_name, isoformat_zulu
 from mount import SettleMode
+from sky_offsets import plain_ra_tolerance_arcsec, within_tolerance
 
 logger = get_logger(__name__)
 filer = Filer(logger)
@@ -252,6 +253,9 @@ class Solver(SolverInterface):
 
             self.unit.acquirer.latest_acquisition.corrections = {}
 
+        target_dec_degs = float(target.dec.deg)  # type: ignore
+        ra_tolerance_arcsec = plain_ra_tolerance_arcsec(solving_tolerance.ra.arcsecond, target_dec_degs)  # type: ignore
+
         if self.unit.acquirer is not None and self.unit.acquirer.latest_acquisition is not None:
             if phase not in self.unit.acquirer.latest_acquisition.corrections:
                 # in case there were no corrections yet for this phase
@@ -259,7 +263,7 @@ class Solver(SolverInterface):
                     phase=phase,
                     target_ra=target.ra.hour,  # type: ignore
                     target_dec=target.dec.deg,  # type: ignore
-                    tolerance_ra=solving_tolerance.ra.arcsecond,  # type: ignore
+                    tolerance_ra=ra_tolerance_arcsec,
                     tolerance_dec=solving_tolerance.dec.arcsecond,  # type: ignore
                 )
             latest_corrections = self.unit.acquirer.latest_acquisition.corrections[phase]
@@ -345,17 +349,12 @@ class Solver(SolverInterface):
                 # configured one, so the ram disk filled over the night.
                 filer.move_ram_to_shared(imager_settings.image_path)
 
-                # dec_avg_rad = math.radians(
-                #     (target.dec.arcsecond + Angle(result.solution.dec_rads * u.radian).arcsecond) / 2
-                # )
-                dec_avg_rad = float(target.dec.radian + result.solution.dec_rads) / 2  # type: ignore  # noqa: F841 -- #191
                 assert result.solution is not None, f"{op}: result.solution is None"
                 # Oren's wrap-safe RA delta, now shared: the lock nudge re-references
                 # guiding to the same target just before the fold mirror hides it, and
                 # two copies of this arithmetic could let the two disagree about what
                 # "off target" means.
-                delta_ra_arcsec, _ = target_offset_arcsec(target, result.solution)
-                _, delta_dec_arcsec = target_offset_arcsec(target, result.solution)
+                delta_ra_arcsec, delta_dec_arcsec = target_offset_arcsec(target, result.solution)
 
                 abs_delta_ra_arcsec = abs(delta_ra_arcsec)
                 abs_delta_dec_arcsec = abs(delta_dec_arcsec)
@@ -368,18 +367,14 @@ class Solver(SolverInterface):
                     ra=Angle(delta_ra_arcsec * u.arcsecond),  # type: ignore
                     dec=Angle(delta_dec_arcsec * u.arcsecond),  # type: ignore
                 )
-                coord_tolerance = Coord(ra=solving_tolerance.ra, dec=solving_tolerance.dec)
                 logger.info(
                     f"{op}: target: {target}, solved: {coord_solved}, delta: {coord_delta}, "
-                    + f"tolerance: {coord_tolerance}"
+                    + f"tolerance (plain RA, Dec): ({ra_tolerance_arcsec:.3f}, {solving_tolerance.dec.arcsecond:.3f}) arcsec"  # type: ignore
                 )
 
                 # The various solvers will update the FITS file with their findings
 
-                if (
-                    abs_delta_ra_arcsec <= solving_tolerance.ra.arcsecond  # type: ignore
-                    and abs_delta_dec_arcsec <= solving_tolerance.dec.arcsecond  # type: ignore
-                ):
+                if within_tolerance(delta_ra_arcsec, delta_dec_arcsec, solving_tolerance, target_dec_degs):
                     #
                     # Within tolerance, no correction is needed
                     #
@@ -388,7 +383,7 @@ class Solver(SolverInterface):
                         [
                             f"{op}: WITHIN TOLERANCES",
                             f"deltas: ({delta_ra_arcsec:.9f}, {delta_dec_arcsec:.9f}) ",
-                            f"tolerance: ({solving_tolerance.ra.arcsecond:.9f}, {solving_tolerance.dec.arcsecond:.9f})",
+                            f"tolerance (plain RA, Dec): ({ra_tolerance_arcsec:.9f}, {solving_tolerance.dec.arcsecond:.9f})",  # type: ignore
                         ],
                         center=True,
                     )
@@ -432,6 +427,7 @@ class Solver(SolverInterface):
 
                         self.unit.start_activity(UnitActivities.Correcting)
 
+                        # Offsets and the rate thresholds below are plain RA (see sky_offsets).
                         match approach_mode:
                             case ApproachMode.DISCRETE_STEP:
                                 logger.info(
