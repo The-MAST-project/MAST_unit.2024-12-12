@@ -126,7 +126,7 @@ class LockValidityState(BaseModel):
     entered_not_a_star: bool = False
 
 
-class GuideLockSupervisor(BaseModel):
+class LockValidityMonitor(BaseModel):
     """Session-scale and stateless validity checks over a stream of guide frames.
 
     Pure: `update()` is the only entry point, it does no I/O, and every decision it
@@ -145,7 +145,7 @@ class GuideLockSupervisor(BaseModel):
         """Start a new guiding session.
 
         The scale belongs to one session and to one field. Carrying it across a
-        re-guide is how a supervisor would judge a faint field against a bright
+        re-guide is how the check would judge a faint field against a bright
         field's brightness -- the exact error an absolute threshold makes.
         """
         self._scale_window = deque()
@@ -323,7 +323,7 @@ class GuideLockSupervisor(BaseModel):
     def should_end_guiding(self) -> bool:
         """The action, kept separate from the finding.
 
-        Default off. The supervisor is meant to report for a night first, so the
+        Default off. The check is meant to report for a night first, so the
         state can be read against what actually happened before it is allowed to
         act -- and so the action can be withdrawn without losing the signal.
         """

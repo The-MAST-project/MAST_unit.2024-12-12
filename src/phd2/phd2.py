@@ -42,7 +42,7 @@ from phd2.fits_header import stamp_cooling
 from phd2.limit_frame import limit_frame_accepted, limit_frame_covers_sensor, limit_frame_extent
 from phd2.phd2_locate import locate_phd2_exe
 from pointing_check import PointingMonitor
-from science.lock_validity import GuideLockSupervisor, LockMetrics
+from science.lock_validity import LockMetrics, LockValidityMonitor
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 from stage import StagePresetPosition
 
@@ -440,7 +440,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self.restart_event: threading.Event = threading.Event()
 
         self.sky_quality: SeeingQualityWhilePHD2Guiding = SeeingQualityWhilePHD2Guiding()
-        self.lock_supervisor: GuideLockSupervisor = GuideLockSupervisor()
+        self.lock_validity: LockValidityMonitor = LockValidityMonitor()
         self.pointing_monitor: PointingMonitor = PointingMonitor(self)
 
         phd2_exe = locate_phd2_exe()
@@ -583,15 +583,15 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         return st == "Guiding" or st == "LostLock"
 
     def _update_lock_validity(self, ev, lost: bool = False) -> None:
-        """Feed one PHD2 event to the lock supervisor and log a change of state.
+        """Feed one PHD2 event to the lock-validity check and log a change of state.
 
         `Peak`, `Background` and `BackgroundSigma` arrive only from PHD2
         2.6.14dev1mastbuild5 onward; on an older build they are absent and the
-        supervisor falls back to the session-scale test alone, which is why they
+        check falls back to the session-scale test alone, which is why they
         are read with `.get` rather than asserted.
         """
-        previous = self.lock_supervisor.state.validity
-        state = self.lock_supervisor.update(
+        previous = self.lock_validity.state.validity
+        state = self.lock_validity.update(
             LockMetrics(
                 star_mass=ev.get("StarMass") or 0.0,
                 snr=ev.get("SNR") or 0.0,
@@ -844,7 +844,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 # A new session is a new field and a new brightness scale. Carrying
                 # the old one across a re-guide would judge a faint field against a
                 # bright field's median -- the error an absolute threshold makes.
-                self.lock_supervisor.reset()
+                self.lock_validity.reset()
                 self.start_activity(PHD2Activities.Guiding)
                 self.pointing_monitor.start_session()
                 self.accumulators_active = True
@@ -1792,7 +1792,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             )
         )
 
-        lock = self.lock_supervisor.state
+        lock = self.lock_validity.state
         limit_frame, exclude_region, lock_position = self._frame_state()
         return PHD2GuiderStatus(
             identifier=self.identifier,

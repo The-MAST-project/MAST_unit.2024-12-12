@@ -155,7 +155,7 @@ class PointingMonitor:
             "mirror_in": self._mirror_in(),
             "lock_position": connector.get_lock_position(),
             "avg_dist": connector.avg_dist,
-            "lock_validity": str(connector.lock_supervisor.state.validity),
+            "lock_validity": str(connector.lock_validity.state.validity),
         }
 
         # save_image() hands the caller a file it owns: 94 MB at full size, so it is

@@ -100,7 +100,7 @@ class FakeConnector:
         self.app_state = "Guiding"
         self.avg_dist = 0.4
         self.saved: list[str] = []
-        self.lock_supervisor = SimpleNamespace(state=SimpleNamespace(validity="OnStar"))
+        self.lock_validity = SimpleNamespace(state=SimpleNamespace(validity="OnStar"))
         self.parent = SimpleNamespace(
             unit=SimpleNamespace(
                 unit_conf=SimpleNamespace(phd2=SimpleNamespace(validation_interval=interval)),
@@ -383,12 +383,12 @@ class TestTheConnector:
 
     def connector(self):
         from phd2.phd2 import PHD2Accumulator, PHD2Connector
-        from science.lock_validity import GuideLockSupervisor
+        from science.lock_validity import LockValidityMonitor
 
         c = object.__new__(PHD2Connector)
         c.pointing_monitor = self.Recorder()
         c.lock = threading.Lock()
-        c.lock_supervisor = GuideLockSupervisor()
+        c.lock_validity = LockValidityMonitor()
         c._launch_handover = lambda: False
         c.start_activity = lambda *a, **kw: None
         c.end_activity = lambda *a, **kw: None
