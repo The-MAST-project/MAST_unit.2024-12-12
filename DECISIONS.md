@@ -136,6 +136,23 @@ warns, untagged, since there is nothing to report as a verdict.
 cool-down. A cooler that stops regulating after the first cool-down is not covered; nothing
 watches once `CoolingDown` ends (MAST_unit#375). A cooler switched off during the cool-down is
 reported as `unreached` with its last reading, since PHD2 then reports no set point.
+## [2026-10-26] The acquisition outcome is GUIDING only once the unit is ready
+
+**Why:** rebasing the fold-mirror handover branch onto `main` brought in #346, which sets
+`status.latest.acquisition.state` to `GUIDING` at PHD2's first lock. On this branch the handover
+holds `PreGuiding` through settle and the lock nudge, and ready for exposure is `Guiding`
+without `PreGuiding`. MAST_control counts a unit ready on `GUIDING`, so it would have started
+the spectrograph before the settle and the nudge were done.
+
+**What:** team decision, 2026-10-26. `_hand_over_to_guider` sets `GUIDING` when PHD2 is
+locked and `PreGuiding` is down, so `GUIDING` means ready. Guiding that stops after a lock
+but before ready (a failed settle) fails the acquisition as `GUIDING_NEVER_READY`, kept
+apart from `GUIDING_NEVER_LOCKED`.
+
+**Implications:** control needs no change to wait for the handover. On a unit with no
+handover (FCU v1, `auto_insert` off) `PreGuiding` never goes up and `GUIDING` comes at the
+first lock, as before.
+
 ## [2026-10-26] The lock-validity check, in code `LockValidityMonitor`
 
 **Why:** in `phd2.py` "the supervisor" also means the MAST process supervisor that starts and
