@@ -136,6 +136,19 @@ warns, untagged, since there is nothing to report as a verdict.
 cool-down. A cooler that stops regulating after the first cool-down is not covered; nothing
 watches once `CoolingDown` ends (MAST_unit#375). A cooler switched off during the cool-down is
 reported as `unreached` with its last reading, since PHD2 then reports no set point.
+## [2026-10-26] The lock-validity check, in code `LockValidityMonitor`
+
+**Why:** in `phd2.py` "the supervisor" also means the MAST process supervisor that starts and
+watches `phd2.exe`, so calling the guide-lock check a supervisor (`GuideLockSupervisor`,
+`connector.lock_supervisor`) gave one word two meanings in the same file.
+
+**What:** team decision, 2026-10-26. `GuideLockSupervisor` is `LockValidityMonitor`, as the
+pointing check's is `PointingMonitor`, and the connector's attribute is `lock_validity`. The
+config section, the module and the status field were already `lock_validity`.
+
+**Implications:** nothing that leaves the unit changes: config documents, status and logs read
+as before.
+
 ## [2026-10-26] The acquisition tolerance is on the sky; offsets stay in plain RA
 
 **Why:** `Solver._solve_and_correct` compared the plain-RA offset (the RA coordinate
