@@ -19,6 +19,7 @@ import plan_products as plan_products_module
 from acquirer import Acquirer
 from common.canonical import CanonicalResponse
 from common.filer import Filer
+from common.models.latest import LatestFocusOnStar
 from common.models.plans import PLAN_ID_FILE, PlanStage
 from common.notifications import NotificationInitiator
 from plan_products import announce_plan_products
@@ -99,7 +100,7 @@ class TestStartAcquisition:
         a.unit = SimpleNamespace(claimed=[])
         a.unit.claim_plan = a.unit.claimed.append
         monkeypatch.setattr(Acquirer, "prepare_acquisition", lambda self, **kw: SimpleNamespace(folder=folder))
-        monkeypatch.setattr(Acquirer, "start", lambda self, acquisition: None)
+        monkeypatch.setattr(Acquirer, "start", lambda self, acquisition, plan_id=None: None)
         return a
 
     def test_with_a_plan_the_folder_is_announced(self, acquirer, sent, folder):
@@ -125,7 +126,8 @@ class TestStartAcquisition:
 class TestFocusOnStar:
     @pytest.fixture
     def unit(self, folder):
-        started = SimpleNamespace(folder=folder)
+        # The real record: `start` returns it, and the endpoint reads its products path off it.
+        started = LatestFocusOnStar(local_products_path=os.fspath(folder))
         unit = SimpleNamespace(unit_conf=None, focus_on_star=SimpleNamespace(start=lambda params: started), claimed=[])
         unit.claim_plan = unit.claimed.append
         return unit
@@ -134,6 +136,7 @@ class TestFocusOnStar:
         Unit.endpoint_focus_on_star(unit, plan_id=ULID)  # type: ignore[arg-type]
 
         assert _label(folder) == ULID
+        assert unit.focus_on_star.start(None).plan_id == ULID, "the record says which plan it ran for"
         assert [n.stage for n in sent] == [PlanStage.Autofocus]
         assert unit.claimed == [ULID]
 
@@ -159,7 +162,7 @@ class TestHiddenFromOperators:
         from common.endpoints import add_api_route
 
         monkeypatch.setattr(Acquirer, "prepare_acquisition", lambda self, **kw: SimpleNamespace(folder=folder))
-        monkeypatch.setattr(Acquirer, "start", lambda self, acquisition: None)
+        monkeypatch.setattr(Acquirer, "start", lambda self, acquisition, plan_id=None: None)
         acquirer = Acquirer.__new__(Acquirer)
         acquirer.unit = SimpleNamespace(claim_plan=lambda plan_id: None)
 
@@ -170,7 +173,7 @@ class TestHiddenFromOperators:
                 pass
 
         unit = _Unit.__new__(_Unit)
-        unit.focus_on_star = SimpleNamespace(start=lambda params: SimpleNamespace(folder=folder))  # type: ignore[assignment]
+        unit.focus_on_star = SimpleNamespace(start=lambda params: LatestFocusOnStar(local_products_path=os.fspath(folder)))  # type: ignore[assignment]
 
         router = APIRouter()
         add_api_route(

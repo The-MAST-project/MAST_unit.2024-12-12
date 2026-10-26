@@ -1,4 +1,3 @@
-import datetime
 import os
 import time
 from threading import Thread
@@ -16,8 +15,9 @@ from common.config.rois import FcuVersion, SkyRoiConfig
 from common.endpoints import Tier, endpoint
 from common.filer import MoveGuardian
 from common.mast_logging import get_logger
+from common.models.latest import AcquisitionState, LatestAcquisition, LatestAcquisitionPhase
 from common.models.plans import PlanStage
-from common.models.statuses import AcquisitionOutcome, AcquisitionState, ImagerSettings
+from common.models.statuses import ImagerSettings
 from common.object_resolver import TOTAL_TIMEOUT_SECONDS, ObjectNameError
 
 # RA_PATTERN/DEC_PATTERN are deliberately no longer applied to this endpoint's coordinate
@@ -50,28 +50,42 @@ ACQUISITION_CANCELLED = "the acquisition was cancelled"
 GUIDING_NEVER_LOCKED = "guiding stopped before locking on a star"
 
 
-def _now_iso() -> str:
-    return datetime.datetime.now(datetime.UTC).isoformat()
+def _phases_of(acquisition) -> dict[str, LatestAcquisitionPhase]:
+    """Each phase's corrections, summarised: steps applied, and the last offset against tolerance."""
+    phases: dict[str, LatestAcquisitionPhase] = {}
+    for phase, corrections in (getattr(acquisition, "corrections", None) or {}).items():
+        last = corrections.last_delta or (corrections.sequence[-1] if corrections.sequence else None)
+        phases[phase] = LatestAcquisitionPhase(
+            steps=len(corrections.sequence),
+            tolerance_ra=corrections.tolerance_ra,
+            tolerance_dec=corrections.tolerance_dec,
+            last_ra_delta=last.ra_delta if last is not None else None,
+            last_dec_delta=last.dec_delta if last is not None else None,
+        )
+    return phases
 
 
-def _settle_outcome(outcome: AcquisitionOutcome | None, failure: str | None) -> None:
-    """Give `outcome` its final state, from how `do_acquire` returned.
+def _settle(latest: LatestAcquisition | None, acquisition, failure: str | None) -> None:
+    """Give the record its final state, from how `do_acquire` returned, and write it out.
 
     A failure string is `FAILED` (or `ABORTED`, for a cancellation); no failure after a
-    lock is `ENDED`, which the handover has already set. No failure and no lock is the
+    lock is `ENDED`, which the handover has already reached. No failure and no lock is the
     acquisition-tuning path (no handover), which also ends here: `ENDED`, nothing wrong.
+    Succeeded: it locked, or (tuning) it ended without a failure.
     """
-    if outcome is None:
+    if latest is None:
         return
+    latest.phases = _phases_of(acquisition)
     if failure is None:
-        outcome.state = AcquisitionState.ENDED
+        latest.state = AcquisitionState.ENDED
+        latest.finish(True)
     elif failure == ACQUISITION_CANCELLED:
-        outcome.state = AcquisitionState.ABORTED
-        outcome.errors.append(failure)
+        latest.state = AcquisitionState.ABORTED
+        latest.finish(False, [failure])
     else:
-        outcome.state = AcquisitionState.FAILED
-        outcome.errors.append(failure)
-    outcome.ended_at = _now_iso()
+        latest.state = AcquisitionState.FAILED
+        latest.finish(False, [failure])
+    latest.write()  # latest.json in the acquisition's folder
 
 
 class Acquirer:
@@ -90,26 +104,31 @@ class Acquirer:
         self.folder: str | None = None
         self.latest_acquisition: Acquisition | None = None
 
-    #: The latest acquisition's outcome, published as `FullUnitStatus.acquisition`. None until
-    #: the first one starts. A class attribute so an Acquirer built without `__init__` (the
-    #: tests) has it too; `start` replaces it on the instance, never mutates this one.
-    outcome: AcquisitionOutcome | None = None
+    #: The latest acquisition's record, published as `FullUnitStatus.latest.acquisition`. None
+    #: until the first one starts. A class attribute so an Acquirer built without `__init__`
+    #: (the tests) has it too; `start` replaces it on the instance, never mutates this one.
+    latest: LatestAcquisition | None = None
 
     def missing_components(self) -> list[str]:
         """The `REQUIRED_COMPONENTS` this unit did not build, in declaration order."""
         return [name for name in REQUIRED_COMPONENTS if getattr(self.unit, name) is None]
 
-    def start(self, acquisition: Acquisition) -> None:
-        """Publish a fresh `RUNNING` outcome, then run `acquisition` on its own thread.
+    def start(self, acquisition: Acquisition, plan_id: str | None = None) -> None:
+        """Publish a fresh `RUNNING` record, then run `acquisition` on its own thread.
 
-        The outcome is replaced *before* this returns, so before the endpoint answers: a
+        The record is replaced *before* this returns, so before the endpoint answers: a
         caller's first status read after a successful PUT describes this acquisition, never
-        the previous one. That ordering is what lets the outcome carry no id
+        the previous one. That ordering is what lets it carry no id
         (mast-claude-config plans/control_acquisition_design.md, 4.1).
         """
-        outcome = AcquisitionOutcome(state=AcquisitionState.RUNNING, started_at=_now_iso())
-        acquisition.outcome = outcome
-        self.outcome = outcome
+        latest = LatestAcquisition(
+            target_ra_hours=getattr(acquisition, "target_ra", None),
+            target_dec_degrees=getattr(acquisition, "target_dec", None),
+            handed_over=bool(getattr(acquisition, "handover_automatically_to_guider", False)),
+            solver=str(getattr(acquisition, "solver_id", None) or "") or None,
+        ).begin(getattr(acquisition, "folder", None), plan_id)
+        acquisition.latest = latest
+        self.latest = latest
         Thread(name="acquisition", target=self.run_acquisition, args=[acquisition]).start()
 
     def run_acquisition(self, acquisition: Acquisition):
@@ -134,7 +153,7 @@ class Acquirer:
         finally:
             # Before the folder release, which can wait on artifacts still moving: a caller
             # polling the outcome should learn how this ended as soon as it has.
-            _settle_outcome(getattr(acquisition, "outcome", None), acquisition.failure)
+            _settle(getattr(acquisition, "latest", None), acquisition, acquisition.failure)
             # Removed once every protected artifact has reached the shared area, and never
             # before -- so a frame that failed to move keeps its folder instead of being
             # deleted with it.
@@ -211,7 +230,7 @@ class Acquirer:
         except Exception:  # the unwind must finish even if part of it fails
             logger.exception(f"{op}: error while unwinding a cancelled acquisition")
 
-    def _hand_over_to_guider(self, op: str, outcome: AcquisitionOutcome | None) -> str | None:
+    def _hand_over_to_guider(self, op: str, outcome: LatestAcquisition | None) -> str | None:
         """Start guiding and stay with it until it stops. None, or why the handover failed.
 
         `outcome` becomes `GUIDING` the first time the guider is locked on a star -- for
@@ -239,6 +258,7 @@ class Acquirer:
         if not isinstance(guider._backend, PHD2Connector):
             if outcome is not None:
                 outcome.state = AcquisitionState.GUIDING
+                outcome.succeeded = True  # its goal; the run goes on, guiding
             response = guider.start_guiding()  # blocks until guiding stops
             if response.failed:
                 self._abandon(op)
@@ -255,6 +275,7 @@ class Acquirer:
                     locked = True
                     if outcome is not None:
                         outcome.state = AcquisitionState.GUIDING
+                        outcome.succeeded = True  # its goal; the run goes on, guiding
                     logger.info(f"{op}: guiding, locked on a star")
                 time.sleep(1)
 
@@ -576,7 +597,7 @@ class Acquirer:
         if self.latest_acquisition.handover_automatically_to_guider:
             lines.append("starting PHD2 guiding")
             boxed_log(logger, lines)
-            failure = self._hand_over_to_guider(op, getattr(self.latest_acquisition, "outcome", None))
+            failure = self._hand_over_to_guider(op, getattr(self.latest_acquisition, "latest", None))
             if failure is not None:
                 return failure
         else:
@@ -828,6 +849,6 @@ class Acquirer:
         # anything is written into it, so control's link is there from the start.
         self.unit.claim_plan(plan_id)  # accepted: the unit works for the plan from here
         announce_plan_products(plan_id, PlanStage.Acquisition, prepared.folder)
-        self.start(prepared)
+        self.start(prepared, plan_id)
 
         return CanonicalResponse_Ok

@@ -44,6 +44,7 @@ from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 from common.interfaces.imager import ImagerTypes
 from common.mast_logging import DailyFileHandler, get_logger
+from common.models.latest import LATEST_FILE, LatestExposure, LatestRecords
 from common.models.plans import PlanStage
 from common.opmode import OpmodeBase, OpState
 
@@ -174,6 +175,13 @@ def _start_exposure_or_raise(imager, settings: ImagerSettings) -> None:
         raise RuntimeError(f"{function_name()}: the imager refused the exposure: {response.errors}")
 
 
+def _expose_record_name(latest: LatestExposure) -> str:
+    """``expose-<UTC start>.json``: an exposure series without a subfolder shares the night's
+    Exposures/ folder with every other, so its record is named for its run."""
+    stamp = (latest.started or "").replace(":", "").replace("-", "").split(".")[0].split("+")[0]
+    return f"expose-{stamp}.json"
+
+
 class Unit(Component, OpmodeBase):
     MAX_UNITS = 20
     MAX_AUTOFOCUS_TRIES = 3
@@ -262,6 +270,8 @@ class Unit(Component, OpmodeBase):
         self.guider: Guider | None = _try_init("guider", lambda: Guider(self))
         #: The plan this unit works for, under `UnitActivities.ExecutingPlan` (claim_plan).
         self.plan_id: str | None = None
+        #: The latest exposure series' record, `FullUnitStatus.latest.exposure`.
+        self.latest_exposure: LatestExposure | None = None
 
         self.components: list[Component] = [
             c
@@ -758,10 +768,10 @@ class Unit(Component, OpmodeBase):
             flux_metering=(
                 report("flux_metering.status", self.flux_metering.status) if self.flux_metering.has_run else None
             ),
-            # The latest acquisition's outcome; None until one has started (and from old units).
+            # Each kind's latest run (focus_on_star, acquisition, exposure); None until one has run.
             # Through `report`, like every other live read here -- and before `errors`, which is
             # built when its argument is evaluated: a read after it would fail unreported.
-            acquisition=report("acquirer.outcome", lambda: self.acquirer.outcome) if self.acquirer else None,
+            latest=report("latest", self._latest_records),
             plan_id=self.plan_owner,
             # solver= self.solver.status(),
             # A new list: `self.errors` is the unit's own standing errors, and a read that
@@ -873,6 +883,14 @@ class Unit(Component, OpmodeBase):
         if errors:
             return CanonicalResponse(errors=errors)
         return CanonicalResponse_Ok
+
+    def _latest_records(self) -> LatestRecords:
+        """Each kind's latest run, for `FullUnitStatus.latest` (common.models.latest)."""
+        return LatestRecords(
+            focus_on_star=self.focus_on_star.latest,
+            acquisition=self.acquirer.latest if self.acquirer is not None else None,
+            exposure=self.latest_exposure,
+        )
 
     # ------------------------------------------------------------------- the plan token
     # Design: mast-claude-config plans/control_acquisition_design.md 6.6.
@@ -1468,6 +1486,12 @@ class Unit(Component, OpmodeBase):
         # it sees this Ok would find the unit idle and read the run as already over.
         # do_expose's outermost `finally` is what ends it.
         self._expose_cancelled.clear()
+        # The record before the run, so the first status read after this Ok describes it.
+        default_folder = PathMaker().make_exposures_folder()
+        self.latest_exposure = LatestExposure(exposure_seconds=exposure_seconds, repeats=repeats).begin(
+            os.path.join(default_folder, subfolder) if subfolder else default_folder, self.plan_owner
+        )
+        self._latest_exposure_file = LATEST_FILE if subfolder else None
         self.start_activity(UnitActivities.Exposing, details=[f"{repeats} x {exposure_seconds}s"])
         Thread(
             name="expose-thread",
@@ -1486,6 +1510,7 @@ class Unit(Component, OpmodeBase):
                 binning,
                 gain,
                 mount_was_tracking,
+                self.latest_exposure,
             ],
         ).start()
         return CanonicalResponse_Ok
@@ -1505,6 +1530,7 @@ class Unit(Component, OpmodeBase):
         binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
         gain: int = asi.ASI_294MM_DEFAULT_GAIN,
         mount_was_tracking: bool = False,
+        latest: LatestExposure | None = None,
     ) -> CanonicalResponse:
 
         assert self.mount is not None
@@ -1512,6 +1538,7 @@ class Unit(Component, OpmodeBase):
 
         op = function_name()
         seconds = exposure_seconds
+        failure: str | None = None
 
         try:
             if not mount_was_tracking:
@@ -1531,13 +1558,15 @@ class Unit(Component, OpmodeBase):
                     ra_offsets,
                     dec_offsets,
                     cadence_seconds,
+                    latest,
                 )
-            except Exception:
+            except Exception as ex:
                 # This runs in `expose-thread`, where an exception would otherwise vanish
                 # entirely -- the endpoint has already returned "ok" to the caller. Logging
                 # is the only trace there is; the finally below is what keeps the exposure
                 # series from dangling and stops the tracking this run started.
                 logger.exception(f"{op}: exposure run failed")
+                failure = f"the exposure run failed: {ex!r}"
                 return CanonicalResponse(errors=[f"{op}: exposure run failed, see the log"])
             finally:
                 self.imager.end_exposure_series(exposure_series)
@@ -1549,6 +1578,15 @@ class Unit(Component, OpmodeBase):
             # are outside it too: either can raise, and the flag `expose` raised would then
             # be stranded set for the life of the process, with the run visibly never over.
             self.end_activity(UnitActivities.Exposing)
+            if latest is not None:
+                if failure is None and self._expose_cancelled.is_set():
+                    failure = "aborted"
+                if failure is None and latest.completed < (latest.repeats or 0):
+                    failure = f"{latest.completed} of {latest.repeats} frames"
+                latest.finish(failure is None, [failure] if failure else None)
+                # Its own folder (a subfolder) gets latest.json; the night's shared Exposures/
+                # folder gets one file per run, named after its start.
+                latest.write(getattr(self, "_latest_exposure_file", None) or _expose_record_name(latest))
 
     def _expose_repeatedly(
         self,
@@ -1564,6 +1602,7 @@ class Unit(Component, OpmodeBase):
         ra_offsets: list[float] | None,
         dec_offsets: list[float] | None,
         cadence_seconds: float,
+        latest: LatestExposure | None = None,
     ) -> None:
         assert self.mount is not None
         assert self.imager is not None
@@ -1611,6 +1650,9 @@ class Unit(Component, OpmodeBase):
                     logger.info(f"{op}: cancelled during exposure #{repeat} (of {repeats}); no frame to move")
                     return
                 filer.move_ram_to_shared(image_path)
+                if latest is not None:
+                    latest.completed += 1
+                    latest.last_frame = image_path
 
             if next_start is not None:
                 # total_seconds(), not `.seconds`, which is the seconds-of-day component of
@@ -2160,8 +2202,9 @@ class Unit(Component, OpmodeBase):
             return CanonicalResponse(errors=[f"{function_name()}: {outcome}"])
         # Accepted: the unit works for the plan from here. The run folder exists once `start`
         # has answered; None for an imager with no files.
+        outcome.plan_id = plan_id
         self.claim_plan(plan_id)
-        announce_plan_products(plan_id, PlanStage.Autofocus, outcome.folder)
+        announce_plan_products(plan_id, PlanStage.Autofocus, outcome.local_products_path)
         return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
