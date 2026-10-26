@@ -19,7 +19,7 @@ from common.models.statuses import ImagerSettings
 from common.safety import safety_get_sensor
 from common.utils import Coord, boxed_log, function_name, isoformat_zulu
 from mount import SettleMode
-from sky_offsets import plain_ra_tolerance_arcsec, target_offset_plain_arcsec, within_tolerance
+from sky_offsets import plain_ra_tolerance_arcsec, within_tolerance
 
 logger = get_logger(__name__)
 filer = Filer(logger)
@@ -354,8 +354,7 @@ class Solver(SolverInterface):
                 # guiding to the same target just before the fold mirror hides it, and
                 # two copies of this arithmetic could let the two disagree about what
                 # "off target" means.
-                delta_ra_arcsec, _ = target_offset_arcsec(target, result.solution)
-                _, delta_dec_arcsec = target_offset_arcsec(target, result.solution)
+                delta_ra_arcsec, delta_dec_arcsec = target_offset_arcsec(target, result.solution)
 
                 abs_delta_ra_arcsec = abs(delta_ra_arcsec)
                 abs_delta_dec_arcsec = abs(delta_dec_arcsec)

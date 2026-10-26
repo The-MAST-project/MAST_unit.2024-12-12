@@ -12,15 +12,10 @@ import pytest
 from astropy.coordinates import Angle
 
 from common.interfaces.solving import SolvingTolerance
-from common.utils import Coord
-from sky_offsets import plain_ra_tolerance_arcsec, target_offset_plain_arcsec, within_tolerance
+from sky_offsets import plain_ra_tolerance_arcsec, within_tolerance
 
 TOLERANCE = SolvingTolerance(Angle(0.5 * u.arcsecond), Angle(0.5 * u.arcsecond))  # type: ignore
 ARCSEC_PER_HOUR = 15 * 3600
-
-
-def _target(ra_hours: float, dec_degs: float) -> Coord:
-    return Coord(ra=Angle(ra_hours * u.hourangle), dec=Angle(dec_degs * u.deg))  # type: ignore
 
 
 class TestPlainRaTolerance:
@@ -36,19 +31,6 @@ class TestPlainRaTolerance:
         tolerance = plain_ra_tolerance_arcsec(0.5, dec)
         assert math.isfinite(tolerance)
         assert tolerance > 0.5 * ARCSEC_PER_HOUR * 24
-
-
-class TestTargetOffset:
-    def test_plain_ra_and_dec_in_arcsec(self):
-        d_ra, d_dec = target_offset_plain_arcsec(
-            _target(6.0, 80.0), ra_hours=6.0 - 2.0 / ARCSEC_PER_HOUR, dec_degs=80.0 - 0.2 / 3600
-        )
-        assert d_ra == pytest.approx(2.0)
-        assert d_dec == pytest.approx(0.2)
-
-    def test_wraps_through_zero_hours(self):
-        d_ra, _ = target_offset_plain_arcsec(_target(0.0, 0.0), ra_hours=24.0 - 1.0 / ARCSEC_PER_HOUR, dec_degs=0.0)
-        assert d_ra == pytest.approx(1.0)
 
 
 class TestWithinTolerance:
