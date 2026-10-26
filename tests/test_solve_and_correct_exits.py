@@ -6,6 +6,7 @@ runners do not have. The solve, the imager and the mount are never reached, or a
 a `solve` that raises.
 """
 
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,7 +17,7 @@ from astropy.coordinates import Angle
 import solving
 from acquisition import ApproachMode
 from common.activities import UnitActivities
-from common.interfaces.solving import SolverId, SolvingResult, SolvingTolerance
+from common.interfaces.solving import SolverId, SolvingResult, SolvingSolution, SolvingTolerance
 from common.models.statuses import ImagerSettings
 from common.utils import Coord
 from solving import Solver
@@ -213,3 +214,72 @@ class TestNoImageIsNotSolved:
         assert _call(solver, imager_settings=ImagerSettings(seconds=3.0, binning=1, image_path=str(image))) is False
         assert not (tmp_path / "released" / "frame-solver_result.json").exists()
         assert not unit.is_active(UnitActivities.Solving)
+
+
+class _SolvingBackend:
+    """`Solver.solve` replaced: every try 'solves' at a fixed offset from the target."""
+
+    def __init__(self, target: Coord, d_ra_plain_arcsec: float, d_dec_arcsec: float):
+        self.ra_hours = target.ra.hour - d_ra_plain_arcsec / (15 * 3600)  # type: ignore
+        self.dec_degs = target.dec.deg - d_dec_arcsec / 3600  # type: ignore
+        self.calls = 0
+
+    def __call__(self, imager_settings, target, phase):
+        self.calls += 1
+        solution = SolvingSolution(
+            ra_hours=self.ra_hours,
+            ra_rads=math.radians(self.ra_hours * 15),
+            dec_degs=self.dec_degs,
+            dec_rads=math.radians(self.dec_degs),
+        )
+        return SolvingResult(succeeded=True, solution=solution)
+
+
+class TestToleranceOnTheSky:
+    """The RA tolerance is on the sky, applied to plain RA as ra / cos(Dec) (#191)."""
+
+    def _run(self, activity_spy, monkeypatch, tmp_path, dec_degs: float, d_ra: float, d_dec: float):
+        monkeypatch.setattr(solving.filer, "move_ram_to_shared", lambda *a, **k: None)
+        acquisition = _acquisition()
+        unit = _unit(activity_spy, acquisition)
+        unit.start_activity(UnitActivities.Acquiring)
+        offsets = []
+        unit.pw = SimpleNamespace(mount_offset=lambda **kw: offsets.append(kw))
+        unit.mount = SimpleNamespace(wait_until_settled=lambda *_: None)
+        solver = _solver(unit)
+        target = Coord(ra=Angle(6 * u.hourangle), dec=Angle(dec_degs * u.deg))  # type: ignore
+        solver.solve = _SolvingBackend(target, d_ra, d_dec)  # type: ignore[method-assign]
+        settings = ImagerSettings(seconds=3.0, binning=1, save=False)
+        settings.image_path = str(tmp_path / "frame.fits")
+        done = _call(
+            solver,
+            target=target,
+            imager_settings=settings,
+            solving_tolerance=SolvingTolerance(Angle(0.5 * u.arcsecond), Angle(0.5 * u.arcsecond)),  # type: ignore
+            max_tries=1,
+        )
+        return done, offsets, acquisition.corrections["spec"]
+
+    def test_high_dec_within_on_the_sky_ends_the_loop(self, activity_spy, monkeypatch, tmp_path):
+        """2" of plain RA at Dec +80 is 0.35" on the sky."""
+        done, offsets, corrections = self._run(activity_spy, monkeypatch, tmp_path, 80.0, 2.0, 0.2)
+        assert done is True
+        assert offsets == []
+        assert corrections.tolerance_ra == pytest.approx(0.5 / math.cos(math.radians(80.0)))
+
+    def test_same_offset_at_the_equator_is_corrected(self, activity_spy, monkeypatch, tmp_path):
+        done, offsets, corrections = self._run(activity_spy, monkeypatch, tmp_path, 0.0, 2.0, 0.2)
+        assert done is False
+        assert len(offsets) == 1
+        assert corrections.tolerance_ra == pytest.approx(0.5)
+
+    def test_at_the_pole_dec_alone_decides(self, activity_spy, monkeypatch, tmp_path):
+        done, offsets, _ = self._run(activity_spy, monkeypatch, tmp_path, 90.0, 90 * 3600.0, 0.3)
+        assert done is True
+        assert offsets == []
+
+    def test_three_arcmin_from_the_pole_converges(self, activity_spy, monkeypatch, tmp_path):
+        """400" of plain RA at Dec 89.95 is 0.35" on the sky."""
+        done, offsets, _ = self._run(activity_spy, monkeypatch, tmp_path, 89.95, 400.0, 0.3)
+        assert done is True
+        assert offsets == []

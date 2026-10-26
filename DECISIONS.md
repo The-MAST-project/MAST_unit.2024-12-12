@@ -2,6 +2,31 @@
 
 ---
 
+## [2026-10-26] The acquisition tolerance is on the sky; offsets stay in plain RA
+
+**Why:** `Solver._solve_and_correct` compared the plain-RA offset (the RA coordinate
+difference, as `mount_offset` takes it) with the configured RA tolerance, so on the sky the RA
+side shrank to `ra_arcsec x cos(dec)`. On mast01 on 2026-10-25, at Dec +79.9, that was 0.087"
+against about 0.4" of solve noise per axis: a strip arm used all 20 SPEC tries, most of them
+within 0.1-0.4" of the target on the sky, and failed, and a full-field arm at the same pointing needed 9.
+MAST_unit#191 (Oren's #3 before it).
+
+**What:** team decision, 2026-10-26. `ToleranceConfig` is on the sky. Offsets stay in plain RA,
+and the RA side of the tolerance is applied in plain RA as `ra_arcsec / cos(target dec)`
+(`src/sky_offsets.py`). `corrections.json` (`ra_delta`, and `tolerance_ra`, now the plain-RA
+value applied) and the gradual-approach rate ladder stay in plain RA. No cap toward the pole:
+for a target at the pole the Dec test alone bounds the distance, which the unbounded tolerance
+gives, and a cap would refuse every RA there. The orphan `dec_avg_rad` is gone with the
+question it marked. The combined acquisition plot draws RA and Dec tolerance lines separately.
+
+**Implications:** at high declination the loop stops once the target is within tolerance on
+the sky; the 2026-10-25 strip arm would have stopped at its 3rd solve, the full-field arm at its
+4th, and no arm nearer the equator changes. `tolerance_ra` in `corrections.json` now varies with
+the target's Dec and is very large within arcseconds of the pole; compare RA across nights only
+after scaling by `cos(target_dec)`.
+
+---
+
 ## [2026-10-20] start_guiding sets the guide exposure from the config DB
 
 **Why:** `start_guiding` never sent an exposure, so PHD2 guided at its profile's
