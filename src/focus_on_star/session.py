@@ -28,16 +28,14 @@ Design: mast-claude-config ``plans/focus_on_star_design.md``.
 
 from __future__ import annotations
 
-import datetime
 import os
 import threading
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 from astropy.coordinates import Angle
 from astropy.io import fits
-from pydantic import BaseModel, Field
 
 from acquisition import Acquisition, ApproachMode
 from calibration.analysis.models import HFDAutofocusStatus
@@ -53,6 +51,7 @@ from common.config.rois import FcuVersion
 from common.filer import MoveGuardian
 from common.interfaces.solving import SolverId
 from common.mast_logging import get_logger
+from common.models.latest import LatestFocusOnStar
 from common.paths import PathMaker
 from common.utils import Coord
 from focus_on_star.star_selection import FocusStar, find_focus_star, isolation_radius_deg, years_since
@@ -115,33 +114,10 @@ class FocusOnStarParams:
         return None
 
 
-class FocusOnStarStatus(BaseModel):
-    """What ``GET /unit/focus_on_star_status`` reports: the current run, or the last one."""
-
-    active: bool = False
-    phase: str | None = None  # selecting | slewing | acquiring | probing | sweeping | finishing
-    outcome: str | None = None  # solved | failed | aborted
-    folder: str | None = None
-    started_at: str | None = None
-    ended_at: str | None = None
-    params: dict[str, Any] | None = None
-    sky_position: tuple[float, float] | None = Field(default=None, description="(ra hours, dec degrees), J2000")
-    star: dict[str, Any] | None = None
-    focus_center: tuple[float, float] | None = Field(default=None, description="(x, y), bin-1 pixels")
-    box: tuple[int, int, int, int] | None = Field(default=None, description="(x0, x1, y0, y1), sweep pixels")
-    exposure: float | None = None
-    start_position: int | None = None
-    best_position: int | None = None
-    final_position: int | None = None
-    #: What says the unit is near focus: "calibration" (a /calibrate/focuser product) or
-    #: "known_as_good_position" (the last ps3cli autofocus, used when there is no product).
-    focus_reference: str | None = None
-    errors: list[str] = Field(default_factory=list)
-    analysis: HFDAutofocusStatus | None = None
-
-
-def _isoformat_utc() -> str:
-    return datetime.datetime.now(datetime.UTC).isoformat()
+#: What ``GET /unit/focus_on_star_status`` reports, and ``FullUnitStatus.latest.focus_on_star``:
+#: the current run, or the last one (common.models.latest). The V-curve's `HFDAutofocusStatus`
+#: goes in its `analysis`.
+FocusOnStarStatus = LatestFocusOnStar
 
 
 def focus_reference(conf) -> str | None:
@@ -216,13 +192,7 @@ class FocusOnStarSession:
             except Exception as ex:  # noqa: BLE001 -- a memory imager needs no folder; a file imager fails in the run
                 logger.warning(f"focus_on_star: could not create the run folder ({ex})")
                 folder = None
-            self.state = FocusOnStarStatus(
-                active=True,
-                phase="selecting",
-                folder=folder,
-                started_at=_isoformat_utc(),
-                params=asdict(params),
-            )
+            self.state = FocusOnStarStatus(phase="selecting", params=asdict(params)).begin(folder)
             # Raised here rather than in the thread: the endpoint declares this flag as its
             # completion signal, so a caller answered Ok must find it already set.
             self.unit.start_activity(UnitActivities.FocusingOnStar)
@@ -240,8 +210,12 @@ class FocusOnStarSession:
             self.unit.end_activity(UnitActivities.FocusingOnStar)
 
     def status(self) -> FocusOnStarStatus:
-        self.state.active = self.is_active
         return self.state
+
+    @property
+    def latest(self) -> FocusOnStarStatus | None:
+        """The latest run's record, for `FullUnitStatus.latest`; None before the first."""
+        return self.state if self.state.started is not None else None
 
     def do_focus_on_star(self, params: FocusOnStarParams, folder: str | None) -> None:
         """The whole run, on its own thread. Never raises; always ends the flag."""
@@ -253,8 +227,8 @@ class FocusOnStarSession:
             self.state.errors.append(f"run failed: {ex!r}")
             self.state.outcome = self.state.outcome or "failed"
         finally:
-            self.state.ended_at = _isoformat_utc()
-            self.state.active = False
+            self.state.finish(self.state.outcome == "solved")
+            self.state.write()  # latest.json beside the sweep's frames
             if self.unit.is_active(UnitActivities.FocusingOnStar):
                 self.unit.end_activity(UnitActivities.FocusingOnStar)
 

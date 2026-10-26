@@ -18,7 +18,7 @@ import acquirer as acquirer_module
 from acquirer import ACQUISITION_CANCELLED, GUIDING_NEVER_LOCKED, Acquirer
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.models.statuses import AcquisitionOutcome, AcquisitionState
+from common.models.latest import AcquisitionState, LatestAcquisition
 from guiding import Guider
 from phd2.phd2 import PHD2Connector
 
@@ -105,7 +105,7 @@ def _handover(response: CanonicalResponse, script: list[str]):
     unit.required_guider = _Guider(unit, response)
     acquirer = object.__new__(Acquirer)
     acquirer.unit = unit
-    outcome = AcquisitionOutcome(state=AcquisitionState.RUNNING, started_at="t")
+    outcome = LatestAcquisition(state=AcquisitionState.RUNNING).begin()
     failure = acquirer._hand_over_to_guider("test", outcome)
     return failure, outcome, unit
 
@@ -124,7 +124,7 @@ def test_a_lock_makes_the_outcome_guiding_and_guiding_ending_is_not_a_failure():
 
 
 def test_still_calibrating_is_still_running():
-    outcome = AcquisitionOutcome(state=AcquisitionState.RUNNING, started_at="t")
+    outcome = LatestAcquisition(state=AcquisitionState.RUNNING).begin()
     unit = _Unit(["Calibrating", "Calibrating"])
     seen: list[AcquisitionState] = []
 
@@ -190,16 +190,16 @@ def no_thread(monkeypatch):
 
 def test_start_publishes_a_fresh_running_outcome_before_the_thread_runs(no_thread):
     acquirer = object.__new__(Acquirer)
-    previous = AcquisitionOutcome(state=AcquisitionState.FAILED, started_at="earlier", errors=["old"])
-    acquirer.outcome = previous
+    previous = LatestAcquisition(state=AcquisitionState.FAILED, errors=["old"]).begin()
+    acquirer.latest = previous
     acquisition = SimpleNamespace(folder="unused", failure=None)
 
     acquirer.start(acquisition)
 
-    assert acquirer.outcome is not previous
-    assert acquirer.outcome.state == AcquisitionState.RUNNING
-    assert acquirer.outcome.errors == []
-    assert acquisition.outcome is acquirer.outcome
+    assert acquirer.latest is not previous
+    assert acquirer.latest.state == AcquisitionState.RUNNING
+    assert acquirer.latest.errors == []
+    assert acquisition.latest is acquirer.latest
     assert len(no_thread) == 1  # and the run was handed to a thread, not run here
 
 
@@ -215,13 +215,13 @@ def test_start_publishes_a_fresh_running_outcome_before_the_thread_runs(no_threa
 def test_run_acquisition_settles_the_outcome(monkeypatch, failure, state):
     acquirer = object.__new__(Acquirer)
     monkeypatch.setattr(acquirer, "do_acquire", lambda acquisition: failure, raising=False)
-    outcome = AcquisitionOutcome(state=AcquisitionState.GUIDING, started_at="t")
-    acquisition = SimpleNamespace(folder="unused", failure=None, outcome=outcome)
+    outcome = LatestAcquisition(state=AcquisitionState.GUIDING).begin()
+    acquisition = SimpleNamespace(folder="unused", failure=None, latest=outcome)
 
     acquirer.run_acquisition(acquisition)
 
     assert outcome.state == state
-    assert outcome.ended_at is not None
+    assert outcome.ended is not None
     assert outcome.errors == ([] if failure is None else [failure])
 
 
@@ -232,8 +232,8 @@ def test_an_acquisition_that_raises_settles_as_failed(monkeypatch):
         raise RuntimeError("the solver fell over")
 
     monkeypatch.setattr(acquirer, "do_acquire", boom, raising=False)
-    outcome = AcquisitionOutcome(state=AcquisitionState.RUNNING, started_at="t")
-    acquisition = SimpleNamespace(folder="unused", failure=None, outcome=outcome)
+    outcome = LatestAcquisition(state=AcquisitionState.RUNNING).begin()
+    acquisition = SimpleNamespace(folder="unused", failure=None, latest=outcome)
 
     acquirer.run_acquisition(acquisition)
 
@@ -244,13 +244,13 @@ def test_an_acquisition_that_raises_settles_as_failed(monkeypatch):
 def test_a_refused_request_leaves_the_previous_outcome_alone(no_thread):
     acquirer = object.__new__(Acquirer)
     acquirer.unit = SimpleNamespace(mount=None, guider=object(), imager=object(), solver=object(), stage=object())
-    previous = AcquisitionOutcome(state=AcquisitionState.ENDED, started_at="earlier")
-    acquirer.outcome = previous
+    previous = LatestAcquisition(state=AcquisitionState.ENDED).begin()
+    acquirer.latest = previous
 
     response = acquirer.endpoint_start_acquisition_and_guiding(ra_j2000_hours="1", dec_j2000_degs="2")
 
     assert response.failed
-    assert acquirer.outcome is previous
+    assert acquirer.latest is previous
     assert not no_thread
 
 
