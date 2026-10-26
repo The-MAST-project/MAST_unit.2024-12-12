@@ -26,7 +26,6 @@ import json
 import math
 import os
 import threading
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from astropy.io import fits
@@ -35,7 +34,7 @@ from common.activities import UnitActivities
 from common.canonical import CanonicalResponse
 from common.config import Config
 from common.config.rois import FcuVersion, SpecRoiConfig
-from common.filer import Filer, FilerTop, MoveGuardian
+from common.filer import Filer, FilingArea, MoveGuardian
 from common.mast_logging import get_logger
 from common.models.statuses import ImagerSettings
 from common.paths import PathMaker
@@ -591,22 +590,22 @@ class SpiralSearch:
     def _share_relative(path: str) -> str:
         """Where the mover puts `path`, relative to the share's MAST root.
 
-        Relative, because the share has a different name on every machine (`Z:/MAST/` here,
+        Relative, because the share has a different name on every machine (by UNC here,
         `/Storage/mast-share/MAST` on the control host), so only the caller can say where its
-        own view of it starts. Raises when the destination is not on the share: with Z:
-        unmapped, Filer's shared area is this unit's own disk, and a caller told otherwise
-        would wait for a frame that never arrives.
-
-        The roots are stored POSIX-style ("D:/MAST/"), so the path is compared in that form.
+        own view of it starts. Raises when the product will not reach the share: while the
+        share is unreachable the mover sends it to this unit's share fallback, and a caller
+        told otherwise would wait for a frame that never arrives.
         """
-        destination = filer.change_top_to(FilerTop.Shared, Path(path).as_posix())
-        root = filer.share_root.root
-        if destination is None or not destination.startswith(root):
+        if filer.is_demoted(FilingArea.SHARE) or not filer.ensure_shared_root():
             raise SpiralSearchError(
-                f"'{destination or path}' is not on the share ('{root}'), so it stays on this unit: "
-                "the shared area falls back to the local disk when Z: is not mapped"
+                f"'{path}' is not on the share ('{filer.share_root.root}'), so it stays on this unit: "
+                "the share is unreachable and products go to its local fallback"
             )
-        return destination.removeprefix(root)
+        try:
+            destination = filer.to_top(FilingArea.SHARE, path)
+        except ValueError as ex:
+            raise SpiralSearchError(f"'{path}' is not on the share: {ex}") from ex
+        return destination.removeprefix(filer.share_root.root)
 
     def _close(self) -> None:
         """Stop tracking, end the series, reap the folder. Caller holds the lock."""

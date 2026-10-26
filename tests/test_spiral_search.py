@@ -27,14 +27,12 @@ from astropy.io import fits
 
 import spiral_search
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.filer import FilerTop, Location
+from common.filer import Filer, FilingArea, Location
 from common.models.statuses import ImagerRoi
 from spiral_search import FINAL_IMAGE, REFERENCE_IMAGE, RESULT_FILE, SpiralSearch
 
 SIZE = 300
 CENTER = SIZE // 2
-SHARE_ROOT = "Z:/MAST/"
-SHARED_ROOT = SHARE_ROOT + "mast01/"
 
 
 class FakeRoi:
@@ -163,7 +161,7 @@ class FakeUnit:
 @pytest.fixture
 def session(tmp_path, monkeypatch):
     """A SpiralSearch writing into tmp_path, with the mover and reaper stubbed out."""
-    folder = tmp_path / "Spirals" / "0001"
+    folder = tmp_path / "ram" / "Spirals" / "0001"
     folder.mkdir(parents=True)
 
     monkeypatch.setattr(spiral_search, "guiding_roi", lambda: FakeRoi())
@@ -172,16 +170,11 @@ def session(tmp_path, monkeypatch):
 
     moved: list[str] = []
     monkeypatch.setattr(spiral_search.filer, "move_ram_to_shared", lambda p: moved.append(str(p)))
-    # tmp_path stands for the RAM area, so the reported share paths are derived for real.
-    monkeypatch.setattr(
-        spiral_search.filer,
-        "tops",
-        {
-            FilerTop.Ram: Location(None, tmp_path.as_posix() + "/"),
-            FilerTop.Shared: Location(None, SHARED_ROOT),
-        },
-    )
-    monkeypatch.setattr(spiral_search.filer, "share_root", Location(None, SHARE_ROOT))
+    # tmp_path holds the RAM area and a reachable share, so the reported paths are derived for real.
+    (tmp_path / "share" / "mast01").mkdir(parents=True)
+    monkeypatch.setattr(spiral_search.filer, "ram", Location((tmp_path / "ram").as_posix()))
+    monkeypatch.setattr(spiral_search.filer, "share_root", Location((tmp_path / "share").as_posix()))
+    monkeypatch.setattr(spiral_search.filer, "shared", Location((tmp_path / "share" / "mast01").as_posix()))
     reaped: list[str] = []
     monkeypatch.setattr(
         spiral_search.MoveGuardian, "release_folder", lambda self, f, logger=None, timeout=None: reaped.append(str(f))
@@ -475,11 +468,16 @@ class TestReportedSharePaths:
         assert value["image"] == f"mast01/Spirals/0001/{name}"
         assert "image_error" not in value
 
-    def test_a_unit_writing_to_its_local_fallback_reports_no_share_path(self, session, monkeypatch):
-        """With Z: unmapped, Filer's 'shared' area is the unit's own C:/MAST/. A path there
+    @pytest.mark.parametrize("cause", ["demoted", "unreachable"])
+    def test_a_unit_whose_share_is_down_reports_no_share_path(self, session, monkeypatch, tmp_path, cause):
+        """While the share is down, products go to the unit's own share fallback. A path there
         is not on the share, and a caller told it was would wait for a file that never
         arrives -- the frames lost on 2026-07-14."""
-        monkeypatch.setitem(spiral_search.filer.tops, FilerTop.Shared, Location("C:/", "MAST/"))
+        if cause == "demoted":
+            monkeypatch.setitem(Filer._demoted, FilingArea.SHARE, "unreachable")
+        else:
+            monkeypatch.setattr(spiral_search.filer, "share_root", Location((tmp_path / "no-share").as_posix()))
+            monkeypatch.setattr(spiral_search.filer, "shared", Location((tmp_path / "no-share" / "mast01").as_posix()))
         start = session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=True).value
         step = session.step(forward=True).value
 
