@@ -1,4 +1,4 @@
-"""The guide-lock supervisor, against the shapes 2026-09-08 actually produced.
+"""The lock-validity check, against the shapes 2026-09-08 actually produced.
 
 Numbers here are that night's: a session guiding at ~500,000 counts on a sky of
 ~980 ADU, and artifact locks at ~5,300 counts whose peak sits *at* the sky.
@@ -8,14 +8,14 @@ from __future__ import annotations
 
 import pytest
 
-from science.lock_validity import GuideLockSupervisor, LockMetrics, LockValidity
+from science.lock_validity import LockMetrics, LockValidity, LockValidityMonitor
 
 STAR = dict(star_mass=500_000.0, snr=41.0, hfd_pixels=6.7, peak=12_000.0, background=980.0, background_sigma=40.0)
 #: A noise fluctuation: star-shaped HFD, plausible SNR, and a peak that is the sky.
 ARTIFACT = dict(star_mass=5_300.0, snr=14.9, hfd_pixels=6.3, peak=983.0, background=980.0, background_sigma=40.0)
 
 
-def feed(supervisor: GuideLockSupervisor, sample: dict, count: int):
+def feed(supervisor: LockValidityMonitor, sample: dict, count: int):
     state = supervisor.state
     for _ in range(count):
         state = supervisor.update(LockMetrics(**sample))
@@ -23,14 +23,14 @@ def feed(supervisor: GuideLockSupervisor, sample: dict, count: int):
 
 
 def test_warms_up_before_it_has_a_scale():
-    s = GuideLockSupervisor()
+    s = LockValidityMonitor()
     state = feed(s, STAR, s.config.warmup_frames - 1)
     assert state.validity is LockValidity.WarmingUp
     assert state.session_mass_scale is None
 
 
 def test_reaches_on_star_after_warmup():
-    s = GuideLockSupervisor()
+    s = LockValidityMonitor()
     state = feed(s, STAR, s.config.warmup_frames + 2)
     assert state.validity is LockValidity.OnStar
     assert state.session_mass_scale == pytest.approx(500_000.0)
@@ -42,7 +42,7 @@ def test_artifact_during_warmup_is_caught_with_no_history():
     A session that *begins* on an artifact is the case the session scale cannot
     ever catch -- the running median would be the artifact itself.
     """
-    s = GuideLockSupervisor()
+    s = LockValidityMonitor()
     state = feed(s, ARTIFACT, 3)
     assert state.frame_verdict is LockValidity.NotAStar
     assert state.session_mass_scale is None
@@ -51,7 +51,7 @@ def test_artifact_during_warmup_is_caught_with_no_history():
 def test_single_frame_artifact_is_reported_per_frame():
     """One of 2026-09-08's two episodes was a single frame, so debouncing detection
     would have lost it entirely. The frame verdict is not debounced; the state is."""
-    s = GuideLockSupervisor()
+    s = LockValidityMonitor()
     feed(s, STAR, 20)
     state = s.update(LockMetrics(**ARTIFACT))
     assert state.frame_verdict is LockValidity.NotAStar
@@ -60,7 +60,7 @@ def test_single_frame_artifact_is_reported_per_frame():
 
 
 def test_sustained_artifact_moves_the_state_and_reports_the_onset_once():
-    s = GuideLockSupervisor()
+    s = LockValidityMonitor()
     feed(s, STAR, 20)
     onsets = 0
     for _ in range(6):
@@ -73,7 +73,7 @@ def test_sustained_artifact_moves_the_state_and_reports_the_onset_once():
 def test_artifacts_do_not_drag_the_scale_they_are_measured_against():
     """The failure that defeats PHD2's own 45 s window: a long episode walking the
     baseline down until each successive artifact looks ordinary."""
-    s = GuideLockSupervisor()
+    s = LockValidityMonitor()
     feed(s, STAR, 20)
     scale_before = s.state.session_mass_scale
     feed(s, ARTIFACT, 30)
@@ -83,14 +83,14 @@ def test_artifacts_do_not_drag_the_scale_they_are_measured_against():
 def test_a_faint_field_is_not_condemned_for_being_faint():
     """Pisces guided at 70,195 counts where an earlier field ran at 2,000,000. Any
     absolute threshold either condemns one or misses the artifact in the other."""
-    s = GuideLockSupervisor()
+    s = LockValidityMonitor()
     faint = dict(STAR, star_mass=70_195.0, peak=4_000.0, snr=17.5)
     state = feed(s, faint, 20)
     assert state.validity is LockValidity.OnStar
 
 
 def test_lost_star_is_not_an_artifact():
-    s = GuideLockSupervisor()
+    s = LockValidityMonitor()
     feed(s, STAR, 20)
     state = s.update(LockMetrics(star_mass=0.0, lost=True))
     assert state.frame_verdict is LockValidity.NoLock
@@ -98,7 +98,7 @@ def test_lost_star_is_not_an_artifact():
 
 def test_paused_frames_are_ignored_entirely():
     """The bracketed handover pauses the guide loop with the lock held."""
-    s = GuideLockSupervisor()
+    s = LockValidityMonitor()
     feed(s, STAR, 20)
     seen = s.state.frames_seen
     s.update(LockMetrics(**dict(ARTIFACT, guiding_paused=True)))
@@ -107,7 +107,7 @@ def test_paused_frames_are_ignored_entirely():
 
 
 def test_the_action_is_off_by_default_and_separable_from_the_finding():
-    s = GuideLockSupervisor()
+    s = LockValidityMonitor()
     feed(s, STAR, 20)
     feed(s, ARTIFACT, 4)
     assert s.state.validity is LockValidity.NotAStar
@@ -118,7 +118,7 @@ def test_the_action_is_off_by_default_and_separable_from_the_finding():
 
 def test_runs_without_background_on_an_older_phd2_build():
     """Peak and background arrive only from 2.6.14dev1mastbuild5 onward."""
-    s = GuideLockSupervisor()
+    s = LockValidityMonitor()
     bare = {k: v for k, v in STAR.items() if k not in ("peak", "background", "background_sigma")}
     state = feed(s, bare, 20)
     assert state.validity is LockValidity.OnStar
@@ -136,7 +136,7 @@ def test_thresholds_are_read_live_per_frame():
     """
     from common.config.phd2 import LockValidityConfig
 
-    s = GuideLockSupervisor()
+    s = LockValidityMonitor()
     feed(s, STAR, 20)
     faint = dict(STAR, star_mass=100_000.0)  # 0.2 of the scale: sound by default
     assert s.update(LockMetrics(**faint)).frame_verdict is LockValidity.OnStar
@@ -152,7 +152,7 @@ def test_the_assessment_survives_the_guider_recovering():
     it, so a person reading `validity` at an arbitrary moment saw whichever it
     happened to be. The episode has to outlive the state.
     """
-    s = GuideLockSupervisor()
+    s = LockValidityMonitor()
     feed(s, STAR, 20)
     feed(s, ARTIFACT, 6)
     assert s.state.validity is LockValidity.NotAStar
@@ -173,10 +173,10 @@ def test_the_assessment_survives_the_guider_recovering():
 def test_one_bad_frame_and_a_long_episode_are_distinguishable():
     """Both read NotAStar. Only the frame count separates them, and that is the
     difference between a glitch and eleven minutes of guiding on nothing."""
-    brief = GuideLockSupervisor()
+    brief = LockValidityMonitor()
     feed(brief, STAR, 20)
     feed(brief, ARTIFACT, 3)
-    long = GuideLockSupervisor()
+    long = LockValidityMonitor()
     feed(long, STAR, 20)
     feed(long, ARTIFACT, 40)
     assert brief.state.validity is long.state.validity is LockValidity.NotAStar
