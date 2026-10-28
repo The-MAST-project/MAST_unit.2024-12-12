@@ -34,9 +34,12 @@ it moves the mount.
 
 This nudge never converts a solved position. It computes an offset, which is the
 same in both frames because they differ only by origin, and adds it to the guide
-star's position measured in the very frame that was solved. PHD2 saves the frame
-it delivers, so that position is already in PHD2's frame, whatever that is. There
-is deliberately no sensor-to-image conversion here to get wrong.
+star's position on the very frame that was solved, as PHD2 measured it: the lock
+plus that frame's GuideStep dx/dy, PHD2's own centroid, in the frame PHD2 delivers
+and saves, whatever that is. There is deliberately no sensor-to-image conversion
+here to get wrong, and no star detection of our own: one, measuring sky and noise
+in the box the star filled, found no star in any of the 14 frames PHD2 was guiding
+on, on 2026-10-28.
 
 The offset goes on the star, not on the lock. The solve says where the fiber sat
 when the frame was taken, and at that moment the star sat wherever the guide error
@@ -55,7 +58,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import numpy as np
 from astropy.io import fits
 
 from common.config.phd2 import LockNudgeConfig
@@ -79,18 +81,6 @@ CONFIRM_POLL_SECONDS: float = 1.0
 #: How often frame collection looks for a new guide step before asking for the frame.
 #: Asked sooner, `save_image` hands back the frame already used -- 94 MB at full size.
 FRAME_POLL_SECONDS: float = 0.5
-
-#: Half-width of the box the guide star is looked for in, around the lock: PHD2's
-#: default search region, which is as far as the star can be from the lock and
-#: still be the one PHD2 is guiding on.
-STAR_SEARCH_HALF_WIDTH_PX: int = 15
-#: A star is a peak this many sky-noise sigmas above the box's median.
-STAR_MIN_SNR: float = 10.0
-#: Pixels below this fraction of the peak are left out of the centroid, so the
-#: sky's noise does not pull it toward the box's center.
-STAR_CORE_FRACTION: float = 0.2
-#: The median absolute deviation of Gaussian noise times this is its sigma.
-MAD_TO_SIGMA: float = 1.4826
 
 
 @dataclass
@@ -128,6 +118,20 @@ class NudgeOutcome:
             frames_used=self.frames_used,
             residual_px=self.residual_px,
         )
+
+
+@dataclass(frozen=True)
+class GuideStep:
+    """PHD2's latest GuideStep: how many the connector has seen, and that frame's guide star
+    offset from the lock, in the frame's pixels (PHD2's own centroid)."""
+
+    count: int
+    dx: float
+    dy: float
+
+    @property
+    def distance(self) -> float:
+        return math.hypot(self.dx, self.dy)
 
 
 class NudgeRefusedError(Exception):
@@ -202,31 +206,6 @@ def detector_pixel_scale_arcsec(solution: SolvingSolution, downsample_factor: in
     return math.sqrt(abs(det)) * ARCSEC_PER_DEGREE / downsample_factor
 
 
-def star_position(image_path: str, near: tuple[float, float]) -> tuple[float, float] | None:
-    """The centroid of the star within PHD2's search region around `near`, in the saved
-    frame's pixels; None if there is no star there."""
-    data = np.asarray(fits.getdata(image_path), dtype=float)
-    x0, y0 = round(near[0]), round(near[1])
-    h = STAR_SEARCH_HALF_WIDTH_PX
-    rows = slice(max(y0 - h, 0), min(y0 + h + 1, data.shape[0]))
-    cols = slice(max(x0 - h, 0), min(x0 + h + 1, data.shape[1]))
-    box = data[rows, cols]
-    if box.size == 0:
-        return None
-
-    sky = float(np.median(box))
-    noise = MAD_TO_SIGMA * float(np.median(np.abs(box - sky)))
-    signal = box - sky
-    peak = float(signal.max())
-    if peak <= STAR_MIN_SNR * noise:
-        return None
-
-    weights = np.where(signal >= STAR_CORE_FRACTION * peak, signal, 0.0)
-    ys, xs = np.mgrid[rows, cols]
-    total = float(weights.sum())
-    return float((weights * xs).sum()) / total, float((weights * ys).sum()) / total
-
-
 def _await_confirmation(connector, conf: LockNudgeConfig) -> float | None:
     """Wait for `confirm_frames` guide steps under `confirm_px`; return the last step's distance.
 
@@ -242,19 +221,19 @@ def _await_confirmation(connector, conf: LockNudgeConfig) -> float | None:
         return None
 
     deadline = time.monotonic() + conf.confirm_timeout
-    step, _ = connector.latest_guide_step
+    step = connector.latest_guide_step.count
     in_flight = step + 1
     seen = 0
     last = None
     while time.monotonic() < deadline:
         time.sleep(CONFIRM_POLL_SECONDS)
-        latest, distance = connector.latest_guide_step
-        if latest == step:
+        latest = connector.latest_guide_step
+        if latest.count == step:
             continue
-        step = latest
+        step = latest.count
         if step <= in_flight:
             continue
-        last = distance
+        last = latest.distance
         seen = seen + 1 if last <= conf.confirm_px else 0
         if seen >= conf.confirm_frames:
             return last
@@ -263,9 +242,11 @@ def _await_confirmation(connector, conf: LockNudgeConfig) -> float | None:
 
 
 def _estimate_from_frame(
-    unit, connector, image_path: str, near: tuple[float, float], target: Coord, solves_folder: Path | None
+    unit, connector, image_path: str, star: tuple[float, float], target: Coord, solves_folder: Path | None
 ) -> FrameEstimate:
     """Where the lock should go according to one saved guide frame, in its own pixels.
+
+    `star` is where PHD2 measured the guide star on this frame.
 
     The frame is solved in its own coordinates: a limit-frame crop carries its origin,
     found as the pointing check finds it, or mastrometry places its sensor-pixel ROI on
@@ -276,10 +257,6 @@ def _estimate_from_frame(
     placement = place_guide_frame(connector, width, height)
     if placement is None:
         raise NudgeRefusedError(unplaced_frame_reason(width, height))
-
-    star = star_position(image_path, near)
-    if star is None:
-        raise FrameUnusableError("no star near the lock in the guide frame")
 
     try:
         result = unit.solver._backend.solve(
@@ -335,14 +312,20 @@ def _collect_estimates(
     connector,
     target: Coord,
     conf: LockNudgeConfig,
-    near: tuple[float, float],
+    lock: tuple[float, float],
     is_current: Callable[[], bool],
     solves_folder: Path | None,
 ) -> list[FrameEstimate]:
     """`solve_frames` estimates from distinct guide frames, or NudgeRefusedError.
 
     While guiding, `save_image` returns the most recent guide frame, so it is asked once
-    per new guide step, and a frame whose `DATE-OBS` was already used does not count.
+    per new guide step, and a frame whose `DATE-OBS` was already used does not count. The
+    guide star is where PHD2 measured it on that frame -- the lock plus the step's dx/dy --
+    so a frame is kept only if no newer step arrived while it was saved: otherwise the
+    frame saved may be the newer one, and one frame's star would meet another's solve. A
+    frame PHD2 lost the star in sends no GuideStep and is never asked for. The first
+    frame waits for a step after the collection starts, so it is never paired with a
+    step from before.
     The guide session is checked between frames: a session stopped or replaced mid-way
     -- a manual one, say -- is never nudged.
     """
@@ -350,7 +333,7 @@ def _collect_estimates(
     deadline = time.monotonic() + conf.frames_timeout
     estimates: list[FrameEstimate] = []
     used: set[str] = set()
-    step: int | None = None
+    step = connector.latest_guide_step.count
     skipped = ""
     while len(estimates) < conf.solve_frames:
         if not is_current():
@@ -360,19 +343,23 @@ def _collect_estimates(
                 f"only {len(estimates)} of {conf.solve_frames} guide frames gave an estimate "
                 f"in {conf.frames_timeout:.0f} s" + (f" (last skipped: {skipped})" if skipped else "")
             )
-        latest, _ = connector.latest_guide_step
-        if latest == step:
+        latest = connector.latest_guide_step
+        if latest.count == step:
             time.sleep(FRAME_POLL_SECONDS)
             continue
-        step = latest
+        step = latest.count
 
         image_path = connector.save_image()
         try:
+            if connector.latest_guide_step.count != step:
+                logger.info(f"{op}: a newer guide frame arrived while saving; not pairing it with step {step}")
+                continue
             taken = fits.getheader(image_path)["DATE-OBS"]
             if taken in used:
                 continue
             used.add(taken)
-            estimates.append(_estimate_from_frame(unit, connector, image_path, near, target, solves_folder))
+            star = (lock[0] + latest.dx, lock[1] + latest.dy)
+            estimates.append(_estimate_from_frame(unit, connector, image_path, star, target, solves_folder))
         except FrameUnusableError as ex:
             skipped = str(ex)
             logger.info(f"{op}: skipping the guide frame of {taken}: {ex}")

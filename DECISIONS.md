@@ -2,6 +2,25 @@
 
 ---
 
+## [2026-10-28] The lock nudge takes the guide star from PHD2
+
+**Why:** the nudge measured the guide star in each saved frame with its own centroider,
+which took sky and noise from the same ±15 px box it searched. On mast01 on 2026-10-28 the
+guide star (HFD about 6.5 px) filled that box: it read a median of 13,031 against a sky of
+about 2,000 and a noise of 10,092 against about 300, so a star PHD2 was guiding on at SNR
+23-83 stood 4.4 sigma high, under the 10 required, and the nudge found it in none of 14
+frames and was refused.
+
+**What:** team decision, 2026-10-28. The star is where PHD2 measured it on that frame: the lock
+plus the frame's GuideStep `dx`/`dy`. The connector keeps the latest step as `GuideStep`
+(count, dx, dy). The collection waits for a step newer than its start, saves the frame, and
+keeps it only if no newer step arrived meanwhile, so a frame's star and its solve are always
+the same frame's. A frame PHD2 lost the star in sends no step and is not used.
+`star_position` is gone.
+
+**Implications:** no thresholds of our own on the star, and the star is the centroid PHD2
+then guides on. A frame superseded during its save costs one cadence.
+
 ## [2026-10-28] Keep solve-field's records of every plate solve
 
 **Why:** to judge how good a plate solve is -- how many stars matched, how confident the match
