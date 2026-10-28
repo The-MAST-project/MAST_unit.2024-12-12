@@ -250,7 +250,7 @@ def mastrometry_importable():
         pytest.skip(f"solver import chain unavailable here ({ex!r})")
 
 
-def _nudge(phd2: FakePHD2, solver: FakeSolver, is_current=lambda: True, **conf):
+def _nudge(phd2: FakePHD2, solver: FakeSolver, is_current=lambda: True, solves_folder=None, **conf):
     from common.config.phd2 import LockNudgeConfig
     from common.utils import Coord
     from lock_nudge import nudge_lock_to_target
@@ -258,7 +258,9 @@ def _nudge(phd2: FakePHD2, solver: FakeSolver, is_current=lambda: True, **conf):
     unit = SimpleNamespace(solver=SimpleNamespace(_backend=solver))
     target = Coord(ra=Angle(TARGET_RA_H, unit="hour"), dec=Angle(TARGET_DEC, unit="deg"))
     settings = {"enabled": True, "confirm_frames": 0, **conf}
-    return nudge_lock_to_target(unit, phd2, target, LockNudgeConfig(**settings), is_current=is_current)
+    return nudge_lock_to_target(
+        unit, phd2, target, LockNudgeConfig(**settings), is_current=is_current, solves_folder=solves_folder
+    )
 
 
 @pytest.mark.usefixtures("mastrometry_importable")
@@ -420,6 +422,16 @@ class TestTheMultiSolveGate:
         assert outcome.applied, outcome.reason
         assert [c["frame_origin"] for c in solver.calls] == [(2972, 0), (2972, 0)]
 
+    def test_every_solve_keeps_its_metafiles_in_the_solves_folder(self, tmp_path, clock):
+        phd2 = FakePHD2(tmp_path, clock)
+        solver = FakeSolver([0.5])
+        solves = tmp_path / "guiding" / "solves"
+
+        _nudge(phd2, solver, solves_folder=solves, solve_frames=4)
+
+        assert [c["metafiles_folder"] for c in solver.calls] == [solves] * 4
+        assert all(c["keep_artifacts"] is False for c in solver.calls)
+
     def test_a_full_sensor_frame_is_solved_without_an_origin(self, tmp_path, clock):
         phd2 = FakePHD2(tmp_path, clock, size=SENSOR, star=(6102.4, 2561.7), lock=(6102.0, 2562.0))
         solver = FakeSolver([0.5])
@@ -507,7 +519,7 @@ class TestTheOutcomeIsPublished:
             PHD2Connector, "conf", property(lambda self: SimpleNamespace(lock_nudge=LockNudgeConfig(enabled=True)))
         )
         latest = LatestAcquisition(state=AcquisitionState.RUNNING).begin()
-        acquisition = SimpleNamespace(target_ra=TARGET_RA_H, target_dec=TARGET_DEC, latest=latest)
+        acquisition = SimpleNamespace(target_ra=TARGET_RA_H, target_dec=TARGET_DEC, latest=latest, folder=None)
         connector = object.__new__(PHD2Connector)
         connector._nudge_onto_target = True
         connector.parent = SimpleNamespace(unit=SimpleNamespace(acquirer=SimpleNamespace(latest_acquisition=acquisition)))
@@ -541,3 +553,31 @@ def test_the_connector_counts_guide_steps_with_their_own_distance():
     c._handle_event({**step, "dx": 0.3, "dy": 0.4, "AvgDist": 0.9})
 
     assert c.latest_guide_step == (2, pytest.approx(0.5))
+
+
+def test_the_handover_gives_the_nudge_the_acquisitions_solves_folder(monkeypatch, tmp_path):
+    """Beside the pointing check's journal: `<the acquisition's folder on the share>/guiding/solves`."""
+    import phd2.phd2 as phd2_module
+    from common.config.phd2 import LockNudgeConfig
+    from lock_nudge import NudgeOutcome
+    from phd2.phd2 import PHD2Connector
+
+    seen: dict = {}
+
+    def nudge(*args, **kwargs):
+        seen.update(kwargs)
+        return NudgeOutcome(applied=False, reason="test")
+
+    monkeypatch.setattr(phd2_module, "nudge_lock_to_target", nudge)
+    monkeypatch.setattr(phd2_module, "guiding_folder", lambda folder: tmp_path / "share" / folder / "guiding")
+    monkeypatch.setattr(
+        PHD2Connector, "conf", property(lambda self: SimpleNamespace(lock_nudge=LockNudgeConfig(enabled=True)))
+    )
+    acquisition = SimpleNamespace(target_ra=TARGET_RA_H, target_dec=TARGET_DEC, latest=None, folder="acq-1")
+    connector = object.__new__(PHD2Connector)
+    connector._nudge_onto_target = True
+    connector.parent = SimpleNamespace(unit=SimpleNamespace(acquirer=SimpleNamespace(latest_acquisition=acquisition)))
+
+    connector._nudge_lock_onto_target(session=1)
+
+    assert seen["solves_folder"] == tmp_path / "share" / "acq-1" / "guiding" / "solves"

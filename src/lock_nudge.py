@@ -53,6 +53,7 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 from astropy.io import fits
@@ -261,7 +262,9 @@ def _await_confirmation(connector, conf: LockNudgeConfig) -> float | None:
     return last
 
 
-def _estimate_from_frame(unit, connector, image_path: str, near: tuple[float, float], target: Coord) -> FrameEstimate:
+def _estimate_from_frame(
+    unit, connector, image_path: str, near: tuple[float, float], target: Coord, solves_folder: Path | None
+) -> FrameEstimate:
     """Where the lock should go according to one saved guide frame, in its own pixels.
 
     The frame is solved in its own coordinates: a limit-frame crop carries its origin,
@@ -284,6 +287,7 @@ def _estimate_from_frame(unit, connector, image_path: str, near: tuple[float, fl
             phase="spec",
             full_frame_input_image_path=image_path,
             keep_artifacts=False,
+            metafiles_folder=solves_folder,
             target=target,
             **placement.solve_kwargs(),
         )
@@ -327,7 +331,13 @@ def _estimate_from_frame(unit, connector, image_path: str, near: tuple[float, fl
 
 
 def _collect_estimates(
-    unit, connector, target: Coord, conf: LockNudgeConfig, near: tuple[float, float], is_current: Callable[[], bool]
+    unit,
+    connector,
+    target: Coord,
+    conf: LockNudgeConfig,
+    near: tuple[float, float],
+    is_current: Callable[[], bool],
+    solves_folder: Path | None,
 ) -> list[FrameEstimate]:
     """`solve_frames` estimates from distinct guide frames, or NudgeRefusedError.
 
@@ -362,7 +372,7 @@ def _collect_estimates(
             if taken in used:
                 continue
             used.add(taken)
-            estimates.append(_estimate_from_frame(unit, connector, image_path, near, target))
+            estimates.append(_estimate_from_frame(unit, connector, image_path, near, target, solves_folder))
         except FrameUnusableError as ex:
             skipped = str(ex)
             logger.info(f"{op}: skipping the guide frame of {taken}: {ex}")
@@ -376,12 +386,18 @@ def _collect_estimates(
 
 
 def nudge_lock_to_target(
-    unit, connector, target: Coord, conf: LockNudgeConfig, is_current: Callable[[], bool]
+    unit,
+    connector,
+    target: Coord,
+    conf: LockNudgeConfig,
+    is_current: Callable[[], bool],
+    solves_folder: Path | None = None,
 ) -> NudgeOutcome:
     """Move the lock position so the fiber sits on `target`, once guiding has settled.
 
     `is_current` says whether the guide session the nudge was started for is still the
-    one running.
+    one running. `solves_folder` keeps solve-field's records of each frame's solve; the
+    frames themselves are not kept.
     """
     op = function_name()
 
@@ -393,7 +409,7 @@ def nudge_lock_to_target(
         return NudgeOutcome(applied=False, reason="PHD2 holds no lock position")
 
     try:
-        estimates = _collect_estimates(unit, connector, target, conf, lock_before, is_current)
+        estimates = _collect_estimates(unit, connector, target, conf, lock_before, is_current, solves_folder)
     except NudgeRefusedError as ex:
         logger.warning(f"{op}: not nudging: {ex}")
         return NudgeOutcome(applied=False, reason=str(ex), lock_before=lock_before)

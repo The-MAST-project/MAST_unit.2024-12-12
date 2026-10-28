@@ -2,6 +2,25 @@
 
 ---
 
+## [2026-10-28] Keep solve-field's records of every plate solve
+
+**Why:** to judge how good a plate solve is -- how many stars matched, how confident the match
+was, how well the fit sits on them -- and so how far a single solve, or the lock nudge's few,
+can be trusted, on dense and sparse fields alike. MastrometryDotNet asked solve-field for none
+of these (`--match none --rdls none --corr none`) and kept only the solved FITS and its result
+text.
+
+**What:** team decision, 2026-10-28. Every solve writes `<stem>.corr`, `<stem>.match`,
+`<stem>-indx.xyls` and `<stem>.rdls` into its scratch, protected like the solved FITS, and with
+`keep_artifacts` keeps them beside the input, as it does the solved FITS. A caller that discards
+its frame passes `metafiles_folder` to keep just these and the result text: the pointing check
+and the lock nudge keep theirs in the acquisition's `guiding/solves/` on the share, beside the
+pointing-check journal. Their pixel positions are in the downsampled, cropped frame solve-field
+was given.
+
+**Implications:** a few KB per solve more on the share; about 1 per guide frame solved by the
+pointing check, and `solve_frames` per nudge.
+
 ## [2026-10-26] The lock nudge solves several guide frames, and refuses when they disagree
 
 **Why:** the nudge moved the lock on one plate solve of one guide frame, and one solve places
