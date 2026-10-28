@@ -22,7 +22,7 @@ from astropy.io import fits
 
 from common.interfaces.solving import SolvingSolution
 from common.models.statuses import ImagerRoi
-from lock_nudge import detector_pixel_scale_arcsec, sky_offset_to_detector_pixels
+from lock_nudge import GuideStep, detector_pixel_scale_arcsec, sky_offset_to_detector_pixels
 
 PIXEL_SCALE_DEG = 0.27 / 3600.0  # per detector pixel
 DOWNSAMPLE = 2
@@ -140,30 +140,37 @@ class FakeClock:
 
 @pytest.fixture
 def clock(monkeypatch):
+    """`lock_nudge`'s own `time`, not the shared module: patching `time.sleep` itself also
+    advanced the fake clock from inside astropy's 187 MB full-sensor write on Windows, a
+    whole cadence, and the nudge rightly discarded the frame as superseded."""
     import lock_nudge
 
     fake = FakeClock()
-    monkeypatch.setattr(lock_nudge.time, "monotonic", fake.monotonic)
-    monkeypatch.setattr(lock_nudge.time, "sleep", fake.sleep)
+    monkeypatch.setattr(lock_nudge, "time", SimpleNamespace(monotonic=fake.monotonic, sleep=fake.sleep))
     return fake
 
 
-def _frame_data(size: tuple[int, int], star: tuple[float, float]) -> np.ndarray:
-    """A guide frame with one star at `star` (x, y) on a flat, noisy sky."""
+def _frame_data(size: tuple[int, int], star: tuple[float, float] | None) -> np.ndarray:
+    """A guide frame on a flat, noisy sky, with one star at `star` (x, y) if given."""
     width, height = size
-    y, x = np.mgrid[0:height, 0:width]
     sky = 100.0 + np.random.default_rng(0).normal(0.0, 3.0, (height, width))
+    if star is None:
+        return sky.astype(np.float32)
+    y, x = np.mgrid[0:height, 0:width]
     return (sky + 5000.0 * np.exp(-((x - star[0]) ** 2 + (y - star[1]) ** 2) / (2 * 2.0**2))).astype(np.float32)
 
 
 class FakePHD2:
     """The connector as the nudge sees it.
 
-    A GuideStep arrives every `CADENCE_S` of the fake clock (`latest_guide_step`). `save_image` writes the
-    latest guide frame, stamped with the next of `dates` (the last repeats once they
-    run out), as PHD2 hands back the most recent frame whenever it is asked.
-    `step_px[i]` is the guide distance of step i, counted from the first. By default
-    a frame smaller than the sensor is the limit frame PHD2 holds.
+    A GuideStep arrives every `CADENCE_S` of the fake clock (`latest_guide_step`), with
+    PHD2's measurement of the guide star: `star - lock` as (dx, dy). From step `lost_from`
+    on PHD2 has lost the star, so no further GuideStep arrives. `save_image` writes the
+    latest guide frame -- a flat sky: the nudge takes the star from PHD2, never from the
+    pixels -- stamped with the next of `dates` (the last repeats once they run out), as
+    PHD2 hands back the most recent frame whenever it is asked. A save whose index is in
+    `slow_saves` takes a whole cadence, so a newer frame has arrived by the time it is
+    back. By default a frame smaller than the sensor is the limit frame PHD2 holds.
     """
 
     def __init__(
@@ -176,26 +183,30 @@ class FakePHD2:
         lock=(100.0, 100.0),
         dates=None,
         limit=MATCHING,
-        step_px=None,
+        lost_from=None,
+        slow_saves=(),
     ):
         self.tmp_path, self.clock = tmp_path, clock
-        self.data = _frame_data(size, star)
-        self.lock = lock
+        self.data = _frame_data(size, None)
+        self.star, self.lock = star, lock
+        self.lost_from = lost_from
+        self.slow_saves = set(slow_saves)
         self.dates = dates or [f"2026-10-26T20:00:{i:02d}.000" for i in range(0, 60, 6)]
         if limit is MATCHING:
             from common.models.statuses import ImagerRoi
 
             limit = None if size == SENSOR else ImagerRoi.verbatim(x=1000, y=0, width=size[0], height=size[1])
         self.limit = limit
-        self.step_px = step_px or (lambda i: 0.1)
         self.profile_binning = 1
         self.saved: list[str] = []
         self.moved: list[tuple[float, float]] = []
 
     @property
-    def latest_guide_step(self) -> tuple[int, float]:
+    def latest_guide_step(self) -> GuideStep:
         n = int(self.clock.now // CADENCE_S)
-        return n, self.step_px(n)
+        if self.lost_from is not None:
+            n = min(n, self.lost_from)
+        return GuideStep(count=n, dx=self.star[0] - self.lock[0], dy=self.star[1] - self.lock[1])
 
     def get_lock_position(self):
         return self.lock
@@ -208,6 +219,8 @@ class FakePHD2:
 
     def save_image(self) -> str:
         n = len(self.saved)
+        if n in self.slow_saves:
+            self.clock.now += CADENCE_S
         path = str(self.tmp_path / f"guide-{n}.fits")
         hdu = fits.PrimaryHDU(self.data)
         hdu.header["DATE-OBS"] = self.dates[min(n, len(self.dates) - 1)]
@@ -305,11 +318,42 @@ class TestASolvedNudgeIsApplied:
         assert outcome.applied, outcome.reason
         assert phd2.moved[0] == pytest.approx(star, abs=0.1)
 
-    def test_no_star_near_the_lock_leaves_it_alone(self, tmp_path, clock):
-        phd2 = FakePHD2(tmp_path, clock, star=(20.0, 20.0), lock=(150.0, 150.0))
+    def test_the_star_is_phd2s_not_found_in_the_frame(self, tmp_path, clock):
+        """The frame holds no detectable star at all; PHD2's GuideStep says where it is.
+
+        Our own detection measured sky and noise in the box the star filled, and on
+        2026-10-28 it found no star in any of 14 frames PHD2 was guiding on."""
+        phd2 = FakePHD2(tmp_path, clock, star=(103.0, 98.5), lock=(100.0, 100.0))
+        assert phd2.data.max() < 200  # nothing but sky
+
         outcome = _nudge(phd2, FakeSolver([0.0]))
+
+        assert outcome.applied, outcome.reason
+        assert phd2.moved[0] == pytest.approx((103.0, 98.5))
+
+    def test_a_lost_star_gives_no_estimate(self, tmp_path, clock):
+        """PHD2 sends no GuideStep for a frame it lost the star in, so that frame cannot count."""
+        phd2 = FakePHD2(tmp_path, clock, lost_from=0)
+        solver = FakeSolver([0.0])
+
+        outcome = _nudge(phd2, solver)
+
         assert not outcome.applied
+        assert "0 of 4" in outcome.reason
+        assert solver.calls == []
         assert phd2.moved == []
+
+    def test_a_frame_superseded_during_its_save_is_discarded(self, tmp_path, clock):
+        """The step's dx/dy belong to the frame it was measured on; a newer frame saved in
+        its place would pair one frame's star with another frame's solve."""
+        phd2 = FakePHD2(tmp_path, clock, slow_saves={0})
+        solver = FakeSolver([0.5])
+
+        outcome = _nudge(phd2, solver, solve_frames=4)
+
+        assert outcome.applied, outcome.reason
+        assert len(phd2.saved) == 5
+        assert len(solver.calls) == 4
 
     def test_a_star_too_far_from_the_lock_is_refused(self, tmp_path, clock):
         """A hot pixel, or a cosmic ray in a frame the star dropped out of, can sit anywhere
@@ -465,12 +509,12 @@ class TestConfirmation:
 
         # step 1 is the frame exposing during the move; steps 2 and 3 are on the new lock
         distances = {0: 3.0, 1: 0.8, 2: 0.4, 3: 0.3}
-        phd2 = SimpleNamespace(latest_guide_step=(0, 3.0))
+        phd2 = SimpleNamespace(latest_guide_step=GuideStep(0, 3.0, 0.0))
 
         def sleep(seconds):
             clock.now += seconds
             n = int(clock.now // CADENCE_S)
-            phd2.latest_guide_step = (n, distances.get(n, 0.3))
+            phd2.latest_guide_step = GuideStep(n, distances.get(n, 0.3), 0.0)
 
         import lock_nudge
 
@@ -485,12 +529,12 @@ class TestConfirmation:
         from lock_nudge import _await_confirmation
 
         distances = {1: 0.5, 2: 0.4, 3: 2.0, 4: 0.3, 5: 0.2}
-        phd2 = SimpleNamespace(latest_guide_step=(0, 3.0))
+        phd2 = SimpleNamespace(latest_guide_step=GuideStep(0, 3.0, 0.0))
 
         def sleep(seconds):
             clock.now += seconds
             n = int(clock.now // CADENCE_S)
-            phd2.latest_guide_step = (n, distances.get(n, 0.2))
+            phd2.latest_guide_step = GuideStep(n, distances.get(n, 0.2), 0.0)
 
         import lock_nudge
 
@@ -532,9 +576,10 @@ class TestTheOutcomeIsPublished:
         assert (latest.nudge.spread_arcsec, latest.nudge.frames_used) == (1.41, 4)
 
 
-def test_the_connector_counts_guide_steps_with_their_own_distance():
+def test_the_connector_counts_guide_steps_with_their_own_offset():
     """What the gate and the confirmation wait on: one count per GuideStep, with that
-    step's own guide distance -- not the smoothed `AvgDist`, which lags a lock move."""
+    step's own star offset (dx, dy) -- the star for the gate, its distance for the
+    confirmation, not the smoothed `AvgDist`, which lags a lock move."""
     import threading
 
     from phd2.phd2 import PHD2Connector
@@ -542,7 +587,7 @@ def test_the_connector_counts_guide_steps_with_their_own_distance():
     c = object.__new__(PHD2Connector)
     c.lock = threading.Lock()
     c.accumulators_active = False
-    c.latest_guide_step = (0, 0.0)
+    c.latest_guide_step = GuideStep(0, 0.0, 0.0)
     c.start_activity = lambda *a, **kw: None
     c.sky_quality = SimpleNamespace(update=lambda metrics: None)
     c._update_lock_validity = lambda ev: None
@@ -552,7 +597,8 @@ def test_the_connector_counts_guide_steps_with_their_own_distance():
     c._handle_event({**step, "dx": 3.0, "dy": 4.0, "AvgDist": 1.0})
     c._handle_event({**step, "dx": 0.3, "dy": 0.4, "AvgDist": 0.9})
 
-    assert c.latest_guide_step == (2, pytest.approx(0.5))
+    assert c.latest_guide_step == GuideStep(2, 0.3, 0.4)
+    assert c.latest_guide_step.distance == pytest.approx(0.5)
 
 
 def test_the_handover_gives_the_nudge_the_acquisitions_solves_folder(monkeypatch, tmp_path):
