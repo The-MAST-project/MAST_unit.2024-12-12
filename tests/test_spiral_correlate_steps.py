@@ -40,6 +40,7 @@ def _run(
     terminal_state="max_rings",
     pixel_scale=0.2616,
     dec=49.3,
+    offsets_on_sky=False,
     result_json=True,
     write_frames=True,
     date="2026-09-01",
@@ -82,6 +83,8 @@ def _run(
             document["pixel_scale_at_bin1"] = pixel_scale
         if dec is not None:
             document["dec_degrees"] = dec
+        if offsets_on_sky:
+            document["offsets_on_sky"] = True
         (folder / "result.json").write_text(json.dumps(document), encoding="utf-8")
     return folder, date, seq
 
@@ -140,7 +143,17 @@ def test_the_commanded_offset_is_the_difference_between_the_two_steps(tmp_path, 
     assert out.commanded_offset_px == pytest.approx((0.0, 4.0))
 
 
-def test_cos_dec_is_applied_to_the_ra_axis_only(tmp_path, monkeypatch):
+def test_a_run_with_offsets_on_the_sky_gets_no_cos_dec(tmp_path, monkeypatch):
+    """Since MAST_unit#136 the steps are sky angles, and the run says so."""
+    _, date, seq = _run(
+        tmp_path, monkeypatch, offsets=((0.0, 0.0), (2.0, 2.0)), pixel_scale=0.5, dec=60.0, offsets_on_sky=True
+    )
+    out = correlate.correlate_steps(date, seq, 0, 1)
+    assert out.commanded_offset_px == pytest.approx((4.0, 4.0))
+
+
+def test_an_earlier_run_gets_cos_dec_on_the_ra_axis_only(tmp_path, monkeypatch):
+    """Runs written before MAST_unit#136's fix commanded RA coordinate arcsec."""
     _, date, seq = _run(
         tmp_path,
         monkeypatch,

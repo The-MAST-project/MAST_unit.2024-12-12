@@ -14,6 +14,7 @@ hardware and the operator's result --
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -67,6 +68,7 @@ class FakePw:
 
     def mount_spiral_offset_new(self, x_step_arcsec, y_step_arcsec):
         self.calls.append("new")
+        self.steps_commanded = (x_step_arcsec, y_step_arcsec)
         self.x = self.y = 0
 
     def mount_spiral_offset_next(self):
@@ -336,26 +338,53 @@ class TestThePixelEstimate:
 
         assert "px" not in session.step(forward=True).value["offset"]
 
-    def test_it_is_omitted_when_the_declination_is_unknown(self, session, monkeypatch):
-        # Read from PWI4 on every step: PWI4 reporting none is what makes it unknown.
-        monkeypatch.setattr(FakePw, "DEC_DEGREES", None)
-        session.start(10.0, 10.0, exposure_seconds=1.0)
-
-        assert "px" not in session.step(forward=True).value["offset"]
-
-    def test_it_carries_the_cos_dec_factor_on_the_ra_axis(self, session):
-        """`x_step_arcsec` is RA COORDINATE arcsec, so the sky moves x*step*cos(dec) along
-        it (MAST_unit#136). At dec +41.157 a commanded 10" moves 7.53", which is 29 px --
-        not the 38 px the uncorrected arithmetic would claim. The estimate is meant to be
-        compared against the shift `end` measures, so it has to be in the same units as
-        the sky, not as the command."""
+    def test_it_is_the_step_on_the_sky(self, session):
+        """The steps are sky angles, so a 10" step is 10" whatever the declination:
+        38 px at 0.2616"/px, not the 29 px a cos(dec) factor would make of it at +41."""
         session.unit.unit_conf.imager.pixel_scale_at_bin1 = self.SCALE
         session.start(10.0, 10.0, exposure_seconds=1.0)
 
         offset = session.step(forward=True).value["offset"]
 
-        assert "(~29 px)" in offset
-        assert "38 px" not in offset, "cos(dec) was not applied"
+        assert "(~38 px)" in offset
+
+
+class TestTheStepsAreSquareOnTheSky:
+    """PWI4 steps the RA coordinate, which covers cos(dec) of itself on the sky
+    (MAST_unit#136), so the session widens the RA step it commands."""
+
+    def test_the_ra_step_commanded_is_widened_by_one_over_cos_dec(self, session):
+        value = session.start(10.0, 4.0, exposure_seconds=1.0).value
+
+        ra_step = 10.0 / math.cos(math.radians(FakePw.DEC_DEGREES))
+        assert session.unit.mount.pw.steps_commanded == pytest.approx((ra_step, 4.0))
+        assert value["ra_step_arcsec_commanded"] == pytest.approx(ra_step)
+        assert value["dec_degrees"] == FakePw.DEC_DEGREES
+
+    def test_the_result_records_what_was_commanded(self, session):
+        session.start(10.0, 4.0, exposure_seconds=1.0)
+        session.end()
+
+        result = read_result(session.test_folder)
+        assert result["x_step_arcsec"] == 10.0
+        assert result["ra_step_arcsec_commanded"] == pytest.approx(10.0 / math.cos(math.radians(FakePw.DEC_DEGREES)))
+        assert result["dec_degrees"] == FakePw.DEC_DEGREES
+
+    @pytest.mark.parametrize("dec", [None, 85.0, -85.0])
+    def test_a_session_that_cannot_size_its_ra_step_is_refused(self, session, monkeypatch, dec):
+        monkeypatch.setattr(FakePw, "DEC_DEGREES", dec)
+
+        response = session.start(10.0, 10.0, exposure_seconds=1.0)
+
+        assert response.failed
+        assert not session.is_active
+        assert not session.unit.mount.tracking, "refused before tracking starts"
+        assert "new" not in session.unit.mount.pw.calls
+
+    def test_near_the_pole_limit_it_still_walks(self, session, monkeypatch):
+        monkeypatch.setattr(FakePw, "DEC_DEGREES", 84.0)
+
+        assert session.start(10.0, 10.0, exposure_seconds=1.0).succeeded
 
 
 class TestEndingASession:

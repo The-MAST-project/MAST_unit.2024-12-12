@@ -229,8 +229,13 @@ def _commanded_difference(
     offset_a, offset_b = step_a.get("offset_arcsec"), step_b.get("offset_arcsec")
     if offset_a is None or offset_b is None:
         return None, "one of the steps recorded no commanded offset"
-    # cos(dec) on the RA axis only, as in the session: the step is RA COORDINATE arcsec and
-    # the sky moves by that times cos(dec). The run's declination, never the mount's now.
+    if document.get("offsets_on_sky"):
+        return (
+            ((offset_b[0] - offset_a[0]) / scale, (offset_b[1] - offset_a[1]) / scale),
+            f"{scale_source}; the offsets are on the sky",
+        )
+    # A run from before MAST_unit#136's fix: its RA offsets are COORDINATE arcsec, and the sky
+    # moved by that times cos(dec). The run's declination, never the mount's now.
     ra_scale = math.cos(math.radians(dec)) if dec is not None else 1.0
     source = f"{scale_source}, and the run's recorded declination"
     if dec is None:

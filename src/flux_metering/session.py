@@ -57,7 +57,7 @@ from flux_metering.correlate import measure_pair
 from flux_metering.flux_meter import FluxMeter, FluxMeterError, measure_frame, saturated_pixels
 from imaging.frame_shift import MIN_CONFIDENCE
 from mount import SettleMode
-from spiral_search import resolve_center
+from spiral_search import SpiralSearchError, commanded_ra_step, resolve_center
 from stage import StagePresetPosition
 
 if TYPE_CHECKING:
@@ -156,6 +156,9 @@ class FluxMeteringSession:
         self._meter: FluxMeter | None = None
         self._solve_thread: threading.Thread | None = None
         self._reference_solution: dict[str, Any] | None = None
+        #: The RA step given to PWI4 for the walk, and the declination it was sized for.
+        self._ra_step_commanded: float | None = None
+        self._ra_step_dec: float | None = None
         #: Where the aperture last found the fibre. Frames with nothing to detect are
         #: measured here instead, so a dark cell yields a small number through the same
         #: window rather than a hole in the curve.
@@ -724,7 +727,13 @@ class FluxMeteringSession:
         if mount is None or mount.pw is None:
             raise FluxMeteringError("no mount")
 
-        mount.pw.mount_spiral_offset_new(self.params.x_step_arcsec, self.params.y_step_arcsec)
+        dec = self._dec_degrees()
+        try:
+            self._ra_step_commanded = commanded_ra_step(self.params.x_step_arcsec, dec)
+        except SpiralSearchError as ex:
+            raise FluxMeteringError(str(ex)) from ex
+        self._ra_step_dec = dec
+        mount.pw.mount_spiral_offset_new(self._ra_step_commanded, self.params.y_step_arcsec)
 
         best_flux: float | None = None
         best_ring = 0
@@ -787,16 +796,8 @@ class FluxMeteringSession:
         return cell, max(abs(cell[0]), abs(cell[1])), offset
 
     def _radius_arcsec(self, offset: tuple[float, float]) -> float:
-        """Sky angle from the origin, with cos(dec) on the RA axis.
-
-        `x_step_arcsec` is RA COORDINATE arcsec, so the angle on the sky along that axis is
-        the offset times cos(dec). Without it the radius reads 25% high at dec +41 -- the
-        same factor `_pixels_from_reference` carries, MAST_unit#136 -- and the cap would
-        mean a different thing at every declination.
-        """
-        dec = self._dec_degrees()
-        scale = math.cos(math.radians(dec)) if dec is not None else 1.0
-        return math.hypot(offset[0] * scale, offset[1])
+        """Sky angle from the origin. The steps are sky angles in both axes (MAST_unit#136)."""
+        return math.hypot(offset[0], offset[1])
 
     def _pixel_scale(self) -> float | None:
         """The configured plate scale, or None when it is unset.
@@ -1095,11 +1096,7 @@ class FluxMeteringSession:
         scale, _source = self._effective_pixel_scale()
         if not scale or scale <= 0.0:
             return None
-        dec, _dec_source = self._effective_dec()
-        # cos(dec) on the RA axis for the same reason the radius cap carries it: the step is
-        # RA COORDINATE arcsec, and the sky moves by that times cos(dec).
-        ra_scale = math.cos(math.radians(dec)) if dec is not None else 1.0
-        return (offset_arcsec[0] * ra_scale / scale, offset_arcsec[1] / scale)
+        return (offset_arcsec[0] / scale, offset_arcsec[1] / scale)
 
     # ------------------------------------------------------------------- plumbing --
 
@@ -1367,6 +1364,11 @@ class FluxMeteringSession:
             "dec_degrees": self._effective_dec()[0],
             "dec_source": self._effective_dec()[1],
             "dec_degrees_mount": self._dec_degrees(),
+            # The steps' offsets are sky angles; `spiral_correlate_steps` applies cos(dec) only
+            # to runs written before this key, whose RA offsets were coordinate arcsec.
+            "offsets_on_sky": True,
+            "ra_step_arcsec_commanded": self._ra_step_commanded,
+            "ra_step_dec_degrees": self._ra_step_dec,
             # The reference frame's own WCS: where the field actually was, at what scale and
             # rotation. `pixel_scale` here is MEASURED, so it can be set against the
             # configured `pixel_scale_at_bin1` above that `commanded_offset_px` relies on.
@@ -1380,7 +1382,9 @@ class FluxMeteringSession:
 
         try:
             if self.unit.mount is not None and self.unit.mount.pw is not None:
-                self.unit.mount.pw.mount_spiral_offset_new(self.params.x_step_arcsec, self.params.y_step_arcsec)
+                # Only zeroes the offset; the step is the walk's, or any when no walk began.
+                ra_step = self._ra_step_commanded or self.params.x_step_arcsec
+                self.unit.mount.pw.mount_spiral_offset_new(ra_step, self.params.y_step_arcsec)
         except Exception as ex:  # noqa: BLE001
             logger.error(f"could not reset the spiral offset: {ex}")
 

@@ -74,6 +74,29 @@ SESSION_TIMEOUT_SECONDS = 3600.0
 #: transfer.
 MAX_TRAILING_BLANK_ROWS = 2
 
+#: Above this |dec| a spiral is refused rather than walked: the RA coordinate step that
+#: covers a sky angle is 1/cos(dec) of it, ten times it at 84.3 deg and growing without
+#: bound towards the pole.
+MAX_RA_STEP_FACTOR = 10.0
+
+
+def commanded_ra_step(x_step_arcsec: float, dec_degrees: float | None) -> float:
+    """The RA step to give PWI4 so the spiral's RA step covers ``x_step_arcsec`` ON THE SKY.
+
+    PWI4 steps the RA coordinate, and a coordinate step covers ``cos(dec)`` of itself on the
+    sky (MAST_unit#136: 10" commanded at dec +41 moved the star 7.44"). Every spiral takes
+    its steps as sky angles, so its cells are square on the sky at any declination.
+    """
+    if dec_degrees is None:
+        raise SpiralSearchError("no declination to size the spiral's RA step for")
+    cos_dec = math.cos(math.radians(dec_degrees))
+    if cos_dec < 1.0 / MAX_RA_STEP_FACTOR:
+        raise SpiralSearchError(
+            f'at dec {dec_degrees:+.2f} an RA step of {x_step_arcsec:g}" on the sky needs '
+            f'{x_step_arcsec / max(cos_dec, 1e-9):.1f}" of RA; refusing beyond {MAX_RA_STEP_FACTOR:g} times the step'
+        )
+    return x_step_arcsec / cos_dec
+
 
 def _reject_truncated_frame(data, file_name: str) -> None:
     """Refuse a frame whose bottom rows are entirely zero.
@@ -125,6 +148,9 @@ class SpiralSearch:
         self.reference: Any = None
         self.x_step_arcsec: float = 0.0
         self.y_step_arcsec: float = 0.0
+        #: The RA step given to PWI4, and the declination it was sized for.
+        self.ra_step_arcsec_commanded: float | None = None
+        self.dec_degrees: float | None = None
         self.exposure_seconds: float = 0.0
         self.margin_horizontal: int = DEFAULT_MARGIN_HORIZONTAL
         self.margin_vertical: int = DEFAULT_MARGIN_VERTICAL
@@ -135,7 +161,6 @@ class SpiralSearch:
         self.save_intermediate_exposures: bool = False
         self.steps: list[dict] = []
         self.started_at: str | None = None
-        self._dec_degrees: float | None = None
         self._timer: threading.Timer | None = None
 
     @property
@@ -200,11 +225,8 @@ class SpiralSearch:
         identical cell sequence (1,0), (1,-1), (0,-1) at 1" and 10" steps respectively,
         which is what settles it: the values do not scale with the angular step.
 
-        The declination is picked up from the same status call, for the pixel estimate in
-        the step message. Both reads go through getattr: PWI4Status hangs its sections off
-        `Section`, which declares no attributes at all, so nothing here is checkable
-        statically -- and a mount that reports one field but not the other should cost the
-        message only the part that is missing.
+        The read goes through getattr: PWI4Status hangs its sections off `Section`, which
+        declares no attributes at all, so nothing here is checkable statically.
 
         An absent offset is a BRANCH, not an exception. PWI4 older than 4.0.11 Beta 8 does
         not report it and pwi4_client sets the whole section to None, which is a version
@@ -213,7 +235,6 @@ class SpiralSearch:
         """
         try:
             status = self.unit.mount.pw.status()  # type: ignore[union-attr]
-            self._dec_degrees = getattr(status.mount, "dec_j2000_degs", None)
             offset = getattr(status.mount, "spiral_offset", None)
             if offset is None:
                 logger.warning("this PWI4 does not report the spiral offset (needs 4.0.11 Beta 8 or later)")
@@ -223,27 +244,30 @@ class SpiralSearch:
             logger.exception("could not read PWI4 spiral offset")
             return {"x": None, "y": None}
 
+    def _mount_dec(self) -> float | None:
+        """The mount's declination now, for sizing the RA step; None when it cannot be read."""
+        try:
+            status = self.unit.mount.pw.status()  # type: ignore[union-attr]
+        except Exception:
+            logger.exception("could not read the mount's declination")
+            return None
+        return getattr(status.mount, "dec_j2000_degs", None)
+
     def _pixels_from_reference(self, x: int, y: int) -> float | None:
         """Roughly how far the field has moved, in detector pixels, since the reference.
 
-        Meant to be comparable with the shift ``end`` reports, which is why the RA axis
-        carries a cos(dec) factor: ``x_step_arcsec`` is RA COORDINATE arcsec, so the sky
-        moves ``x * x_step_arcsec * cos(dec)`` along it (MAST_unit#136, measured at dec
-        +41 as 7.44" for 10" commanded). Without it the estimate reads 25% high there and
-        invites an operator to distrust a correct measurement.
+        Meant to be comparable with the shift ``end`` reports. The steps are sky angles in
+        both axes, so no cos(dec) enters here.
 
         None -- so the caller can omit the clause -- when there is no configuration to give
-        the plate scale, or the declination is unknown: no estimate at all beats "0 px".
+        the plate scale: no estimate at all beats "0 px".
         With a configuration the scale is positive, the model refusing anything else
         (MAST_common `ImagerConfig.pixel_scale_at_bin1`, after MAST_unit#138 found 0.0 there).
         """
         conf = self.unit.unit_conf
-        if conf is None or self._dec_degrees is None:
+        if conf is None:
             return None
-        scale = conf.imager.pixel_scale_at_bin1
-        dx = x * self.x_step_arcsec * math.cos(math.radians(self._dec_degrees))
-        dy = y * self.y_step_arcsec
-        return math.hypot(dx, dy) / scale
+        return math.hypot(x * self.x_step_arcsec, y * self.y_step_arcsec) / conf.imager.pixel_scale_at_bin1
 
     def _revisit_clause(self, entry: dict) -> str:
         """Whether this cell has been occupied before in this session, and when.
@@ -295,7 +319,7 @@ class SpiralSearch:
             # what the braces meant back when this line was an f-string.
             "cell": (x, y),
             "ring": max(abs(x), abs(y)),
-            "offset": f"{x * self.x_step_arcsec:+.1f}arcsec RA, {y * self.y_step_arcsec:+.1f}arcsec Dec",
+            "offset": f"{x * self.x_step_arcsec:+.1f}arcsec RA, {y * self.y_step_arcsec:+.1f}arcsec Dec, on the sky",
             "revisit": self._revisit_clause(entry),
         }
         pixels = self._pixels_from_reference(x, y)
@@ -329,6 +353,12 @@ class SpiralSearch:
 
             assert self.unit.mount is not None and self.unit.mount.pw is not None and self.unit.imager is not None
 
+            dec_degrees = self._mount_dec()
+            try:
+                ra_step_arcsec = commanded_ra_step(x_step_arcsec, dec_degrees)
+            except SpiralSearchError as ex:
+                return CanonicalResponse(errors=[f"{op}: {ex}"])
+
             self.x_step_arcsec = x_step_arcsec
             self.y_step_arcsec = y_step_arcsec
             self.exposure_seconds = exposure_seconds
@@ -349,7 +379,8 @@ class SpiralSearch:
                 logger.error(f"{op}: cannot start the session -- {response.errors}")
                 return response
 
-            self.unit.mount.pw.mount_spiral_offset_new(x_step_arcsec=x_step_arcsec, y_step_arcsec=y_step_arcsec)
+            self.unit.mount.pw.mount_spiral_offset_new(x_step_arcsec=ra_step_arcsec, y_step_arcsec=y_step_arcsec)
+            self.ra_step_arcsec_commanded, self.dec_degrees = ra_step_arcsec, dec_degrees
             self.folder = PathMaker().make_spirals_folder()
             self.exposure_series = self.unit.imager.start_exposure_series(purpose="spiral")
 
@@ -380,8 +411,18 @@ class SpiralSearch:
             self._timer.daemon = True
             self._timer.start()
 
-            logger.info(f"{op}: spiral session open in '{self.folder}', steps ({x_step_arcsec}, {y_step_arcsec}) arcsec")
-            return CanonicalResponse(value={"folder": self.folder, "reference_image": REFERENCE_IMAGE})
+            logger.info(
+                f"{op}: spiral session open in '{self.folder}', steps ({x_step_arcsec}, {y_step_arcsec}) arcsec on the "
+                f"sky; RA step {ra_step_arcsec:.3f} arcsec commanded at dec {dec_degrees:+.3f}"
+            )
+            return CanonicalResponse(
+                value={
+                    "folder": self.folder,
+                    "reference_image": REFERENCE_IMAGE,
+                    "dec_degrees": dec_degrees,
+                    "ra_step_arcsec_commanded": ra_step_arcsec,
+                }
+            )
 
     def step(self, forward: bool) -> CanonicalResponse:
         op = function_name()
@@ -496,6 +537,8 @@ class SpiralSearch:
             "ended_at": isoformat_zulu(datetime.datetime.now(datetime.UTC)),
             "x_step_arcsec": self.x_step_arcsec,
             "y_step_arcsec": self.y_step_arcsec,
+            "ra_step_arcsec_commanded": self.ra_step_arcsec_commanded,
+            "dec_degrees": self.dec_degrees,
             "exposure_seconds": self.exposure_seconds,
             "margin_horizontal": self.margin_horizontal,
             "margin_vertical": self.margin_vertical,
