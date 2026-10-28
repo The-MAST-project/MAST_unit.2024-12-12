@@ -41,7 +41,7 @@ from lock_nudge import NudgeOutcome, nudge_lock_to_target
 from phd2.fits_header import stamp_cooling
 from phd2.limit_frame import limit_frame_accepted, limit_frame_covers_sensor, limit_frame_extent
 from phd2.phd2_locate import locate_phd2_exe
-from pointing_check import PointingMonitor
+from pointing_check import SOLVES_SUBFOLDER, PointingMonitor, guiding_folder
 from science.lock_validity import LockMetrics, LockValidityMonitor
 from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
 from stage import StagePresetPosition
@@ -664,7 +664,15 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 ra=Angle(acquisition.target_ra, unit="hour"),
                 dec=Angle(acquisition.target_dec, unit="deg"),
             )
-            outcome = nudge_lock_to_target(unit, self, target, conf, is_current=lambda: self._handover_is_current(session))
+            guiding = guiding_folder(acquisition.folder) if acquisition.folder else None
+            outcome = nudge_lock_to_target(
+                unit,
+                self,
+                target,
+                conf,
+                is_current=lambda: self._handover_is_current(session),
+                solves_folder=None if guiding is None else guiding / SOLVES_SUBFOLDER,
+            )
         except Exception as ex:
             logger.exception(f"{op}: lock nudge failed, continuing with the handover")
             outcome = NudgeOutcome(applied=False, reason=f"nudge failed: {ex!r}")
