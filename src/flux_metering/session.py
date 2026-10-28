@@ -1223,8 +1223,9 @@ class FluxMeteringSession:
                 ("CELLX", cell[0] if cell else None, "spiral cell x"),
                 ("CELLY", cell[1] if cell else None, "spiral cell y"),
                 ("RING", ring, "spiral ring"),
-                ("OFFRA", offset[0] if offset else None, "commanded RA offset, arcsec"),
+                ("OFFRA", offset[0] if offset else None, "RA offset on the sky, arcsec"),
                 ("OFFDEC", offset[1] if offset else None, "commanded Dec offset, arcsec"),
+                ("RASTEPC", self._ra_step_commanded, "RA step commanded to PWI4, RA-coord arcsec"),
             ]
 
         ra_hours = pointing.get("ra_j2000_hours")
@@ -1364,11 +1365,10 @@ class FluxMeteringSession:
             "dec_degrees": self._effective_dec()[0],
             "dec_source": self._effective_dec()[1],
             "dec_degrees_mount": self._dec_degrees(),
-            # The steps' offsets are sky angles; `spiral_correlate_steps` applies cos(dec) only
-            # to runs written before this key, whose RA offsets were coordinate arcsec.
-            "offsets_on_sky": True,
-            "ra_step_arcsec_commanded": self._ra_step_commanded,
-            "ra_step_dec_degrees": self._ra_step_dec,
+            # The RA step given to PWI4 for a step on the sky, as `acquire_and_save_spirals` names
+            # it. Its presence is what tells `spiral_correlate_steps` the offsets are on the sky.
+            "ra_step_commanded_arcsec": self._ra_step_commanded,
+            "dec_for_ra_step_degs": self._ra_step_dec,
             # The reference frame's own WCS: where the field actually was, at what scale and
             # rotation. `pixel_scale` here is MEASURED, so it can be set against the
             # configured `pixel_scale_at_bin1` above that `commanded_offset_px` relies on.

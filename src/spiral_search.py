@@ -419,8 +419,8 @@ class SpiralSearch:
                 value={
                     "folder": self.folder,
                     "reference_image": REFERENCE_IMAGE,
-                    "dec_degrees": dec_degrees,
-                    "ra_step_arcsec_commanded": ra_step_arcsec,
+                    "dec_for_ra_step_degs": dec_degrees,
+                    "ra_step_commanded_arcsec": ra_step_arcsec,
                 }
             )
 
@@ -537,8 +537,8 @@ class SpiralSearch:
             "ended_at": isoformat_zulu(datetime.datetime.now(datetime.UTC)),
             "x_step_arcsec": self.x_step_arcsec,
             "y_step_arcsec": self.y_step_arcsec,
-            "ra_step_arcsec_commanded": self.ra_step_arcsec_commanded,
-            "dec_degrees": self.dec_degrees,
+            "ra_step_commanded_arcsec": self.ra_step_arcsec_commanded,
+            "dec_for_ra_step_degs": self.dec_degrees,
             "exposure_seconds": self.exposure_seconds,
             "margin_horizontal": self.margin_horizontal,
             "margin_vertical": self.margin_vertical,

@@ -358,8 +358,8 @@ class TestTheStepsAreSquareOnTheSky:
 
         ra_step = 10.0 / math.cos(math.radians(FakePw.DEC_DEGREES))
         assert session.unit.mount.pw.steps_commanded == pytest.approx((ra_step, 4.0))
-        assert value["ra_step_arcsec_commanded"] == pytest.approx(ra_step)
-        assert value["dec_degrees"] == FakePw.DEC_DEGREES
+        assert value["ra_step_commanded_arcsec"] == pytest.approx(ra_step)
+        assert value["dec_for_ra_step_degs"] == FakePw.DEC_DEGREES
 
     def test_the_result_records_what_was_commanded(self, session):
         session.start(10.0, 4.0, exposure_seconds=1.0)
@@ -367,8 +367,8 @@ class TestTheStepsAreSquareOnTheSky:
 
         result = read_result(session.test_folder)
         assert result["x_step_arcsec"] == 10.0
-        assert result["ra_step_arcsec_commanded"] == pytest.approx(10.0 / math.cos(math.radians(FakePw.DEC_DEGREES)))
-        assert result["dec_degrees"] == FakePw.DEC_DEGREES
+        assert result["ra_step_commanded_arcsec"] == pytest.approx(10.0 / math.cos(math.radians(FakePw.DEC_DEGREES)))
+        assert result["dec_for_ra_step_degs"] == FakePw.DEC_DEGREES
 
     @pytest.mark.parametrize("dec", [None, 85.0, -85.0])
     def test_a_session_that_cannot_size_its_ra_step_is_refused(self, session, monkeypatch, dec):

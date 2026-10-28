@@ -1891,7 +1891,7 @@ class Unit(Component, OpmodeBase):
             "step#": 9,
             "cell": [2, 1],
             "ring": 2,
-            "offset": "+20.0arcsec RA, +10.0arcsec Dec (~115 px)",
+            "offset": "+20.0arcsec RA, +10.0arcsec Dec, on the sky (~86 px)",
             "revisit": "back at step#4",
         }
         ```
@@ -1988,13 +1988,11 @@ class Unit(Component, OpmodeBase):
                 )
             ),
         ] = False,
-        x_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along RA")] = 0.5,
-        y_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along Dec")] = 0.5,
+        x_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along RA, arcsec on the sky")] = 0.5,
+        y_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along Dec, arcsec on the sky")] = 0.5,
         max_rings: Annotated[int, Query(ge=1, description="Ceiling on the search; what normally ends it")] = 6,
         patience_rings: Annotated[int, Query(ge=1, description="Complete rings without improvement before stopping")] = 1,
-        max_radius_arcsec: Annotated[
-            float, Query(gt=0, description="Runaway guard, cos(dec)-corrected on the RA axis")
-        ] = 10.0,
+        max_radius_arcsec: Annotated[float, Query(gt=0, description="Runaway guard, arcsec on the sky")] = 10.0,
         flux_gain: Annotated[
             int,
             Query(

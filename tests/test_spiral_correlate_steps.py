@@ -84,7 +84,7 @@ def _run(
         if dec is not None:
             document["dec_degrees"] = dec
         if offsets_on_sky:
-            document["offsets_on_sky"] = True
+            document["ra_step_commanded_arcsec"] = 4.0  # its presence is what counts
         (folder / "result.json").write_text(json.dumps(document), encoding="utf-8")
     return folder, date, seq
 
