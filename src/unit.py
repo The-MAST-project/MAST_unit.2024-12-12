@@ -1847,6 +1847,11 @@ class Unit(Component, OpmodeBase):
             Tracking is started; `spiral_end_path()` stops it again.<br>
             **NOTE**: an abandoned session closes itself after an hour, without a measurement.
 
+            - **x_step_arcsec**, **y_step_arcsec**: the spiral's steps along RA and Dec, both as
+              angles **on the sky**, so the cells are square at any declination. The RA step
+              given to PWI4 is `x_step_arcsec / cos(dec)`, sized for the mount's declination
+              now; both are in the response. Refused within 5.7 deg of the pole, where that
+              step exceeds ten times `x_step_arcsec`.
             - **exposure_seconds**: exposure for every frame in the session (binning is always 1)
             - **save_intermediate_exposures**: when false (default) only the reference and final
               frames are kept; every step is logged either way
@@ -1886,7 +1891,7 @@ class Unit(Component, OpmodeBase):
             "step#": 9,
             "cell": [2, 1],
             "ring": 2,
-            "offset": "+20.0arcsec RA, +10.0arcsec Dec (~115 px)",
+            "offset": "+20.0arcsec RA, +10.0arcsec Dec, on the sky (~86 px)",
             "revisit": "back at step#4",
         }
         ```
@@ -1983,13 +1988,11 @@ class Unit(Component, OpmodeBase):
                 )
             ),
         ] = False,
-        x_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along RA")] = 0.5,
-        y_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along Dec")] = 0.5,
+        x_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along RA, arcsec on the sky")] = 0.5,
+        y_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along Dec, arcsec on the sky")] = 0.5,
         max_rings: Annotated[int, Query(ge=1, description="Ceiling on the search; what normally ends it")] = 6,
         patience_rings: Annotated[int, Query(ge=1, description="Complete rings without improvement before stopping")] = 1,
-        max_radius_arcsec: Annotated[
-            float, Query(gt=0, description="Runaway guard, cos(dec)-corrected on the RA axis")
-        ] = 10.0,
+        max_radius_arcsec: Annotated[float, Query(gt=0, description="Runaway guard, arcsec on the sky")] = 10.0,
         flux_gain: Annotated[
             int,
             Query(
