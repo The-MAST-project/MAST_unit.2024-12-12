@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import time
+from contextlib import ExitStack
 from pathlib import Path
 from threading import Thread
 from typing import TYPE_CHECKING, cast
@@ -25,6 +26,9 @@ from phd2.limit_frame import derived_guiding_roi
 from .astrometry_dot_net import generate_random_string, parse_solver_output, win_to_cygwin
 from .pixel_grid import roi_center_to_crpix
 from .ram_area import index_dir, missing_indexes, scratch_dir
+
+#: solve-field's records of a solve, by the option that asks for each, and the suffix it gets.
+METAFILE_SUFFIXES = {"--corr": ".corr", "--match": ".match", "--index-xyls": "-indx.xyls", "--rdls": ".rdls"}
 
 logger = get_logger(__name__)
 if TYPE_CHECKING:
@@ -91,6 +95,7 @@ class MastrometryDotNet(SolverInterface):
         target: Coord | None = None,
         keep_artifacts: bool = True,
         frame_origin: tuple[int, int] | None = None,
+        metafiles_folder: Path | None = None,
     ) -> SolvingResult | None:
         """
         MAST specific astrometry.net solver implementation.
@@ -104,6 +109,13 @@ class MastrometryDotNet(SolverInterface):
         the input and follow it to the shared area; without it they are discarded with the
         scratch folder, for callers that solve every few minutes and record the result
         themselves.
+
+        Beside them go solve-field's own records of the solve, for judging how good it was:
+        `.corr` (matched field and index stars), `.match` (the match, with its log-odds),
+        `-indx.xyls` (index stars in the field) and `.rdls` (field sources on the sky). Their
+        pixel positions are in the downsampled, cropped frame solve-field was given. A caller
+        that does not keep artifacts can still keep these and the result text, in
+        `metafiles_folder`.
 
         `frame_origin` is where the input sits on the sensor when it is a limit-frame crop
         rather than the full frame. The phase ROI is then clipped to the frame, and the
@@ -138,10 +150,25 @@ class MastrometryDotNet(SolverInterface):
         artifact_stem = f"{Path(full_frame_input_image_path).stem},solver={self.name}"
         new_fits_path = win_tmp_dir / f"{artifact_stem}.fits"
         result_file = win_tmp_dir / f"{artifact_stem}-result.txt"
+        metafiles = {option: win_tmp_dir / f"{artifact_stem}{suffix}" for option, suffix in METAFILE_SUFFIXES.items()}
+
+        if keep_artifacts:
+            kept, kept_in = [result_file, new_fits_path, *metafiles.values()], Path(full_frame_input_image_path).parent
+        elif metafiles_folder is not None:
+            kept, kept_in = [result_file, *metafiles.values()], metafiles_folder
+        else:
+            kept, kept_in = [], Path(full_frame_input_image_path).parent
 
         try:
             return self._solve_in(
-                win_tmp_dir, new_fits_path, result_file, phase, full_frame_input_image_path, target, frame_origin
+                win_tmp_dir,
+                new_fits_path,
+                result_file,
+                metafiles,
+                phase,
+                full_frame_input_image_path,
+                target,
+                frame_origin,
             )
         finally:
             # The solved frame (it carries the WCS -- MAST_unit#27) and the solver's own
@@ -150,12 +177,7 @@ class MastrometryDotNet(SolverInterface):
             Thread(
                 target=self._run_logged,
                 name="mastrometry-cleanup",
-                args=(
-                    self.cleanup,
-                    [result_file, new_fits_path] if keep_artifacts else [],
-                    Path(full_frame_input_image_path).parent,
-                    win_tmp_dir,
-                ),
+                args=(self.cleanup, kept, kept_in, win_tmp_dir),
             ).start()
 
     def _solve_in(  # noqa: C901
@@ -163,6 +185,7 @@ class MastrometryDotNet(SolverInterface):
         win_tmp_dir: Path,
         new_fits_path: Path,
         result_file: Path,
+        metafiles: dict[str, Path],
         phase: Const.SolvingPhase,
         full_frame_input_image_path: str,
         target: Coord | None,
@@ -323,12 +346,6 @@ class MastrometryDotNet(SolverInterface):
                 "30",  # timeout in seconds
                 "--solved",
                 "none",
-                "--match",
-                "none",
-                "--rdls",
-                "none",
-                "--corr",
-                "none",
                 # Output control
                 "--dir",
                 win_to_cygwin(str(win_tmp_dir)),
@@ -369,6 +386,9 @@ class MastrometryDotNet(SolverInterface):
                     str(refpix[1]),
                 ]
 
+            for option, path in metafiles.items():
+                args += [option, win_to_cygwin(str(path))]
+
             args += [
                 "--new-fits",
                 win_to_cygwin(str(new_fits_path)),
@@ -384,7 +404,10 @@ class MastrometryDotNet(SolverInterface):
         # protect() is also what marks a path as a product -- it is what stops
         # MoveGuardian.release_folder from discarding it as scratch. Every other writer in
         # the fleet does this; this solver was the one that did not.
-        with MoveGuardian().protect(str(new_fits_path)):
+        # The meta-files likewise, so they are products, not scratch, wherever they are kept.
+        with ExitStack() as products:
+            for path in [new_fits_path, *metafiles.values()]:
+                products.enter_context(MoveGuardian().protect(str(path)))
             completed_process = subprocess.run(
                 command, capture_output=True, shell=True, env=env, check=False
             )  # returncode is inspected below
@@ -487,8 +510,9 @@ class MastrometryDotNet(SolverInterface):
         """Keep the solver's own artifacts, discard its scratch.
 
         `target_folder` is the acquisition folder holding the input frame, so the solved
-        FITS and the result text land beside it and are then handed to the mover -- the
-        frame itself is moved by Solver.solve, which owns it.
+        FITS, the result text and the meta-files land beside it and are then handed to the
+        mover -- the frame itself is moved by Solver.solve, which owns it. For a caller that
+        discards its frame it is that caller's `metafiles_folder`.
         """
         filer = Filer(logger)
         files_to_move = [f for f in files_to_move if f.exists()]
