@@ -45,6 +45,11 @@ chain="…"` at INFO, and `DEGRADED usb-link=HighSpeed …` at WARNING when a US
 the link. `DEGRADED` is the tag for any degradation that is not a fault; the line format
 is pinned in `tests/test_usb_link.py`. It never fails startup (`DECISIONS.md` 2026-09-27).
 
+The cool-down watcher logs the cooler's verdict the same way, once per cool-down:
+`cooler=regulating temp=… set-point=… power=… after=…s` at INFO when the sensor reaches the
+set point, and `DEGRADED cooler=unreached …` at WARNING when it is still short of it after
+`COOLING_SLOW_WARNING_SECONDS`. The line format is pinned in `tests/test_cooler_verdict.py`.
+
 ## Tests
 
 `tests/` holds a pytest suite that drives the real connector code with mocked
