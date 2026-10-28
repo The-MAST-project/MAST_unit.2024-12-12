@@ -140,11 +140,13 @@ class FakeClock:
 
 @pytest.fixture
 def clock(monkeypatch):
+    """`lock_nudge`'s own `time`, not the shared module: patching `time.sleep` itself also
+    advanced the fake clock from inside astropy's 187 MB full-sensor write on Windows, a
+    whole cadence, and the nudge rightly discarded the frame as superseded."""
     import lock_nudge
 
     fake = FakeClock()
-    monkeypatch.setattr(lock_nudge.time, "monotonic", fake.monotonic)
-    monkeypatch.setattr(lock_nudge.time, "sleep", fake.sleep)
+    monkeypatch.setattr(lock_nudge, "time", SimpleNamespace(monotonic=fake.monotonic, sleep=fake.sleep))
     return fake
 
 
