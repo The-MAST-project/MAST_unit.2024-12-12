@@ -37,7 +37,7 @@ from common.models.statuses import (
 from common.process import WatchedProcess
 from common.utils import Coord, Timeout, boxed_debug, function_name
 from failure_streaks import FailureStreaks
-from lock_nudge import NudgeOutcome, nudge_lock_to_target
+from lock_nudge import GuideStep, NudgeOutcome, nudge_lock_to_target
 from phd2.fits_header import stamp_cooling
 from phd2.limit_frame import limit_frame_accepted, limit_frame_covers_sensor, limit_frame_extent
 from phd2.phd2_locate import locate_phd2_exe
@@ -407,9 +407,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         self._pending: dict[int, queue.SimpleQueue] = {}
         self.app_state = ""
         self.avg_dist = 0
-        #: GuideSteps seen so far, and the latest one's own guide distance in pixels: what
-        #: the lock nudge waits on for a new frame, and counts to confirm a lock move.
-        self.latest_guide_step: tuple[int, float] = (0, 0.0)
+        #: GuideSteps seen so far, and the latest one's star offset from the lock: where the
+        #: lock nudge takes the guide star from, and what it counts to confirm a lock move.
+        self.latest_guide_step: GuideStep = GuideStep(count=0, dx=0.0, dy=0.0)
         self.version = ""
         self.sub_version = ""
         self.accumulators_active = False
@@ -918,7 +918,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     self.app_state = "Guiding"
                     self.start_activity(PHD2Activities.Guiding, existing_ok=True)
                     self.avg_dist = ev["AvgDist"]
-                    self.latest_guide_step = (self.latest_guide_step[0] + 1, math.hypot(ev["dx"], ev["dy"]))
+                    self.latest_guide_step = GuideStep(count=self.latest_guide_step.count + 1, dx=ev["dx"], dy=ev["dy"])
                     if self.accumulators_active:
                         self.stats = stats
                 lines = []
