@@ -46,6 +46,9 @@ logger = get_logger(__name__)
 THREAD_NAME = "pointing-check"
 JOURNAL_NAME = "pointing-check.jsonl"
 JOURNAL_SUBFOLDER = "guiding"
+#: Beside the journal: solve-field's records of each guide-frame solve (MastrometryDotNet's
+#: meta-files and result text). The frames themselves are not kept.
+SOLVES_SUBFOLDER = "solves"
 
 #: Samples kept for the status; the journal holds the whole session.
 RECENT_SAMPLES = 20
@@ -89,6 +92,19 @@ def place_guide_frame(connector, width: int, height: int) -> GuideFramePlacement
     if limit is None or (limit.width, limit.height) != (width, height):
         return None
     return GuideFramePlacement(crop=limit)
+
+
+def guiding_folder(acquisition_folder: str) -> Path | None:
+    """Where an acquisition's guiding records go: its folder on the share, `guiding/`.
+
+    Not the folder itself: that is on the RAM disk and is released when the
+    acquisition thread ends, which is before guiding has even settled.
+    """
+    try:
+        shared = Filer().to_top(FilingArea.SHARE, acquisition_folder)
+    except ValueError:
+        return None
+    return Path(shared) / JOURNAL_SUBFOLDER
 
 
 def unplaced_frame_reason(width: int, height: int) -> str:
@@ -224,6 +240,7 @@ class PointingMonitor:
                 phase=SOLVING_PHASE,
                 full_frame_input_image_path=image_path,
                 keep_artifacts=False,
+                metafiles_folder=None if self._journal is None else self._journal.parent / SOLVES_SUBFOLDER,
                 target=target,
                 **placement.solve_kwargs(),
             )
@@ -295,13 +312,4 @@ class PointingMonitor:
         return None if stage is None else stage.at_preset(StagePresetPosition.Spec)
 
     def _journal_folder(self, acquisition_folder: str) -> Path | None:
-        """The acquisition's folder on the share.
-
-        Not the folder itself: that is on the RAM disk and is released when the
-        acquisition thread ends, which is before guiding has even settled.
-        """
-        try:
-            shared = Filer().to_top(FilingArea.SHARE, acquisition_folder)
-        except ValueError:
-            return None
-        return Path(shared) / JOURNAL_SUBFOLDER
+        return guiding_folder(acquisition_folder)

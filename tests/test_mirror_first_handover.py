@@ -51,7 +51,7 @@ class FakeUnit:
         self.active: set = set()
         self.events: list[tuple[str, UnitActivities]] = []
         self.acquirer = SimpleNamespace(
-            latest_acquisition=SimpleNamespace(target_ra=1.0, target_dec=2.0, latest=None),
+            latest_acquisition=SimpleNamespace(target_ra=1.0, target_dec=2.0, latest=None, folder=None),
         )
 
     def start_activity(self, activity):

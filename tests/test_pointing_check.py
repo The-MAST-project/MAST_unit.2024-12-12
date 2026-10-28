@@ -247,6 +247,20 @@ class TestALimitFrame:
         assert "frame_origin" not in call
 
 
+class TestTheSolvesRecords:
+    def test_the_solve_keeps_its_metafiles_beside_the_journal(self, tmp_path, journal_dir):
+        """The frame goes, but solve-field's records of the solve stay, to judge it by."""
+        backend = FakeBackend(solved())
+        monitor = PointingMonitor(FakeConnector(tmp_path, backend=backend))
+        monitor.start_session()
+
+        monitor.sample_once()
+
+        (call,) = backend.calls
+        assert call["keep_artifacts"] is False
+        assert call["metafiles_folder"] == journal_dir / "solves"
+
+
 class TestUnavailable:
     @pytest.mark.parametrize(
         ("frame_size", "limit_frame", "profile_binning"),
