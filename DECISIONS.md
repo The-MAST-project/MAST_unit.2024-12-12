@@ -2,6 +2,29 @@
 
 ---
 
+## [2026-10-29] expose reports each frame in status.latest.exposure
+
+**Why:** `expose` answers before it exposes, and its record carried only a count and the last
+frame's path on the unit. A caller off the unit could not tell which files a run wrote, when
+each was exposed, or which failed, and on PHD2 a failed frame (no file written, no exception)
+was counted as saved and handed to the mover. The flux-metering orchestrator needs each
+frame's window to pair it with the flux camera's frames. MAST_unit#327.
+
+**What:** `LatestExposure.frames` (MAST_common) lists every frame attempted: `name`,
+`date_obs` and `exposure_seconds` read from the saved FITS (`EXPTIME` where `EXPOSURE` is
+absent), and `error`. `DATE-OBS` is reported aware UTC; PHD2 writes it without a zone. A frame
+with no file is recorded failed and not moved; a refused start or a failed wait is recorded
+before it ends the run; an aborted frame is recorded as `aborted`. `completed` and
+`last_frame` are computed from `frames`, keeping their wire keys. The record is read in the
+expose loop, not in the PHD2 backend that #30 rewrites. No run id: the record replaced before
+`expose` answers is the run, and the caller's `subfolder` identifies it.
+
+**Implications:** `completed` no longer counts frames PHD2 failed to save, so a run with one
+reads `succeeded: false` with `k of n frames`. On the ASCOM and ZWO backends `DATE-OBS` is the
+save time, so the window is wrong there; no unit runs them.
+
+---
+
 ## [2026-10-20] start_guiding sets the guide exposure from the config DB
 
 **Why:** `start_guiding` never sent an exposure, so PHD2 guided at its profile's

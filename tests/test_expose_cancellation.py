@@ -22,11 +22,14 @@ on-unit run instead.
 
 from __future__ import annotations
 
+import itertools
 import threading
 import time
 import types
+from typing import Any
 
 import pytest
+from astropy.io import fits
 
 from common.activities import ImagerActivities, UnitActivities
 from unit import Unit
@@ -36,17 +39,18 @@ FRAME_SECONDS = 5.0
 
 
 class Recorder:
-    """An imager that exposes instantly and remembers what it was asked to do."""
+    """An imager that exposes instantly, writes the frame, and remembers what it was asked to do."""
 
     def __init__(self):
         self.exposures = 0
-        self.latest_settings = None
+        self.latest_settings: Any = None
 
     def start_exposure(self, settings):
         self.exposures += 1
+        self.latest_settings = settings
 
     def wait_for_image_saved(self):
-        pass
+        fits.PrimaryHDU().writeto(self.latest_settings.image_path)
 
 
 class Mount:
@@ -78,15 +82,16 @@ class Runner:
 
 
 @pytest.fixture
-def moved(monkeypatch):
+def moved(monkeypatch, tmp_path):
     """The image paths `_expose_repeatedly` handed to the filer during one test."""
     import unit as unit_module
 
     paths: list[str] = []
+    numbers = itertools.count()
 
     class Settings:
         def __init__(self, **kwargs):
-            self.image_path = "ram/frame.fits"
+            self.image_path = (tmp_path / f"frame-{next(numbers):03d}.fits").as_posix()
 
     class Guardian:
         def protect(self, path):
@@ -179,6 +184,7 @@ class TestTheCadence:
 
         assert time.monotonic() - started < 1.0
         assert runner.imager.exposures == 3
+        assert len(moved) == 3, "every frame was written, so every frame is moved"
 
     def test_an_overrun_starts_the_next_exposure_without_holding(self, moved):
         runner = Runner()
