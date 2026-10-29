@@ -26,6 +26,8 @@ import json
 import math
 import os
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from astropy.io import fits
@@ -125,6 +127,10 @@ class SpiralSearch:
         #: The latest session's record, published as `FullUnitStatus.latest.spiral`. Not
         #: reset by `_clear`: a closed session stays reported until the next one starts.
         self.latest: LatestSpiral | None = None
+        #: Counts sessions opened, so an abort that waited for the lock closes only the
+        #: session it was asked to close.
+        self._session_generation = 0
+        self._abort_waiter: threading.Thread | None = None
         self._clear()
 
     def _clear(self) -> None:
@@ -141,6 +147,9 @@ class SpiralSearch:
         self.center_x: int = 0
         self.center_y: int = 0
         self.save_intermediate_exposures: bool = False
+        #: False: the session only moves the mount, and the frames are the caller's `/expose`.
+        self.frames: bool = True
+        self._tracking_was_on: bool = False
         self.steps: list[dict] = []
         self.started_at: str | None = None
         self._dec_degrees: float | None = None
@@ -322,9 +331,18 @@ class SpiralSearch:
         center_x: int | None = None,
         center_y: int | None = None,
         usable_fraction: float | None = None,
+        frames: bool = True,
     ) -> CanonicalResponse:
         op = function_name()
         with self._lock:
+            refusal = self._busy_refusal()
+            if refusal is None and self.unit.is_active(UnitActivities.FluxMetering):
+                refusal = "a flux-metering run is driving PWI4's spiral"
+            if refusal is None and not frames and save_intermediate_exposures:
+                refusal = "a session with frames=false takes no frames, so it cannot save intermediate exposures"
+            if refusal is not None:
+                return CanonicalResponse(errors=[f"{op}: {refusal}"])
+
             if self.is_active:
                 logger.warning(f"{op}: a spiral session was still open; closing it before starting a new one")
                 self._abandon("superseded by a new spiral session")
@@ -338,11 +356,13 @@ class SpiralSearch:
             assert self.unit.mount is not None and self.unit.mount.pw is not None and self.unit.imager is not None
 
             self.latest = LatestSpiral(
+                frames=frames,
                 x_step_arcsec=x_step_arcsec,
                 y_step_arcsec=y_step_arcsec,
-                exposure_seconds=exposure_seconds,
+                exposure_seconds=exposure_seconds if frames else None,
                 save_intermediate_exposures=save_intermediate_exposures,
             ).begin()
+            self.frames = frames
             self.x_step_arcsec = x_step_arcsec
             self.y_step_arcsec = y_step_arcsec
             self.exposure_seconds = exposure_seconds
@@ -358,6 +378,7 @@ class SpiralSearch:
             # shift of (-0.0, 0.01) with confidence 0.93, an answer that was wrong and looked
             # healthy. Refusing here is the difference between one clear error and a night's
             # worth of unusable frames.
+            self._tracking_was_on = bool(self.unit.mount.is_tracking)
             response = self.unit.mount.start_tracking()
             if response is not None and response.failed:
                 logger.error(f"{op}: cannot start the session -- {response.errors}")
@@ -367,6 +388,16 @@ class SpiralSearch:
             self.unit.mount.pw.mount_spiral_offset_new(x_step_arcsec=x_step_arcsec, y_step_arcsec=y_step_arcsec)
             self.folder = PathMaker().make_spirals_folder()
             self.latest.products_at(self.folder)
+            self._session_generation += 1
+            if not frames:
+                self._log_step(direction="origin", image=None)
+                self._arm_timer()
+                logger.info(
+                    f"{op}: frameless spiral session open in '{self.folder}', "
+                    f"steps ({x_step_arcsec}, {y_step_arcsec}) arcsec"
+                )
+                return CanonicalResponse(value={"folder": self.folder, "reference_image": None})
+
             self.exposure_series = self.unit.imager.start_exposure_series(purpose="spiral")
 
             try:
@@ -403,6 +434,9 @@ class SpiralSearch:
         with self._lock:
             if not self.is_active:
                 return CanonicalResponse(errors=[f"{op}: no spiral session is open; call spiral_new_path first"])
+            refusal = self._busy_refusal()
+            if refusal is not None:
+                return CanonicalResponse(errors=[f"{op}: {refusal}"])
 
             assert self.unit.mount is not None and self.unit.mount.pw is not None
 
@@ -456,8 +490,21 @@ class SpiralSearch:
         with self._lock:
             if not self.is_active:
                 return CanonicalResponse(errors=[f"{op}: no spiral session is open"])
+            refusal = self._busy_refusal()
+            if refusal is not None:
+                return CanonicalResponse(errors=[f"{op}: {refusal}"])
 
             self._cancel_timer()
+            if not self.frames:
+                result = self._result()
+                self._write_result(result)
+                if self.latest is not None:
+                    self.latest.finish(True)
+                    self.latest.write()
+                self._close()
+                logger.info(f"{op}: frameless spiral session closed after {len(self.steps) - 1} steps")
+                return CanonicalResponse(value=result)
+
             try:
                 _path, final = self._expose(FINAL_IMAGE)
             except Exception as ex:
@@ -523,10 +570,11 @@ class SpiralSearch:
         self.steps.append(entry)
         return entry
 
-    def _result(self, **extra) -> dict:
+    def _result(self, reason: str | None = None, **extra) -> dict:
         shift = extra.get("shift")
         magnitude = extra.get("magnitude")
         result: dict = {
+            "frames": self.frames,
             "started_at": self.started_at,
             "ended_at": isoformat_zulu(datetime.datetime.now(datetime.UTC)),
             "x_step_arcsec": self.x_step_arcsec,
@@ -539,12 +587,14 @@ class SpiralSearch:
             "center_x": self.center_x,
             "center_y": self.center_y,
             "save_intermediate_exposures": self.save_intermediate_exposures,
-            "reference_image": REFERENCE_IMAGE,
+            "reference_image": REFERENCE_IMAGE if self.frames else None,
             "steps": self.steps,
             "aborted": False,
         }
-        if shift is None:
-            return result | {"final_image": None, "shift": None, "aborted": True, "abort_reason": extra.get("reason")}
+        if reason is not None:
+            return result | {"final_image": None, "shift": None, "aborted": True, "abort_reason": reason}
+        if shift is None:  # a frameless session, closed by spiral_end_path: nothing to measure
+            return result | {"final_image": None, "shift": None}
 
         result |= {
             "final_image": FINAL_IMAGE,
@@ -569,6 +619,10 @@ class SpiralSearch:
                 return  # end() got here first
             if generation != self._timer_generation:
                 return  # fired while a step held the lock; that step re-armed it
+            if self.unit.is_active(UnitActivities.Exposing):
+                logger.info(f"spiral session in '{self.folder}': timeout reached during an exposure run; re-armed")
+                self._arm_timer()
+                return
             logger.warning(
                 f"spiral session in '{self.folder}' abandoned: no step or spiral_end_path within "
                 f"{SESSION_TIMEOUT_SECONDS / 3600:.0f}h. Closing WITHOUT a final frame -- nobody confirmed the "
@@ -592,6 +646,69 @@ class SpiralSearch:
             self.latest.write()
         self._close()
 
+    def abort(self) -> None:
+        """Close an open session for `unit/abort`, as abandoned and without a final frame.
+
+        Never waits: a verb in flight holds the lock through an exposure, and `abort` has to
+        answer at once. The imager's own abort releases that frame; the session is closed
+        when the verb lets go, unless a new session has been opened by then.
+        """
+        if not self.is_active:
+            return
+        generation = self._session_generation
+        if self._lock.acquire(blocking=False):
+            try:
+                self._abort_session(generation)
+            finally:
+                self._lock.release()
+            return
+        self._abort_waiter = threading.Thread(
+            name="spiral-abort", target=self.do_abort_when_free, args=[generation], daemon=True
+        )
+        self._abort_waiter.start()
+
+    def do_abort_when_free(self, generation: int) -> None:
+        with self._lock:
+            self._abort_session(generation)
+
+    def _abort_session(self, generation: int) -> None:
+        if self.is_active and generation == self._session_generation:
+            logger.warning(f"spiral session in '{self.folder}' closed by unit/abort")
+            self._abandon("aborted")
+
+    @contextmanager
+    def held_for_expose(self, moves_mount: bool) -> Iterator[str | None]:
+        """Why `/expose` may not run now, or None, holding the session while it sets up.
+
+        `/expose` keeps this open from its checks until it has raised `Exposing`, which every
+        session verb refuses on; so no step can start between the check and the run.
+        `moves_mount`: the run slews or offsets the mount.
+        """
+        if not self._lock.acquire(blocking=False):
+            yield "a spiral session is busy moving the mount or taking its frame; try again once it answers"
+            return
+        try:
+            yield self._expose_refusal(moves_mount)
+        finally:
+            self._lock.release()
+
+    def _expose_refusal(self, moves_mount: bool) -> str | None:
+        if not self.is_active:
+            return None
+        if self.frames:
+            return (
+                f"a spiral session is open in '{self.folder}' and holds the imager; end it with spiral_end_path "
+                "or unit/abort, or open it with frames=false to take the frames with expose"
+            )
+        if moves_mount:
+            return "a frameless spiral session is open: coordinates and offsets would move the mount outside PWI4's spiral"
+        return None
+
+    def _busy_refusal(self) -> str | None:
+        if self.unit.is_active(UnitActivities.Exposing):
+            return "an exposure run is in flight; the spiral would move the mount or take the imager under its frame"
+        return None
+
     def _arm_timer(self) -> None:
         self._cancel_timer()
         self._timer_generation += 1
@@ -608,7 +725,8 @@ class SpiralSearch:
         """Stop tracking, end the series, reap the folder. Caller holds the lock."""
         if self.unit.imager is not None and self.exposure_series is not None:
             self.unit.imager.end_exposure_series(self.exposure_series)
-        if self.unit.mount is not None:
+        # A frameless session leaves tracking as it found it (#302); the imaging one stops it (#304).
+        if self.unit.mount is not None and (self.frames or not self._tracking_was_on):
             self.unit.mount.stop_tracking()
         if self.folder is not None:
             # Removed once every protected artifact -- the two frames and result.json --

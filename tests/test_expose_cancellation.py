@@ -213,6 +213,17 @@ class TestAbortReachesTheRun:
 
         flux_metering = _FluxMetering()
 
+        class _Spiral:
+            """No session open: `Unit.abort` closes one only when it is."""
+
+            is_active = False
+            aborted = 0
+
+            def abort(self):
+                self.aborted += 1
+
+        spiral = _Spiral()
+
         def __init__(self, exposing: bool):
             self.activities = {UnitActivities.Exposing} if exposing else set()
             self._expose_cancelled = threading.Event()
@@ -247,6 +258,25 @@ class TestAbortReachesTheRun:
         Unit.abort(stub)  # type: ignore[arg-type]
 
         assert stub.is_active(UnitActivities.Exposing), "abort must not clear the completion signal"
+
+    def test_abort_closes_an_open_spiral_session(self):
+        """Left open, an imaging session would hold the imager against `/expose` until its
+        hour ran out, with tracking already off (MAST_unit#385)."""
+        stub = self.Aborting(exposing=False)
+        stub.spiral = self.Aborting._Spiral()
+        stub.spiral.is_active = True
+
+        Unit.abort(stub)  # type: ignore[arg-type]
+
+        assert stub.spiral.aborted == 1
+
+    def test_abort_leaves_no_session_alone(self):
+        stub = self.Aborting(exposing=False)
+        stub.spiral = self.Aborting._Spiral()
+
+        Unit.abort(stub)  # type: ignore[arg-type]
+
+        assert stub.spiral.aborted == 0
 
     def test_abort_with_no_run_in_flight_cancels_nothing(self):
         stub = self.Aborting(exposing=False)

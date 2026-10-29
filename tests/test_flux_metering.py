@@ -147,6 +147,7 @@ class FakeUnit:
         self.stage = FakeStage()
         self.activities = 0
         self.activities_verbal = []
+        self.spiral = SimpleNamespace(is_active=False)
         self.started: list = []
         self.ended: list = []
 
@@ -699,6 +700,16 @@ def test_a_second_run_is_refused_while_one_is_in_progress(session):
     s, _unit, _mount, _meter = session()
     s._thread = SimpleNamespace(is_alive=lambda: True)
     assert "already in progress" in (s.require_can_start() or "")
+
+
+def test_a_run_is_refused_while_a_spiral_session_is_open(session):
+    """Both drive PWI4's one spiral, and would reset it under each other (MAST_unit#385)."""
+    s, unit, _mount, _meter = session()
+    unit.spiral = SimpleNamespace(is_active=True)
+
+    refusal = s.require_can_start()
+
+    assert refusal is not None and "spiral session" in refusal
 
 
 def test_a_busy_unit_is_refused_and_says_what_it_is_doing(session):
