@@ -27,6 +27,8 @@ from astropy.io import fits
 
 import spiral_search
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from common.filer import Filer, FilingArea
+from common.models.latest import LATEST_FILE
 from common.models.statuses import ImagerRoi
 from spiral_search import FINAL_IMAGE, REFERENCE_IMAGE, RESULT_FILE, SpiralSearch
 
@@ -160,7 +162,9 @@ class FakeUnit:
 @pytest.fixture
 def session(tmp_path, monkeypatch):
     """A SpiralSearch writing into tmp_path, with the mover and reaper stubbed out."""
-    folder = tmp_path / "Spirals" / "0001"
+    # Under the suite's RAM area (common.testing.filer), so the record derives its share
+    # paths through a real Filer.
+    folder = Path(spiral_search.filer.ram.root) / tmp_path.name / "Spirals" / "0001"
     folder.mkdir(parents=True)
 
     monkeypatch.setattr(spiral_search, "guiding_roi", lambda: FakeRoi())
@@ -168,7 +172,8 @@ def session(tmp_path, monkeypatch):
     monkeypatch.setattr(spiral_search.PathMaker, "make_seq", lambda self, f: f"{len(os.listdir(f)):04d}")
 
     moved: list[str] = []
-    monkeypatch.setattr(spiral_search.filer, "move_ram_to_shared", lambda p: moved.append(str(p)))
+    # On the class: the latest record hands its file to the mover through a Filer of its own.
+    monkeypatch.setattr(Filer, "move_ram_to_shared", lambda self, p: moved.append(str(p)))
     reaped: list[str] = []
     monkeypatch.setattr(
         spiral_search.MoveGuardian, "release_folder", lambda self, f, logger=None, timeout=None: reaped.append(str(f))
@@ -441,12 +446,147 @@ class TestEndingASession:
         assert result["shift_magnitude_pixels"] > 1.0
 
 
+def share_path(session, name: str) -> str:
+    return Filer().to_top(FilingArea.SHARE, os.path.join(session.test_folder, name))
+
+
+class TestTheLatestRecord:
+    """`status.latest.spiral`: a caller off the unit follows the session there and reads its
+    frames from the share, rather than guessing `<night>/Spirals/<NNNN>` -- a guess
+    MAST_common#137 makes wrong after a reboot, when the folder numbers restart."""
+
+    def test_an_open_session_is_running_with_its_share_folder(self, session):
+        session.start(2.0, 3.0, exposure_seconds=4.0, save_intermediate_exposures=True)
+
+        record = session.latest
+        assert record.running and record.succeeded is None
+        assert (record.x_step_arcsec, record.y_step_arcsec, record.exposure_seconds) == (2.0, 3.0, 4.0)
+        assert record.shared_products_path == Filer().to_top(FilingArea.SHARE, str(session.test_folder))
+
+    def test_a_saved_step_frame_is_reported_by_its_share_path(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=True)
+
+        value = session.step(forward=True).value
+
+        name = session.steps[-1]["image"]
+        assert value["image"] == share_path(session, name)
+        assert "image_error" not in value
+        assert session.latest.steps == 1 and session.latest.last_frame.endswith(f"/{name}")
+
+    def test_while_the_share_is_demoted_no_share_path_is_reported(self, session, monkeypatch):
+        """Products go to the unit's share fallback then. A caller told the share path would
+        wait for a file that never arrives -- the frames lost on 2026-07-14."""
+        monkeypatch.setitem(Filer._demoted, FilingArea.SHARE, "unreachable")
+        session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=True)
+
+        step = session.step(forward=True).value
+
+        assert session.latest.shared_products_path is None
+        assert step["image"] is None
+        assert "not on the share" in step["image_error"]
+        assert session.is_active, "the frames are still taken, on the unit"
+
+    def test_no_image_is_reported_when_frames_are_not_saved(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=False)
+
+        value = session.step(forward=True).value
+
+        assert value["image"] is None
+        assert "image_error" not in value, "not saving a frame is not an error"
+        assert session.latest.steps == 1 and session.latest.last_frame is None
+
+    def test_a_failed_step_frame_is_reported_as_failed(self, session):
+        """Otherwise a lost frame and a slow mover look the same from outside: a file that
+        never arrives."""
+        session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=True)
+        session.unit.imager.fail_next = True
+
+        value = session.step(forward=True).value
+
+        assert value["image"] is None
+        assert "fake imager was told to fail" in value["image_error"]
+
+    def test_the_image_is_reported_even_when_pwi4_reports_no_cell(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=True)
+        session.unit.mount.pw.reports_offset = False
+
+        value = session.step(forward=True).value
+
+        assert "no spiral offset" in value["error"]
+        assert value["image"] == share_path(session, session.steps[-1]["image"])
+
+    def test_a_measured_session_succeeds_with_its_shift_and_stays_reported(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+
+        result = session.end().value
+
+        record = session.latest
+        assert not session.is_active
+        assert record.succeeded is True and not record.running
+        assert record.shift == result["shift"]
+        assert any(p.endswith(LATEST_FILE) for p in session.test_moved), "written into the folder, for the share"
+
+    def test_an_abandoned_session_ends_failed_with_the_reason(self, session):
+        """The abandonment timer closes a session with no request in flight: the record is
+        the only place a caller can see it happened."""
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+
+        session._on_timeout(session._timer_generation)
+
+        assert session.latest.succeeded is False and not session.latest.running
+        assert "no step or spiral_end_path" in session.latest.errors[0]
+
+    def test_a_session_that_cannot_start_tracking_is_recorded_as_failed(self, session):
+        session.unit.mount.start_tracking = lambda: CanonicalResponse(errors=["mount not connected"])
+
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+
+        assert session.latest.succeeded is False
+        assert session.latest.errors == ["mount not connected"]
+
+    def test_a_new_session_replaces_the_record(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        first = session.latest
+
+        session.start(2.0, 2.0, exposure_seconds=1.0)
+
+        assert first.succeeded is False and "superseded" in first.errors[0]
+        assert session.latest is not first and session.latest.running
+
+
 class TestAbandonedSession:
+    def test_each_step_restarts_the_abandonment_timer(self, session):
+        """The timeout is for a session nobody is driving. Counted from the start, it ended
+        long walks partway -- an automated spiral of six rings takes over an hour -- with
+        no measurement."""
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        first = session._timer
+
+        session.step(forward=True)
+
+        assert session._timer is not first
+        assert not first.is_alive(), "the old timer must be cancelled, not left to fire"
+        assert session._timer.is_alive()
+        session.end()
+
+    def test_a_timer_that_fired_during_a_step_does_not_abandon_the_session(self, session):
+        """`cancel()` cannot stop a timer that has already fired. One that fires while a
+        step holds the lock runs once the step releases it, after the step has re-armed --
+        and must then leave the session alone."""
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        stale = session._timer_generation
+
+        session.step(forward=True)
+        session._on_timeout(stale)
+
+        assert session.is_active, "a step re-armed the timer, so the old one is stale"
+        session.end()
+
     def test_timeout_closes_without_inventing_a_measurement(self, session):
         session.start(1.0, 1.0, exposure_seconds=1.0)
         exposures_before = list(session.unit.imager.exposures)
 
-        session._on_timeout()
+        session._on_timeout(session._timer_generation)
 
         result = read_result(session.test_folder)
         assert result["aborted"] is True
@@ -461,7 +601,7 @@ class TestAbandonedSession:
         session.end()
         tracking_after_end = session.unit.mount.tracking
 
-        session._on_timeout()  # the timer fires late; end() already won
+        session._on_timeout(session._timer_generation)  # the timer fires late; end() already won
 
         assert session.unit.mount.tracking == tracking_after_end
         assert read_result(session.test_folder)["aborted"] is False
