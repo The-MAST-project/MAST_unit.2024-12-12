@@ -248,7 +248,7 @@ def plot_phase_corrections(  # noqa: C901
             y=corrections.tolerance_ra,
             color=ra_color,
             linestyle=":",
-            label=f"RA tolerance: {corrections.tolerance_ra:.2f}",
+            label=f"RA tolerance, plain: {corrections.tolerance_ra:.2f}",
         )
         plt.axhline(
             y=corrections.tolerance_dec,
@@ -274,20 +274,24 @@ def plot_phase_corrections(  # noqa: C901
         dec_rms_label = Patch(color="none", label=f"Dec RMS: {dec_guiding_rms:.2f}")
 
     if phase == "acquisition" and tolerances:
-        if "sky" in tolerances and "ra" in tolerances["sky"]:
-            plt.axhline(
-                y=tolerances["sky"]["ra"],
-                color="maroon",
-                linestyle=":",
-                label=f"'sky' tolerance ({tolerances['sky']['ra']} arcsec)",
-            )
-        if "spec" in tolerances and "ra" in tolerances["spec"]:
-            plt.axhline(
-                y=tolerances["spec"]["ra"],
-                color="maroon",
-                linestyle="-.",
-                label=f"'spec' tolerance ({tolerances['spec']['ra']} arcsec)",
-            )
+        # The RA tolerance is plain RA, scaled by 1/cos(Dec) from the on-sky one, so it
+        # differs from the Dec tolerance away from the equator.
+        for tolerance_phase, linestyle in (("sky", ":"), ("spec", "-.")):
+            phase_tolerances = tolerances.get(tolerance_phase, {})
+            if "ra" in phase_tolerances:
+                plt.axhline(
+                    y=phase_tolerances["ra"],
+                    color=ra_color,
+                    linestyle=linestyle,
+                    label=f"'{tolerance_phase}' RA tolerance, plain ({phase_tolerances['ra']:.3g} arcsec)",
+                )
+            if "dec" in phase_tolerances:
+                plt.axhline(
+                    y=phase_tolerances["dec"],
+                    color=dec_color,
+                    linestyle=linestyle,
+                    label=f"'{tolerance_phase}' Dec tolerance ({phase_tolerances['dec']:.3g} arcsec)",
+                )
 
     if start.day == end.day:
         start_time = f"{start.time().strftime('%H:%M:%S.%f')[:11]}"
