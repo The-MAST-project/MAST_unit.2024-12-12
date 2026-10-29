@@ -1377,7 +1377,9 @@ class Unit(Component, OpmodeBase):
             Query(
                 description=(
                     "#### Optional RA offsets applied between exposures.\n"
-                    "**Arcseconds, as plain decimals.**\n"
+                    "**Arcseconds of RA, as plain decimals.**\n"
+                    "- passed to PWI4's mount offset as they are: arcseconds of right ascension, "
+                    "not an angle on the sky, so the field moves `cos(dec)` times the value\n"
                     "- omitted or empty - no RA offsetting\n"
                     "- one value - used after every repeat (e.g. `1.5`)\n"
                     "- exactly `repeats` values - one each (e.g. `1.5 -2 0`)\n"
