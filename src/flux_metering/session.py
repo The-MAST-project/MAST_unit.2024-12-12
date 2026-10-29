@@ -205,6 +205,8 @@ class FluxMeteringSession:
         )
         if self.unit.activities & busy:
             return f"the unit is busy ({self.unit.activities_verbal})"
+        if self.unit.spiral.is_active:
+            return "a spiral session is open and drives PWI4's spiral too; end it with spiral_end_path or unit/abort"
         if self.unit.acquirer is None:
             return "no acquirer, so the star cannot be put on the fibre"
         # The fibre sees light only with the folding mirror in, so a run without a stage

@@ -31,6 +31,7 @@ except (ImportError, NameError) as ex:  # NameError: stage.py off-Windows
     pytest.skip(f"unit import chain unavailable here ({ex!r})", allow_module_level=True)
 
 from common.activities import UnitActivities
+from spiral_search import SpiralSearch
 
 SENSOR_X, SENSOR_Y = 8288, 5644
 TARGET_RA, TARGET_DEC = "10:00:00", "20:00:00"
@@ -95,6 +96,7 @@ def make_unit(is_tracking: bool) -> Unit:
     u.activities = set()
     # `expose` clears the cancellation event before starting the run (#212).
     u._expose_cancelled = threading.Event()
+    u.spiral = SpiralSearch(u)  # asked by `expose` before it moves anything
     for name in ("start_activity", "end_activity", "is_active"):
         setattr(u, name, getattr(FakeActivities, name).__get__(u))
     return u

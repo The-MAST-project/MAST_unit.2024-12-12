@@ -2,6 +2,37 @@
 
 ---
 
+## [2026-10-29] A spiral session that takes no frames, and the guards between spiral and expose
+
+**Why:** a caller off the unit (the flux-meter orchestrator on mast-ns-spec) needs PWI4's spiral
+to move the mount cell by cell and `/expose` to take several imager frames at each cell. An
+imaging spiral session holds an exposure series from `spiral_new_path` to `spiral_end_path`,
+and `/expose` opening its own overwrites it (#232). The spiral itself stays in the unit, as the
+one point of reference for spiral-like processes. MAST_unit#385.
+
+**What:**
+- `spiral_new_path` takes `frames=false`: the session moves the mount and takes no frame,
+  opens no series and measures nothing. It logs an origin entry, so step numbers and `revisit`
+  read as in an imaging session, and `spiral_end_path` leaves tracking as it was found (the
+  #302 convention; #304 remains for the imaging session).
+- Every spiral verb refuses while `Exposing` is set, and the hour's timeout re-arms instead of
+  closing under a frame. `/expose` holds the session from its checks until `Exposing` is raised,
+  and refuses an imaging session, a step in flight, and, during a frameless session,
+  coordinates or offsets. These are per-endpoint guards: #303's table is keyed by activity,
+  and a spiral session has none.
+- A spiral session and a flux-metering run refuse each other: both drive PWI4's one spiral.
+- `unit/abort` closes an open session without waiting; a session whose step is in flight is
+  closed when the step lets go, unless a new one has been opened by then.
+- `status.latest.spiral.frames` says which kind it is. A frameless session has succeeded when
+  `spiral_end_path` closed it.
+
+**Implications:** #232 stays open: the imaging session and `/expose` are kept apart, not
+serialized. The flux-metering walkers still drive PWI4's spiral directly and go with the
+removal of in-unit flux metering. #377 also rewrites `SpiralSearch.start`; whichever lands
+second is rebased onto the other.
+
+---
+
 ## [2026-10-20] start_guiding sets the guide exposure from the config DB
 
 **Why:** `start_guiding` never sent an exposure, so PHD2 guided at its profile's
