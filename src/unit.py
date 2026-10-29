@@ -43,7 +43,7 @@ from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 from common.interfaces.imager import ImagerTypes
 from common.mast_logging import DailyFileHandler, get_logger
-from common.models.latest import LATEST_FILE, LatestExposure, LatestRecords
+from common.models.latest import LATEST_FILE, LatestExposure, LatestRecords, LatestSkyQuality
 from common.models.plans import PlanStage
 from common.opmode import OpmodeBase, OpState
 
@@ -889,7 +889,12 @@ class Unit(Component, OpmodeBase):
             acquisition=self.acquirer.latest if self.acquirer is not None else None,
             exposure=self.latest_exposure,
             spiral=self.spiral.latest,
+            sky_quality=self._latest_sky_quality(),
         )
+
+    def _latest_sky_quality(self) -> LatestSkyQuality | None:
+        while_guiding = self.guider.sky_quality_while_guiding if self.guider is not None else None
+        return None if while_guiding is None else LatestSkyQuality(while_guiding=while_guiding)
 
     # ------------------------------------------------------------------- the plan token
     # Design: mast-claude-config plans/control_acquisition_design.md 6.6.
