@@ -18,6 +18,7 @@ import acquirer as acquirer_module
 from acquirer import ACQUISITION_CANCELLED, GUIDING_NEVER_LOCKED, Acquirer
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from common.interfaces.guiding import GuiderTypes
 from common.models.latest import AcquisitionState, LatestAcquisition
 from guiding import Guider
 from phd2.phd2 import PHD2Connector
@@ -284,6 +285,8 @@ def test_guider_start_guiding_passes_the_backends_refusal_on():
     guider = object.__new__(Guider)
     refusal = CanonicalResponse(errors=["not connected"])
     guider._backend = SimpleNamespace(start_guiding=lambda: refusal)
+    guider.guider_type = GuiderTypes.Phd2
+    guider.unit = None
 
     assert guider.start_guiding() is refusal
 

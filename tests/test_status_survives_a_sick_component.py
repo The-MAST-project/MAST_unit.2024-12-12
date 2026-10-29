@@ -43,6 +43,7 @@ class Guider(Part):
 
     #: In memory, so it cannot fail the way a PHD2 call can.
     sky_quality_while_guiding = None
+    latest_guiding = None
 
     @property
     def is_guiding(self) -> bool:

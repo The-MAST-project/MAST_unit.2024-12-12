@@ -55,6 +55,8 @@ def make_connector() -> PHD2Connector:
     p._terminate_requested = False
     p._connected = True
     p.sky_quality = GuidingSkyQuality()
+    p.lock = threading.Lock()
+    p.settle = None
     return p
 
 
