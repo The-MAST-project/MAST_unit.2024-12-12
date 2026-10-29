@@ -34,8 +34,9 @@ from common.activities import UnitActivities
 from common.canonical import CanonicalResponse
 from common.config import Config
 from common.config.rois import FcuVersion, SpecRoiConfig
-from common.filer import Filer, FilingArea, MoveGuardian
+from common.filer import Filer, MoveGuardian
 from common.mast_logging import get_logger
+from common.models.latest import LatestSpiral, products_paths
 from common.models.statuses import ImagerSettings
 from common.paths import PathMaker
 from common.utils import function_name, isoformat_zulu
@@ -121,6 +122,9 @@ class SpiralSearch:
         #: Which arming of the timer is current. Not reset by `_clear`, so a timer from a
         #: closed session can never match a new one's.
         self._timer_generation = 0
+        #: The latest session's record, published as `FullUnitStatus.latest.spiral`. Not
+        #: reset by `_clear`: a closed session stays reported until the next one starts.
+        self.latest: LatestSpiral | None = None
         self._clear()
 
     def _clear(self) -> None:
@@ -333,6 +337,12 @@ class SpiralSearch:
 
             assert self.unit.mount is not None and self.unit.mount.pw is not None and self.unit.imager is not None
 
+            self.latest = LatestSpiral(
+                x_step_arcsec=x_step_arcsec,
+                y_step_arcsec=y_step_arcsec,
+                exposure_seconds=exposure_seconds,
+                save_intermediate_exposures=save_intermediate_exposures,
+            ).begin()
             self.x_step_arcsec = x_step_arcsec
             self.y_step_arcsec = y_step_arcsec
             self.exposure_seconds = exposure_seconds
@@ -351,10 +361,12 @@ class SpiralSearch:
             response = self.unit.mount.start_tracking()
             if response is not None and response.failed:
                 logger.error(f"{op}: cannot start the session -- {response.errors}")
+                self.latest.finish(False, response.errors)
                 return response
 
             self.unit.mount.pw.mount_spiral_offset_new(x_step_arcsec=x_step_arcsec, y_step_arcsec=y_step_arcsec)
             self.folder = PathMaker().make_spirals_folder()
+            self.latest.products_at(self.folder)
             self.exposure_series = self.unit.imager.start_exposure_series(purpose="spiral")
 
             try:
@@ -365,9 +377,11 @@ class SpiralSearch:
                 # possible, but the mount still tracking and the series still open with
                 # nothing to close them.
                 logger.exception(f"{op}: the reference exposure failed; closing the session down")
+                errors = [f"{op}: reference exposure failed: {ex}"]
+                self.latest.finish(False, errors)
                 self._close()
                 self._clear()
-                return CanonicalResponse(errors=[f"{op}: reference exposure failed: {ex}"])
+                return CanonicalResponse(errors=errors)
 
             # Resolved here, not above: the frame-centre fallback needs a frame to exist.
             self.center_x, self.center_y, self.center_source = resolve_center(center_x, center_y, self.reference.shape)
@@ -382,14 +396,7 @@ class SpiralSearch:
             self._arm_timer()
 
             logger.info(f"{op}: spiral session open in '{self.folder}', steps ({x_step_arcsec}, {y_step_arcsec}) arcsec")
-            value: dict[str, Any] = {"folder": self.folder, "reference_image": REFERENCE_IMAGE}
-            try:
-                value["shared_folder"] = self._share_relative(self.folder)
-            except SpiralSearchError as ex:
-                logger.error(f"{op}: {ex}")
-                value["shared_folder"] = None
-                value["share_error"] = str(ex)
-            return CanonicalResponse(value=value)
+            return CanonicalResponse(value={"folder": self.folder, "reference_image": REFERENCE_IMAGE})
 
     def step(self, forward: bool) -> CanonicalResponse:
         op = function_name()
@@ -407,11 +414,12 @@ class SpiralSearch:
             self._arm_timer()
 
             image = None
+            path = None
             image_error = None
             if self.save_intermediate_exposures and self.folder:
                 image = "step-" + PathMaker().make_seq(self.folder) + ".fits"
                 try:
-                    self._expose(image)
+                    path, _data = self._expose(image)
                 except Exception as ex:
                     # A lost intermediate frame is a nuisance, not a reason to end the
                     # session: the measurement needs only the reference and the final.
@@ -420,15 +428,18 @@ class SpiralSearch:
                     image_error = str(ex)
 
             entry = self._log_step(direction="next" if forward else "previous", image=image)
+            if self.latest is not None:
+                self.latest.stepped(path)
             # Not the raw entry: the operator is reading this between presses, and needs
             # where they ARE. The full log of every step is in result.json either way.
             message = self._step_message(entry)
             message["image"] = None
-            if image and self.folder:
-                try:
-                    message["image"] = self._share_relative(os.path.join(self.folder, image))
-                except SpiralSearchError as ex:
-                    image_error = str(ex)
+            if path is not None:
+                # Asked now, not taken from the record: the share may have been demoted since
+                # the session started, and then the frame stays on this unit.
+                message["image"] = products_paths(path)[1]
+                if message["image"] is None:
+                    image_error = f"'{path}' is not on the share, so it stays on this unit: the share is demoted"
             if image_error is not None:
                 message["image_error"] = image_error
             return CanonicalResponse(value=message)
@@ -491,6 +502,10 @@ class SpiralSearch:
                 at_reference_position=at_reference_position,
             )
             self._write_result(result)
+            if self.latest is not None:
+                self.latest.shift = result["shift"]
+                self.latest.finish(True)
+                self.latest.write()
             self._close()
             logger.info(f"{op}: spiral session closed, dx={shift.dx} dy={shift.dy} px (confidence {shift.confidence})")
             return CanonicalResponse(value=result)
@@ -572,6 +587,9 @@ class SpiralSearch:
             self._write_result(self._result(reason=reason))
         except Exception:
             logger.exception("could not write the aborted spiral result")
+        if self.latest is not None:
+            self.latest.finish(False, [reason])
+            self.latest.write()
         self._close()
 
     def _arm_timer(self) -> None:
@@ -585,27 +603,6 @@ class SpiralSearch:
         if self._timer is not None:
             self._timer.cancel()
             self._timer = None
-
-    @staticmethod
-    def _share_relative(path: str) -> str:
-        """Where the mover puts `path`, relative to the share's MAST root.
-
-        Relative, because the share has a different name on every machine (by UNC here,
-        `/Storage/mast-share/MAST` on the control host), so only the caller can say where its
-        own view of it starts. Raises when the product will not reach the share: while the
-        share is unreachable the mover sends it to this unit's share fallback, and a caller
-        told otherwise would wait for a frame that never arrives.
-        """
-        if filer.is_demoted(FilingArea.SHARE) or not filer.ensure_shared_root():
-            raise SpiralSearchError(
-                f"'{path}' is not on the share ('{filer.share_root.root}'), so it stays on this unit: "
-                "the share is unreachable and products go to its local fallback"
-            )
-        try:
-            destination = filer.to_top(FilingArea.SHARE, path)
-        except ValueError as ex:
-            raise SpiralSearchError(f"'{path}' is not on the share: {ex}") from ex
-        return destination.removeprefix(filer.share_root.root)
 
     def _close(self) -> None:
         """Stop tracking, end the series, reap the folder. Caller holds the lock."""

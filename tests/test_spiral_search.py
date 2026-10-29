@@ -27,7 +27,8 @@ from astropy.io import fits
 
 import spiral_search
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.filer import Filer, FilingArea, Location
+from common.filer import Filer, FilingArea
+from common.models.latest import LATEST_FILE
 from common.models.statuses import ImagerRoi
 from spiral_search import FINAL_IMAGE, REFERENCE_IMAGE, RESULT_FILE, SpiralSearch
 
@@ -161,7 +162,9 @@ class FakeUnit:
 @pytest.fixture
 def session(tmp_path, monkeypatch):
     """A SpiralSearch writing into tmp_path, with the mover and reaper stubbed out."""
-    folder = tmp_path / "ram" / "Spirals" / "0001"
+    # Under the suite's RAM area (common.testing.filer), so the record derives its share
+    # paths through a real Filer.
+    folder = Path(spiral_search.filer.ram.root) / tmp_path.name / "Spirals" / "0001"
     folder.mkdir(parents=True)
 
     monkeypatch.setattr(spiral_search, "guiding_roi", lambda: FakeRoi())
@@ -169,12 +172,8 @@ def session(tmp_path, monkeypatch):
     monkeypatch.setattr(spiral_search.PathMaker, "make_seq", lambda self, f: f"{len(os.listdir(f)):04d}")
 
     moved: list[str] = []
-    monkeypatch.setattr(spiral_search.filer, "move_ram_to_shared", lambda p: moved.append(str(p)))
-    # tmp_path holds the RAM area and a reachable share, so the reported paths are derived for real.
-    (tmp_path / "share" / "mast01").mkdir(parents=True)
-    monkeypatch.setattr(spiral_search.filer, "ram", Location((tmp_path / "ram").as_posix()))
-    monkeypatch.setattr(spiral_search.filer, "share_root", Location((tmp_path / "share").as_posix()))
-    monkeypatch.setattr(spiral_search.filer, "shared", Location((tmp_path / "share" / "mast01").as_posix()))
+    # On the class: the latest record hands its file to the mover through a Filer of its own.
+    monkeypatch.setattr(Filer, "move_ram_to_shared", lambda self, p: moved.append(str(p)))
     reaped: list[str] = []
     monkeypatch.setattr(
         spiral_search.MoveGuardian, "release_folder", lambda self, f, logger=None, timeout=None: reaped.append(str(f))
@@ -447,16 +446,22 @@ class TestEndingASession:
         assert result["shift_magnitude_pixels"] > 1.0
 
 
-class TestReportedSharePaths:
-    """A caller off the unit reads the frames from the share, so it is told where they land
-    rather than left to guess `<night>/Spirals/<NNNN>` and `step-NNNN.fits` -- a guess
+def share_path(session, name: str) -> str:
+    return Filer().to_top(FilingArea.SHARE, os.path.join(session.test_folder, name))
+
+
+class TestTheLatestRecord:
+    """`status.latest.spiral`: a caller off the unit follows the session there and reads its
+    frames from the share, rather than guessing `<night>/Spirals/<NNNN>` -- a guess
     MAST_common#137 makes wrong after a reboot, when the folder numbers restart."""
 
-    def test_start_reports_the_session_folder_on_the_share(self, session):
-        value = session.start(1.0, 1.0, exposure_seconds=1.0).value
+    def test_an_open_session_is_running_with_its_share_folder(self, session):
+        session.start(2.0, 3.0, exposure_seconds=4.0, save_intermediate_exposures=True)
 
-        assert value["shared_folder"] == "mast01/Spirals/0001", "relative to the share's MAST root, no drive letter"
-        assert "share_error" not in value
+        record = session.latest
+        assert record.running and record.succeeded is None
+        assert (record.x_step_arcsec, record.y_step_arcsec, record.exposure_seconds) == (2.0, 3.0, 4.0)
+        assert record.shared_products_path == Filer().to_top(FilingArea.SHARE, str(session.test_folder))
 
     def test_a_saved_step_frame_is_reported_by_its_share_path(self, session):
         session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=True)
@@ -464,25 +469,19 @@ class TestReportedSharePaths:
         value = session.step(forward=True).value
 
         name = session.steps[-1]["image"]
-        assert name.startswith("step-")
-        assert value["image"] == f"mast01/Spirals/0001/{name}"
+        assert value["image"] == share_path(session, name)
         assert "image_error" not in value
+        assert session.latest.steps == 1 and session.latest.last_frame.endswith(f"/{name}")
 
-    @pytest.mark.parametrize("cause", ["demoted", "unreachable"])
-    def test_a_unit_whose_share_is_down_reports_no_share_path(self, session, monkeypatch, tmp_path, cause):
-        """While the share is down, products go to the unit's own share fallback. A path there
-        is not on the share, and a caller told it was would wait for a file that never
-        arrives -- the frames lost on 2026-07-14."""
-        if cause == "demoted":
-            monkeypatch.setitem(Filer._demoted, FilingArea.SHARE, "unreachable")
-        else:
-            monkeypatch.setattr(spiral_search.filer, "share_root", Location((tmp_path / "no-share").as_posix()))
-            monkeypatch.setattr(spiral_search.filer, "shared", Location((tmp_path / "no-share" / "mast01").as_posix()))
-        start = session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=True).value
+    def test_while_the_share_is_demoted_no_share_path_is_reported(self, session, monkeypatch):
+        """Products go to the unit's share fallback then. A caller told the share path would
+        wait for a file that never arrives -- the frames lost on 2026-07-14."""
+        monkeypatch.setitem(Filer._demoted, FilingArea.SHARE, "unreachable")
+        session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=True)
+
         step = session.step(forward=True).value
 
-        assert start["shared_folder"] is None
-        assert "not on the share" in start["share_error"]
+        assert session.latest.shared_products_path is None
         assert step["image"] is None
         assert "not on the share" in step["image_error"]
         assert session.is_active, "the frames are still taken, on the unit"
@@ -494,6 +493,7 @@ class TestReportedSharePaths:
 
         assert value["image"] is None
         assert "image_error" not in value, "not saving a frame is not an error"
+        assert session.latest.steps == 1 and session.latest.last_frame is None
 
     def test_a_failed_step_frame_is_reported_as_failed(self, session):
         """Otherwise a lost frame and a slow mover look the same from outside: a file that
@@ -513,7 +513,45 @@ class TestReportedSharePaths:
         value = session.step(forward=True).value
 
         assert "no spiral offset" in value["error"]
-        assert value["image"].startswith("mast01/Spirals/0001/")
+        assert value["image"] == share_path(session, session.steps[-1]["image"])
+
+    def test_a_measured_session_succeeds_with_its_shift_and_stays_reported(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+
+        result = session.end().value
+
+        record = session.latest
+        assert not session.is_active
+        assert record.succeeded is True and not record.running
+        assert record.shift == result["shift"]
+        assert any(p.endswith(LATEST_FILE) for p in session.test_moved), "written into the folder, for the share"
+
+    def test_an_abandoned_session_ends_failed_with_the_reason(self, session):
+        """The abandonment timer closes a session with no request in flight: the record is
+        the only place a caller can see it happened."""
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+
+        session._on_timeout(session._timer_generation)
+
+        assert session.latest.succeeded is False and not session.latest.running
+        assert "no step or spiral_end_path" in session.latest.errors[0]
+
+    def test_a_session_that_cannot_start_tracking_is_recorded_as_failed(self, session):
+        session.unit.mount.start_tracking = lambda: CanonicalResponse(errors=["mount not connected"])
+
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+
+        assert session.latest.succeeded is False
+        assert session.latest.errors == ["mount not connected"]
+
+    def test_a_new_session_replaces_the_record(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        first = session.latest
+
+        session.start(2.0, 2.0, exposure_seconds=1.0)
+
+        assert first.succeeded is False and "superseded" in first.errors[0]
+        assert session.latest is not first and session.latest.running
 
 
 class TestAbandonedSession:

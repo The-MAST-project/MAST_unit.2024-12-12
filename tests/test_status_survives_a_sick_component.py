@@ -80,10 +80,11 @@ class Stub:
         # `Unit.__init__` always builds a FluxMeteringSession -- but `status` reads it, so a
         # Stub without one raises where the real thing cannot.
         self.flux_metering = parts.pop("flux_metering", FluxMetering())
-        # Likewise: `Unit.__init__` always builds an Acquirer and a FocusOnStarSession, and
-        # `status` reads their latest records.
+        # Likewise: `Unit.__init__` always builds an Acquirer, a FocusOnStarSession and a
+        # SpiralSearch, and `status` reads their latest records.
         self.acquirer = parts.pop("acquirer", SimpleNamespace(latest=None))
         self.focus_on_star = SimpleNamespace(latest=None)
+        self.spiral = SimpleNamespace(latest=None)
         self.latest_exposure = None
         # Read by `status` since the plan token (control acquisition 6.6).
         self.plan_owner = None
