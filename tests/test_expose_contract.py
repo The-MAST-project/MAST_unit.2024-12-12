@@ -88,6 +88,7 @@ class Stub(FakeActivities):
         self.mount = FakeMount()
         self.raised = False
         self._expose_cancelled = threading.Event()
+        self.plan_owner = None  # read by `expose`, for its latest record
 
     def _expose_repeatedly(self, *args, **kwargs):
         if self.raised:
@@ -112,8 +113,10 @@ class FakeThread:
 
 
 @pytest.fixture
-def dispatched(monkeypatch):
+def dispatched(monkeypatch, tmp_path):
     """The threads `expose` started during one test."""
+    # `expose` makes its products folder before it answers: keep it off the real disk.
+    monkeypatch.setattr(unit_module.PathMaker, "make_exposures_folder", lambda self: tmp_path.as_posix())
     monkeypatch.setattr(FakeThread, "started", [])
     monkeypatch.setattr(unit_module, "Thread", FakeThread)
     return FakeThread.started

@@ -1,6 +1,6 @@
 """A plan's products, from the unit's side (plans/control_acquisition_design.md 5.10, 6.5).
 
-With a `plan_ulid`, `start_acquisition_and_guiding` and `focus_on_star` label the products
+With a `plan_id`, `start_acquisition_and_guiding` and `focus_on_star` label the products
 folder they create with a `plan_id` file and tell control where it is, by stage. Without one
 -- an operator's call -- they do neither. `execute_assignment`, which used to send these
 notifications, is gone.
@@ -19,6 +19,7 @@ import plan_products as plan_products_module
 from acquirer import Acquirer
 from common.canonical import CanonicalResponse
 from common.filer import Filer
+from common.models.latest import LatestFocusOnStar
 from common.models.plans import PLAN_ID_FILE, PlanStage
 from common.notifications import NotificationInitiator
 from plan_products import announce_plan_products
@@ -96,15 +97,18 @@ class TestStartAcquisition:
     @pytest.fixture
     def acquirer(self, monkeypatch, folder):
         a = Acquirer.__new__(Acquirer)
+        a.unit = SimpleNamespace(claimed=[])
+        a.unit.claim_plan = a.unit.claimed.append
         monkeypatch.setattr(Acquirer, "prepare_acquisition", lambda self, **kw: SimpleNamespace(folder=folder))
-        monkeypatch.setattr(Acquirer, "run_acquisition", lambda self, acquisition: None)
+        monkeypatch.setattr(Acquirer, "start", lambda self, acquisition, plan_id=None: None)
         return a
 
     def test_with_a_plan_the_folder_is_announced(self, acquirer, sent, folder):
-        Acquirer.endpoint_start_acquisition_and_guiding(acquirer, plan_ulid=ULID)
+        Acquirer.endpoint_start_acquisition_and_guiding(acquirer, plan_id=ULID)
 
         assert _label(folder) == ULID
         assert [n.stage for n in sent] == [PlanStage.Acquisition]
+        assert acquirer.unit.claimed == [ULID], "accepted: the unit works for the plan"
 
     def test_by_hand_nothing_is(self, acquirer, sent, folder):
         Acquirer.endpoint_start_acquisition_and_guiding(acquirer)
@@ -114,7 +118,7 @@ class TestStartAcquisition:
         a = Acquirer.__new__(Acquirer)
         monkeypatch.setattr(Acquirer, "prepare_acquisition", lambda self, **kw: CanonicalResponse(errors=["no"]))
 
-        response = Acquirer.endpoint_start_acquisition_and_guiding(a, plan_ulid=ULID)
+        response = Acquirer.endpoint_start_acquisition_and_guiding(a, plan_id=ULID)
 
         assert response.failed and sent == []
 
@@ -122,14 +126,19 @@ class TestStartAcquisition:
 class TestFocusOnStar:
     @pytest.fixture
     def unit(self, folder):
-        started = SimpleNamespace(folder=folder)
-        return SimpleNamespace(unit_conf=None, focus_on_star=SimpleNamespace(start=lambda params: started))
+        # The real record: `start` returns it, and the endpoint reads its products path off it.
+        started = LatestFocusOnStar(local_products_path=os.fspath(folder))
+        unit = SimpleNamespace(unit_conf=None, focus_on_star=SimpleNamespace(start=lambda params: started), claimed=[])
+        unit.claim_plan = unit.claimed.append
+        return unit
 
     def test_with_a_plan_the_run_folder_is_announced(self, unit, sent, folder):
-        Unit.endpoint_focus_on_star(unit, plan_ulid=ULID)  # type: ignore[arg-type]
+        Unit.endpoint_focus_on_star(unit, plan_id=ULID)  # type: ignore[arg-type]
 
         assert _label(folder) == ULID
+        assert unit.focus_on_star.start(None).plan_id == ULID, "the record says which plan it ran for"
         assert [n.stage for n in sent] == [PlanStage.Autofocus]
+        assert unit.claimed == [ULID]
 
     def test_by_hand_nothing_is(self, unit, sent, folder):
         Unit.endpoint_focus_on_star(unit)  # type: ignore[arg-type]
@@ -143,7 +152,7 @@ def test_execute_assignment_is_gone():
 
 
 class TestHiddenFromOperators:
-    """`plan_ulid` is control's, not an operator's: accepted over HTTP, absent from OpenAPI."""
+    """`plan_id` is control's, not an operator's: accepted over HTTP, absent from OpenAPI."""
 
     @pytest.fixture
     def client(self, monkeypatch, folder):
@@ -153,14 +162,18 @@ class TestHiddenFromOperators:
         from common.endpoints import add_api_route
 
         monkeypatch.setattr(Acquirer, "prepare_acquisition", lambda self, **kw: SimpleNamespace(folder=folder))
-        monkeypatch.setattr(Acquirer, "run_acquisition", lambda self, acquisition: None)
+        monkeypatch.setattr(Acquirer, "start", lambda self, acquisition, plan_id=None: None)
         acquirer = Acquirer.__new__(Acquirer)
+        acquirer.unit = SimpleNamespace(claim_plan=lambda plan_id: None)
 
         class _Unit(Unit):
             unit_conf = None  # a property on Unit; the endpoint then uses the default settings
 
+            def claim_plan(self, plan_id):
+                pass
+
         unit = _Unit.__new__(_Unit)
-        unit.focus_on_star = SimpleNamespace(start=lambda params: SimpleNamespace(folder=folder))  # type: ignore[assignment]
+        unit.focus_on_star = SimpleNamespace(start=lambda params: LatestFocusOnStar(local_products_path=os.fspath(folder)))  # type: ignore[assignment]
 
         router = APIRouter()
         add_api_route(
@@ -177,14 +190,14 @@ class TestHiddenFromOperators:
     @pytest.mark.parametrize("path", ["/start_acquisition_and_guiding", "/focus_on_star"])
     def test_not_in_the_schema(self, client, path):
         parameters = client.app.openapi()["paths"][path]["put"].get("parameters", [])
-        assert "plan_ulid" not in [p["name"] for p in parameters]
+        assert "plan_id" not in [p["name"] for p in parameters]
 
     @pytest.mark.parametrize(
         ("path", "stage"),
         [("/start_acquisition_and_guiding", PlanStage.Acquisition), ("/focus_on_star", PlanStage.Autofocus)],
     )
     def test_still_accepted(self, client, sent, folder, path, stage):
-        response = client.put(path, params={"plan_ulid": ULID})
+        response = client.put(path, params={"plan_id": ULID})
 
         assert response.status_code == 200, response.text
         assert _label(folder) == ULID
