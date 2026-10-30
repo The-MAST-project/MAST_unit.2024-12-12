@@ -1622,8 +1622,7 @@ class Unit(Component, OpmodeBase):
                 base_folder=base_folder,
                 gain=gain,
                 binning=binning,
-                # roi=unit_roi.to_imager_roi(binning=imager_binning),
-                roi=ImagerRoi.from_other(roi=unit_roi).binned(binning),
+                roi=ImagerRoi.from_other(roi=unit_roi),
                 tags={"roi": None},
                 save=True,
             )
