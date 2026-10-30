@@ -135,8 +135,12 @@ def test_a_strip_that_misses_the_roi_is_refused(solver, unit, tmp_path, solve_fi
     _join_cleanup()
 
 
-#: Sensor columns blanked by the guide-frame mask, inside the strip's overlap with the ROI.
+#: Sensor columns left out by the guide-frame mask, inside the strip's overlap with the ROI.
 MASK_FROM, MASK_TO = 600, 640
+
+#: Sources image2xy reports, on the downsampled crop (1-based X): sensor x ~518, ~608, ~678.
+SOURCE_X = (10.0, 55.0, 90.0)
+KEPT_X = (10.0, 90.0)
 
 
 def _noisy_frame(tmp_path: Path) -> str:
@@ -147,7 +151,71 @@ def _noisy_frame(tmp_path: Path) -> str:
     return str(path)
 
 
-def test_the_masked_columns_reach_solve_field_blank(solver, unit, tmp_path, solve_field):
+def _option(tokens: list[str], name: str) -> str | None:
+    return tokens[tokens.index(name) + 1] if name in tokens else None
+
+
+@pytest.fixture
+def astrometry(monkeypatch) -> dict:
+    """image2xy reports SOURCE_X; solve-field records its input and solves, writing a WCS."""
+    seen: dict = {"image2xy": [], "solve_field": []}
+
+    def run(command, **_kwargs):
+        tokens = shlex.split(command)
+        if tokens[0].endswith("image2xy"):
+            image = Path(cygwin_to_win(tokens[-1]))
+            seen["image2xy"].append(fits.getdata(image))
+            xy = Path(cygwin_to_win(_option(tokens, "-o")))
+            table = fits.BinTableHDU.from_columns(
+                [
+                    fits.Column(name="X", format="E", array=np.array(SOURCE_X)),
+                    fits.Column(name="Y", format="E", array=np.full(len(SOURCE_X), 20.0)),
+                    fits.Column(name="FLUX", format="E", array=np.array([300.0, 900.0, 500.0])),
+                ]
+            )
+            fits.HDUList([fits.PrimaryHDU(), table]).writeto(xy, overwrite=True)
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        source = Path(cygwin_to_win(tokens[-1]))
+        call = {"tokens": tokens, "source": source}
+        if source.suffix == ".fits" and _option(tokens, "--x-column") is not None:
+            call["xy"] = fits.getdata(source, 1)
+        seen["solve_field"].append(call)
+        header = fits.Header({"CRVAL1": 15.0, "CRVAL2": 80.0, "CD1_1": 1e-4, "CD1_2": 0.0, "CD2_1": 0.0, "CD2_2": 1e-4})
+        for option in ("--wcs", "--new-fits"):
+            if (path := _option(tokens, option)) is not None:
+                fits.PrimaryHDU(header=header).writeto(Path(cygwin_to_win(path)), overwrite=True)
+        return subprocess.CompletedProcess(command, 0, b"Field 1: solved with index index-5203-15.fits.\n", b"")
+
+    monkeypatch.setattr(mastrometry_module.subprocess, "run", run)
+    return seen
+
+
+def test_a_mask_solves_the_source_list_without_the_masked_columns(solver, unit, tmp_path, astrometry):
+    result = solver.solve(
+        unit=unit,
+        phase="spec",
+        full_frame_input_image_path=_noisy_frame(tmp_path),
+        frame_origin=(STRIP_X, STRIP_Y),
+        exclude_columns=(MASK_FROM, MASK_TO),
+    )
+    _join_cleanup()
+
+    (call,) = astrometry["solve_field"]
+    assert sorted(call["xy"]["X"].tolist()) == list(KEPT_X)
+    assert (_option(call["tokens"], "--x-column"), _option(call["tokens"], "--y-column")) == ("X", "Y")
+    assert _option(call["tokens"], "--sort-column") == "FLUX"
+    overlap_width, overlap_height = ROI_X + ROI_WIDTH - STRIP_X, ROI_HEIGHT
+    assert (int(_option(call["tokens"], "--width")), int(_option(call["tokens"], "--height"))) == (
+        overlap_width // DOWNSAMPLE_FACTOR,
+        overlap_height // DOWNSAMPLE_FACTOR,
+    )
+    assert result is not None and result.succeeded
+    assert (result.solution.ra_hours, result.solution.dec_degs) == (1.0, 80.0)
+
+
+def test_a_mask_never_edits_the_pixels_sources_are_found_in(solver, unit, tmp_path, astrometry):
+    """Blanking columns left a step at the mask's edge that simplexy read as hundreds of
+    sources, and no guide frame solved (mast01, 2026-10-30)."""
     solver.solve(
         unit=unit,
         phase="spec",
@@ -157,19 +225,18 @@ def test_the_masked_columns_reach_solve_field_blank(solver, unit, tmp_path, solv
     )
     _join_cleanup()
 
-    # the crop starts at sensor x STRIP_X; downsampled, the mask is these columns
+    (image,) = astrometry["image2xy"]
     first, last = (MASK_FROM - STRIP_X) // DOWNSAMPLE_FACTOR, (MASK_TO - STRIP_X) // DOWNSAMPLE_FACTOR
-    image = solve_field["image"]
-    assert np.ptp(image[:, first:last]) == 0
-    assert np.ptp(image[:, :first]) > 0 and np.ptp(image[:, last:]) > 0
-    assert (solve_field["header"]["MASK_X0"], solve_field["header"]["MASK_X1"]) == (MASK_FROM, MASK_TO)
+    assert np.ptp(image[:, first:last]) > 0
 
 
-def test_without_a_mask_nothing_is_blanked(solver, unit, tmp_path, solve_field):
+def test_without_a_mask_the_image_is_solved_as_before(solver, unit, tmp_path, astrometry):
     solver.solve(
         unit=unit, phase="spec", full_frame_input_image_path=_noisy_frame(tmp_path), frame_origin=(STRIP_X, STRIP_Y)
     )
     _join_cleanup()
 
-    assert np.ptp(solve_field["image"][:, 40:60]) > 0
-    assert "MASK_X0" not in solve_field["header"]
+    assert astrometry["image2xy"] == []
+    (call,) = astrometry["solve_field"]
+    assert "xy" not in call and _option(call["tokens"], "--x-column") is None
+    assert _option(call["tokens"], "--new-fits") is not None
