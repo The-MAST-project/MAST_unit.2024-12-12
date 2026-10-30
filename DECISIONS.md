@@ -11,11 +11,15 @@ from re-solving 540 frames with and without them. Leaving out x 2000-5800 remove
 leaves the held-out-star error unchanged.
 
 **What:** `phd2.guide_solve_mask` (MAST_common) names sensor columns; `place_guide_frame`
-passes them to the solver as `exclude_columns`, and mastrometry sets them to the frame's median
-before solve-field sees the frame. Only the guide-frame solves (the nudge's and the pointing
-check's) take it: the acquisition's SPEC-phase solves are taken with the mirror out, where those
-columns are the clear middle of the field. Blanking the image, rather than filtering
-solve-field's source list, keeps the solved FITS and its WCS read-back as they are.
+passes them to the solver as `exclude_columns`. mastrometry finds sources on the unedited frame
+with `image2xy`, drops those in the columns, and solves the list (`--x-column` / `--width` /
+`--height`), writing the solved FITS from the frame and the WCS. Only the guide-frame solves (the
+nudge's and the pointing check's) take it: the acquisition's SPEC-phase solves are taken with the
+mirror out, where those columns are the clear middle of the field.
+
+Not by blanking the columns, which was the first version: on sky (mast01, 2026-10-30) the flat
+fill left a step at the mask's right edge that simplexy read as hundreds of sources, and no masked
+guide frame solved. Filtering the source list is also what the offline analysis did.
 
 **Implications:** off until a unit's mask is set (per unit, like the exclusion region). The
 solved FITS carries `MASK_X0`/`MASK_X1`.
