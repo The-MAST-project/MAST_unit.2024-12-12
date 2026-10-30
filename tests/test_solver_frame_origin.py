@@ -78,7 +78,8 @@ def solve_field(monkeypatch) -> dict:
         seen["crpix"] = (float(tokens[tokens.index("--crpix-x") + 1]), float(tokens[tokens.index("--crpix-y") + 1]))
         # solve-field is given cygwin paths; on Windows, open the input as this process names it
         image = Path(cygwin_to_win(tokens[-1]))
-        seen["shape"] = fits.getdata(image).shape
+        seen["image"] = fits.getdata(image)
+        seen["shape"] = seen["image"].shape
         seen["header"] = fits.getheader(image)
         return subprocess.CompletedProcess(command, 1, b"", b"did not solve")
 
@@ -132,3 +133,43 @@ def test_a_strip_that_misses_the_roi_is_refused(solver, unit, tmp_path, solve_fi
     with pytest.raises(Exception, match="does not overlap"):
         solver.solve(unit=unit, phase="spec", full_frame_input_image_path=_frame(tmp_path), frame_origin=(900, 0))
     _join_cleanup()
+
+
+#: Sensor columns blanked by the guide-frame mask, inside the strip's overlap with the ROI.
+MASK_FROM, MASK_TO = 600, 640
+
+
+def _noisy_frame(tmp_path: Path) -> str:
+    path = tmp_path / "savNOISY.tmp"
+    data = np.random.default_rng(1).integers(100, 200, size=(STRIP_HEIGHT, STRIP_WIDTH), dtype=np.uint16)
+    with path.open("wb") as file:
+        fits.writeto(file, data)
+    return str(path)
+
+
+def test_the_masked_columns_reach_solve_field_blank(solver, unit, tmp_path, solve_field):
+    solver.solve(
+        unit=unit,
+        phase="spec",
+        full_frame_input_image_path=_noisy_frame(tmp_path),
+        frame_origin=(STRIP_X, STRIP_Y),
+        exclude_columns=(MASK_FROM, MASK_TO),
+    )
+    _join_cleanup()
+
+    # the crop starts at sensor x STRIP_X; downsampled, the mask is these columns
+    first, last = (MASK_FROM - STRIP_X) // DOWNSAMPLE_FACTOR, (MASK_TO - STRIP_X) // DOWNSAMPLE_FACTOR
+    image = solve_field["image"]
+    assert np.ptp(image[:, first:last]) == 0
+    assert np.ptp(image[:, :first]) > 0 and np.ptp(image[:, last:]) > 0
+    assert (solve_field["header"]["MASK_X0"], solve_field["header"]["MASK_X1"]) == (MASK_FROM, MASK_TO)
+
+
+def test_without_a_mask_nothing_is_blanked(solver, unit, tmp_path, solve_field):
+    solver.solve(
+        unit=unit, phase="spec", full_frame_input_image_path=_noisy_frame(tmp_path), frame_origin=(STRIP_X, STRIP_Y)
+    )
+    _join_cleanup()
+
+    assert np.ptp(solve_field["image"][:, 40:60]) > 0
+    assert "MASK_X0" not in solve_field["header"]
