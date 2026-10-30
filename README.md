@@ -76,6 +76,10 @@ result text) are kept in the acquisition's `guiding/solves/` on the share, as th
 an acquisition's own solves keep theirs beside the solved FITS. Collecting the frames
 adds about 30-60 s before ready.
 
+`phd2.guide_solve_mask` (off by default) blanks sensor columns in the nudge's and the pointing
+check's guide-frame solves: the stars beside the fold mirror's shadow band, which are measured
+displaced away from it. The acquisition's solves, taken with the mirror out, are not masked.
+
 ## Tests
 
 `tests/` holds a pytest suite that drives the real connector code with mocked

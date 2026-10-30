@@ -2,6 +2,24 @@
 
 ---
 
+## [2026-10-30] Guide-frame solves leave out the columns beside the mirror's shadow band
+
+**Why:** with the fold mirror in, stars within about 1000 px of the shadow band are measured
+displaced away from it, by up to 7-9 px, following the vignetting. The fiber sits in the band,
+so a solve that uses them bends the fiber's position: a median 0.37" on mast01 on 2026-10-28,
+from re-solving 540 frames with and without them. Leaving out x 2000-5800 removes the bias and
+leaves the held-out-star error unchanged.
+
+**What:** `phd2.guide_solve_mask` (MAST_common) names sensor columns; `place_guide_frame`
+passes them to the solver as `exclude_columns`, and mastrometry sets them to the frame's median
+before solve-field sees the frame. Only the guide-frame solves (the nudge's and the pointing
+check's) take it: the acquisition's SPEC-phase solves are taken with the mirror out, where those
+columns are the clear middle of the field. Blanking the image, rather than filtering
+solve-field's source list, keeps the solved FITS and its WCS read-back as they are.
+
+**Implications:** off until a unit's mask is set (per unit, like the exclusion region). The
+solved FITS carries `MASK_X0`/`MASK_X1`.
+
 ## [2026-10-28] The lock nudge takes the guide star from PHD2
 
 **Why:** the nudge measured the guide star in each saved frame with its own centroider,
