@@ -120,6 +120,25 @@ the sky; the 2026-10-25 strip arm would have stopped at its 3rd solve, the full-
 4th, and no arm nearer the equator changes. `tolerance_ra` in `corrections.json` now varies with
 the target's Dec and is very large within arcseconds of the pole; compare RA across nights only
 after scaling by `cos(target_dec)`.
+## [2026-10-28] The cool-down watcher logs a cooler verdict for the degradation scraper
+
+**Why:** on mast04, night of 2026-10-19, the guide camera sat at 47.7 C against a 5.0 C set
+point at 100 % cooler power. The watcher warned about it after seven of the night's eight
+starts, but in an untagged line the degradation scraper does not collect, so it was found from
+FITS headers after the night. Its wording also blamed the ambient temperature for what was a
+cooler fault. MAST_unit#374.
+
+**What:** `imagers/cooler.py` logs the cool-down's verdict in the `usb-link` shape:
+`cooler=regulating …` at INFO where the watcher used to log `cooled to`, and
+`DEGRADED cooler=unreached …` at WARNING in place of the `still cooling` warning. The line
+carries the temperature, the set point, the cooler power and the elapsed time, and names no
+cause. Cooler power is read once, at the verdict. A watcher that never got a reading still
+warns, untagged, since there is nothing to report as a verdict.
+
+**Implications:** the latest `cooler=` line per unit is its camera's state as of its last
+cool-down. A cooler that stops regulating after the first cool-down is not covered; nothing
+watches once `CoolingDown` ends (MAST_unit#375). A cooler switched off during the cool-down is
+reported as `unreached` with its last reading, since PHD2 then reports no set point.
 
 ---
 
