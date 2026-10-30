@@ -72,10 +72,15 @@ class GuideFramePlacement:
     cut from, or None for the whole sensor."""
 
     crop: ImagerRoi | None
+    #: Sensor columns to leave out of the solve: the stars beside the mirror's shadow band.
+    mask: tuple[int, int] | None = None
 
     def solve_kwargs(self) -> dict[str, tuple[int, int]]:
-        """What the solver needs to place its sensor-pixel ROI on this frame."""
-        return {} if self.crop is None else {"frame_origin": (self.crop.x, self.crop.y)}
+        """What the solver needs to place its sensor-pixel ROI on this frame, and what to leave out."""
+        kwargs = {} if self.crop is None else {"frame_origin": (self.crop.x, self.crop.y)}
+        if self.mask is not None:
+            kwargs["exclude_columns"] = self.mask
+        return kwargs
 
 
 def place_guide_frame(connector, width: int, height: int) -> GuideFramePlacement | None:
@@ -84,14 +89,15 @@ def place_guide_frame(connector, width: int, height: int) -> GuideFramePlacement
     PHD2 delivers exactly the limit frame it holds, starting at its origin, so a frame
     of that size, unbinned, sits there on the sensor.
     """
+    mask = connector.conf.guide_solve_mask.columns
     if (width, height) == (ASI_294MM_WIDTH, ASI_294MM_HEIGHT):
-        return GuideFramePlacement(crop=None)
+        return GuideFramePlacement(crop=None, mask=mask)
     if connector.profile_binning != 1:
         return None
     limit = connector.get_limit_frame()
     if limit is None or (limit.width, limit.height) != (width, height):
         return None
-    return GuideFramePlacement(crop=limit)
+    return GuideFramePlacement(crop=limit, mask=mask)
 
 
 def guiding_folder(acquisition_folder: str) -> Path | None:
