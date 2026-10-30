@@ -31,6 +31,7 @@ from astropy.io import fits
 
 import pointing_check
 from common.asi import ASI_294MM_HEIGHT, ASI_294MM_WIDTH
+from common.config.phd2 import GuideSolveMaskConfig
 from common.interfaces.solving import SolvingResult, SolvingSolution
 from common.models.statuses import ImagerRoi, PointingCheckStatus, PointingSampleOutcome
 from failure_streaks import FailureStreaks
@@ -92,6 +93,7 @@ class FakeConnector:
         mirror_in: bool = True,
         limit_frame: ImagerRoi | None = None,
         profile_binning: int = 1,
+        mask: GuideSolveMaskConfig | None = None,
     ):
         self.tmp_path = tmp_path
         self.frame_size = frame_size
@@ -103,7 +105,9 @@ class FakeConnector:
         self.lock_validity = SimpleNamespace(state=SimpleNamespace(validity="OnStar"))
         self.parent = SimpleNamespace(
             unit=SimpleNamespace(
-                unit_conf=SimpleNamespace(phd2=SimpleNamespace(validation_interval=interval)),
+                unit_conf=SimpleNamespace(
+                    phd2=SimpleNamespace(validation_interval=interval, guide_solve_mask=mask or GuideSolveMaskConfig())
+                ),
                 solver=SimpleNamespace(_backend=backend),
                 stage=SimpleNamespace(at_preset=lambda preset: mirror_in),
                 acquirer=SimpleNamespace(
@@ -245,6 +249,29 @@ class TestALimitFrame:
         assert sample is not None and sample.frame_crop is None
         (call,) = backend.calls
         assert "frame_origin" not in call
+
+
+class TestTheBandEdgeMask:
+    def test_the_configured_columns_reach_the_solver(self, tmp_path, journal_dir):
+        backend = FakeBackend(solved())
+        mask = GuideSolveMaskConfig(x_from=2000, x_to=5800)
+        monitor = PointingMonitor(FakeConnector(tmp_path, backend=backend, mask=mask))
+        monitor.start_session()
+
+        monitor.sample_once()
+
+        (call,) = backend.calls
+        assert call["exclude_columns"] == (2000, 5800)
+
+    def test_no_mask_configured_passes_none(self, tmp_path, journal_dir):
+        backend = FakeBackend(solved())
+        monitor = PointingMonitor(FakeConnector(tmp_path, backend=backend))
+        monitor.start_session()
+
+        monitor.sample_once()
+
+        (call,) = backend.calls
+        assert "exclude_columns" not in call
 
 
 class TestTheSolvesRecords:
