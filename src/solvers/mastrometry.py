@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import Thread
 from typing import TYPE_CHECKING, cast
 
+import numpy as np
 from astropy.coordinates import Angle
 from astropy.io import fits
 
@@ -42,6 +43,9 @@ if TYPE_CHECKING:
 #: exactly this. A caller that hardcoded 2 would be silently wrong the day it changed --
 #: and the flux-metering run now derives its plate scale from a solve.
 DOWNSAMPLE_FACTOR: int = 2
+
+#: Every n-th pixel in each axis is enough for the frame's median, which fills masked columns.
+MEDIAN_STRIDE: int = 4
 
 
 class MastrometryDotNet(SolverInterface):
@@ -96,6 +100,7 @@ class MastrometryDotNet(SolverInterface):
         keep_artifacts: bool = True,
         frame_origin: tuple[int, int] | None = None,
         metafiles_folder: Path | None = None,
+        exclude_columns: tuple[int, int] | None = None,
     ) -> SolvingResult | None:
         """
         MAST specific astrometry.net solver implementation.
@@ -120,6 +125,10 @@ class MastrometryDotNet(SolverInterface):
         `frame_origin` is where the input sits on the sensor when it is a limit-frame crop
         rather than the full frame. The phase ROI is then clipped to the frame, and the
         reference pixel keeps pointing at the same sensor pixel, inside the frame or not.
+
+        `exclude_columns` (sensor x, from-to) are set to the frame's median before solving, so
+        solve-field finds no stars there: the guide-frame solves leave out the stars beside the
+        fold mirror's shadow band, which are measured displaced (`phd2.guide_solve_mask`).
         """
 
         self.unit: Unit | None = unit
@@ -169,6 +178,7 @@ class MastrometryDotNet(SolverInterface):
                 full_frame_input_image_path,
                 target,
                 frame_origin,
+                exclude_columns,
             )
         finally:
             # The solved frame (it carries the WCS -- MAST_unit#27) and the solver's own
@@ -190,6 +200,7 @@ class MastrometryDotNet(SolverInterface):
         full_frame_input_image_path: str,
         target: Coord | None,
         frame_origin: tuple[int, int] | None = None,
+        exclude_columns: tuple[int, int] | None = None,
     ) -> SolvingResult | None:
         unit = self.unit
 
@@ -213,6 +224,12 @@ class MastrometryDotNet(SolverInterface):
             height, width = data.shape
             dtype = data.dtype
             logger.info(f"{function_name()}: Full frame image dimensions: {width}x{height}, dtype: {dtype}")
+
+            if exclude_columns is not None:
+                data = _blank_columns(data, exclude_columns, (frame_origin or (0, 0))[0])
+                header["MASK_X0"] = (exclude_columns[0], "Sensor columns blanked before solving, from")
+                header["MASK_X1"] = (exclude_columns[1], "Sensor columns blanked before solving, to")
+                logger.info(f"{function_name()}: blanked sensor columns {exclude_columns}")
 
             #
             # Passed to astrometry.net as the reference pixel for the solving process
@@ -585,3 +602,14 @@ def _clip_to_frame(roi: ImagerRoi, frame_origin: tuple[int, int], width: int, he
     clipped = ImagerRoi.verbatim(x=left, y=top, width=right - left, height=bottom - top)
     clipped._center = ImagerPixel(x=roi._center.x - origin_x, y=roi._center.y - origin_y)
     return clipped
+
+
+def _blank_columns(data: np.ndarray, columns: tuple[int, int], origin_x: int) -> np.ndarray:
+    """`data` with sensor `columns` set to the frame's median; a frame starting at sensor x
+    `origin_x` is blanked where the columns fall on it, if anywhere."""
+    left, right = max(columns[0] - origin_x, 0), min(columns[1] - origin_x, data.shape[1])
+    if right <= left:
+        return data
+    blanked = np.array(data)
+    blanked[:, left:right] = np.median(data[::MEDIAN_STRIDE, ::MEDIAN_STRIDE])
+    return blanked
