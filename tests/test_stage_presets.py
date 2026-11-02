@@ -69,6 +69,28 @@ def test_at_preset_is_none_when_undetected():
     assert Stage.at_preset_name(_stub(detected=False, close_enough=lambda _p: True)) is None
 
 
+def test_a_moving_stage_is_at_no_preset():
+    """Within `close_enough` of a preset is not at it while still leaving or arriving: a wait
+    on `at_preset` returned with the mirror still moving, and status named the preset."""
+    stub = _stub(close_enough=lambda _p: True, is_moving=True)
+
+    assert Stage.at_preset_name(stub) is None
+    assert Stage.at_preset(stub, StagePresetPosition.Sky) is False
+    assert Stage.at_preset(_stub(close_enough=lambda _p: True), StagePresetPosition.Sky) is True
+
+
+def test_a_moving_stage_says_so_rather_than_not_at_a_preset():
+    stub = _stub(close_enough=lambda _p: True, is_moving=True, target=321297)
+    stub.name = "stage"
+    stub.is_on = lambda: True
+    stub.was_shut_down = False
+    stub._currently_operational = True
+    stub.at_preset = lambda preset: Stage.at_preset(stub, preset)
+    stub.target_preset_name = lambda: Stage.target_preset_name(stub)
+
+    assert Stage.why_not_operational.fget(stub) == ["stage: moving to 'spec'"]
+
+
 def test_target_verbal_resolves_a_preset_position():
     """It compared `target` against the enum's value rather than the preset's position, so
     it never resolved to a name at all."""
@@ -111,6 +133,7 @@ def _stub(**kw):
         "position": 190000,
         "close_enough": lambda _p: False,
         "target": None,
+        "is_moving": False,
     }
     return SimpleNamespace(**{**base, **kw})
 
