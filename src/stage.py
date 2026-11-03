@@ -535,6 +535,15 @@ from pyximc import *
         self.power_off()
 
     def at_preset(self, preset: StagePresetPosition) -> bool:
+        """At `preset`, and stopped there.
+
+        Not while moving: within `close_enough` of a preset is not at it while the stage is
+        still leaving it or still arriving -- a wait on this (flux metering's, for SPEC) used
+        to return with the mirror still moving. `is_moving` is set when a move is commanded
+        and cleared by the 2-second `ontimer`, so this lags the stop by up to that.
+        """
+        if self.is_moving:
+            return False
         current_position = self.position
         if current_position is not None:
             for p in self.presets:
@@ -568,8 +577,13 @@ from pyximc import *
 
         `value`, not `name.lower()`: the latter reported "middle" for a preset the API calls
         "mid", so what status said did not round-trip into `move_to_preset` (#85).
+
+        None while moving, as `at_preset`: the preset being left, or being approached, is not
+        where the stage is. `target_verbal` says where it is going.
         """
         if not self.detected:
+            return None
+        if self.is_moving:
             return None
         for preset, position in self.presets.items():
             if self.close_enough(position):
@@ -976,6 +990,9 @@ from pyximc import *
                 ret.append(f"{label}: shut down")
             if not self.connected:
                 ret.append(f"{label}: not connected")
+            elif self.is_moving:
+                # `at_preset` is False while moving; "not at a preset" would read like a fault.
+                ret.append(f"{label}: moving to '{self.target_preset_name()}'")
             elif not (self.at_preset(StagePresetPosition.Spec) or self.at_preset(StagePresetPosition.Sky)):
                 ret.append(
                     f"{label}: at {self.position}, not at '{StagePresetPosition.Spec.value}' "

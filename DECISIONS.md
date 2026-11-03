@@ -19,6 +19,83 @@ PHD2 connection. It is built on `main`, not stacked on #30, so its clients do no
 
 **Implications:** `is_settling` means a settle in progress. Only the first settle of a guide
 start is recorded; a later one in the same guide start is not.
+## [2026-10-29] expose reports each frame in status.latest.exposure
+
+**Why:** `expose` answers before it exposes, and its record carried only a count and the last
+frame's path on the unit. A caller off the unit could not tell which files a run wrote, when
+each was exposed, or which failed, and on PHD2 a failed frame (no file written, no exception)
+was counted as saved and handed to the mover. The flux-metering orchestrator needs each
+frame's window to pair it with the flux camera's frames. MAST_unit#327.
+
+**What:** `LatestExposure.frames` (MAST_common) lists every frame attempted: `name`,
+`date_obs` and `exposure_seconds` read from the saved FITS (`EXPTIME` where `EXPOSURE` is
+absent), and `error`. `DATE-OBS` is reported aware UTC; PHD2 writes it without a zone. A frame
+with no file is recorded failed and not moved; a refused start or a failed wait is recorded
+before it ends the run; an aborted frame is recorded as `aborted`. `completed` and
+`last_frame` are computed from `frames`, keeping their wire keys. The record is read in the
+expose loop, not in the PHD2 backend that #30 rewrites. No run id: the record replaced before
+`expose` answers is the run, and the caller's `subfolder` identifies it.
+
+**Implications:** `completed` no longer counts frames PHD2 failed to save, so a run with one
+reads `succeeded: false` with `k of n frames`. On the ASCOM and ZWO backends `DATE-OBS` is the
+save time, so the window is wrong there; no unit runs them.
+## [2026-11-03] Spiral steps are arcsec on the sky in both axes
+
+**Why:** the x step went to PWI4 as arcseconds of RA, so a cell was `cos(dec)` narrower on the
+sky than it was tall: at Dec +80 a 30" step moved the mount 5" on the sky. The search was not
+square anywhere off the equator. MAST_unit#136.
+
+**What:** `x_step_arcsec` and `y_step_arcsec` are on the sky. `commanded_ra_step` turns the x
+step into the RA step PWI4 is given, `x_step_arcsec / cos(dec)` at the mount's declination,
+and refuses with no declination or past ten times the step (|dec| > 84.3 deg). Every spiral on
+the unit uses it: `spiral_new_path` refuses before tracking starts, and `acquire_and_find_max_flux`
+widens its walk the same way. The commanded step and the declination it was sized at are
+reported (`ra_step_commanded_arcsec`, `dec_for_ra_step_degs`) and kept in `result.json`.
+`spiral_correlate_steps` applies `cos(dec)` only to a run with no commanded step on record,
+one written before this change.
+
+**Implications:** no spiral near either pole; the refusal says why. Old runs reduce as before.
+## [2026-10-28] The cool-down watcher logs a cooler verdict for the degradation scraper
+
+**Why:** on mast04, night of 2026-10-19, the guide camera sat at 47.7 C against a 5.0 C set
+point at 100 % cooler power. The watcher warned about it after seven of the night's eight
+starts, but in an untagged line the degradation scraper does not collect, so it was found from
+FITS headers after the night. Its wording also blamed the ambient temperature for what was a
+cooler fault. MAST_unit#374.
+
+**What:** `imagers/cooler.py` logs the cool-down's verdict in the `usb-link` shape:
+`cooler=regulating …` at INFO where the watcher used to log `cooled to`, and
+`DEGRADED cooler=unreached …` at WARNING in place of the `still cooling` warning. The line
+carries the temperature, the set point, the cooler power and the elapsed time, and names no
+cause. Cooler power is read once, at the verdict. A watcher that never got a reading still
+warns, untagged, since there is nothing to report as a verdict.
+
+**Implications:** the latest `cooler=` line per unit is its camera's state as of its last
+cool-down. A cooler that stops regulating after the first cool-down is not covered; nothing
+watches once `CoolingDown` ends (MAST_unit#375). A cooler switched off during the cool-down is
+reported as `unreached` with its last reading, since PHD2 then reports no set point.
+## [2026-10-26] The acquisition tolerance is on the sky; offsets stay in plain RA
+
+**Why:** `Solver._solve_and_correct` compared the plain-RA offset (the RA coordinate
+difference, as `mount_offset` takes it) with the configured RA tolerance, so on the sky the RA
+side shrank to `ra_arcsec x cos(dec)`. On mast01 on 2026-10-25, at Dec +79.9, that was 0.087"
+against about 0.4" of solve noise per axis: a strip arm used all 20 SPEC tries, most of them
+within 0.1-0.4" of the target on the sky, and failed, and a full-field arm at the same pointing needed 9.
+MAST_unit#191 (Oren's #3 before it).
+
+**What:** team decision, 2026-10-26. `ToleranceConfig` is on the sky. Offsets stay in plain RA,
+and the RA side of the tolerance is applied in plain RA as `ra_arcsec / cos(target dec)`
+(`src/sky_offsets.py`). `corrections.json` (`ra_delta`, and `tolerance_ra`, now the plain-RA
+value applied) and the gradual-approach rate ladder stay in plain RA. No cap toward the pole:
+for a target at the pole the Dec test alone bounds the distance, which the unbounded tolerance
+gives, and a cap would refuse every RA there. The orphan `dec_avg_rad` is gone with the
+question it marked. The combined acquisition plot draws RA and Dec tolerance lines separately.
+
+**Implications:** at high declination the loop stops once the target is within tolerance on
+the sky; the 2026-10-25 strip arm would have stopped at its 3rd solve, the full-field arm at its
+4th, and no arm nearer the equator changes. `tolerance_ra` in `corrections.json` now varies with
+the target's Dec and is very large within arcseconds of the pole; compare RA across nights only
+after scaling by `cos(target_dec)`.
 
 ---
 
