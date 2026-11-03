@@ -877,6 +877,10 @@ class Unit(Component, OpmodeBase):
         Each sub-abort is attempted independently, and a failure in one is collected
         rather than allowed to skip the others.
 
+        An open spiral session is closed, as abandoned and without a final frame; one whose
+        step is in flight is closed when that step lets go. A spiral session has no activity
+        flag, so `status.latest.spiral` is where its end shows.
+
         **`UnitActivities.Aborting` says when it has all stopped.** Raised here, ended by
         `ontimer` once none of `_ABORTABLE_WORK` is active and no component reports its own
         `Aborting`. That is what `shutdown` waits on (opmode-design 5.3), and what a caller of
@@ -922,6 +926,12 @@ class Unit(Component, OpmodeBase):
         if self.is_active(UnitActivities.FocusingOnStar):
             attempt("focus_on_star", self.focus_on_star.abort)
 
+        # Closed rather than left to its hour: an imaging session holds the imager against
+        # `/expose`, and the mount's abort below turns its tracking off. Never waits on a
+        # step in flight; the imager abort below releases its frame.
+        if self.spiral.is_active:
+            attempt("spiral session", self.spiral.abort)
+
         if self.guider:
             attempt("guider", self.guider.abort)
         for comp in self.components:
@@ -942,6 +952,7 @@ class Unit(Component, OpmodeBase):
             acquisition=self.acquirer.latest if self.acquirer is not None else None,
             exposure=self.latest_exposure,
             guiding=self.guider.latest_guiding if self.guider is not None else None,
+            spiral=self.spiral.latest,
             sky_quality=self._latest_sky_quality(),
         )
 
@@ -1477,6 +1488,11 @@ class Unit(Component, OpmodeBase):
         - PHD2 while guiding: PHD2 saves the guide frame it already has, so `date_obs` can
           predate the request and `exposure_seconds` is the guide exposure
         - ASCOM and ZWO backends: `DATE-OBS` is stamped at save time, after the exposure
+
+        Beside an open spiral session: refused while one opened with frames is open (it holds
+        the imager; end it with `spiral_end_path` or `unit/abort`) and while a session's step
+        is moving the mount. With a session opened with `frames=false` it runs, but refuses
+        coordinates and offsets, which would move the mount outside PWI4's spiral.
         """
 
         if seconds_between_exposures is not None:
@@ -1542,49 +1558,56 @@ class Unit(Component, OpmodeBase):
         except ValueError as e:
             return CanonicalResponse(errors=[f"expose: {e}"])
 
-        assert self.mount is not None
-        # Read before the slew: PWI4 engages tracking at the end of an equatorial goto, so
-        # afterwards the mount always looks like someone else's.
-        mount_was_tracking = self.mount.is_tracking
-        if (ra_j2000_hours is not None and isinstance(ra_j2000_hours, float)) and (
-            dec_j2000_degs is not None and isinstance(dec_j2000_degs, float)
-        ):
-            logger.info(f"slewing mount to ra={ra_j2000_hours}, dec={dec_j2000_degs}")
-            self.mount.goto_ra_dec_j2000(ra=ra_j2000_hours, dec=dec_j2000_degs)
-            self.mount.wait_until_settled(SettleMode.SLEW)
+        # Held from here until `Exposing` is raised, which every spiral verb refuses on: a
+        # step cannot slip in between, and an imaging session's series is never overwritten
+        # (MAST_unit#232, #385).
+        moves_mount = ra_j2000_hours is not None or ra_offsets is not None or dec_offsets is not None
+        with self.spiral.held_for_expose(moves_mount) as refusal:
+            if refusal is not None:
+                return CanonicalResponse(errors=[f"expose: {refusal}"])
+            assert self.mount is not None
+            # Read before the slew: PWI4 engages tracking at the end of an equatorial goto, so
+            # afterwards the mount always looks like someone else's.
+            mount_was_tracking = self.mount.is_tracking
+            if (ra_j2000_hours is not None and isinstance(ra_j2000_hours, float)) and (
+                dec_j2000_degs is not None and isinstance(dec_j2000_degs, float)
+            ):
+                logger.info(f"slewing mount to ra={ra_j2000_hours}, dec={dec_j2000_degs}")
+                self.mount.goto_ra_dec_j2000(ra=ra_j2000_hours, dec=dec_j2000_degs)
+                self.mount.wait_until_settled(SettleMode.SLEW)
 
-        # Raised here, not in the thread body: Thread.start() returns once the thread has
-        # begun bootstrapping, not once the target runs, so a caller that polls the instant
-        # it sees this Ok would find the unit idle and read the run as already over.
-        # do_expose's outermost `finally` is what ends it.
-        self._expose_cancelled.clear()
-        # The record before the run, so the first status read after this Ok describes it.
-        default_folder = PathMaker().make_exposures_folder()
-        self.latest_exposure = LatestExposure(exposure_seconds=exposure_seconds, repeats=repeats).begin(
-            os.path.join(default_folder, subfolder) if subfolder else default_folder, self.plan_owner
-        )
-        self._latest_exposure_file = LATEST_FILE if subfolder else None
-        self.start_activity(UnitActivities.Exposing, details=[f"{repeats} x {exposure_seconds}s"])
-        Thread(
-            name="expose-thread",
-            target=self.do_expose,
-            args=[
-                subfolder,
-                exposure_seconds,
-                repeats,
-                ra_offsets,
-                dec_offsets,
-                cadence_seconds,
-                fiber_x,
-                fiber_y,
-                width,
-                height,
-                binning,
-                gain,
-                mount_was_tracking,
-                self.latest_exposure,
-            ],
-        ).start()
+            # Raised here, not in the thread body: Thread.start() returns once the thread has
+            # begun bootstrapping, not once the target runs, so a caller that polls the instant
+            # it sees this Ok would find the unit idle and read the run as already over.
+            # do_expose's outermost `finally` is what ends it.
+            self._expose_cancelled.clear()
+            # The record before the run, so the first status read after this Ok describes it.
+            default_folder = PathMaker().make_exposures_folder()
+            self.latest_exposure = LatestExposure(exposure_seconds=exposure_seconds, repeats=repeats).begin(
+                os.path.join(default_folder, subfolder) if subfolder else default_folder, self.plan_owner
+            )
+            self._latest_exposure_file = LATEST_FILE if subfolder else None
+            self.start_activity(UnitActivities.Exposing, details=[f"{repeats} x {exposure_seconds}s"])
+            Thread(
+                name="expose-thread",
+                target=self.do_expose,
+                args=[
+                    subfolder,
+                    exposure_seconds,
+                    repeats,
+                    ra_offsets,
+                    dec_offsets,
+                    cadence_seconds,
+                    fiber_x,
+                    fiber_y,
+                    width,
+                    height,
+                    binning,
+                    gain,
+                    mount_was_tracking,
+                    self.latest_exposure,
+                ],
+            ).start()
         return CanonicalResponse_Ok
 
     def do_expose(
@@ -1912,11 +1935,20 @@ class Unit(Component, OpmodeBase):
             usable_fraction: Annotated[
                 float, Query(description="Usable fraction of the frame, around (center_x, center_y) to avoid coma")
             ] = 0.66,
+            frames: bool = True,
         ):
             """
             Opens a spiral search session and takes the **reference** frame.<br>
             Tracking is started; `spiral_end_path()` stops it again.<br>
-            **NOTE**: an abandoned session closes itself after an hour, without a measurement.
+            **NOTE**: an abandoned session closes itself after an hour with no step, without a
+            measurement.
+
+            Returns `folder` (on the unit) and `reference_image`. The session is reported in
+            `status.latest.spiral`: its settings, steps taken, the folder on the share
+            (`shared_products_path`, null while the share is demoted and frames stay on the
+            unit), and, once closed, whether a shift was measured. A session the hour's
+            timeout closed shows there as failed. The move is queued, so a frame appears on
+            the share some time after it is taken.
 
             - **x_step_arcsec**, **y_step_arcsec**: the spiral's steps along RA and Dec, both as
               angles **on the sky**, so the cells are square at any declination. The RA step
@@ -1938,6 +1970,15 @@ class Unit(Component, OpmodeBase):
               correlates the whole sensor and costs ~15 s per measurement (MAST_unit#137).
 
             Whichever source was used for each is reported back in the result.
+
+            - **frames**: false opens a session that only moves the mount, for a caller that
+              takes the frames itself with `expose` at each cell. It takes no reference, step
+              or final frame and measures nothing; `exposure_seconds`, the centre and
+              `usable_fraction` are unused, and `save_intermediate_exposures` must be false.
+              `spiral_end_path` then leaves tracking as it was before `spiral_new_path`.
+
+            Refused while an `expose` run is in flight, and while a flux-metering run drives
+            PWI4's spiral.
             """
             return self.spiral.start(
                 x_step_arcsec=x_step_arcsec,
@@ -1947,6 +1988,7 @@ class Unit(Component, OpmodeBase):
                 center_x=center_x,
                 center_y=center_y,
                 usable_fraction=usable_fraction,
+                frames=frames,
             )
 
         return endpoint_spiral_new_path
@@ -1964,6 +2006,7 @@ class Unit(Component, OpmodeBase):
             "ring": 2,
             "offset": "+20.0arcsec RA, +10.0arcsec Dec, on the sky (~86 px)",
             "revisit": "back at step#4",
+            "image": "//mast-ns-control/mast-share/MAST/mast01/2026-10-19/Spirals/0003/step-0009.fits",
         }
         ```
 
@@ -1973,8 +2016,13 @@ class Unit(Component, OpmodeBase):
           identifies a POSITION: the same cell is the same patch of sky
         - **revisit** names the earlier step occupying this cell, if any -- which is how
           you confirm you are back at the position you judged brightest
+        - **image** is where this step's frame lands on the share; null when the session
+          does not save intermediate exposures. When the exposure failed, or the frame will
+          not reach the share (the share is demoted), it is null and **image_error** says
+          why; the session carries on. Always null in a session opened with `frames=false`.
 
-        When PWI4 does not report a spiral offset, only `step#` and an `error` come back.
+        When PWI4 does not report a spiral offset, only `step#`, `image` and an `error` come back.
+        Refused while an `expose` run is in flight: the step would move the mount under its frame.
         """
         return self.spiral.step(forward=True)
 
@@ -2404,6 +2452,10 @@ class Unit(Component, OpmodeBase):
         far the sky moved, not whether it was the position you wanted.
 
         The same result is written as `result.json` beside the two frames.
+
+        A session opened with `frames=false` takes no final frame and measures nothing: this
+        closes it, writes `result.json` with its steps, and leaves tracking as it was before
+        `spiral_new_path`. Refused while an `expose` run is in flight.
         """
         return self.spiral.end()
 

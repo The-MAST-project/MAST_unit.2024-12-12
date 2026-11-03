@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,7 +29,10 @@ pytest.importorskip("photutils", reason="photutils unavailable")
 from astropy.io import fits
 
 import spiral_search
+from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from common.filer import Filer, FilingArea
+from common.models.latest import LATEST_FILE
 from common.models.statuses import ImagerRoi
 from spiral_search import FINAL_IMAGE, REFERENCE_IMAGE, RESULT_FILE, SpiralSearch
 
@@ -96,6 +101,10 @@ class FakeMount:
     def stop_tracking(self):
         self.tracking = False
 
+    @property
+    def is_tracking(self):
+        return self.tracking
+
     def wait_until_settled(self, mode):
         self.settled += 1
 
@@ -154,15 +163,18 @@ class FakeUnit:
         self.mount = FakeMount()
         self.imager = FakeImager()
         self.unit_conf = FakeConf()
+        self.active: set = set()
 
-    def is_active(self, _activity):
-        return False
+    def is_active(self, activity):
+        return activity in self.active
 
 
 @pytest.fixture
 def session(tmp_path, monkeypatch):
     """A SpiralSearch writing into tmp_path, with the mover and reaper stubbed out."""
-    folder = tmp_path / "Spirals" / "0001"
+    # Under the suite's RAM area (common.testing.filer), so the record derives its share
+    # paths through a real Filer.
+    folder = Path(spiral_search.filer.ram.root) / tmp_path.name / "Spirals" / "0001"
     folder.mkdir(parents=True)
 
     monkeypatch.setattr(spiral_search, "guiding_roi", lambda: FakeRoi())
@@ -170,7 +182,8 @@ def session(tmp_path, monkeypatch):
     monkeypatch.setattr(spiral_search.PathMaker, "make_seq", lambda self, f: f"{len(os.listdir(f)):04d}")
 
     moved: list[str] = []
-    monkeypatch.setattr(spiral_search.filer, "move_ram_to_shared", lambda p: moved.append(str(p)))
+    # On the class: the latest record hands its file to the mover through a Filer of its own.
+    monkeypatch.setattr(Filer, "move_ram_to_shared", lambda self, p: moved.append(str(p)))
     reaped: list[str] = []
     monkeypatch.setattr(
         spiral_search.MoveGuardian, "release_folder", lambda self, f, logger=None, timeout=None: reaped.append(str(f))
@@ -470,12 +483,147 @@ class TestEndingASession:
         assert result["shift_magnitude_pixels"] > 1.0
 
 
+def share_path(session, name: str) -> str:
+    return Filer().to_top(FilingArea.SHARE, os.path.join(session.test_folder, name))
+
+
+class TestTheLatestRecord:
+    """`status.latest.spiral`: a caller off the unit follows the session there and reads its
+    frames from the share, rather than guessing `<night>/Spirals/<NNNN>` -- a guess
+    MAST_common#137 makes wrong after a reboot, when the folder numbers restart."""
+
+    def test_an_open_session_is_running_with_its_share_folder(self, session):
+        session.start(2.0, 3.0, exposure_seconds=4.0, save_intermediate_exposures=True)
+
+        record = session.latest
+        assert record.running and record.succeeded is None
+        assert (record.x_step_arcsec, record.y_step_arcsec, record.exposure_seconds) == (2.0, 3.0, 4.0)
+        assert record.shared_products_path == Filer().to_top(FilingArea.SHARE, str(session.test_folder))
+
+    def test_a_saved_step_frame_is_reported_by_its_share_path(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=True)
+
+        value = session.step(forward=True).value
+
+        name = session.steps[-1]["image"]
+        assert value["image"] == share_path(session, name)
+        assert "image_error" not in value
+        assert session.latest.steps == 1 and session.latest.last_frame.endswith(f"/{name}")
+
+    def test_while_the_share_is_demoted_no_share_path_is_reported(self, session, monkeypatch):
+        """Products go to the unit's share fallback then. A caller told the share path would
+        wait for a file that never arrives -- the frames lost on 2026-07-14."""
+        monkeypatch.setitem(Filer._demoted, FilingArea.SHARE, "unreachable")
+        session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=True)
+
+        step = session.step(forward=True).value
+
+        assert session.latest.shared_products_path is None
+        assert step["image"] is None
+        assert "not on the share" in step["image_error"]
+        assert session.is_active, "the frames are still taken, on the unit"
+
+    def test_no_image_is_reported_when_frames_are_not_saved(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=False)
+
+        value = session.step(forward=True).value
+
+        assert value["image"] is None
+        assert "image_error" not in value, "not saving a frame is not an error"
+        assert session.latest.steps == 1 and session.latest.last_frame is None
+
+    def test_a_failed_step_frame_is_reported_as_failed(self, session):
+        """Otherwise a lost frame and a slow mover look the same from outside: a file that
+        never arrives."""
+        session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=True)
+        session.unit.imager.fail_next = True
+
+        value = session.step(forward=True).value
+
+        assert value["image"] is None
+        assert "fake imager was told to fail" in value["image_error"]
+
+    def test_the_image_is_reported_even_when_pwi4_reports_no_cell(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, save_intermediate_exposures=True)
+        session.unit.mount.pw.reports_offset = False
+
+        value = session.step(forward=True).value
+
+        assert "no spiral offset" in value["error"]
+        assert value["image"] == share_path(session, session.steps[-1]["image"])
+
+    def test_a_measured_session_succeeds_with_its_shift_and_stays_reported(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+
+        result = session.end().value
+
+        record = session.latest
+        assert not session.is_active
+        assert record.succeeded is True and not record.running
+        assert record.shift == result["shift"]
+        assert any(p.endswith(LATEST_FILE) for p in session.test_moved), "written into the folder, for the share"
+
+    def test_an_abandoned_session_ends_failed_with_the_reason(self, session):
+        """The abandonment timer closes a session with no request in flight: the record is
+        the only place a caller can see it happened."""
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+
+        session._on_timeout(session._timer_generation)
+
+        assert session.latest.succeeded is False and not session.latest.running
+        assert "no step or spiral_end_path" in session.latest.errors[0]
+
+    def test_a_session_that_cannot_start_tracking_is_recorded_as_failed(self, session):
+        session.unit.mount.start_tracking = lambda: CanonicalResponse(errors=["mount not connected"])
+
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+
+        assert session.latest.succeeded is False
+        assert session.latest.errors == ["mount not connected"]
+
+    def test_a_new_session_replaces_the_record(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        first = session.latest
+
+        session.start(2.0, 2.0, exposure_seconds=1.0)
+
+        assert first.succeeded is False and "superseded" in first.errors[0]
+        assert session.latest is not first and session.latest.running
+
+
 class TestAbandonedSession:
+    def test_each_step_restarts_the_abandonment_timer(self, session):
+        """The timeout is for a session nobody is driving. Counted from the start, it ended
+        long walks partway -- an automated spiral of six rings takes over an hour -- with
+        no measurement."""
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        first = session._timer
+
+        session.step(forward=True)
+
+        assert session._timer is not first
+        assert not first.is_alive(), "the old timer must be cancelled, not left to fire"
+        assert session._timer.is_alive()
+        session.end()
+
+    def test_a_timer_that_fired_during_a_step_does_not_abandon_the_session(self, session):
+        """`cancel()` cannot stop a timer that has already fired. One that fires while a
+        step holds the lock runs once the step releases it, after the step has re-armed --
+        and must then leave the session alone."""
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        stale = session._timer_generation
+
+        session.step(forward=True)
+        session._on_timeout(stale)
+
+        assert session.is_active, "a step re-armed the timer, so the old one is stale"
+        session.end()
+
     def test_timeout_closes_without_inventing_a_measurement(self, session):
         session.start(1.0, 1.0, exposure_seconds=1.0)
         exposures_before = list(session.unit.imager.exposures)
 
-        session._on_timeout()
+        session._on_timeout(session._timer_generation)
 
         result = read_result(session.test_folder)
         assert result["aborted"] is True
@@ -490,7 +638,7 @@ class TestAbandonedSession:
         session.end()
         tracking_after_end = session.unit.mount.tracking
 
-        session._on_timeout()  # the timer fires late; end() already won
+        session._on_timeout(session._timer_generation)  # the timer fires late; end() already won
 
         assert session.unit.mount.tracking == tracking_after_end
         assert read_result(session.test_folder)["aborted"] is False
@@ -661,3 +809,234 @@ class TestExposureFailures:
         assert (settings.roi.width, settings.roi.height) == (full.width, full.height), "the full frame"
         assert settings.gain == 170
         assert settings.binning == 1
+
+
+class TestAFramelessSession:
+    """`frames=False`: PWI4's spiral moves the mount and the session takes no frame, so a
+    caller's `/expose` can take them at each cell (MAST_unit#385)."""
+
+    def test_it_opens_without_a_frame_or_a_series(self, session):
+        response = session.start(1.0, 1.0, exposure_seconds=1.0, frames=False)
+
+        assert response.succeeded and session.is_active
+        assert session.unit.imager.exposures == [] and session.unit.imager.series_open == 0
+        assert session.unit.mount.tracking and session.unit.mount.pw.calls == ["new"]
+        assert response.value["reference_image"] is None
+        assert session.latest.frames is False and session.latest.exposure_seconds is None
+
+    def test_it_is_refused_with_saved_step_frames(self, session):
+        response = session.start(1.0, 1.0, exposure_seconds=1.0, frames=False, save_intermediate_exposures=True)
+
+        assert response.failed and not session.is_active
+        assert session.unit.mount.pw.calls == []
+
+    def test_the_origin_is_logged_so_steps_count_and_revisit_as_usual(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, frames=False)
+
+        session.step(forward=True)
+        back = session.step(forward=False).value
+
+        assert session.steps[0]["direction"] == "origin" and session.steps[0]["image"] is None
+        assert back["step#"] == 2
+        assert back["revisit"] == "back at the reference position"
+
+    def test_a_step_takes_no_frame(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, frames=False)
+
+        value = session.step(forward=True).value
+
+        assert value["image"] is None and "image_error" not in value
+        assert session.unit.imager.exposures == []
+
+    @pytest.mark.parametrize("tracking_before", [True, False])
+    def test_the_end_measures_nothing_and_leaves_tracking_as_it_found_it(self, session, tracking_before):
+        session.unit.mount.tracking = tracking_before
+        session.start(1.0, 1.0, exposure_seconds=1.0, frames=False)
+        session.step(forward=True)
+
+        response = session.end()
+
+        assert response.succeeded and not session.is_active
+        assert session.unit.imager.exposures == [], "no final frame"
+        assert session.unit.mount.tracking == tracking_before
+        result = read_result(session.test_folder)
+        assert result["shift"] is None and result["aborted"] is False and result["frames"] is False
+        assert session.latest.succeeded is True and session.latest.shift is None
+
+    def test_an_abandoned_frameless_session_has_not_succeeded(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, frames=False)
+
+        session._on_timeout(session._timer_generation)
+
+        assert session.latest.succeeded is False
+        assert read_result(session.test_folder)["aborted"] is True
+
+
+class TestKeepingOutOfAnExposeRun:
+    """While `/expose` runs, no session verb may move the mount, stop tracking or open a
+    series under its frame (MAST_unit#232, #385)."""
+
+    def test_a_session_cannot_open(self, session):
+        session.unit.active.add(UnitActivities.Exposing)
+
+        response = session.start(1.0, 1.0, exposure_seconds=1.0, frames=False)
+
+        assert response.failed and "exposure run" in response.errors[0]
+        assert session.unit.mount.pw.calls == [] and not session.is_active
+
+    @pytest.mark.parametrize("verb", ["next", "previous", "end"])
+    def test_an_open_session_does_not_move_or_close(self, session, verb):
+        session.start(1.0, 1.0, exposure_seconds=1.0, frames=False)
+        session.unit.active.add(UnitActivities.Exposing)
+        calls = list(session.unit.mount.pw.calls)
+
+        response = session.end() if verb == "end" else session.step(forward=verb == "next")
+
+        assert response.failed and "exposure run" in response.errors[0]
+        assert session.unit.mount.pw.calls == calls
+        assert session.is_active and session.unit.mount.tracking
+
+    def test_the_timeout_waits_for_the_run(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, frames=False)
+        session.unit.active.add(UnitActivities.Exposing)
+        generation = session._timer_generation
+
+        session._on_timeout(generation)
+
+        assert session.is_active, "not closed under a frame"
+        assert session._timer_generation == generation + 1, "re-armed"
+        session.unit.active.clear()
+        session.end()
+
+
+class TestKeepingOutOfFluxMetering:
+    def test_a_session_cannot_open_during_a_flux_metering_run(self, session):
+        """Flux metering drives PWI4's spiral itself; the two would reset it under each other."""
+        session.unit.active.add(UnitActivities.FluxMetering)
+
+        response = session.start(1.0, 1.0, exposure_seconds=1.0)
+
+        assert response.failed and "flux-metering" in response.errors[0]
+        assert session.unit.mount.pw.calls == []
+
+
+class TestAbort:
+    def test_an_imaging_session_closes_as_abandoned_without_a_final_frame(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+        exposures = list(session.unit.imager.exposures)
+
+        session.abort()
+
+        assert not session.is_active and not session.unit.mount.tracking
+        assert session.unit.imager.exposures == exposures
+        assert read_result(session.test_folder)["aborted"] is True
+        assert session.latest.succeeded is False and session.latest.errors == ["aborted"]
+
+    def test_a_frameless_session_closes_as_aborted(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, frames=False)
+
+        session.abort()
+
+        assert not session.is_active and session.latest.succeeded is False
+
+    def test_without_a_session_nothing(self, session):
+        session.abort()
+        assert session.latest is None
+
+    def test_a_busy_session_is_closed_once_its_verb_lets_go_and_abort_does_not_wait(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, frames=False)
+        holding, release = threading.Event(), threading.Event()
+
+        def hold():
+            with session._lock:
+                holding.set()
+                release.wait(5)
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        holding.wait(5)
+        began = time.monotonic()
+        session.abort()
+        assert time.monotonic() - began < 1.0, "abort answers at once"
+        assert session.is_active, "the verb in flight still holds it"
+
+        release.set()
+        holder.join(5)
+        session._abort_waiter.join(5)
+        assert not session.is_active
+
+    def test_a_session_opened_after_the_abort_is_left_alone(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, frames=False)
+        holding, release = threading.Event(), threading.Event()
+
+        def hold():
+            with session._lock:
+                holding.set()
+                release.wait(5)
+                session.end()
+                session.start(1.0, 1.0, exposure_seconds=1.0, frames=False)
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        holding.wait(5)
+        session.abort()
+        release.set()
+        holder.join(5)
+        session._abort_waiter.join(5)
+
+        assert session.is_active, "the new session is not the one abort was asked to close"
+        session.end()
+
+
+class TestExposeRefusal:
+    """What `/expose` asks the session before it touches the mount (`refusal_for_expose`)."""
+
+    def test_no_session_refuses_nothing(self, session):
+        with session.held_for_expose(moves_mount=True) as refusal:
+            assert refusal is None
+
+    def test_an_imaging_session_refuses_and_says_how_to_end_it(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0)
+
+        with session.held_for_expose(moves_mount=False) as refusal:
+            assert refusal is not None and "spiral_end_path" in refusal and "unit/abort" in refusal
+        session.end()
+
+    def test_a_frameless_session_takes_an_expose_that_leaves_the_mount_alone(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, frames=False)
+
+        with session.held_for_expose(moves_mount=False) as refusal:
+            assert refusal is None
+        with session.held_for_expose(moves_mount=True) as refusal:
+            assert refusal is not None and "outside PWI4's spiral" in refusal
+        session.end()
+
+    def test_a_step_in_progress_refuses(self, session):
+        session.start(1.0, 1.0, exposure_seconds=1.0, frames=False)
+        holding, release = threading.Event(), threading.Event()
+
+        def hold():
+            with session._lock:
+                holding.set()
+                release.wait(5)
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        holding.wait(5)
+        with session.held_for_expose(moves_mount=False) as refusal:
+            assert refusal is not None and "moving the mount" in refusal
+        release.set()
+        holder.join(5)
+        session.end()
+
+    def test_the_session_is_held_while_the_expose_sets_up(self, session):
+        """Held from the check until `Exposing` is set, so a step cannot slip in between."""
+        session.start(1.0, 1.0, exposure_seconds=1.0, frames=False)
+        acquired: list[bool] = []
+
+        with session.held_for_expose(moves_mount=False):
+            other = threading.Thread(target=lambda: acquired.append(session._lock.acquire(blocking=False)))
+            other.start()
+            other.join(5)
+        assert acquired == [False]
+        session.end()
