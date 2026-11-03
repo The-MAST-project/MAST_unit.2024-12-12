@@ -19,6 +19,7 @@ import unit as unit_module
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse_Ok
 from common.endpoints import declaration_of
+from common.models.latest import LatestExposure, LatestExposureFrame
 from unit import Unit
 
 
@@ -89,6 +90,7 @@ class Stub(FakeActivities):
         self.raised = False
         self._expose_cancelled = threading.Event()
         self.plan_owner = None  # read by `expose`, for its latest record
+        self.latest_exposure: LatestExposure | None = None  # replaced by `expose`
 
     def _expose_repeatedly(self, *args, **kwargs):
         if self.raised:
@@ -266,6 +268,18 @@ class TestTheExposingFlag:
         assert response == CanonicalResponse_Ok
         assert len(dispatched) == 1
         assert stub.is_active(UnitActivities.Exposing), "the flag must be up by the time Ok is returned"
+
+
+class TestTheRecord:
+    def test_the_next_run_replaces_the_frames(self, dispatched):
+        """A finished run's frames stay reported until the next `expose` replaces its record."""
+        stub = Stub()
+        stub.latest_exposure = LatestExposure(repeats=1).begin()
+        stub.latest_exposure.frames.append(LatestExposureFrame(name="old.fits"))
+
+        Unit.expose(stub)  # type: ignore[arg-type]
+
+        assert stub.latest_exposure is not None and stub.latest_exposure.frames == []
 
 
 class TestOneRunAtATime:
