@@ -19,7 +19,7 @@ from common.config.rois import FcuVersion, SpecRoiConfig
 from common.endpoints import Tier, endpoint
 from common.interfaces.guiding import GuiderInterface, GuiderTypes
 from common.mast_logging import get_logger
-from common.models.latest import LatestGuidingSkyQuality
+from common.models.latest import LatestGuiding, LatestGuidingSkyQuality
 from common.models.statuses import GuiderStatus, ImagerSettings
 
 logger = get_logger(__name__)
@@ -27,6 +27,9 @@ guider_address_port = ("127.0.0.1", 8001)
 
 
 class Guider(GuiderInterface):
+    #: `FullUnitStatus.latest.guiding`: the latest guide start's record.
+    latest_guiding: LatestGuiding | None = None
+
     @staticmethod
     def valid_guiding_methods():
         from common.config import Config
@@ -87,17 +90,37 @@ class Guider(GuiderInterface):
             return self._backend.sky_quality_while_guiding
         return None
 
-    def start_guiding(self) -> CanonicalResponse:
+    def begin_latest_guiding(self) -> LatestGuiding:
+        """A fresh `latest.guiding` record, for the guide start about to be made."""
+        record = LatestGuiding(backend=self.guider_type.value).begin(plan_id=getattr(self.unit, "plan_owner", None))
+        if isinstance(self._backend, PHD2Connector):
+            self._backend.adopt_guiding_record(record)
+        self.latest_guiding = record
+        return record
+
+    def start_guiding(self, record: LatestGuiding | None = None) -> CanonicalResponse:
         """Start the backend guiding, and say whether it agreed to.
 
         PHD2 refuses with errors -- cannot connect, binning or bpp not matching its profile
         -- and without raising `Guiding`. That answer used to be dropped here, so a caller
         waiting on `Guiding` saw it already clear and took the handover for done.
+
+        ``record`` is the one `endpoint_start_guiding` began before answering; otherwise
+        one is begun here.
         """
         if not self._backend:
             return CanonicalResponse(errors=["no guider backend"])
-        response = self._backend.start_guiding()
-        return response if isinstance(response, CanonicalResponse) else CanonicalResponse_Ok
+        if record is None:
+            record = self.begin_latest_guiding()
+        try:
+            response = self._backend.start_guiding()
+        except Exception as ex:
+            record.finish(False, [f"{ex}"])
+            raise
+        response = response if isinstance(response, CanonicalResponse) else CanonicalResponse_Ok
+        if response.failed:
+            record.finish(False, response.errors)
+        return response
 
     def start_looping(self):
         if isinstance(self._backend, PHD2Connector):
@@ -107,6 +130,8 @@ class Guider(GuiderInterface):
         if self._backend is not None:
             self._backend.stop_guiding()
             logger.info("guider bakend guiding stopped")
+        if self.latest_guiding is not None:
+            self.latest_guiding.finish(True)
         if self.unit:
             self.unit.end_activity(UnitActivities.Guiding)
             logger.info("unit guiding stopped")
@@ -202,7 +227,7 @@ class Guider(GuiderInterface):
             self.unit.mount.start_tracking()
 
         # start_guiding blocks for the solving backend, so run it on a thread.
-        Thread(name="guiding", target=self.start_guiding).start()
+        Thread(name="guiding", target=self.start_guiding, args=[self.begin_latest_guiding()]).start()
         return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION)
@@ -247,6 +272,8 @@ class Guider(GuiderInterface):
                 logger.debug(f"{function_name()}: unit was guiding, stopping guiding ...")
                 self.unit.guider.stop_guiding()
                 logger.info("stopped guiding")
+            if self.latest_guiding is not None:
+                self.latest_guiding.finish(True)
 
             logger.debug(f"{function_name()}: acquisition and guiding stopped")
 
