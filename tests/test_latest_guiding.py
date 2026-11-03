@@ -228,5 +228,6 @@ class TestTheGuider:
         u.focus_on_star = SimpleNamespace(latest=None)
         u.acquirer = None
         u.latest_exposure = None
+        u.spiral = SimpleNamespace(latest=None)
         u.guider = g
         assert Unit._latest_records(u).guiding is g.latest_guiding
