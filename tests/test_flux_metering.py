@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from common.models.statuses import ImagerRoi
 from flux_metering.flux_meter import SimulatedFluxMeter
-from flux_metering.session import FluxMeteringParams, FluxMeteringSession
+from flux_metering.session import FluxMeteringError, FluxMeteringParams, FluxMeteringSession
 
 
 def square_spiral(n: int):
@@ -83,6 +83,7 @@ class FakeMount:
 
     def _new(self, x_step_arcsec, y_step_arcsec):
         self.spiral_restarts += 1
+        self.steps_commanded = (x_step_arcsec, y_step_arcsec)
         self._index = 0
 
     def _next(self):
@@ -301,14 +302,31 @@ def test_the_flux_exposure_follows_the_imager_exposure():
     assert FluxMeteringParams(seconds=0.25).flux_exposure_us == 250_000
 
 
-def test_the_radius_cap_carries_cos_dec(session):
-    """`x_step_arcsec` is RA COORDINATE arcsec, so the sky angle along it is scaled by
-    cos(dec). Without this the cap means a different thing at every declination."""
+def test_the_radius_is_the_offset_on_the_sky(session):
+    """The steps are sky angles in both axes (MAST_unit#136), so no cos(dec) enters."""
     s, _unit, _mount, _meter = session()
 
-    # The fake mount reports dec +41, where cos(dec) is about 0.755.
-    assert s._radius_arcsec((10.0, 0.0)) == pytest.approx(10.0 * np.cos(np.radians(41.0)), rel=1e-6)
-    assert s._radius_arcsec((0.0, 10.0)) == pytest.approx(10.0)
+    assert s._radius_arcsec((3.0, 4.0)) == pytest.approx(5.0)
+
+
+def test_the_walk_commands_an_ra_step_square_on_the_sky(session):
+    """PWI4 steps the RA coordinate, so the walk widens the RA step by 1/cos(dec): at the
+    fake mount's dec +41 a 10" step on the sky is 13.25" of RA."""
+    s, _unit, mount, _meter = session(peak_cell=(1, 0))
+    s.params.x_step_arcsec, s.params.y_step_arcsec = 10.0, 4.0
+
+    s._walk_spiral()
+
+    assert mount.steps_commanded == pytest.approx((10.0 / np.cos(np.radians(41.0)), 4.0))
+
+
+def test_a_walk_with_no_declination_is_refused(session):
+    s, unit, mount, _meter = session()
+    unit.mount.status = lambda: SimpleNamespace(dec_j2000_degs=None)
+
+    with pytest.raises(FluxMeteringError, match="declination"):
+        s._walk_spiral()
+    assert mount.spiral_restarts == 0
 
 
 def test_the_status_is_the_typed_model_and_carries_the_steps(session):

@@ -29,6 +29,7 @@ class FakeBackend:
         self.can_set_cooler_set_point = can_set
         self.connected = True
         self.cooler_on = True
+        self.cooler_power = 100.0
         self.operational = True
         self.why_not_operational: list[str] = []
         self.calls: list = []
@@ -197,7 +198,7 @@ class TestCoolingDown:
 
         assert len(_NoThread.started) == 1
 
-    def test_an_unreachable_set_point_warns_once_and_keeps_waiting(self, monkeypatch, caplog):
+    def test_an_unreachable_set_point_is_logged_degraded_once_and_keeps_waiting(self, monkeypatch, caplog):
         monkeypatch.setattr(imagers_module, "COOLING_SLOW_WARNING_SECONDS", -1.0)
         backend = FakeBackend(set_point=-30.0, readings=[10.0] * 3)
         imager = _imager(backend)
@@ -213,7 +214,7 @@ class TestCoolingDown:
         with caplog.at_level("WARNING"):
             _NoThread.started[0]()
 
-        assert caplog.text.count("still cooling") == 1
+        assert caplog.text.count("DEGRADED cooler=unreached temp=10.0 set-point=-30.0") == 1
 
     def test_the_cooler_endpoints_start_and_end_it(self):
         backend = FakeBackend()
