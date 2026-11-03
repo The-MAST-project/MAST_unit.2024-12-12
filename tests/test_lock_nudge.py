@@ -589,7 +589,8 @@ def test_the_connector_counts_guide_steps_with_their_own_offset():
     c.accumulators_active = False
     c.latest_guide_step = GuideStep(0, 0.0, 0.0)
     c.start_activity = lambda *a, **kw: None
-    c.sky_quality = SimpleNamespace(update=lambda metrics: None)
+    c.is_active = lambda activity: False
+    c.sky_quality = SimpleNamespace(running=True, guide_step=lambda ev: None)
     c._update_lock_validity = lambda ev: None
     step = {"Event": "GuideStep", "Frame": 7, "Time": 40.0, "RADistanceRaw": 0.0, "DECDistanceRaw": 0.0}
     step |= {"SNR": 50.0, "HFD": 2.5, "StarMass": 1e5}
