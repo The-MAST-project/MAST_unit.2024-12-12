@@ -2,6 +2,26 @@
 
 ---
 
+## [2026-11-03] A spiral session is reported in status.latest.spiral
+
+**Why:** a caller off the unit following a manual spiral session, the flux-metering
+orchestrator on mast-ns-spec, had no record of it and no path to its frames on the share. A
+step whose exposure failed answered as if no frame had been asked for, and the hour's
+abandonment timer ran from the start of the session, so a long session could close under its
+caller.
+
+**What:** the session is `status.latest.spiral` (MAST_common `LatestSpiral`), replaced when a
+session opens and written as `latest.json` into the session folder when it closes. It ends
+failed, with the reason, when the timeout closes it, a new session supersedes it, or its final
+frame fails. `spiral_next_step` and `spiral_previous_step` return the step frame's path on the
+share as `image`, or null with `image_error`. The timer restarts on every step; a timer that
+fired while a step held the lock carries its arming number and leaves the session alone.
+
+**Implications:** while the share is demoted the frames stay on the unit's fallback and the
+record names no share path (MAST_common#212).
+
+---
+
 ## [2026-10-20] start_guiding sets the guide exposure from the config DB
 
 **Why:** `start_guiding` never sent an exposure, so PHD2 guided at its profile's
