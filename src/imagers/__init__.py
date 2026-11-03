@@ -13,6 +13,7 @@ from common.interfaces.imager import ImagerExposureSeries, ImagerInterface, Imag
 from common.mast_logging import get_logger
 from common.models.statuses import COOLING_DOWN_REASON, ImagerSettings, ImagerStatus
 from failure_streaks import FailureStreaks
+from imagers.cooler import CoolerState, log_cooler_verdict
 from imagers.usb_link import log_usb_link
 
 logger = get_logger(__name__)
@@ -232,8 +233,8 @@ class Imager(ImagerInterface, SwitchedOutlet):
 
         Exits, ending the flag, if the backend disconnects (a shutdown). Keeps waiting
         otherwise -- a set point out of the cooler's reach keeps the imager non-operational,
-        reported in `why_not_operational` and warned about once after
-        COOLING_SLOW_WARNING_SECONDS.
+        reported in `why_not_operational` and logged once after COOLING_SLOW_WARNING_SECONDS
+        as `DEGRADED cooler=unreached` (see `imagers.cooler`).
         """
         started = time.monotonic()
         warned = False
@@ -249,19 +250,27 @@ class Imager(ImagerInterface, SwitchedOutlet):
             if temperature is not None and set_point is not None:
                 self._cooling_reading = (float(temperature), float(set_point))
                 if float(temperature) <= float(set_point) + COOLING_TOLERANCE_DEGREES:
-                    logger.info(
-                        f"imager: cooled to {float(temperature):.1f} C (set point {float(set_point):.1f} C) "
-                        f"in {time.monotonic() - started:.0f}s"
-                    )
+                    self._log_cooler_verdict(CoolerState.Regulating, self._cooling_reading, time.monotonic() - started)
                     self.end_cooling_down()
                     return
             if not warned and time.monotonic() - started > COOLING_SLOW_WARNING_SECONDS:
-                logger.warning(
-                    f"imager: still cooling after {time.monotonic() - started:.0f}s, reading {self._cooling_reading}; "
-                    "the set point may be out of the cooler's reach at this ambient temperature"
-                )
+                if self._cooling_reading is None:
+                    logger.warning(
+                        f"imager: still cooling after {time.monotonic() - started:.0f}s, with no reading of the camera"
+                    )
+                else:
+                    self._log_cooler_verdict(CoolerState.Unreached, self._cooling_reading, time.monotonic() - started)
                 warned = True
             time.sleep(self._cooling_poll_seconds)
+
+    def _log_cooler_verdict(self, state: CoolerState, reading: tuple[float, float], elapsed_s: float) -> None:
+        temperature, set_point = reading
+        try:
+            power = self._backend.cooler_power
+        except Exception as ex:  # noqa: BLE001 -- the verdict is logged without the power rather than lost
+            logger.warning(f"imager: could not read the cooler power for the cooler verdict: {ex}")
+            power = None
+        log_cooler_verdict(state, temperature, set_point, power, elapsed_s)
 
     @endpoint(tier=Tier.INTERFACE, completion=Completion.IMMEDIATE)
     def startup(self) -> CanonicalResponse:
