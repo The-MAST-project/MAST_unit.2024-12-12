@@ -19,6 +19,7 @@ from common.config.rois import FcuVersion, SpecRoiConfig
 from common.endpoints import Tier, endpoint
 from common.interfaces.guiding import GuiderInterface, GuiderTypes
 from common.mast_logging import get_logger
+from common.models.latest import LatestGuidingSkyQuality
 from common.models.statuses import GuiderStatus, ImagerSettings
 
 logger = get_logger(__name__)
@@ -78,6 +79,13 @@ class Guider(GuiderInterface):
             activities_verbal=self.activities_verbal,
             backend=self._backend.guider_status() if self._backend else None,
         )
+
+    @property
+    def sky_quality_while_guiding(self) -> LatestGuidingSkyQuality | None:
+        """The current or last guiding session's sky quality; None from a backend without one."""
+        if isinstance(self._backend, PHD2Connector):
+            return self._backend.sky_quality_while_guiding
+        return None
 
     def start_guiding(self) -> CanonicalResponse:
         """Start the backend guiding, and say whether it agreed to.

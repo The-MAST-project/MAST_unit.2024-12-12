@@ -25,6 +25,7 @@ import time
 import pytest
 
 from phd2.phd2 import PHD2Connection, PHD2Connector, PHD2ConnectorError
+from science.sky_quality import GuidingSkyQuality
 
 SHORT_TIMEOUT = 0.3
 
@@ -53,6 +54,7 @@ def make_connector() -> PHD2Connector:
     p._terminate = False
     p._terminate_requested = False
     p._connected = True
+    p.sky_quality = GuidingSkyQuality()
     return p
 
 
