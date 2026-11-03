@@ -942,6 +942,7 @@ class Unit(Component, OpmodeBase):
             acquisition=self.acquirer.latest if self.acquirer is not None else None,
             exposure=self.latest_exposure,
             guiding=self.guider.latest_guiding if self.guider is not None else None,
+            spiral=self.spiral.latest,
             sky_quality=self._latest_sky_quality(),
         )
 
@@ -1917,7 +1918,15 @@ class Unit(Component, OpmodeBase):
             """
             Opens a spiral search session and takes the **reference** frame.<br>
             Tracking is started; `spiral_end_path()` stops it again.<br>
-            **NOTE**: an abandoned session closes itself after an hour, without a measurement.
+            **NOTE**: an abandoned session closes itself after an hour with no step, without a
+            measurement.
+
+            Returns `folder` (on the unit) and `reference_image`. The session is reported in
+            `status.latest.spiral`: its settings, steps taken, the folder on the share
+            (`shared_products_path`, null while the share is demoted and frames stay on the
+            unit), and, once closed, whether a shift was measured. A session the hour's
+            timeout closed shows there as failed. The move is queued, so a frame appears on
+            the share some time after it is taken.
 
             - **x_step_arcsec**, **y_step_arcsec**: the spiral's steps along RA and Dec, both as
               angles **on the sky**, so the cells are square at any declination. The RA step
@@ -1965,6 +1974,7 @@ class Unit(Component, OpmodeBase):
             "ring": 2,
             "offset": "+20.0arcsec RA, +10.0arcsec Dec, on the sky (~86 px)",
             "revisit": "back at step#4",
+            "image": "//mast-ns-control/mast-share/MAST/mast01/2026-10-19/Spirals/0003/step-0009.fits",
         }
         ```
 
@@ -1974,8 +1984,12 @@ class Unit(Component, OpmodeBase):
           identifies a POSITION: the same cell is the same patch of sky
         - **revisit** names the earlier step occupying this cell, if any -- which is how
           you confirm you are back at the position you judged brightest
+        - **image** is where this step's frame lands on the share; null when the session
+          does not save intermediate exposures. When the exposure failed, or the frame will
+          not reach the share (the share is demoted), it is null and **image_error** says
+          why; the session carries on.
 
-        When PWI4 does not report a spiral offset, only `step#` and an `error` come back.
+        When PWI4 does not report a spiral offset, only `step#`, `image` and an `error` come back.
         """
         return self.spiral.step(forward=True)
 
