@@ -13,6 +13,7 @@ from threading import Thread
 from typing import TYPE_CHECKING, Annotated, Any, TypeVar
 
 import numpy as np
+from astropy.io import fits
 from fastapi import Query
 from fastapi.routing import APIRouter
 from PIL import Image
@@ -43,7 +44,7 @@ from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 from common.interfaces.imager import ImagerTypes
 from common.mast_logging import DailyFileHandler, get_logger
-from common.models.latest import LATEST_FILE, LatestExposure, LatestRecords, LatestSkyQuality
+from common.models.latest import LATEST_FILE, LatestExposure, LatestExposureFrame, LatestRecords, LatestSkyQuality
 from common.models.plans import PlanStage
 from common.opmode import OpmodeBase, OpState
 
@@ -172,6 +173,58 @@ def _start_exposure_or_raise(imager, settings: ImagerSettings) -> None:
     response = imager.start_exposure(settings)
     if response is not None and response.failed:
         raise RuntimeError(f"{function_name()}: the imager refused the exposure: {response.errors}")
+
+
+#: The `error` of a frame an abort cut short.
+ABORTED_FRAME = "aborted"
+
+
+def _take_frame(
+    imager, settings: ImagerSettings, image_path: str, cancelled: threading.Event, latest: LatestExposure | None
+) -> LatestExposureFrame:
+    """Expose one frame of an `expose` run, and record in `latest` what became of it.
+
+    Every attempted frame gets an entry, appended whole: a refused start or a failed wait is
+    recorded before it is re-raised to end the run. Module-level for the reason
+    `_start_exposure_or_raise` is.
+    """
+    name = os.path.basename(image_path)
+    with MoveGuardian().protect(image_path):
+        try:
+            _start_exposure_or_raise(imager, settings)
+            imager.wait_for_image_saved()
+        except Exception as ex:
+            if latest is not None:
+                latest.frames.append(LatestExposureFrame(name=name, error=str(ex)))
+            raise
+        frame = LatestExposureFrame(name=name, error=ABORTED_FRAME) if cancelled.is_set() else _saved_frame(image_path)
+    if latest is not None:
+        latest.frames.append(frame)
+    return frame
+
+
+def _saved_frame(path: str) -> LatestExposureFrame:
+    """What `status.latest.exposure` reports for a frame the imager says it saved.
+
+    No file is the failure: PHD2 reports a failed frame (`SingleFrameComplete` with
+    `Success=false`, or the save timeout) by returning from `wait_for_image_saved` with
+    nothing written. PHD2 writes `DATE-OBS` with no zone, in UTC; it is reported aware, as
+    `started` is. `EXPTIME` is the ASCOM and ZWO backends' key for `EXPOSURE`.
+    """
+    name = os.path.basename(path)
+    try:
+        header = fits.getheader(path)
+    except OSError as ex:
+        return LatestExposureFrame(name=name, error=f"no frame was saved: {ex}")
+    date_obs = header.get("DATE-OBS")
+    if date_obs is not None:
+        stamp = datetime.datetime.fromisoformat(str(date_obs))
+        stamp = stamp.replace(tzinfo=datetime.UTC) if stamp.tzinfo is None else stamp.astimezone(datetime.UTC)
+        date_obs = stamp.isoformat()
+    exposure = header.get("EXPOSURE", header.get("EXPTIME"))
+    return LatestExposureFrame(
+        name=name, date_obs=date_obs, exposure_seconds=float(exposure) if exposure is not None else None
+    )
 
 
 def _expose_record_name(latest: LatestExposure) -> str:
@@ -1410,6 +1463,19 @@ class Unit(Component, OpmodeBase):
         If the mount was already tracking, `expose` neither re-commands nor stops it: the
         caller that started tracking owns it. Otherwise `expose` starts tracking for the run
         and stops it afterwards, also when the run fails.
+
+        Answers before it exposes. `status.latest.exposure` describes the run from the first
+        status read after the answer; the `subfolder` sent ends its `local_products_path`.
+        Its `frames` lists every frame attempted, in order: `name` (on the share, under
+        `shared_products_path`), `date_obs` and `exposure_seconds` from the frame's header,
+        and `error` for a frame that failed or was aborted. A frame PHD2 failed to save is
+        reported there, not counted in `completed`, and the run goes on.
+
+        - PHD2, not guiding: `[date_obs, date_obs + exposure_seconds]` is the frame's real
+          window, in the unit's clock
+        - PHD2 while guiding: PHD2 saves the guide frame it already has, so `date_obs` can
+          predate the request and `exposure_seconds` is the guide exposure
+        - ASCOM and ZWO backends: `DATE-OBS` is stamped at save time, after the exposure
         """
 
         if seconds_between_exposures is not None:
@@ -1646,18 +1712,16 @@ class Unit(Component, OpmodeBase):
             if image_path is None:
                 _start_exposure_or_raise(self.imager, imager_settings)
             else:
-                with MoveGuardian().protect(image_path):
-                    _start_exposure_or_raise(self.imager, imager_settings)
-                    self.imager.wait_for_image_saved()
+                frame = _take_frame(self.imager, imager_settings, image_path, self._expose_cancelled, latest)
                 # An aborted exposure is released without a readout, so there is no file
                 # here to move and `move_ram_to_shared` would be the next exception.
-                if self._expose_cancelled.is_set():
+                if frame.error == ABORTED_FRAME:
                     logger.info(f"{op}: cancelled during exposure #{repeat} (of {repeats}); no frame to move")
                     return
-                filer.move_ram_to_shared(image_path)
-                if latest is not None:
-                    latest.completed += 1
-                    latest.last_frame = image_path
+                if frame.error is not None:
+                    logger.error(f"{op}: exposure #{repeat} (of {repeats}): {frame.error}")
+                else:
+                    filer.move_ram_to_shared(image_path)
 
             if next_start is not None:
                 # total_seconds(), not `.seconds`, which is the seconds-of-day component of
