@@ -403,6 +403,7 @@ class TestTheConnector:
         c.pointing_monitor = self.Recorder()
         c.lock = threading.Lock()
         c.lock_validity = LockValidityMonitor()
+        c.sky_quality = SimpleNamespace(start=lambda **kw: None, stop=lambda: None)
         c._launch_handover = lambda: False
         c.start_activity = lambda *a, **kw: None
         c.end_activity = lambda *a, **kw: None
@@ -430,7 +431,6 @@ class TestTheConnector:
 
     def test_the_guider_status_carries_the_record(self):
         c = self.connector()
-        c.sky_quality = SimpleNamespace(state=SimpleNamespace(), latest_update=None)
         c.get_limit_frame = c.get_exclude_region = c.get_lock_position = lambda: None
         c.get_status = lambda: ("Guiding", 0.0)
         c.is_settling = lambda: False

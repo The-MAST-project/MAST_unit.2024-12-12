@@ -15,8 +15,11 @@ from types import SimpleNamespace
 import pytest
 
 from common.activities import Activities
+from common.config.phd2 import LockValidityConfig
 from common.notifications import Notifier
+from lock_nudge import GuideStep
 from phd2.phd2 import PHD2Accumulator, PHD2Activities, PHD2Connector
+from science.lock_validity import LockValidityMonitor
 from science.sky_quality import (
     BASELINE_SECONDS,
     MIN_BASELINE_SAMPLES,
@@ -215,11 +218,13 @@ def connector(binning: int = 2) -> PHD2Connector:
     Activities.__init__(c)
     unit_conf = SimpleNamespace(
         imager=SimpleNamespace(pixel_scale_at_bin1=PLATE_SCALE),
-        phd2=SimpleNamespace(profile=f"MAST, binning={binning}, bpp=16"),
+        phd2=SimpleNamespace(profile=f"MAST, binning={binning}, bpp=16", lock_validity=LockValidityConfig()),
     )
     c.parent = SimpleNamespace(unit=SimpleNamespace(unit_conf=unit_conf, plan_owner="PLAN_Y"))
     c.sky_quality = GuidingSkyQuality(clock=Clock())
-    c.guiding_verification_timer = None
+    c.lock_validity = LockValidityMonitor()
+    c.pointing_monitor = SimpleNamespace(start_session=lambda: None, stop_session=lambda: None)
+    c.latest_guide_step = GuideStep(0, 0.0, 0.0)
     c.accumulators_active = False
     c.ra_accumulator = PHD2Accumulator()
     c.dec_accumulator = PHD2Accumulator()

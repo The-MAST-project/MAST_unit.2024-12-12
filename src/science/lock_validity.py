@@ -1,6 +1,6 @@
 """Is the guider holding the star it locked onto, or something that is not a star?
 
-This answers a different question from `sky_quality.SeeingQualityWhilePHD2Guiding`,
+This answers a different question from `sky_quality.GuidingSkyQuality`,
 which scores *how steady the atmosphere is* while guiding proceeds. Both can be
 excellent at once while the guide loop chases a noise fluctuation, and on
 2026-09-08 they were: PHD2 reported successful guide steps for eleven minutes
