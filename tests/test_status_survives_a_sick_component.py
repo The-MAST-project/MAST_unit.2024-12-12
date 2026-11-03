@@ -41,6 +41,9 @@ class Guider(Part):
         super().__init__(failure)
         self.guiding_failure = guiding_failure
 
+    #: In memory, so it cannot fail the way a PHD2 call can.
+    sky_quality_while_guiding = None
+
     @property
     def is_guiding(self) -> bool:
         if self.guiding_failure:
@@ -97,6 +100,9 @@ class Stub:
 
     def _latest_records(self):
         return Unit._latest_records(self)  # type: ignore[arg-type]
+
+    def _latest_sky_quality(self):
+        return Unit._latest_sky_quality(self)  # type: ignore[arg-type]
 
     def component_status(self) -> ComponentStatus:
         return ComponentStatus(

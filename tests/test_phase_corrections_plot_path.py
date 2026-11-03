@@ -45,3 +45,35 @@ def test_plots_from_a_forward_slashed_acquisition_folder(tmp_path: Path, tail: s
     plot_phase_corrections(phase="spec", corrections=_corrections(), file=file)
 
     assert Path(file.replace(".json", ".png")).exists()
+
+
+def _horizontal_lines() -> dict[str, float]:
+    import matplotlib.pyplot as plt
+
+    return {
+        line.get_label(): line.get_ydata()[0]
+        for line in plt.gca().get_lines()
+        if len(set(line.get_ydata())) == 1 and not str(line.get_label()).startswith("_")
+    }
+
+
+def test_combined_plot_draws_each_phases_dec_tolerance(tmp_path: Path):
+    """Once the RA tolerance is plain RA scaled by 1/cos(Dec) (#191), RA and Dec differ."""
+    import matplotlib.pyplot as plt
+
+    plt.close("all")
+    folder = tmp_path / ACQUISITION
+    folder.mkdir(parents=True)
+    corrections = _corrections()
+    corrections.tolerance_ra = 2.86
+    plot_phase_corrections(
+        phase="acquisition",
+        corrections=corrections,
+        file=str(folder) + "/corrections.json",
+        tolerances={"sky": {"ra": 1.0, "dec": 1.0}, "spec": {"ra": 2.86, "dec": 0.5}},
+    )
+
+    lines = _horizontal_lines()
+    assert lines["'spec' RA tolerance, plain (2.86 arcsec)"] == 2.86
+    assert lines["'spec' Dec tolerance (0.5 arcsec)"] == 0.5
+    assert lines["'sky' Dec tolerance (1 arcsec)"] == 1.0

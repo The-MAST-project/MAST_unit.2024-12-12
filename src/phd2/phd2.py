@@ -24,14 +24,15 @@ from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface
 from common.mast_logging import get_logger
-from common.models.statuses import ImagerRoi, ImagerSettings, PHD2GuiderStatus, PHD2ImagerStatus, SkyQualityStatus
+from common.models.latest import LatestGuidingSkyQuality
+from common.models.statuses import ImagerRoi, ImagerSettings, PHD2GuiderStatus, PHD2ImagerStatus
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_debug, function_name
 from failure_streaks import FailureStreaks
 from phd2.fits_header import stamp_cooling
 from phd2.limit_frame import limit_frame_accepted, limit_frame_covers_sensor, limit_frame_extent
 from phd2.phd2_locate import locate_phd2_exe
-from science.sky_quality import FrameMetrics, SeeingQualityWhilePHD2Guiding
+from science.sky_quality import GuidingSkyQuality
 
 logger = get_logger(__name__)
 
@@ -404,7 +405,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
         self.restart_event: threading.Event = threading.Event()
 
-        self.sky_quality: SeeingQualityWhilePHD2Guiding = SeeingQualityWhilePHD2Guiding()
+        self.sky_quality = GuidingSkyQuality()
 
         phd2_exe = locate_phd2_exe()
         if phd2_exe is None:
@@ -665,6 +666,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
             case "StartGuiding":
                 self.start_activity(PHD2Activities.Guiding)
+                self._start_sky_quality()
                 if self.guiding_verification_timer is not None:
                     self.guiding_verification_timer.start()
                 self.accumulators_active = True
@@ -715,9 +717,12 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                     self.ra_accumulator.add(ev["RADistanceRaw"])
                     self.dec_accumulator.add(ev["DECDistanceRaw"])
                     stats = self._get_accumulated_stats(self.ra_accumulator, self.dec_accumulator)
+                # Outside the lock: it is the Activities lock too, and `start_activity` takes it.
+                # Inside, a GuideStep with Guiding not yet raised -- the unit connecting to a
+                # PHD2 already guiding -- deadlocked this thread, and with it every RPC reply.
+                self.start_activity(PHD2Activities.Guiding, existing_ok=True)
                 with self.lock:
                     self.app_state = "Guiding"
-                    self.start_activity(PHD2Activities.Guiding, existing_ok=True)
                     self.avg_dist = ev["AvgDist"]
                     if self.accumulators_active:
                         self.stats = stats
@@ -735,7 +740,10 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 if lines:
                     boxed_debug(logger=logger, lines=lines)
 
-                self.sky_quality.update(FrameMetrics(snr=ev["SNR"], hfd_pixels=ev["HFD"]))
+                if not self.is_active(PHD2Activities.Settling):  # the star is moving: not the sky
+                    if not self.sky_quality.running:  # guiding when the unit (re)connected
+                        self._start_sky_quality()
+                    self.sky_quality.guide_step(ev)
 
             case "SettleBegin":
                 self.start_activity(PHD2Activities.Settling)
@@ -843,6 +851,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             case "GuidingStopped":
                 activity = PHD2Activities.Looping if e == "LoopingExposuresStopped" else PHD2Activities.Guiding
                 self.end_activity(activity)
+                self.sky_quality.stop()
                 if activity == PHD2Activities.Guiding and self.guiding_verification_timer is not None:
                     logger.info(f"{function_name()}: stopping guiding verification timer")
                     self.guiding_verification_timer.cancel()
@@ -870,6 +879,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 boxed_debug(logger=logger, lines=[f"{function_name()}: event: LockPositionLost"])
 
             case "StarLost":
+                self.sky_quality.star_lost()
                 with self.lock:
                     self.app_state = "LostLock"
                     self.avg_dist = ev["AvgDist"]
@@ -927,6 +937,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             # caller in `call` waits out its whole timeout for an answer that cannot arrive --
             # and before there was a timeout, for the life of the process.
             self._fail_pending("the reader thread exited")
+            self.sky_quality.stop(None if self._terminate_requested else "the connection to PHD2 was lost")
             # And the JSON-RPC connection is gone, so `connected` must say so. It stayed True
             # when PHD2 closed or reset the socket (PHD2 exiting, crashing or being restarted),
             # so a dead connection read as connected. Only `disconnect()` exits on purpose, and
@@ -970,7 +981,12 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             if "jsonrpc" in j:
                 self._deliver(j)
             else:
-                self._handle_event(j)
+                try:
+                    self._handle_event(j)
+                except Exception:  # noqa: BLE001 -- one event must not end the reader
+                    # This thread also delivers every RPC reply: an event it failed on used to
+                    # end it, and with it every call to PHD2 until the unit was restarted.
+                    logger.exception(f"{function_name()}: could not handle the {j.get('Event')!r} event; ignoring it")
 
     def _deliver(self, response: dict) -> None:
         """Hand a reply to the caller that asked for it, and to nobody else.
@@ -1420,22 +1436,34 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         wrapper came to pass `capacity="imager"` to ASCOM and ZWO, neither of
         which takes an argument: `/imager/status` was a 500 on both (#100).
         """
-        st = self.sky_quality.state
-        sky_quality: SkyQualityStatus | None = (
-            None
-            if self.sky_quality.latest_update is None
-            else SkyQualityStatus(
-                score=st.score_0_to_100, state=st.quality_state, latest_update=self.sky_quality.latest_update
-            )
-        )
-
         return PHD2GuiderStatus(
             identifier=self.identifier,
             is_guiding=self.is_guiding,
             is_settling=self.is_settling(),
             app_state=self.app_state,
             avg_dist=self.avg_dist,
-            sky_quality=sky_quality,
+        )
+
+    @property
+    def sky_quality_while_guiding(self) -> LatestGuidingSkyQuality | None:
+        """`FullUnitStatus.latest.sky_quality.while_guiding`: the current or last session's."""
+        return self.sky_quality.latest
+
+    def _start_sky_quality(self) -> None:
+        """A new sky-quality session, at the plate scale guiding runs at. On the reader thread,
+        so nothing here may call PHD2: its reply would be delivered by this very thread."""
+        unit = self.parent.unit if self.parent is not None else None
+        plate_scale: float | None = None
+        binning = self.profile_binning or 1
+        try:
+            assert unit is not None and unit.unit_conf is not None
+            plate_scale = unit.unit_conf.imager.pixel_scale_at_bin1 * binning
+        except Exception as ex:  # noqa: BLE001 -- the HFD is still reported, in pixels
+            logger.warning(f"{function_name()}: no plate scale, sky quality in guide pixels only: {ex!r}")
+        self.sky_quality.start(
+            plate_scale_arcsec=plate_scale,
+            binning=binning,
+            plan_id=getattr(unit, "plan_owner", None),
         )
 
     @property
