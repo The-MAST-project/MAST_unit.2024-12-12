@@ -2,6 +2,26 @@
 
 ---
 
+## [2026-11-03] status.latest.guiding: the guide start's settle outcome
+
+**Why:** a caller off the unit could not tell whether a guide start settled. `is_settling`
+stayed true after the first settle (#362), `SettleDone`'s error was read from a key PHD2 does
+not send, and nothing recorded the outcome. The flux-metering orchestrator needs it to start
+measuring only on a settled guide. MAST_unit#383.
+
+**What:** one `LatestGuiding` (MAST_common) per guide start, begun before `start_guiding`
+answers, or in `Guider.start_guiding` for the acquisition's handover. PHD2's first
+`SettleDone` sets `settle`, `settled_at` and `settle_error`. A failed settle does not end the
+record or stop guiding: guiding goes on with the failure recorded, and the client decides. The
+record ends at `GuidingStopped` (the boundary `sky_quality.while_guiding` uses), on
+`stop_guiding`, abort or `stop_acquisition_and_guiding`, and fails on a refused start or a lost
+PHD2 connection. It is built on `main`, not stacked on #30, so its clients do not wait on #30.
+
+**Implications:** `is_settling` means a settle in progress. Only the first settle of a guide
+start is recorded; a later one in the same guide start is not.
+
+---
+
 ## [2026-10-20] start_guiding sets the guide exposure from the config DB
 
 **Why:** `start_guiding` never sent an exposure, so PHD2 guided at its profile's
