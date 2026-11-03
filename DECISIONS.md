@@ -2,6 +2,25 @@
 
 ---
 
+## [2026-11-03] Spiral steps are arcsec on the sky in both axes
+
+**Why:** the x step went to PWI4 as arcseconds of RA, so a cell was `cos(dec)` narrower on the
+sky than it was tall: at Dec +80 a 30" step moved the mount 5" on the sky. The search was not
+square anywhere off the equator. MAST_unit#136.
+
+**What:** `x_step_arcsec` and `y_step_arcsec` are on the sky. `commanded_ra_step` turns the x
+step into the RA step PWI4 is given, `x_step_arcsec / cos(dec)` at the mount's declination,
+and refuses with no declination or past ten times the step (|dec| > 84.3 deg). Every spiral on
+the unit uses it: `spiral_new_path` refuses before tracking starts, and `acquire_and_find_max_flux`
+widens its walk the same way. The commanded step and the declination it was sized at are
+reported (`ra_step_commanded_arcsec`, `dec_for_ra_step_degs`) and kept in `result.json`.
+`spiral_correlate_steps` applies `cos(dec)` only to a run with no commanded step on record,
+one written before this change.
+
+**Implications:** no spiral near either pole; the refusal says why. Old runs reduce as before.
+
+---
+
 ## [2026-10-20] start_guiding sets the guide exposure from the config DB
 
 **Why:** `start_guiding` never sent an exposure, so PHD2 guided at its profile's
