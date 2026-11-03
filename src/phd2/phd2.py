@@ -25,7 +25,7 @@ from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.guiding import GuiderInterface
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface
 from common.mast_logging import get_logger
-from common.models.latest import LatestGuidingSkyQuality
+from common.models.latest import LatestGuiding, LatestGuidingSkyQuality
 from common.models.statuses import (
     ImagerRoi,
     ImagerSettings,
@@ -309,6 +309,9 @@ PHD2_STARTUP_POLL: float = 0.5
 
 class PHD2Connector(GuiderInterface, ImagerInterface):
     """The main class for interacting with PHD2 both as a guider and as an imager."""
+
+    #: The guide start's record (`Guider.latest_guiding`), fed its first `SettleDone`.
+    guiding_record: LatestGuiding | None = None
 
     DEFAULT_STOP_CAPTURE_TIMEOUT = 10
     _instance = None
@@ -979,10 +982,13 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 s = PHD2SettleProgress()
                 s.done = True
                 s.status = ev["Status"]
-                s.error = ev.get("error")
+                s.error = ev.get("Error")
                 with self.lock:
                     self.settle = s
                     self.stats = stats
+                if self.guiding_record is not None:
+                    failed = s.status != 0 or bool(s.error)
+                    self.guiding_record.settle_done((s.error or f"status {s.status}") if failed else None)
                 boxed_debug(
                     lines=[
                         f"{function_name()}: Settling done, status={s.status}, error={s.error}",
@@ -1056,6 +1062,8 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 activity = PHD2Activities.Looping if e == "LoopingExposuresStopped" else PHD2Activities.Guiding
                 self.end_activity(activity)
                 self.sky_quality.stop()
+                if self.guiding_record is not None:
+                    self.guiding_record.finish(True)
                 if activity == PHD2Activities.Guiding:
                     self.pointing_monitor.stop_session()
                 with self.lock:
@@ -1141,7 +1149,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             # caller in `call` waits out its whole timeout for an answer that cannot arrive --
             # and before there was a timeout, for the life of the process.
             self._fail_pending("the reader thread exited")
-            self.sky_quality.stop(None if self._terminate_requested else "the connection to PHD2 was lost")
+            lost = None if self._terminate_requested else "the connection to PHD2 was lost"
+            self.sky_quality.stop(lost)
+            if self.guiding_record is not None:
+                self.guiding_record.finish(lost is None, [lost] if lost else None)
+            # No SettleDone will come for it, and `guide()` refuses while one is unfinished.
+            with self.lock:
+                if self.settle is not None and not self.settle.done:
+                    self.settle = None
             # And the JSON-RPC connection is gone, so `connected` must say so. It stayed True
             # when PHD2 closed or reset the socket (PHD2 exiting, crashing or being restarted),
             # so a dead connection read as connected. Only `disconnect()` exits on purpose, and
@@ -1627,7 +1642,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         if not self.connected:
             return False
         with self.lock:
-            if self.settle:
+            if self.settle is not None and not self.settle.done:
                 return True
         # for app init, initialize the settle state to a consistent
         # value as if Guide had been called
@@ -1842,6 +1857,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 ),
             ),
         )
+
+    def adopt_guiding_record(self, record: LatestGuiding) -> None:
+        """Feed ``record`` from here on, with the settle criterion guiding starts with."""
+        criterion = self.settling_settings
+        record.settle_pixels = criterion.pixels
+        record.settle_time = criterion.time
+        record.settle_timeout = criterion.timeout
+        self.guiding_record = record
 
     @property
     def sky_quality_while_guiding(self) -> LatestGuidingSkyQuality | None:

@@ -888,6 +888,7 @@ class Unit(Component, OpmodeBase):
             focus_on_star=self.focus_on_star.latest,
             acquisition=self.acquirer.latest if self.acquirer is not None else None,
             exposure=self.latest_exposure,
+            guiding=self.guider.latest_guiding if self.guider is not None else None,
             sky_quality=self._latest_sky_quality(),
         )
 
