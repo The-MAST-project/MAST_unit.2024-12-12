@@ -167,3 +167,28 @@ def find_focus_star(
         if star is not None:
             return star
     return None
+
+
+def field_catalog(
+    catalog: CatsHtm,
+    *,
+    ra_deg: float,
+    dec_deg: float,
+    radius_deg: float,
+    mag_column: str,
+    faintest_mag: float,
+    years_of_proper_motion: float | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(ra_deg, dec_deg, mag)`` of the stars within ``radius_deg`` down to ``faintest_mag``.
+
+    The sky-quality frame's catalog: the focus star's field, positions brought to now when
+    ``years_of_proper_motion`` is given.  Raises :class:`catalogs.catshtm.CatalogError`.
+    """
+    columns = [RA, DEC, mag_column] + ([PMRA, PMDEC] if years_of_proper_motion is not None else [])
+    data = catalog.cone_search(ra_deg, dec_deg, radius_deg, columns)
+    ra, dec = np.degrees(data[RA]), np.degrees(data[DEC])
+    if years_of_proper_motion is not None:
+        ra, dec = propagate_proper_motion(ra, dec, data[PMRA], data[PMDEC], years_of_proper_motion)
+    mag = np.asarray(data[mag_column], dtype=float)
+    ok = np.isfinite(ra) & np.isfinite(dec) & np.isfinite(mag) & (mag <= faintest_mag)
+    return np.asarray(ra)[ok], np.asarray(dec)[ok], mag[ok]

@@ -643,7 +643,18 @@ def measure_sweep_star(images, start_xy: tuple[float, float], **star_kw) -> list
     return out
 
 
-def peak_fraction(
+@dataclass(frozen=True)
+class FieldStar:
+    """A source in a box: where, how much light, how high, and whether it saturated."""
+
+    x: float  # the frame's own pixels
+    y: float
+    flux: float  # background-subtracted, within the HFD aperture
+    peak: float  # background-subtracted, 3x3 median: a hot pixel cannot set it
+    saturated: bool
+
+
+def field_stars(
     image,
     box,
     *,
@@ -655,12 +666,11 @@ def peak_fraction(
     r_max: float = 70.0,
     stamp_pad: int = 6,
     max_value: float = 63000.0,
-    min_peak_snr: float = 20.0,
-) -> float | None:
-    """Median ``peak / flux`` of the bright, unsaturated stars in ``box``; None if there are none.
+) -> tuple[list[FieldStar], float]:
+    """The sources whose centroid is in ``box``, and the background noise of the crop.
 
-    The stars of one frame share the PSF, so this ratio carries over to a saturated star in
-    it: its true peak is about this times its (clipped, so lower-bound) flux.
+    One background subtraction over the padded box; each source's flux over the HFD
+    aperture (``r_factor`` x its major sigma), less its stamp's border median.
     """
     data = _load(image)
     crop = _fov_crop_box(data.shape, box, r_max + stamp_pad)
@@ -669,21 +679,37 @@ def peak_fraction(
     x, y, smaj = _detect(sub, nsigma, npixels, 4)
     keep = _box_keep(x, y, _shift_box(box, crop))
     noise = 1.4826 * float(np.median(np.abs(sub - np.median(sub)))) or 1.0
-    ratios = []
-    for xs, ys, s in zip(x[keep], y[keep], smaj[keep], strict=True):
-        r_out = float(np.clip(r_factor * s, r_min, r_max))
+    stars = []
+    for xs, ys, sm in zip(x[keep], y[keep], smaj[keep], strict=True):
+        r_out = float(np.clip(r_factor * sm, r_min, r_max))
         h = int(round(r_out + stamp_pad))
         xc, yc = int(round(xs)), int(round(ys))
         sx0, sx1 = max(0, xc - h), min(raw.shape[1], xc + h + 1)
         sy0, sy1 = max(0, yc - h), min(raw.shape[0], yc + h + 1)
-        if sx1 - sx0 < 5 or sy1 - sy0 < 5 or raw[sy0:sy1, sx0:sx1].max() >= max_value:
+        if sx1 - sx0 < 5 or sy1 - sy0 < 5:
             continue
         st = sub[sy0:sy1, sx0:sx1]
         border = np.concatenate([st[0], st[-1], st[1:-1, 0], st[1:-1, -1]])
         v = st - np.median(border)
         yy, xx = np.mgrid[0 : v.shape[0], 0 : v.shape[1]]
-        flux = float(v[np.hypot(xx - (xs - sx0), yy - (ys - sy0)) <= r_out].sum())
-        peak = float(ndimage.median_filter(v, size=3).max())
-        if flux > 0 and peak >= min_peak_snr * noise:
-            ratios.append(peak / flux)
+        stars.append(
+            FieldStar(
+                x=float(xs + crop[0]),
+                y=float(ys + crop[2]),
+                flux=float(v[np.hypot(xx - (xs - sx0), yy - (ys - sy0)) <= r_out].sum()),
+                peak=float(ndimage.median_filter(v, size=3).max()),
+                saturated=bool(raw[sy0:sy1, sx0:sx1].max() >= max_value),
+            )
+        )
+    return stars, noise
+
+
+def peak_fraction(image, box, *, max_value: float = 63000.0, min_peak_snr: float = 20.0, **field_kw) -> float | None:
+    """Median ``peak / flux`` of the bright, unsaturated stars in ``box``; None if there are none.
+
+    The stars of one frame share the PSF, so this ratio carries over to a saturated star in
+    it: its true peak is about this times its (clipped, so lower-bound) flux.
+    """
+    stars, noise = field_stars(image, box, max_value=max_value, **field_kw)
+    ratios = [s.peak / s.flux for s in stars if not s.saturated and s.flux > 0 and s.peak >= min_peak_snr * noise]
     return float(np.median(ratios)) if ratios else None
