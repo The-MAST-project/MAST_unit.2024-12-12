@@ -113,14 +113,16 @@ class Solver(SolverInterface):
             #
             # Try to fetch wind-speed from safety system
             #
-            wind_speed = safe = reasons_for_not_safe = None
-            result = safety_get_sensor("wind-speed", timeout=0.5, max_age=datetime.timedelta(minutes=1))
-            if result is not None:
-                wind_speed, safe, reasons_for_not_safe = result
+            wind_speed = safety_get_sensor(
+                weather_station_name="davis",
+                sensor_name="wind_speed",
+                timeout=0.5,
+                max_age=datetime.timedelta(minutes=1),
+            )
 
             msg = f"{op}: starting {imager_settings.seconds=} acquisition exposure"
             if wind_speed is not None:
-                msg += f" (wind_speed={wind_speed} Km/h, {safe=}, reasons={reasons_for_not_safe})"
+                msg += f" (wind_speed={wind_speed:.1f} km/h)"
             logger.info(msg)
 
             response = self.unit.imager.start_exposure(imager_settings)
