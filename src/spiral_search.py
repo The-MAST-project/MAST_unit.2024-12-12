@@ -389,6 +389,8 @@ class SpiralSearch:
                 frames=frames,
                 x_step_arcsec=x_step_arcsec,
                 y_step_arcsec=y_step_arcsec,
+                ra_step_commanded_arcsec=ra_step_arcsec,
+                dec_for_ra_step_degs=dec_degrees,
                 exposure_seconds=exposure_seconds if frames else None,
                 save_intermediate_exposures=save_intermediate_exposures,
             ).begin()

@@ -374,6 +374,15 @@ class TestTheStepsAreSquareOnTheSky:
         assert value["ra_step_commanded_arcsec"] == pytest.approx(ra_step)
         assert value["dec_for_ra_step_degs"] == FakePw.DEC_DEGREES
 
+    @pytest.mark.parametrize("frames", [True, False])
+    def test_the_latest_record_reports_what_was_commanded(self, session, frames):
+        """A frameless session's answer carries no RA step, so a caller off the unit reads it here."""
+        session.start(10.0, 4.0, exposure_seconds=1.0, frames=frames)
+
+        record = session.latest
+        assert record.ra_step_commanded_arcsec == pytest.approx(10.0 / math.cos(math.radians(FakePw.DEC_DEGREES)))
+        assert record.dec_for_ra_step_degs == FakePw.DEC_DEGREES
+
     def test_the_result_records_what_was_commanded(self, session):
         session.start(10.0, 4.0, exposure_seconds=1.0)
         session.end()
