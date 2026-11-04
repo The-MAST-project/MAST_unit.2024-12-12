@@ -24,7 +24,7 @@ from imagers import ImagerSettings
 from phd2.limit_frame import derived_guiding_roi
 
 from .astrometry_dot_net import generate_random_string, parse_solver_output, win_to_cygwin
-from .pixel_grid import roi_center_to_crpix
+from .pixel_grid import grid_to_orig_fits, roi_center_to_crpix
 from .ram_area import index_dir, missing_indexes, scratch_dir
 
 #: solve-field's records of a solve, by the option that asks for each, and the suffix it gets.
@@ -42,6 +42,9 @@ if TYPE_CHECKING:
 #: exactly this. A caller that hardcoded 2 would be silently wrong the day it changed --
 #: and the flux-metering run now derives its plate scale from a solve.
 DOWNSAMPLE_FACTOR: int = 2
+
+#: astrometry.net's source extractor: the same simplexy solve-field runs on an image.
+IMAGE2XY = r"C:/cygwin64/usr/local/astrometry/bin/image2xy"
 
 
 class MastrometryDotNet(SolverInterface):
@@ -96,6 +99,7 @@ class MastrometryDotNet(SolverInterface):
         keep_artifacts: bool = True,
         frame_origin: tuple[int, int] | None = None,
         metafiles_folder: Path | None = None,
+        exclude_columns: tuple[int, int] | None = None,
     ) -> SolvingResult | None:
         """
         MAST specific astrometry.net solver implementation.
@@ -120,6 +124,12 @@ class MastrometryDotNet(SolverInterface):
         `frame_origin` is where the input sits on the sensor when it is a limit-frame crop
         rather than the full frame. The phase ROI is then clipped to the frame, and the
         reference pixel keeps pointing at the same sensor pixel, inside the frame or not.
+
+        `exclude_columns` (sensor x, from-to) are left out of the solve: sources are found on the
+        unedited frame, those in the columns dropped, and the list is solved. The guide-frame
+        solves leave out the stars beside the fold mirror's shadow band this way, which are
+        measured displaced (`phd2.guide_solve_mask`). The pixels are never edited: a blanked band
+        leaves an edge that source extraction reads as a wall of sources (mast01, 2026-10-30).
         """
 
         self.unit: Unit | None = unit
@@ -169,6 +179,7 @@ class MastrometryDotNet(SolverInterface):
                 full_frame_input_image_path,
                 target,
                 frame_origin,
+                exclude_columns,
             )
         finally:
             # The solved frame (it carries the WCS -- MAST_unit#27) and the solver's own
@@ -190,6 +201,7 @@ class MastrometryDotNet(SolverInterface):
         full_frame_input_image_path: str,
         target: Coord | None,
         frame_origin: tuple[int, int] | None = None,
+        exclude_columns: tuple[int, int] | None = None,
     ) -> SolvingResult | None:
         unit = self.unit
 
@@ -213,6 +225,10 @@ class MastrometryDotNet(SolverInterface):
             height, width = data.shape
             dtype = data.dtype
             logger.info(f"{function_name()}: Full frame image dimensions: {width}x{height}, dtype: {dtype}")
+
+            if exclude_columns is not None:
+                header["MASK_X0"] = (exclude_columns[0], "Sources not solved from sensor x")
+                header["MASK_X1"] = (exclude_columns[1], "Sources not solved to sensor x")
 
             #
             # Passed to astrometry.net as the reference pixel for the solving process
@@ -389,11 +405,32 @@ class MastrometryDotNet(SolverInterface):
             for option, path in metafiles.items():
                 args += [option, win_to_cygwin(str(path))]
 
-            args += [
-                "--new-fits",
-                win_to_cygwin(str(new_fits_path)),
-                win_to_cygwin(str(downsampled_image_path)),
-            ]
+            wcs_path: Path | None = None
+            if exclude_columns is None:
+                args += [
+                    "--new-fits",
+                    win_to_cygwin(str(new_fits_path)),
+                    win_to_cygwin(str(downsampled_image_path)),
+                ]
+            else:
+                crop_x0 = (imager_roi.x if imager_roi is not None else 0) + (frame_origin or (0, 0))[0]
+                xy_path = self._sources_outside(downsampled_image_path, exclude_columns, crop_x0, downsample_factor, env)
+                wcs_path = win_tmp_dir / f"{downsampled_image_path.stem}.wcs"
+                args += [
+                    "--x-column",
+                    "X",
+                    "--y-column",
+                    "Y",
+                    "--sort-column",
+                    "FLUX",
+                    "--width",
+                    str(downsampled_width),
+                    "--height",
+                    str(downsampled_height),
+                    "--wcs",
+                    win_to_cygwin(str(wcs_path)),
+                    win_to_cygwin(str(xy_path)),
+                ]
 
         command = " ".join([r"C:/cygwin64/usr/local/astrometry/bin/solve-field"] + args)
         logger.info(f"{function_name()}: Running astrometry.net with '{command}'")
@@ -411,6 +448,9 @@ class MastrometryDotNet(SolverInterface):
             completed_process = subprocess.run(
                 command, capture_output=True, shell=True, env=env, check=False
             )  # returncode is inspected below
+            if wcs_path is not None and completed_process.returncode == 0 and wcs_path.exists():
+                # A source list carries no image, so the solved frame is assembled here.
+                _write_solved_fits(downsampled_image_path, wcs_path, new_fits_path)
         stdout_lines = completed_process.stdout.decode().strip().splitlines()
         stderr_lines = completed_process.stderr.decode().strip().splitlines()
         elapsed = time.monotonic() - start
@@ -490,6 +530,19 @@ class MastrometryDotNet(SolverInterface):
             )
 
         return ret
+
+    @staticmethod
+    def _sources_outside(image: Path, columns: tuple[int, int], crop_x0: int, factor: int, env: dict[str, str]) -> Path:
+        """image2xy's sources on `image`, without those in sensor `columns`, as a list to solve."""
+        found = image.with_suffix(".xy.fits")
+        kept = image.with_suffix(".kept.xy.fits")
+        command = f"{IMAGE2XY} -O -o {win_to_cygwin(str(found))} {win_to_cygwin(str(image))}"
+        completed = subprocess.run(command, capture_output=True, shell=True, env=env, check=False)
+        if completed.returncode != 0:
+            raise Exception(f"{function_name()}: image2xy failed: {completed.stderr.decode().strip()}")
+        n_found, n_kept = _drop_sources_in_columns(found, kept, columns, crop_x0, factor)
+        logger.info(f"{function_name()}: {n_kept} of {n_found} sources outside sensor columns {columns}")
+        return kept
 
     @staticmethod
     def _run_logged(target, *args):
@@ -585,3 +638,27 @@ def _clip_to_frame(roi: ImagerRoi, frame_origin: tuple[int, int], width: int, he
     clipped = ImagerRoi.verbatim(x=left, y=top, width=right - left, height=bottom - top)
     clipped._center = ImagerPixel(x=roi._center.x - origin_x, y=roi._center.y - origin_y)
     return clipped
+
+
+def _drop_sources_in_columns(
+    xy_in: Path, xy_out: Path, columns: tuple[int, int], crop_x0: int, factor: int
+) -> tuple[int, int]:
+    """Copy image2xy's list `xy_in` to `xy_out` without the sources in sensor `columns`.
+
+    The list is on the downsampled crop (FITS 1-based); `crop_x0` is the sensor x of the
+    crop's first column. Returns (sources found, sources kept)."""
+    with fits.open(xy_in) as hdul:
+        table = hdul[1].data
+        sensor_x = grid_to_orig_fits(table["X"], factor) - 1 + crop_x0
+        keep = (sensor_x < columns[0]) | (sensor_x >= columns[1])
+        fits.HDUList([fits.PrimaryHDU(header=hdul[0].header), fits.BinTableHDU(table[keep], header=hdul[1].header)]).writeto(
+            xy_out, overwrite=True
+        )
+    return len(table), int(keep.sum())
+
+
+def _write_solved_fits(image: Path, wcs: Path, out: Path) -> None:
+    """The solved frame of a source-list solve: the image solve-field was not given, with its WCS."""
+    header = fits.getheader(image)
+    header.update(fits.getheader(wcs))
+    fits.writeto(out, fits.getdata(image), header, overwrite=True)

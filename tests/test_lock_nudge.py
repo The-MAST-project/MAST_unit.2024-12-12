@@ -20,6 +20,7 @@ import pytest
 from astropy.coordinates import Angle
 from astropy.io import fits
 
+from common.config.phd2 import GuideSolveMaskConfig
 from common.interfaces.solving import SolvingSolution
 from common.models.statuses import ImagerRoi
 from lock_nudge import GuideStep, detector_pixel_scale_arcsec, sky_offset_to_detector_pixels
@@ -198,6 +199,7 @@ class FakePHD2:
             limit = None if size == SENSOR else ImagerRoi.verbatim(x=1000, y=0, width=size[0], height=size[1])
         self.limit = limit
         self.profile_binning = 1
+        self.conf = SimpleNamespace(guide_solve_mask=GuideSolveMaskConfig())
         self.saved: list[str] = []
         self.moved: list[tuple[float, float]] = []
 
