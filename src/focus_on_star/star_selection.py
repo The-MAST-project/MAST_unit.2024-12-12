@@ -7,9 +7,11 @@ The rule (decided 2026-10-11):
 * candidates are tried brightest first (closest to the limit), ties broken by
   distance from the sky position;
 * the first candidate with **no star brighter than itself** inside the isolation
-  radius wins.  That radius covers the measured box wherever the camera's
-  position angle puts it (see :func:`isolation_radius_deg`), so nothing brighter
-  can sit in the box and outweigh the star the box is about.
+  radius wins.  Only that star is measured, so the radius need only keep its
+  stamp clean (``FocusOnStarSettings.isolation_radius_px``); a brighter star
+  elsewhere in the box does not matter -- if it saturates, it is not measured.
+  The radius used to cover the whole measured box, when the box's median HFD was
+  the metric; at G 11-13 that rarely left a candidate.
 
 If no candidate qualifies, the search radius grows by ``search_growth`` up to
 ``max_search_radius_deg``.  Each query reaches ``radius + isolation`` so a
@@ -19,7 +21,6 @@ candidate near the edge of the search still has all its neighbours checked.
 from __future__ import annotations
 
 import datetime
-import math
 from dataclasses import asdict, dataclass
 
 import numpy as np
@@ -48,18 +49,6 @@ class FocusStar:
 
 def separation_deg(ra1_deg, dec1_deg, ra2_deg, dec2_deg):
     return np.degrees(angular_distance(np.radians(ra1_deg), np.radians(dec1_deg), np.radians(ra2_deg), np.radians(dec2_deg)))
-
-
-def isolation_radius_deg(box_w_px: float, box_h_px: float, pixel_scale_arcsec: float, margin_px: float) -> float:
-    """Radius about the star that contains the whole box, at ANY position angle.
-
-    The star sits at the box's center, so the farthest the box reaches is its
-    half-diagonal.  A circle, not the box itself, because the camera's rotation
-    on the sky is not known here; this rejects a few candidates a true rotated
-    box would accept, which only costs search radius.  ``margin_px`` keeps a
-    neighbour just outside the box from spilling its wings in.
-    """
-    return (0.5 * math.hypot(box_w_px, box_h_px) + margin_px) * pixel_scale_arcsec / 3600.0
 
 
 _J2000 = datetime.datetime(2000, 1, 1, 12, tzinfo=datetime.UTC)

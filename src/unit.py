@@ -2374,11 +2374,13 @@ class Unit(Component, OpmodeBase):
         has brought the unit near focus.<br>
         <br>
         The routine **chooses the star**: from the GAIA DR3 catalog, near the sky position, the
-        brightest star no brighter than `star_magnitude` with no brighter star anywhere in the
-        measured box. It is acquired onto the fibre pixel the way acquisition's `spec` phase
-        does it -- but the stage is not moved to SPEC and guiding does not start. Then `steps`
-        frames, `ticks_per_step` apart and centred on the current focuser position, measure the
-        star's half-flux diameter inside the box.<br>
+        brightest star no brighter than `star_magnitude` with no brighter star within the
+        configured isolation radius. It is acquired onto the fibre pixel the way acquisition's
+        `spec` phase does it -- but the stage is not moved to SPEC and guiding does not start.
+        A probe frame at the fixed exposure checks it: if the star saturates, a fainter limit is
+        estimated from it and one replacement star is chosen and acquired. Then `steps` frames,
+        `ticks_per_step` apart and centred on the current focuser position, measure **that star
+        alone**: its half-flux diameter for the fit, its FWHM logged beside it.<br>
         <br>
         Solved: the focuser is left at best focus. Not solved: it is returned to where it was.
         Nothing is written to the configuration database. Answers at once; watch

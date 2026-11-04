@@ -5,17 +5,19 @@ failing a focuser calibration product, at ``focuser.known_as_good_position``:
 
 1. **Sky position** -- the zenith, an explicit (ra, dec), or where the telescope points.
 2. **Star** -- the GAIA DR3 catsHTM catalog is searched around it for the brightest
-   star no brighter than ``star_magnitude`` with nothing brighter in the measured
-   box (:mod:`focus_on_star.star_selection`).
+   star no brighter than ``star_magnitude`` with nothing brighter within
+   ``isolation_radius_px`` (:mod:`focus_on_star.star_selection`).
 3. **Acquire** -- slew, then solve-and-correct exactly as the acquirer's ``spec``
    phase does, so the star lands on the fibre pixel ``(fiber_x, fiber_y)``.  No
    stage move to SPEC afterwards and no guiding: the field must stay clear.
-4. **Probe** -- one frame at the current focuser position: is the star in the box,
-   and is it saturated?  A saturated star halves the exposure and probes again.
+4. **Probe** -- one frame at the current focuser position, at the fixed ``exposure``:
+   is the star at the fibre pixel, and is it saturated?  A saturated star is not
+   measured with a shorter exposure: a fainter magnitude limit is estimated from it
+   (:func:`fainter_limit`) and steps 2-4 run once more.  Saturated again, the run fails.
 5. **Sweep** -- ``steps`` frames ``ticks_per_step`` apart, centred on where the
-   focuser was found, HFD measured only inside the box of ``fov_percent`` of the
-   frame about the fibre pixel (:func:`calibration.analysis.vcurve.analyze_focus_samples`
-   with ``box=``).
+   focuser was found, measuring **only the chosen star**, followed from frame to frame
+   (:func:`calibration.analysis.vcurve.analyze_focus_samples` with ``star_xy=``).  Its
+   FWHM is logged beside the HFD on every frame; the fit uses the HFD.
 6. **Finish** -- solved: the focuser goes to best focus.  Not solved: it goes back
    to where the run found it.  Neither writes the config DB: no
    ``known_as_good_position``, no calibration product.
@@ -54,9 +56,9 @@ from common.mast_logging import get_logger
 from common.models.latest import LatestFocusOnStar
 from common.paths import PathMaker
 from common.utils import Coord
-from focus_on_star.star_selection import FocusStar, find_focus_star, isolation_radius_deg, years_since
+from focus_on_star.star_selection import FocusStar, find_focus_star, years_since
 from imaging.fov import focus_center_bin1, fov_box, fov_box_size, frame_shape_bin1
-from imaging.hfd import frame_hfd
+from imaging.hfd import measure_star, peak_fraction
 from stage import StagePresetPosition
 
 if TYPE_CHECKING:
@@ -69,6 +71,39 @@ init_calibration_log(logger)
 #: drops such a star from the HFD altogether.  One star is all this run measures, so a
 #: saturated one leaves nothing.
 SATURATION_ADU = 63000.0
+
+#: The probe peak a replacement star is chosen for: 40% of saturation, because the star
+#: peaks higher at best focus than on the probe, and higher still on a good night.
+TARGET_PEAK_ADU = 0.4 * SATURATION_ADU
+#: A replacement is at least this much fainter: the saturated star's flux is clipped, so
+#: the estimate from it understates how much fainter it needs to be.
+MIN_FAINTER_MAG = 1.0
+#: How much fainter when nothing unsaturated in the box gives the PSF's peak fraction.
+FALLBACK_FAINTER_MAG = 1.5
+
+
+def fainter_limit(mag: float, flux: float, fraction: float | None) -> float:
+    """The magnitude limit for a star that would peak near ``TARGET_PEAK_ADU``.
+
+    A saturated star's true peak is about ``fraction`` (the peak / flux of the frame's
+    unsaturated stars, which share its PSF) times its flux; the limit is fainter by the
+    magnitudes that takes down to the target -- at least ``MIN_FAINTER_MAG``. With no
+    ``fraction``, ``FALLBACK_FAINTER_MAG``.
+    """
+    if fraction is None or flux <= 0:
+        dm = FALLBACK_FAINTER_MAG
+    else:
+        dm = max(MIN_FAINTER_MAG, 2.5 * float(np.log10(fraction * flux / TARGET_PEAK_ADU)))
+    return round(mag + dm, 1)
+
+
+@dataclass
+class _Probe:
+    """What the probe found: the star's pixel, or -- saturated -- a fainter limit to pick at."""
+
+    star_xy: tuple[float, float] | None = None
+    fainter_limit: float | None = None
+
 
 #: Work that holds the mount, the stage, the focuser or the imager -- none of it may
 #: overlap a focus_on_star run.
@@ -94,9 +129,9 @@ class FocusOnStarParams:
     ra_j2000_hours: float | None = None
     dec_j2000_degs: float | None = None
     fov_percent: float = 10.0
-    star_magnitude: float = 10.0
-    steps: int = 5
-    ticks_per_step: int = 50
+    star_magnitude: float = 11.0
+    steps: int = 7
+    ticks_per_step: int = 75
 
     def problem(self) -> str | None:
         """Why these parameters cannot make a run, or None."""
@@ -276,30 +311,9 @@ class FocusOnStarRun(FocuserCalibrator):
             assert center is not None  # require_can_start checked it
             box = fov_box(shape, center, params.fov_percent, ls.binning)
             w, h = fov_box_size(shape, params.fov_percent)
-            iso = isolation_radius_deg(w, h, conf.imager.pixel_scale_at_bin1, ls.isolation_margin_px)
+            iso = ls.isolation_radius_px * conf.imager.pixel_scale_at_bin1 / 3600.0
             state.focus_center, state.box = center, box
             logger.info(f'{op}: box {w}x{h} px about the fibre pixel {center} -> {box}; isolation {iso * 3600:.0f}"')
-
-            # --- 3. star -------------------------------------------------------
-            star = self._select_star(sky, params, ls, iso)
-            if star is None:
-                return False
-            state.star = star.to_dict()
-
-            # --- 4. acquire on the fibre pixel ---------------------------------
-            state.phase = "slewing"
-            self._position_stage()
-            if not self._goto(star.ra_deg / 15.0, star.dec_deg):
-                aborted = True
-                return self._abort(f"{op}: stopped during the slew")
-            state.phase = "acquiring"
-            if not self._acquire(star, ls):
-                aborted = not self._still_calibrating()
-                return self._fail_run(f"{op}: the star was not acquired on the fibre pixel")
-
-            # --- 5. probe ------------------------------------------------------
-            start_position = int(unit.required_focuser.position)
-            state.start_position = start_position
             st = conf.calibration.settings.focuser.model_copy(
                 update={
                     "images": params.steps,
@@ -308,12 +322,43 @@ class FocusOnStarRun(FocuserCalibrator):
                     "binning": ls.binning,
                 }
             )
-            state.phase = "probing"
-            st = self._probe(st, start_position, box, ls, folder)
-            if st is None:
-                aborted = not self._still_calibrating()
-                return False
             state.exposure = st.exposure
+
+            # --- 3-5. star, acquisition, probe: a saturated star is replaced once -----
+            mag_limit = params.star_magnitude
+            star_xy: tuple[float, float] | None = None
+            for pick in (1, 2):
+                star = self._select_star(sky, mag_limit, ls, iso)
+                if star is None:
+                    return False
+                state.star = star.to_dict()
+
+                state.phase = "slewing"
+                self._position_stage()
+                if not self._goto(star.ra_deg / 15.0, star.dec_deg):
+                    aborted = True
+                    return self._abort(f"{op}: stopped during the slew")
+                state.phase = "acquiring"
+                if not self._acquire(star, ls):
+                    aborted = not self._still_calibrating()
+                    return self._fail_run(f"{op}: the star was not acquired on the fibre pixel")
+
+                start_position = int(unit.required_focuser.position)
+                state.start_position = start_position
+                state.phase = "probing"
+                probe = self._probe(st, start_position, center, box, star, ls, folder, pick)
+                if probe is None:
+                    aborted = not self._still_calibrating()
+                    return False
+                if probe.star_xy is not None:
+                    star_xy = probe.star_xy
+                    break
+                if pick == 2:
+                    return self._fail_run(
+                        f"{op}: the replacement star G={star.mag:.2f} is saturated too at {st.exposure:g}s"
+                    )
+                mag_limit = probe.fainter_limit
+            assert star_xy is not None
 
             # --- 6. sweep ------------------------------------------------------
             state.phase = "sweeping"
@@ -329,11 +374,13 @@ class FocusOnStarRun(FocuserCalibrator):
                     tolerance_frac=ls.tolerance_frac,
                     min_fit_r2=ls.min_fit_r2,
                     min_edge_rise=ls.min_edge_rise,
-                    box=box,
+                    star_xy=star_xy,
+                    search_radius=ls.star_search_px / ls.binning,
                 )
                 state.analysis = status
                 result = status.analysis_result
                 logger.info(f"{op}: sweep {self.tries_used}/{ls.max_tries}: {status.message}")
+                self._log_sweep_frames(status)
                 if result is not None and result.has_solution:
                     dmin = result.best_focus_star_diameter
                     if dmin is not None and dmin > ls.max_best_hfd_px:
@@ -402,14 +449,14 @@ class FocusOnStarRun(FocuserCalibrator):
             return None
         return float(ra), float(dec)
 
-    def _select_star(self, sky, params, ls: FocusOnStarSettings, iso: float) -> FocusStar | None:
+    def _select_star(self, sky, mag_limit: float, ls: FocusOnStarSettings, iso: float) -> FocusStar | None:
         ra_h, dec = sky
         try:
             star = find_focus_star(
                 CatsHtm(ls.catalog_root, ls.catalog_name),
                 ra_deg=ra_h * 15.0,
                 dec_deg=dec,
-                mag_limit=params.star_magnitude,
+                mag_limit=mag_limit,
                 isolation_deg=iso,
                 mag_column=ls.mag_column,
                 search_radius_deg=ls.search_radius_deg,
@@ -421,7 +468,7 @@ class FocusOnStarRun(FocuserCalibrator):
             return self._fail_run(f"focus_on_star: catalog unavailable: {ex}")
         if star is None:
             return self._fail_run(
-                f"focus_on_star: no star with {ls.mag_column} >= {params.star_magnitude} and nothing brighter "
+                f"focus_on_star: no star with {ls.mag_column} >= {mag_limit} and nothing brighter "
                 f'within {iso * 3600:.0f}" found within {ls.max_search_radius_deg} deg of '
                 f"({ra_h:.4f}h, {dec:+.4f})"
             )
@@ -475,38 +522,48 @@ class FocusOnStarRun(FocuserCalibrator):
         finally:
             MoveGuardian().release_folder(acquisition.folder, logger=logger)
 
-    def _probe(self, st, position: int, box, ls: FocusOnStarSettings, folder):
-        """One frame at the start position: is the star in the box, and unsaturated?
+    def _probe(self, st, position: int, center, box, star: FocusStar, ls: FocusOnStarSettings, folder, pick: int):
+        """One frame at the start position: is the star at the fibre pixel, and unsaturated?
 
-        Returns the settings to sweep with (exposure possibly reduced), or None.
+        Returns its pixel; or, saturated, the fainter limit to pick a replacement at; or None
+        when the run cannot go on.
         """
-        for attempt in range(ls.max_saturation_retries + 1):
-            if not self._still_calibrating():
-                return self._abort("focus_on_star: stopped while probing")
-            image = self._expose(st, folder, tag=f"FOCUS{position:05d}_probe{attempt}")
-            if image is None:
-                return self._fail_run("focus_on_star: the probe exposure failed")
-            data = np.asarray(image if isinstance(image, np.ndarray) else fits.getdata(image), dtype=float)
-            x0, x1, y0, y1 = box
-            peak = float(data[y0:y1, x0:x1].max())
-            if peak >= SATURATION_ADU:
-                if attempt == ls.max_saturation_retries:
-                    return self._fail_run(
-                        f"focus_on_star: the star is saturated (peak {peak:.0f} ADU) even at "
-                        f"{st.exposure:g}s; choose a fainter star_magnitude"
-                    )
-                st = st.model_copy(update={"exposure": st.exposure / 2.0})
-                logger.info(f"focus_on_star: probe peak {peak:.0f} ADU is saturated; exposure -> {st.exposure:g}s")
-                continue
-            hfd, n = frame_hfd(image, box=box)
-            if n == 0:
-                return self._fail_run(
-                    "focus_on_star: no star measured in the box on the probe frame -- "
-                    "the acquisition missed it, or the sky is not clear"
-                )
-            logger.info(f"focus_on_star: probe at {position}: {n} star(s) in the box, HFD {hfd:.2f}px, peak {peak:.0f}")
-            return st
-        return None
+        if not self._still_calibrating():
+            return self._abort("focus_on_star: stopped while probing")
+        image = self._expose(st, folder, tag=f"FOCUS{position:05d}_probe{pick}")
+        if image is None:
+            return self._fail_run("focus_on_star: the probe exposure failed")
+        data = np.asarray(image if isinstance(image, np.ndarray) else fits.getdata(image), dtype=float)
+        near = (center[0] / ls.binning, center[1] / ls.binning)
+        m = measure_star(data, near, search_radius=ls.star_search_px / ls.binning, max_value=SATURATION_ADU)
+        if m is None:
+            return self._fail_run(
+                f"focus_on_star: no star within {ls.star_search_px} px of the fibre pixel on the probe frame -- "
+                "the acquisition missed it, or the sky is not clear"
+            )
+        if m.saturated:
+            fraction = peak_fraction(data, box, max_value=SATURATION_ADU)
+            limit = fainter_limit(star.mag, m.flux, fraction)
+            logger.info(
+                f"focus_on_star: the star G={star.mag:.2f} is saturated at {st.exposure:g}s (peak {m.peak:.0f} ADU, "
+                f"flux >= {m.flux:.0f}, peak fraction {fraction if fraction is None else round(fraction, 4)}); "
+                f"picking again at G >= {limit}"
+            )
+            return _Probe(fainter_limit=limit)
+        logger.info(
+            f"focus_on_star: probe at {position}: star at ({m.x:.1f}, {m.y:.1f}), HFD {m.hfd:.2f}px, "
+            f"FWHM {m.fwhm:.2f}px, peak {m.peak:.0f} ADU"
+        )
+        return _Probe(star_xy=(m.x, m.y))
+
+    def _log_sweep_frames(self, status: HFDAutofocusStatus) -> None:
+        """The star's HFD and FWHM on each sweep frame -- the FWHM is logged only."""
+        result = status.analysis_result
+        for sample in (result.focus_samples if result is not None else None) or []:
+            position = "?" if sample.focus_position is None else f"{sample.focus_position:.0f}"
+            hfd = "-" if sample.hfd_pixels is None else f"{sample.hfd_pixels:.2f}px"
+            fwhm = "-" if sample.fwhm_pixels is None else f"{sample.fwhm_pixels:.2f}px"
+            logger.info(f"focus_on_star: sweep frame at {position}: HFD {hfd}, FWHM {fwhm}")
 
     # -------------------------------------------------------------- helpers
     def _fail_run(self, message: str) -> None:

@@ -34,6 +34,9 @@ class HFDFocusSample(ExtendedBaseModel):
     focus_position: float | None = None
     num_stars: int | None = None
     hfd_pixels: float | None = None
+    #: focus_on_star's one star only: its FWHM, a diagnostic logged beside the HFD. Not
+    #: used by the fit -- out of focus a star is a ring, and its FWHM measures the ring.
+    fwhm_pixels: float | None = None
 
     @property
     def star_diameter_pixels(self) -> float | None:
