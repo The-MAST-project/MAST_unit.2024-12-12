@@ -9,6 +9,7 @@ delivers every RPC reply.
 
 from __future__ import annotations
 
+import datetime
 import threading
 from types import SimpleNamespace
 
@@ -89,6 +90,16 @@ class TestTheEstimator:
         assert window(sq, 60).samples == 1 and window(sq, 60).hfd_px == 2.0
         assert window(sq, 180).samples == 1
         assert window(sq, 300).samples == 2 and window(sq, 300).hfd_px == 6.0
+
+    def test_every_window_says_when_it_ends_in_utc(self):
+        clock = Clock()
+        sq = started(clock)
+        before = datetime.datetime.now(datetime.UTC)
+        sq.guide_step(step(hfd=2.0))
+
+        ends = {datetime.datetime.fromisoformat(w.ends_at) for w in sq.latest.windows}
+        assert len(ends) == 1, "all windows end together"
+        assert abs((ends.pop() - before).total_seconds()) < 5
 
     def test_frames_without_a_usable_hfd_or_flagged_by_phd2_are_rejected_not_fatal(self):
         sq = started(Clock())
