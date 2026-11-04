@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import time
+from contextlib import ExitStack
 from pathlib import Path
 from threading import Thread
 from typing import TYPE_CHECKING, cast
@@ -16,15 +17,18 @@ from common.const import Const
 from common.filer import Filer, MoveGuardian
 from common.interfaces.solving import SolverInterface, SolvingResult
 from common.mast_logging import get_logger
-from common.models.statuses import ImagerRoi
+from common.models.statuses import ImagerPixel, ImagerRoi
 from common.rois import SkyRoi
 from common.utils import Coord, boxed_log, function_name
 from imagers import ImagerSettings
 from phd2.limit_frame import derived_guiding_roi
 
 from .astrometry_dot_net import generate_random_string, parse_solver_output, win_to_cygwin
-from .pixel_grid import roi_center_to_crpix
+from .pixel_grid import grid_to_orig_fits, roi_center_to_crpix
 from .ram_area import index_dir, missing_indexes, scratch_dir
+
+#: solve-field's records of a solve, by the option that asks for each, and the suffix it gets.
+METAFILE_SUFFIXES = {"--corr": ".corr", "--match": ".match", "--index-xyls": "-indx.xyls", "--rdls": ".rdls"}
 
 logger = get_logger(__name__)
 if TYPE_CHECKING:
@@ -38,6 +42,9 @@ if TYPE_CHECKING:
 #: exactly this. A caller that hardcoded 2 would be silently wrong the day it changed --
 #: and the flux-metering run now derives its plate scale from a solve.
 DOWNSAMPLE_FACTOR: int = 2
+
+#: astrometry.net's source extractor: the same simplexy solve-field runs on an image.
+IMAGE2XY = r"C:/cygwin64/usr/local/astrometry/bin/image2xy"
 
 
 class MastrometryDotNet(SolverInterface):
@@ -90,6 +97,9 @@ class MastrometryDotNet(SolverInterface):
         index_file: str | None = None,
         target: Coord | None = None,
         keep_artifacts: bool = True,
+        frame_origin: tuple[int, int] | None = None,
+        metafiles_folder: Path | None = None,
+        exclude_columns: tuple[int, int] | None = None,
     ) -> SolvingResult | None:
         """
         MAST specific astrometry.net solver implementation.
@@ -103,6 +113,23 @@ class MastrometryDotNet(SolverInterface):
         the input and follow it to the shared area; without it they are discarded with the
         scratch folder, for callers that solve every few minutes and record the result
         themselves.
+
+        Beside them go solve-field's own records of the solve, for judging how good it was:
+        `.corr` (matched field and index stars), `.match` (the match, with its log-odds),
+        `-indx.xyls` (index stars in the field) and `.rdls` (field sources on the sky). Their
+        pixel positions are in the downsampled, cropped frame solve-field was given. A caller
+        that does not keep artifacts can still keep these and the result text, in
+        `metafiles_folder`.
+
+        `frame_origin` is where the input sits on the sensor when it is a limit-frame crop
+        rather than the full frame. The phase ROI is then clipped to the frame, and the
+        reference pixel keeps pointing at the same sensor pixel, inside the frame or not.
+
+        `exclude_columns` (sensor x, from-to) are left out of the solve: sources are found on the
+        unedited frame, those in the columns dropped, and the list is solved. The guide-frame
+        solves leave out the stars beside the fold mirror's shadow band this way, which are
+        measured displaced (`phd2.guide_solve_mask`). The pixels are never edited: a blanked band
+        leaves an edge that source extraction reads as a wall of sources (mast01, 2026-10-30).
         """
 
         self.unit: Unit | None = unit
@@ -133,9 +160,27 @@ class MastrometryDotNet(SolverInterface):
         artifact_stem = f"{Path(full_frame_input_image_path).stem},solver={self.name}"
         new_fits_path = win_tmp_dir / f"{artifact_stem}.fits"
         result_file = win_tmp_dir / f"{artifact_stem}-result.txt"
+        metafiles = {option: win_tmp_dir / f"{artifact_stem}{suffix}" for option, suffix in METAFILE_SUFFIXES.items()}
+
+        if keep_artifacts:
+            kept, kept_in = [result_file, new_fits_path, *metafiles.values()], Path(full_frame_input_image_path).parent
+        elif metafiles_folder is not None:
+            kept, kept_in = [result_file, *metafiles.values()], metafiles_folder
+        else:
+            kept, kept_in = [], Path(full_frame_input_image_path).parent
 
         try:
-            return self._solve_in(win_tmp_dir, new_fits_path, result_file, phase, full_frame_input_image_path, target)
+            return self._solve_in(
+                win_tmp_dir,
+                new_fits_path,
+                result_file,
+                metafiles,
+                phase,
+                full_frame_input_image_path,
+                target,
+                frame_origin,
+                exclude_columns,
+            )
         finally:
             # The solved frame (it carries the WCS -- MAST_unit#27) and the solver's own
             # output are saved beside the frame they came from, then follow it to the shared
@@ -143,12 +188,7 @@ class MastrometryDotNet(SolverInterface):
             Thread(
                 target=self._run_logged,
                 name="mastrometry-cleanup",
-                args=(
-                    self.cleanup,
-                    [result_file, new_fits_path] if keep_artifacts else [],
-                    Path(full_frame_input_image_path).parent,
-                    win_tmp_dir,
-                ),
+                args=(self.cleanup, kept, kept_in, win_tmp_dir),
             ).start()
 
     def _solve_in(  # noqa: C901
@@ -156,9 +196,12 @@ class MastrometryDotNet(SolverInterface):
         win_tmp_dir: Path,
         new_fits_path: Path,
         result_file: Path,
+        metafiles: dict[str, Path],
         phase: Const.SolvingPhase,
         full_frame_input_image_path: str,
         target: Coord | None,
+        frame_origin: tuple[int, int] | None = None,
+        exclude_columns: tuple[int, int] | None = None,
     ) -> SolvingResult | None:
         unit = self.unit
 
@@ -182,6 +225,10 @@ class MastrometryDotNet(SolverInterface):
             height, width = data.shape
             dtype = data.dtype
             logger.info(f"{function_name()}: Full frame image dimensions: {width}x{height}, dtype: {dtype}")
+
+            if exclude_columns is not None:
+                header["MASK_X0"] = (exclude_columns[0], "Sources not solved from sensor x")
+                header["MASK_X1"] = (exclude_columns[1], "Sources not solved to sensor x")
 
             #
             # Passed to astrometry.net as the reference pixel for the solving process
@@ -223,6 +270,9 @@ class MastrometryDotNet(SolverInterface):
                     # No ROI and no recognized phase: leave imager_roi=None
                     # → no crop, refpix stays None, solve-field uses --crpix-center
                     pass
+
+            if imager_roi is not None and frame_origin is not None:
+                imager_roi = _clip_to_frame(imager_roi, frame_origin, width, height)
 
             if imager_roi is not None:
                 if imager_roi.x + imager_roi.width > width or imager_roi.y + imager_roi.height > height:
@@ -278,8 +328,9 @@ class MastrometryDotNet(SolverInterface):
             header["DOWNSAMP"] = (downsample_factor, "Downsampling factor applied to original image")
 
             if imager_roi is not None:
-                header["ROI_X"] = (imager_roi.x, "X coordinate of ROI in original image")
-                header["ROI_Y"] = (imager_roi.y, "Y coordinate of ROI in original image")
+                origin_x, origin_y = frame_origin or (0, 0)
+                header["ROI_X"] = (imager_roi.x + origin_x, "X coordinate of ROI in original image")
+                header["ROI_Y"] = (imager_roi.y + origin_y, "Y coordinate of ROI in original image")
                 header["ROI_W"] = (imager_roi.width, "Width of ROI in original image")
                 header["ROI_H"] = (imager_roi.height, "Height of ROI in original image")
 
@@ -310,12 +361,6 @@ class MastrometryDotNet(SolverInterface):
                 "--cpulimit",
                 "30",  # timeout in seconds
                 "--solved",
-                "none",
-                "--match",
-                "none",
-                "--rdls",
-                "none",
-                "--corr",
                 "none",
                 # Output control
                 "--dir",
@@ -357,11 +402,35 @@ class MastrometryDotNet(SolverInterface):
                     str(refpix[1]),
                 ]
 
-            args += [
-                "--new-fits",
-                win_to_cygwin(str(new_fits_path)),
-                win_to_cygwin(str(downsampled_image_path)),
-            ]
+            for option, path in metafiles.items():
+                args += [option, win_to_cygwin(str(path))]
+
+            wcs_path: Path | None = None
+            if exclude_columns is None:
+                args += [
+                    "--new-fits",
+                    win_to_cygwin(str(new_fits_path)),
+                    win_to_cygwin(str(downsampled_image_path)),
+                ]
+            else:
+                crop_x0 = (imager_roi.x if imager_roi is not None else 0) + (frame_origin or (0, 0))[0]
+                xy_path = self._sources_outside(downsampled_image_path, exclude_columns, crop_x0, downsample_factor, env)
+                wcs_path = win_tmp_dir / f"{downsampled_image_path.stem}.wcs"
+                args += [
+                    "--x-column",
+                    "X",
+                    "--y-column",
+                    "Y",
+                    "--sort-column",
+                    "FLUX",
+                    "--width",
+                    str(downsampled_width),
+                    "--height",
+                    str(downsampled_height),
+                    "--wcs",
+                    win_to_cygwin(str(wcs_path)),
+                    win_to_cygwin(str(xy_path)),
+                ]
 
         command = " ".join([r"C:/cygwin64/usr/local/astrometry/bin/solve-field"] + args)
         logger.info(f"{function_name()}: Running astrometry.net with '{command}'")
@@ -372,10 +441,16 @@ class MastrometryDotNet(SolverInterface):
         # protect() is also what marks a path as a product -- it is what stops
         # MoveGuardian.release_folder from discarding it as scratch. Every other writer in
         # the fleet does this; this solver was the one that did not.
-        with MoveGuardian().protect(str(new_fits_path)):
+        # The meta-files likewise, so they are products, not scratch, wherever they are kept.
+        with ExitStack() as products:
+            for path in [new_fits_path, *metafiles.values()]:
+                products.enter_context(MoveGuardian().protect(str(path)))
             completed_process = subprocess.run(
                 command, capture_output=True, shell=True, env=env, check=False
             )  # returncode is inspected below
+            if wcs_path is not None and completed_process.returncode == 0 and wcs_path.exists():
+                # A source list carries no image, so the solved frame is assembled here.
+                _write_solved_fits(downsampled_image_path, wcs_path, new_fits_path)
         stdout_lines = completed_process.stdout.decode().strip().splitlines()
         stderr_lines = completed_process.stderr.decode().strip().splitlines()
         elapsed = time.monotonic() - start
@@ -457,6 +532,19 @@ class MastrometryDotNet(SolverInterface):
         return ret
 
     @staticmethod
+    def _sources_outside(image: Path, columns: tuple[int, int], crop_x0: int, factor: int, env: dict[str, str]) -> Path:
+        """image2xy's sources on `image`, without those in sensor `columns`, as a list to solve."""
+        found = image.with_suffix(".xy.fits")
+        kept = image.with_suffix(".kept.xy.fits")
+        command = f"{IMAGE2XY} -O -o {win_to_cygwin(str(found))} {win_to_cygwin(str(image))}"
+        completed = subprocess.run(command, capture_output=True, shell=True, env=env, check=False)
+        if completed.returncode != 0:
+            raise Exception(f"{function_name()}: image2xy failed: {completed.stderr.decode().strip()}")
+        n_found, n_kept = _drop_sources_in_columns(found, kept, columns, crop_x0, factor)
+        logger.info(f"{function_name()}: {n_kept} of {n_found} sources outside sensor columns {columns}")
+        return kept
+
+    @staticmethod
     def _run_logged(target, *args):
         """Run `target` and log anything it raises.
 
@@ -475,8 +563,9 @@ class MastrometryDotNet(SolverInterface):
         """Keep the solver's own artifacts, discard its scratch.
 
         `target_folder` is the acquisition folder holding the input frame, so the solved
-        FITS and the result text land beside it and are then handed to the mover -- the
-        frame itself is moved by Solver.solve, which owns it.
+        FITS, the result text and the meta-files land beside it and are then handed to the
+        mover -- the frame itself is moved by Solver.solve, which owns it. For a caller that
+        discards its frame it is that caller's `metafiles_folder`.
         """
         filer = Filer(logger)
         files_to_move = [f for f in files_to_move if f.exists()]
@@ -532,3 +621,44 @@ if __name__ == "__main__":
 
     # test_solver()
     test_solver_with_roi()
+
+
+def _clip_to_frame(roi: ImagerRoi, frame_origin: tuple[int, int], width: int, height: int) -> ImagerRoi:
+    """`roi` (sensor pixels) as it falls on a `width` x `height` frame starting at `frame_origin`.
+
+    The rectangle is clipped to the frame; the center moves with the origin but is not
+    clipped, so the reference pixel stays on the same sensor pixel even off the frame.
+    """
+    assert roi._center is not None
+    origin_x, origin_y = frame_origin
+    left, top = max(roi.x - origin_x, 0), max(roi.y - origin_y, 0)
+    right, bottom = min(roi.x + roi.width - origin_x, width), min(roi.y + roi.height - origin_y, height)
+    if right <= left or bottom <= top:
+        raise Exception(f"{function_name()}: ROI {roi} does not overlap the {width}x{height} frame at {frame_origin}")
+    clipped = ImagerRoi.verbatim(x=left, y=top, width=right - left, height=bottom - top)
+    clipped._center = ImagerPixel(x=roi._center.x - origin_x, y=roi._center.y - origin_y)
+    return clipped
+
+
+def _drop_sources_in_columns(
+    xy_in: Path, xy_out: Path, columns: tuple[int, int], crop_x0: int, factor: int
+) -> tuple[int, int]:
+    """Copy image2xy's list `xy_in` to `xy_out` without the sources in sensor `columns`.
+
+    The list is on the downsampled crop (FITS 1-based); `crop_x0` is the sensor x of the
+    crop's first column. Returns (sources found, sources kept)."""
+    with fits.open(xy_in) as hdul:
+        table = hdul[1].data
+        sensor_x = grid_to_orig_fits(table["X"], factor) - 1 + crop_x0
+        keep = (sensor_x < columns[0]) | (sensor_x >= columns[1])
+        fits.HDUList([fits.PrimaryHDU(header=hdul[0].header), fits.BinTableHDU(table[keep], header=hdul[1].header)]).writeto(
+            xy_out, overwrite=True
+        )
+    return len(table), int(keep.sum())
+
+
+def _write_solved_fits(image: Path, wcs: Path, out: Path) -> None:
+    """The solved frame of a source-list solve: the image solve-field was not given, with its WCS."""
+    header = fits.getheader(image)
+    header.update(fits.getheader(wcs))
+    fits.writeto(out, fits.getdata(image), header, overwrite=True)

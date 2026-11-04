@@ -50,6 +50,42 @@ The cool-down watcher logs the cooler's verdict the same way, once per cool-down
 set point, and `DEGRADED cooler=unreached …` at WARNING when it is still short of it after
 `COOLING_SLOW_WARNING_SECONDS`. The line format is pinned in `tests/test_cooler_verdict.py`.
 
+## Guiding handover (FCU v2)
+
+Starting to guide raises `PreGuiding` together with `Guiding`; the unit is ready for exposure
+when `Guiding` is up and `PreGuiding` is not. `phd2.handover.style` (MAST_common
+`config/phd2.py`) selects what happens in between:
+
+- `mirror_first` (default): the acquirer inserts the fold mirror before guiding starts; the handover
+  waits for PHD2 to settle and, if `phd2.lock_nudge.enabled`, nudges the lock onto the target.
+  A failed or timed-out settle stops guiding.
+- `bracketed`: the mirror stays out while PHD2 picks a star and settles; the handover then
+  pauses guiding, inserts the mirror and resumes.
+
+With `phd2.handover.auto_insert: false` no handover runs and nothing inserts the mirror.
+
+### Lock nudge (`phd2.lock_nudge`, off by default)
+
+On the acquirer's own handover only, after settle, the nudge moves PHD2's lock so the fiber
+sits on the target (`src/lock_nudge.py`). It collects `solve_frames` (4) distinct guide frames
+(one per new GuideStep; a repeated `DATE-OBS` does not count), plate-solves each in its own
+coordinates (a limit-frame crop with its origin, as the pointing check does), and takes each
+frame's lock estimate: the guide star where PHD2 measured it on that frame (its GuideStep
+`dx`/`dy` from the lock) plus the solved offset. It refuses when fewer than
+`solve_frames` frames give an estimate within `frames_timeout` (90 s), when the guide session
+ends meanwhile, when the estimates scatter (RMS radial) by more than `max_spread_arcsec` (1.0",
+provisional), or when the lock would move more than `max_offset_px`. Otherwise it moves the lock
+to the mean estimate and confirms the move over `confirm_frames` new guide steps under
+`confirm_px`. What it did is published as `status.latest.acquisition.nudge`. solve-field's records of each frame's solve (`.corr`, `.match`, `-indx.xyls`, `.rdls`,
+result text) are kept in the acquisition's `guiding/solves/` on the share, as the pointing check's are;
+an acquisition's own solves keep theirs beside the solved FITS. Collecting the frames
+adds about 30-60 s before ready.
+
+`phd2.guide_solve_mask` (off by default) leaves sensor columns out of the nudge's and the
+pointing check's guide-frame solves: the stars beside the fold mirror's shadow band, which are
+measured displaced away from it. Sources are found on the unedited frame and the list is solved
+without those in the columns. The acquisition's solves, taken with the mirror out, are not masked.
+
 ## Tests
 
 `tests/` holds a pytest suite that drives the real connector code with mocked
