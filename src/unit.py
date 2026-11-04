@@ -1040,7 +1040,10 @@ class Unit(Component, OpmodeBase):
 
     def _latest_sky_quality(self) -> LatestSkyQuality | None:
         while_guiding = self.guider.sky_quality_while_guiding if self.guider is not None else None
-        return None if while_guiding is None else LatestSkyQuality(while_guiding=while_guiding)
+        measured = self.focus_on_star.sky_quality
+        if while_guiding is None and measured is None:
+            return None
+        return LatestSkyQuality(while_guiding=while_guiding, measured=measured)
 
     # ------------------------------------------------------------------- the plan token
     # Design: mast-claude-config plans/control_acquisition_design.md 6.6.
