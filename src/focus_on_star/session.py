@@ -21,6 +21,10 @@ failing a focuser calibration product, at ``focuser.known_as_good_position``:
 6. **Finish** -- solved: the focuser goes to best focus.  Not solved: it goes back
    to where the run found it.  Neither writes the config DB: no
    ``known_as_good_position``, no calibration product.
+7. **Sky quality** -- solved only: one more frame at best focus, measured by
+   :mod:`focus_on_star.sky_quality` into ``latest.sky_quality.measured`` -- the
+   star's FWHM and HFD, the box's zero point against Gaia, its background.  It
+   never fails the run: the focus is already found.
 
 The hardware steps reuse :class:`FocuserCalibrator`'s internals (`_goto`, `_sweep`,
 `_move_focuser`, ...) through a subclass whose abort flag is ``FocusingOnStar``.
@@ -30,6 +34,7 @@ Design: mast-claude-config ``plans/focus_on_star_design.md``.
 
 from __future__ import annotations
 
+import datetime
 import os
 import threading
 from dataclasses import asdict, dataclass
@@ -53,12 +58,13 @@ from common.config.rois import FcuVersion
 from common.filer import MoveGuardian
 from common.interfaces.solving import SolverId
 from common.mast_logging import get_logger
-from common.models.latest import LatestFocusOnStar
+from common.models.latest import LatestFocusOnStar, LatestMeasuredSkyQuality
 from common.paths import PathMaker
 from common.utils import Coord
-from focus_on_star.star_selection import FocusStar, find_focus_star, years_since
+from focus_on_star import sky_quality
+from focus_on_star.star_selection import FocusStar, field_catalog, find_focus_star, years_since
 from imaging.fov import focus_center_bin1, fov_box, fov_box_size, frame_shape_bin1
-from imaging.hfd import measure_star, peak_fraction
+from imaging.hfd import field_stars, measure_star, peak_fraction
 from stage import StagePresetPosition
 
 if TYPE_CHECKING:
@@ -179,6 +185,8 @@ class FocusOnStarSession:
         self._lock = threading.RLock()
         self._thread: threading.Thread | None = None
         self.state = FocusOnStarStatus()
+        #: The latest sky-quality frame, for `FullUnitStatus.latest.sky_quality.measured`.
+        self.sky_quality: LatestMeasuredSkyQuality | None = None
 
     @property
     def is_active(self) -> bool:
@@ -254,14 +262,17 @@ class FocusOnStarSession:
 
     def do_focus_on_star(self, params: FocusOnStarParams, folder: str | None) -> None:
         """The whole run, on its own thread. Never raises; always ends the flag."""
+        run = FocusOnStarRun(self.unit, self.state)
         try:
             with phase_logging("focus_on_star"):
-                FocusOnStarRun(self.unit, self.state).run(params, self._settings(), folder)
+                run.run(params, self._settings(), folder)
         except Exception as ex:  # noqa: BLE001 -- the run's own thread: anything escaping reaches only stderr
             logger.exception("focus_on_star: run failed")
             self.state.errors.append(f"run failed: {ex!r}")
             self.state.outcome = self.state.outcome or "failed"
         finally:
+            if run.sky_quality is not None:
+                self.sky_quality = run.sky_quality
             self.state.finish(self.state.outcome == "solved")
             self.state.write()  # latest.json beside the sweep's frames
             if self.unit.is_active(UnitActivities.FocusingOnStar):
@@ -280,6 +291,7 @@ class FocusOnStarRun(FocuserCalibrator):
     def __init__(self, unit: Unit, state: FocusOnStarStatus):
         super().__init__(unit)
         self.state = state
+        self.sky_quality: LatestMeasuredSkyQuality | None = None
 
     # ------------------------------------------------------------------ entry
     def run(self, params: FocusOnStarParams, ls: FocusOnStarSettings, folder: str | None) -> bool:  # noqa: C901
@@ -403,6 +415,7 @@ class FocusOnStarRun(FocuserCalibrator):
                 logger.info(f"{op}: best focus {best} (start {start_position}, HFD {result.best_focus_star_diameter:.2f}px)")
                 self._move_focuser(best, st)
                 state.best_position = best
+                self._sky_quality(st, star, star_xy, box, ls, folder)
                 return True
             self._log_error(f"{op}: no focus solution after {self.tries_used} sweep(s); returning to {start_position}")
             self._move_focuser(start_position, st)
@@ -556,6 +569,105 @@ class FocusOnStarRun(FocuserCalibrator):
         )
         return _Probe(star_xy=(m.x, m.y))
 
+    def _sky_quality(self, st, star: FocusStar, near_xy, box, ls: FocusOnStarSettings, folder) -> None:
+        """Step 7: one frame at best focus, into `self.sky_quality`. Never raises.
+
+        The star is looked for over three times the sweep's search radius: it has drifted
+        through the sweep, and nothing brighter lies within the isolation radius.
+        """
+        op = "focus_on_star: sky quality"
+        unit = self.unit
+        record = LatestMeasuredSkyQuality(exposure_seconds=st.exposure, binning=ls.binning, star_mag=star.mag)
+        record.begin(folder, plan_id=self.state.plan_id)
+        self.sky_quality = record
+        errors: list[str] = []
+        try:
+            conf = unit.unit_conf
+            assert conf is not None
+            scale = conf.imager.pixel_scale_at_bin1 * ls.binning
+            record.plate_scale_arcsec = scale
+            try:
+                record.altitude_degs = unit.required_pw.status().mount.altitude_degs
+            except Exception as ex:  # noqa: BLE001 -- only the airmass is lost
+                errors.append(f"{op}: no mount altitude ({ex})")
+            record.airmass = sky_quality.airmass(record.altitude_degs)
+
+            if not self._still_calibrating():
+                record.finish(False, [f"{op}: stopped"])
+                return
+            self.state.phase = "sky_quality"
+            # Mid-exposure, from just before the exposure is asked for: close enough for a
+            # header stamp, and it does not depend on what the imager reports.
+            asked_at = datetime.datetime.now(datetime.UTC)
+            image = self._expose(st, folder, tag="SKYQUALITY")
+            record.observed_at = (asked_at + datetime.timedelta(seconds=st.exposure / 2)).isoformat()
+            if image is None:
+                record.finish(False, [f"{op}: the exposure failed"])
+                return
+            data = np.asarray(image if isinstance(image, np.ndarray) else fits.getdata(image), dtype=float)
+            m = measure_star(data, near_xy, search_radius=3 * ls.star_search_px / ls.binning, max_value=SATURATION_ADU)
+            if m is None:
+                record.finish(False, [f"{op}: the star was not found near ({near_xy[0]:.0f}, {near_xy[1]:.0f})"])
+                return
+            if m.saturated:
+                errors.append(f"{op}: the star is saturated at best focus (peak {m.peak:.0f} ADU); no FWHM or HFD")
+
+            x0, x1, y0, y1 = box
+            record.background_adu = float(np.median(data[y0:y1, x0:x1]))
+            stars, _ = field_stars(data, box, max_value=SATURATION_ADU)
+            radius_deg = 0.5 * float(np.hypot(x1 - x0, y1 - y0)) * scale / 3600.0
+            try:
+                cat_ra, cat_dec, cat_mag = field_catalog(
+                    CatsHtm(ls.catalog_root, ls.catalog_name),
+                    ra_deg=star.ra_deg,
+                    dec_deg=star.dec_deg,
+                    radius_deg=radius_deg,
+                    mag_column=ls.mag_column,
+                    faintest_mag=sky_quality.FAINTEST_G,
+                    years_of_proper_motion=years_since(ls.catalog_epoch) if ls.apply_proper_motion else None,
+                )
+            except CatalogError as ex:
+                errors.append(f"{op}: catalog unavailable ({ex}); no zero point")
+                cat_ra = cat_dec = cat_mag = np.empty(0)
+
+            found = sky_quality.measure(
+                m,
+                star.ra_deg,
+                star.dec_deg,
+                stars,
+                cat_ra,
+                cat_dec,
+                cat_mag,
+                scale_arcsec=scale,
+                exposure_seconds=st.exposure,
+            )
+            for name, value in vars(found).items():
+                setattr(record, name, value)
+            if found.fwhm_px is not None:
+                record.fwhm_arcsec = found.fwhm_px * scale
+            if found.hfd_px is not None:
+                record.hfd_arcsec = found.hfd_px * scale
+            if found.fwhm_px and found.hfd_px:
+                record.hfd_over_fwhm = found.hfd_px / found.fwhm_px
+            if found.zero_point_mag is None and len(cat_mag):
+                errors.append(
+                    f"{op}: no zero point ({found.detected_stars} detected, {found.catalog_stars} in the catalog, "
+                    f"{found.matched_stars} matched)"
+                )
+            record.finish(found.fwhm_px is not None, errors)
+            logger.info(
+                f'{op}: FWHM {_fmt(record.fwhm_arcsec)}", HFD {_fmt(record.hfd_arcsec)}", '
+                f"zero point {_fmt(record.zero_point_mag)} mag ({record.zero_point_stars} stars), "
+                f"airmass {_fmt(record.airmass)}, background {_fmt(record.background_adu, 0)} ADU"
+            )
+        except Exception as ex:  # noqa: BLE001 -- the focus is already found; this must not undo it
+            logger.exception(f"{op}: failed")
+            record.finish(False, [*errors, f"{op}: {ex!r}"])
+        finally:
+            for e in record.errors:
+                logger.warning(e)
+            record.write("sky_quality.json")
+
     def _log_sweep_frames(self, status: HFDAutofocusStatus) -> None:
         """The star's HFD and FWHM on each sweep frame -- the FWHM is logged only."""
         result = status.analysis_result
@@ -580,3 +692,7 @@ class FocusOnStarRun(FocuserCalibrator):
                 f.write(self.state.model_dump_json(indent=4, exclude={"analysis"}))
         except Exception as ex:  # noqa: BLE001 -- an artifact, never worth failing the unwind over
             logger.warning(f"could not write {path}: {ex}")
+
+
+def _fmt(value: float | None, digits: int = 2) -> str:
+    return "-" if value is None else f"{value:.{digits}f}"

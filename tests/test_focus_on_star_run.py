@@ -313,3 +313,31 @@ def test_the_acquisition_uses_its_own_try_limit_not_the_units(monkeypatch):
     assert FocusOnStarRun(unit, session_mod.FocusOnStarStatus())._acquire(star, ls) is True
 
     assert unit.required_solver.solve_and_correct.call_args.kwargs["max_tries"] == 4
+
+
+def test_a_solved_run_takes_the_sky_quality_frame_and_the_session_keeps_it(scripted, monkeypatch):
+    calls = []
+
+    def sky(self, st, star, near_xy, box, ls, folder):
+        calls.append(near_xy)
+        self.sky_quality = session_mod.LatestMeasuredSkyQuality(fwhm_arcsec=2.0)
+
+    monkeypatch.setattr(FocusOnStarRun, "_sky_quality", sky)
+    unit = FakeUnit()
+    session = FocusOnStarSession(unit)
+    unit.start_activity(UnitActivities.FocusingOnStar)
+    session.do_focus_on_star(FocusOnStarParams(), folder=None)
+
+    assert session.state.outcome == "solved"
+    assert calls == [(4100.0, 2750.0)]
+    assert session.sky_quality.fwhm_arcsec == 2.0
+
+
+def test_an_unsolved_run_takes_no_sky_quality_frame(scripted, monkeypatch):
+    _, script, _ = scripted
+    script["analysis"] = _status(best=None)
+    monkeypatch.setattr(FocusOnStarRun, "_sky_quality", lambda self, *a: pytest.fail("no frame on an unsolved run"))
+    session = FocusOnStarSession(FakeUnit())
+    session.unit.start_activity(UnitActivities.FocusingOnStar)
+    session.do_focus_on_star(FocusOnStarParams(), folder=None)
+    assert session.sky_quality is None

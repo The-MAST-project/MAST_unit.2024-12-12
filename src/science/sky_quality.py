@@ -206,14 +206,17 @@ class GuidingSkyQuality:
             if len(first) >= MIN_BASELINE_SAMPLES:
                 self._record.baseline_star_mass = statistics.median(first)
 
-        self._record.windows = [self._window(seconds, now) for seconds in WINDOWS_SECONDS]
+        # `now` is the injected (monotonic) clock; the windows' end is stamped in UTC.
+        ends_at = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=self._clock() - now)).isoformat()
+        self._record.windows = [self._window(seconds, now, ends_at) for seconds in WINDOWS_SECONDS]
 
-    def _window(self, seconds: int, now: float) -> SkyQualityWindow:
+    def _window(self, seconds: int, now: float, ends_at: str | None = None) -> SkyQualityWindow:
         assert self._record is not None
         cutoff = now - seconds
         samples = [s for s in self._samples if s.at >= cutoff]
         window = SkyQualityWindow(
             seconds=seconds,
+            ends_at=ends_at,
             samples=len(samples),
             star_lost=sum(1 for t in self._lost if t >= cutoff),
             rejected=sum(1 for t in self._rejected if t >= cutoff),

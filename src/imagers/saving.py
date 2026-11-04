@@ -6,9 +6,11 @@ from astropy.io import fits
 
 from common.activities import ImagerActivities
 from common.filer import MoveGuardian
+from common.fits_headers import apply_cards
 from common.mast_logging import get_logger
 from common.utils import function_name
 from imagers import ImagerInterface
+from imaging.fits_cards import unit_fits_cards
 
 logger = get_logger(__name__)
 
@@ -56,11 +58,10 @@ def save_to_fits_file(imager_backend: ImagerInterface):
 
     header["IMAGER"] = (imager_backend.name, "the imager backend")
 
-    if imager_backend.parent_imager and imager_backend.parent_imager.unit:
-        header["FOCUSPOS"] = imager_backend.parent_imager.unit.focuser.position
-        header.comments["FOCUSPOS"] = "focuser position"
-        header["STAGEPOS"] = imager_backend.parent_imager.unit.stage.position
-        header.comments["STAGEPOS"] = "FCU stage position"
+    # The project-standard cards and the unit's own (FOCUSPOS, STAGEPOS); before the
+    # caller's `fits_cards`, so a caller can still override one.
+    unit = imager_backend.parent_imager.unit if imager_backend.parent_imager else None
+    apply_cards(header, unit_fits_cards(unit))
 
     if settings.fits_cards:
         for k, v in settings.fits_cards.items():

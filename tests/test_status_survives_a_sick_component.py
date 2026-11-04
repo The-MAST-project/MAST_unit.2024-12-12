@@ -87,7 +87,7 @@ class Stub:
         # Likewise: `Unit.__init__` always builds an Acquirer, a FocusOnStarSession and a
         # SpiralSearch, and `status` reads their latest records.
         self.acquirer = parts.pop("acquirer", SimpleNamespace(latest=None))
-        self.focus_on_star = SimpleNamespace(latest=None)
+        self.focus_on_star = SimpleNamespace(latest=None, sky_quality=None)
         self.spiral = SimpleNamespace(latest=None)
         self.latest_exposure = None
         # Read by `status` since the plan token (control acquisition 6.6).

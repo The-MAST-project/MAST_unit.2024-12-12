@@ -225,7 +225,7 @@ class TestTheGuider:
         g = guider()
         g.latest_guiding = LatestGuiding(backend="phd2").begin()
         u = object.__new__(Unit)
-        u.focus_on_star = SimpleNamespace(latest=None)
+        u.focus_on_star = SimpleNamespace(latest=None, sky_quality=None)
         u.acquirer = None
         u.latest_exposure = None
         u.spiral = SimpleNamespace(latest=None)
