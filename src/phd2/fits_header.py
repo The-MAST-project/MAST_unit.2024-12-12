@@ -31,8 +31,7 @@ from __future__ import annotations
 
 import logging
 
-from astropy.io import fits
-
+from common.fits_headers import stamp_fits_file
 from common.mast_logging import init_log
 
 logger = logging.getLogger("mast.unit." + __name__)
@@ -80,13 +79,5 @@ def stamp_cooling(path: str | None, before: dict | None, after: dict | None) -> 
         # tracking ambient -- which invalidates matching this frame to a dark.
         cards["COOLPOWR"] = (last["power"], "[%] cooler power")
 
-    try:
-        with fits.open(path, mode="update", memmap=False) as hdul:
-            header = hdul[0].header
-            for key, (value, comment) in cards.items():
-                header[key] = (value, comment)
+    if stamp_fits_file(path, cards):
         logger.debug(f"stamped {len(cards)} cooling cards into {path}")
-    except Exception as ex:
-        # The frame itself is fine and already on disk; losing the header stamp
-        # must not lose the exposure.
-        logger.warning(f"could not stamp cooling header into {path}: {ex}")

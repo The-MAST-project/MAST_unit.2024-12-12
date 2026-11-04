@@ -21,6 +21,7 @@ from common.activities import ImagerActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.phd2 import LimitFrameMode, PHD2SettleConfig
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.fits_headers import stamp_fits_file
 from common.interfaces.guiding import GuiderInterface
 from common.interfaces.imager import ImagerExposureSeries, ImagerInterface
 from common.mast_logging import get_logger
@@ -29,6 +30,7 @@ from common.models.statuses import ImagerRoi, ImagerSettings, PHD2GuiderStatus, 
 from common.process import WatchedProcess
 from common.utils import Coord, RepeatTimer, boxed_debug, function_name
 from failure_streaks import FailureStreaks
+from imaging.fits_cards import unit_fits_cards
 from phd2.fits_header import stamp_cooling
 from phd2.limit_frame import limit_frame_accepted, limit_frame_covers_sensor, limit_frame_extent
 from phd2.phd2_locate import locate_phd2_exe
@@ -2002,6 +2004,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         # header PHD2 wrote without them.  Best-effort throughout: a frame that
         # was saved must never be failed by a missing temperature.
         stamp_cooling(self._exposure_image_path, self._cooler_before, self.cooler_status)
+        # And the project-standard cards, with the unit's own, which PHD2 knows nothing of.
+        unit = getattr(getattr(self, "parent", None), "unit", None)
+        stamp_fits_file(self._exposure_image_path, unit_fits_cards(unit))
         self._cooler_before = None
         self._exposure_image_path = None
 
