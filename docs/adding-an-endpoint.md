@@ -65,7 +65,7 @@ being unclassified.
 | `Completion.IMMEDIATE` | is done when the response arrives |
 | `Completion.BLOCKING` | waits: the response is withheld until the hardware is done |
 | an activity flag, e.g. `MountActivities.Slewing` | is answered at once, then watches that flag clear in `status` |
-| a notification channel, e.g. `NotificationChannel.ASSIGNMENT` | is answered at once, then reads that `Notifier` stream (`execute_assignment` is the live case) |
+| a notification channel, e.g. `NotificationChannel.ASSIGNMENT` | is answered at once, then reads that `Notifier` stream (no unit route uses it since `execute_assignment` was removed) |
 
 Exactly one flag member — "watch these two bits" is not a signal a caller can act on. **The
 signal has to be one the handler really raises:** a check verifies that, because publishing a

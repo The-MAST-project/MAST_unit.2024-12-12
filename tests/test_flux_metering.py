@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from common.models.statuses import ImagerRoi
 from flux_metering.flux_meter import SimulatedFluxMeter
-from flux_metering.session import FluxMeteringParams, FluxMeteringSession
+from flux_metering.session import FluxMeteringError, FluxMeteringParams, FluxMeteringSession
 
 
 def square_spiral(n: int):
@@ -83,6 +83,7 @@ class FakeMount:
 
     def _new(self, x_step_arcsec, y_step_arcsec):
         self.spiral_restarts += 1
+        self.steps_commanded = (x_step_arcsec, y_step_arcsec)
         self._index = 0
 
     def _next(self):
@@ -147,6 +148,7 @@ class FakeUnit:
         self.stage = FakeStage()
         self.activities = 0
         self.activities_verbal = []
+        self.spiral = SimpleNamespace(is_active=False)
         self.started: list = []
         self.ended: list = []
 
@@ -301,14 +303,31 @@ def test_the_flux_exposure_follows_the_imager_exposure():
     assert FluxMeteringParams(seconds=0.25).flux_exposure_us == 250_000
 
 
-def test_the_radius_cap_carries_cos_dec(session):
-    """`x_step_arcsec` is RA COORDINATE arcsec, so the sky angle along it is scaled by
-    cos(dec). Without this the cap means a different thing at every declination."""
+def test_the_radius_is_the_offset_on_the_sky(session):
+    """The steps are sky angles in both axes (MAST_unit#136), so no cos(dec) enters."""
     s, _unit, _mount, _meter = session()
 
-    # The fake mount reports dec +41, where cos(dec) is about 0.755.
-    assert s._radius_arcsec((10.0, 0.0)) == pytest.approx(10.0 * np.cos(np.radians(41.0)), rel=1e-6)
-    assert s._radius_arcsec((0.0, 10.0)) == pytest.approx(10.0)
+    assert s._radius_arcsec((3.0, 4.0)) == pytest.approx(5.0)
+
+
+def test_the_walk_commands_an_ra_step_square_on_the_sky(session):
+    """PWI4 steps the RA coordinate, so the walk widens the RA step by 1/cos(dec): at the
+    fake mount's dec +41 a 10" step on the sky is 13.25" of RA."""
+    s, _unit, mount, _meter = session(peak_cell=(1, 0))
+    s.params.x_step_arcsec, s.params.y_step_arcsec = 10.0, 4.0
+
+    s._walk_spiral()
+
+    assert mount.steps_commanded == pytest.approx((10.0 / np.cos(np.radians(41.0)), 4.0))
+
+
+def test_a_walk_with_no_declination_is_refused(session):
+    s, unit, mount, _meter = session()
+    unit.mount.status = lambda: SimpleNamespace(dec_j2000_degs=None)
+
+    with pytest.raises(FluxMeteringError, match="declination"):
+        s._walk_spiral()
+    assert mount.spiral_restarts == 0
 
 
 def test_the_status_is_the_typed_model_and_carries_the_steps(session):
@@ -450,7 +469,7 @@ def test_the_coordinates_the_operator_actually_types_are_accepted():
     """`RA_PATTERN` accepts space-separated sexagesimal, so `float()` is not enough --
     which is how a real request with `03 08 10.142` blew up. `acquirer.py` carries a
     comment about having fixed this exact defect once already."""
-    from flux_metering.session import parse_target
+    from common.parsers import parse_target
 
     ra, dec = parse_target("03 08 10.142", " +40 57 20.275")
 
@@ -468,7 +487,7 @@ def test_the_coordinates_the_operator_actually_types_are_accepted():
     ],
 )
 def test_every_accepted_coordinate_form_parses(ra, dec):
-    from flux_metering.session import parse_target
+    from common.parsers import parse_target
 
     parsed_ra, parsed_dec = parse_target(ra, dec)
 
@@ -478,20 +497,20 @@ def test_every_accepted_coordinate_form_parses(ra, dec):
 
 def test_absent_coordinates_stay_absent():
     """None means 'take it from the mount', which only the acquirer can do."""
-    from flux_metering.session import parse_target
+    from common.parsers import parse_target
 
     assert parse_target(None, None) == (None, None)
 
 
 def test_an_ra_of_zero_is_a_coordinate_not_a_missing_value():
     """Truthiness would send RA 0h to the mount instead of using it."""
-    from flux_metering.session import parse_target
+    from common.parsers import parse_target
 
     assert parse_target(0.0, 0.0) == (0.0, 0.0)
 
 
 def test_a_bad_coordinate_raises_rather_than_being_guessed_at():
-    from flux_metering.session import parse_target
+    from common.parsers import parse_target
 
     with pytest.raises(ValueError):
         parse_target("not a coordinate", None)
@@ -500,27 +519,22 @@ def test_a_bad_coordinate_raises_rather_than_being_guessed_at():
 def test_a_moved_frame_is_read_from_the_share(tmp_path, monkeypatch):
     """The fallback is the normal path, not an edge case: frames go to the mover as they
     are written, so the arg-max frame has usually LEFT the ram disk by the time the
-    correlation wants it. A first real run failed here because `change_top_to` compares
+    correlation wants it. A first real run failed here because `change_top_to` compared
     against roots spelled POSIX-style while the folder came from pathlib with backslashes,
-    so the prefix test silently missed."""
+    so the prefix test silently missed. The real `to_top`, on roots spelled as in
+    production, against a folder spelled natively -- the Windows runner's mismatch."""
     import flux_metering.session as session_module
-    from common.filer import FilerTop
+    from common.filer import Location
 
-    ram, shared = tmp_path / "ram" / "run", tmp_path / "shared" / "run"
-    shared.mkdir(parents=True)
-    ram.mkdir(parents=True)
-    fits.PrimaryHDU(data=np.full((8, 8), 7, dtype=np.uint16)).writeto(shared / "step-00000-00.fits")
-
-    def change_top_to(top, path):
-        # As the real one does: a plain prefix test against a posix-spelled root.
-        assert top is FilerTop.Shared
-        posix_ram = ram.as_posix()
-        return path.replace(posix_ram, shared.as_posix()) if path.startswith(posix_ram) else None
-
-    monkeypatch.setattr(session_module.filer, "change_top_to", change_top_to)
+    ram, shared = tmp_path / "ram", tmp_path / "shared"
+    (shared / "run").mkdir(parents=True)
+    (ram / "run").mkdir(parents=True)
+    fits.PrimaryHDU(data=np.full((8, 8), 7, dtype=np.uint16)).writeto(shared / "run" / "step-00000-00.fits")
+    monkeypatch.setattr(session_module.filer, "ram", Location(ram.as_posix()))
+    monkeypatch.setattr(session_module.filer, "shared", Location(shared.as_posix()))
 
     s = FluxMeteringSession.__new__(FluxMeteringSession)
-    s.state = session_module.FluxMeteringStatus(folder=str(ram))  # backslashes on Windows
+    s.state = session_module.FluxMeteringStatus(folder=str(ram / "run"))  # backslashes on Windows
 
     data = s._read_fits("step-00000-00.fits")
 
@@ -531,7 +545,7 @@ def test_a_moved_frame_is_read_from_the_share(tmp_path, monkeypatch):
 def test_a_frame_that_is_nowhere_says_where_it_looked(tmp_path, monkeypatch):
     import flux_metering.session as session_module
 
-    monkeypatch.setattr(session_module.filer, "change_top_to", lambda top, path: None)
+    # tmp_path is under none of the suite's filing areas, so `to_top` raises.
     s = FluxMeteringSession.__new__(FluxMeteringSession)
     s.state = session_module.FluxMeteringStatus(folder=str(tmp_path))
 
@@ -704,6 +718,16 @@ def test_a_second_run_is_refused_while_one_is_in_progress(session):
     s, _unit, _mount, _meter = session()
     s._thread = SimpleNamespace(is_alive=lambda: True)
     assert "already in progress" in (s.require_can_start() or "")
+
+
+def test_a_run_is_refused_while_a_spiral_session_is_open(session):
+    """Both drive PWI4's one spiral, and would reset it under each other (MAST_unit#385)."""
+    s, unit, _mount, _meter = session()
+    unit.spiral = SimpleNamespace(is_active=True)
+
+    refusal = s.require_can_start()
+
+    assert refusal is not None and "spiral session" in refusal
 
 
 def test_a_busy_unit_is_refused_and_says_what_it_is_doing(session):

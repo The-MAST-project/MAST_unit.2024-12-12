@@ -54,6 +54,15 @@ LEGACY_PHD2_DOC = {
     "validation_interval": 0.0,
 }
 
+# A subset of what PHD2's get_exposure_durations offers, in milliseconds.
+PHD2_EXPOSURE_DURATIONS_MS = [1000, 2000, 3000, 5000]
+
+
+def fake_rpc(method: str, params=None) -> dict:
+    if method == "get_exposure_durations":
+        return {"result": PHD2_EXPOSURE_DURATIONS_MS}
+    return {}
+
 
 def make_connector(limit_frame: LimitFrameConfig | None = None) -> PHD2Connector:
     """A real PHD2Connector minus the heavy __init__, with a real PHD2Config."""
@@ -67,7 +76,7 @@ def make_connector(limit_frame: LimitFrameConfig | None = None) -> PHD2Connector
     p._read_failures = FailureStreaks()
     p.app_state = ""
     p.image_saved_event = threading.Event()
-    p.call = MagicMock(name="call", return_value={})
+    p.call = MagicMock(name="call", side_effect=fake_rpc)
     doc = dict(LEGACY_PHD2_DOC)
     if limit_frame is not None:
         doc["limit_frame"] = limit_frame.model_dump()
@@ -220,3 +229,26 @@ class TestAcquisitionPathUntouched:
         p = make_connector(LimitFrameConfig(mode=LimitFrameMode.FIXED, **EXPLICIT_RECT))
         self._expose(p, use_set_limit_frame=True)
         assert limit_frame_rois(p) == [wire_form(DERIVED_ROI)]
+
+
+class TestStartGuidingExposure:
+    """start_guiding puts the configured guide exposure on PHD2 rather than guiding at
+    whatever the PHD2 profile last saved (#352)."""
+
+    def test_configured_exposure_set_before_guide(self):
+        p = make_connector()
+        p.start_guiding()
+        methods = rpc_methods(p)
+        assert methods.index("set_exposure") < methods.index("guide")
+        set_exposure = next(c for c in p.call.call_args_list if c.args and c.args[0] == "set_exposure")
+        assert set_exposure.kwargs["params"] == [3000]
+
+    def test_duration_phd2_does_not_offer_is_refused(self):
+        p = make_connector()
+        guiding_settings_of(p).seconds = 2.7
+        response = p.start_guiding()
+        assert response.errors
+        assert "2700" in response.errors[0]
+        assert "set_exposure" not in rpc_methods(p)
+        assert "guide" not in rpc_methods(p)
+        p.parent.unit.start_activity.assert_not_called()

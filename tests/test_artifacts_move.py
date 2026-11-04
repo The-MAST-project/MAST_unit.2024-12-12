@@ -11,20 +11,25 @@ These pin the separator-agnostic guard without touching a real share: ``Filer``
 is faked, so the tests assert *what would be moved*, not the move.
 """
 
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from calibration.phases import artifacts
+from common.filer import Filer, Location
 
 
 @pytest.fixture
 def fake_filer(monkeypatch):
-    """A Filer whose roots use forward slashes, as the real one does."""
-    filer = MagicMock()
-    filer.ram = SimpleNamespace(root="D:/MAST/")
-    filer.shared = SimpleNamespace(root="Z:/MAST/mast02/")
+    """A real Filer on a unit's roots, spelled as the real one spells them, with only the
+    move itself faked -- so the guard is Filer's own `area_of`, string work that runs the
+    Windows spellings on every platform."""
+    filer = object.__new__(Filer)
+    filer.ram = Location("D:/MAST/")
+    filer.shared = Location("Z:/MAST/mast02/")
+    filer.local = Location("C:/MAST/")
+    filer.ram_fallback = Location("C:/MAST/ram-fallback/")
+    filer.move_ram_to_shared = MagicMock()
     monkeypatch.setattr(artifacts, "Filer", lambda: filer)
     return filer
 
@@ -80,3 +85,13 @@ def test_no_folder_is_a_no_op(fake_filer):
     artifacts.move_to_shared(None)
 
     fake_filer.move_ram_to_shared.assert_not_called()
+
+
+def test_a_folder_on_the_ram_fallback_is_moved_too(fake_filer):
+    """While the RAM disk is gone, PathMaker builds under its fallback on C:. A prefix test on
+    `ram.root` read that as "not on the RAM disk" and left the products on C:."""
+    folder = r"C:\MAST\ram-fallback\2026-10-21\Calibration\Focuser\0002"
+
+    artifacts.move_to_shared(folder)
+
+    fake_filer.move_ram_to_shared.assert_called_once_with(folder)

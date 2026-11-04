@@ -41,7 +41,7 @@ from astropy.io import fits
 
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse
-from common.filer import Filer, FilerTop, MoveGuardian
+from common.filer import Filer, FilingArea, MoveGuardian
 from common.mast_logging import get_logger
 from common.models.statuses import (
     FluxMeteringExposure,
@@ -50,7 +50,6 @@ from common.models.statuses import (
     FluxMeteringStep,
     ImagerSettings,
 )
-from common.parsers import sexagesimal_degrees_to_decimal, sexagesimal_hours_to_decimal
 from common.paths import PathMaker
 from common.utils import function_name
 from flux_metering.aperture_photometry_single import SATURATION_ADU
@@ -58,7 +57,7 @@ from flux_metering.correlate import measure_pair
 from flux_metering.flux_meter import FluxMeter, FluxMeterError, measure_frame, saturated_pixels
 from imaging.frame_shift import MIN_CONFIDENCE
 from mount import SettleMode
-from spiral_search import resolve_center
+from spiral_search import SpiralSearchError, commanded_ra_step, resolve_center
 from stage import StagePresetPosition
 
 if TYPE_CHECKING:
@@ -157,6 +156,9 @@ class FluxMeteringSession:
         self._meter: FluxMeter | None = None
         self._solve_thread: threading.Thread | None = None
         self._reference_solution: dict[str, Any] | None = None
+        #: The RA step given to PWI4 for the walk, and the declination it was sized for.
+        self._ra_step_commanded: float | None = None
+        self._ra_step_dec: float | None = None
         #: Where the aperture last found the fibre. Frames with nothing to detect are
         #: measured here instead, so a dark cell yields a small number through the same
         #: window rather than a hole in the curve.
@@ -206,6 +208,8 @@ class FluxMeteringSession:
         )
         if self.unit.activities & busy:
             return f"the unit is busy ({self.unit.activities_verbal})"
+        if self.unit.spiral.is_active:
+            return "a spiral session is open and drives PWI4's spiral too; end it with spiral_end_path or unit/abort"
         if self.unit.acquirer is None:
             return "no acquirer, so the star cannot be put on the fibre"
         # The fibre sees light only with the folding mirror in, so a run without a stage
@@ -725,7 +729,13 @@ class FluxMeteringSession:
         if mount is None or mount.pw is None:
             raise FluxMeteringError("no mount")
 
-        mount.pw.mount_spiral_offset_new(self.params.x_step_arcsec, self.params.y_step_arcsec)
+        dec = self._dec_degrees()
+        try:
+            self._ra_step_commanded = commanded_ra_step(self.params.x_step_arcsec, dec)
+        except SpiralSearchError as ex:
+            raise FluxMeteringError(str(ex)) from ex
+        self._ra_step_dec = dec
+        mount.pw.mount_spiral_offset_new(self._ra_step_commanded, self.params.y_step_arcsec)
 
         best_flux: float | None = None
         best_ring = 0
@@ -788,16 +798,8 @@ class FluxMeteringSession:
         return cell, max(abs(cell[0]), abs(cell[1])), offset
 
     def _radius_arcsec(self, offset: tuple[float, float]) -> float:
-        """Sky angle from the origin, with cos(dec) on the RA axis.
-
-        `x_step_arcsec` is RA COORDINATE arcsec, so the angle on the sky along that axis is
-        the offset times cos(dec). Without it the radius reads 25% high at dec +41 -- the
-        same factor `_pixels_from_reference` carries, MAST_unit#136 -- and the cap would
-        mean a different thing at every declination.
-        """
-        dec = self._dec_degrees()
-        scale = math.cos(math.radians(dec)) if dec is not None else 1.0
-        return math.hypot(offset[0] * scale, offset[1])
+        """Sky angle from the origin. The steps are sky angles in both axes (MAST_unit#136)."""
+        return math.hypot(offset[0], offset[1])
 
     def _pixel_scale(self) -> float | None:
         """The configured plate scale, or None when it is unset.
@@ -1096,11 +1098,7 @@ class FluxMeteringSession:
         scale, _source = self._effective_pixel_scale()
         if not scale or scale <= 0.0:
             return None
-        dec, _dec_source = self._effective_dec()
-        # cos(dec) on the RA axis for the same reason the radius cap carries it: the step is
-        # RA COORDINATE arcsec, and the sky moves by that times cos(dec).
-        ra_scale = math.cos(math.radians(dec)) if dec is not None else 1.0
-        return (offset_arcsec[0] * ra_scale / scale, offset_arcsec[1] / scale)
+        return (offset_arcsec[0] / scale, offset_arcsec[1] / scale)
 
     # ------------------------------------------------------------------- plumbing --
 
@@ -1227,8 +1225,9 @@ class FluxMeteringSession:
                 ("CELLX", cell[0] if cell else None, "spiral cell x"),
                 ("CELLY", cell[1] if cell else None, "spiral cell y"),
                 ("RING", ring, "spiral ring"),
-                ("OFFRA", offset[0] if offset else None, "commanded RA offset, arcsec"),
+                ("OFFRA", offset[0] if offset else None, "RA offset on the sky, arcsec"),
                 ("OFFDEC", offset[1] if offset else None, "commanded Dec offset, arcsec"),
+                ("RASTEPC", self._ra_step_commanded, "RA step commanded to PWI4, RA-coord arcsec"),
             ]
 
         ra_hours = pointing.get("ra_j2000_hours")
@@ -1286,10 +1285,10 @@ class FluxMeteringSession:
         read moments after being written, usually has not. A first real run failed here
         for exactly that reason while the reference had read fine.
 
-        `change_top_to` compares against roots stored POSIX-style ("D:/MAST/"), while
-        this folder comes from pathlib and is spelled with backslashes, so the prefix
-        test silently fails unless the path is converted first. `move_ram_to_shared`
-        documents the same two-spellings problem and converts for the same reason.
+        The share's copy is found with `Filer.to_top`, which takes either spelling. Its
+        predecessor `change_top_to` compared against roots stored POSIX-style ("D:/MAST/")
+        while this folder came from pathlib with backslashes, so the prefix test silently
+        failed unless the path was converted first.
         """
         return np.asarray(fits.getdata(self._frame_path(file_name)), dtype=float)
 
@@ -1305,12 +1304,12 @@ class FluxMeteringSession:
         if os.path.exists(local):
             return local
 
-        shared_folder = filer.change_top_to(FilerTop.Shared, Path(self.state.folder).as_posix())
-        if shared_folder is None:
+        try:
+            moved = filer.to_top(FilingArea.SHARE, local)
+        except ValueError as e:
             raise FluxMeteringError(
                 f"'{file_name}' is neither on the ram disk nor under a known root (folder '{self.state.folder}')"
-            )
-        moved = os.path.join(shared_folder, file_name)
+            ) from e
         if not os.path.exists(moved):
             raise FluxMeteringError(f"'{file_name}' is neither at '{local}' nor at '{moved}'")
         return moved
@@ -1368,6 +1367,10 @@ class FluxMeteringSession:
             "dec_degrees": self._effective_dec()[0],
             "dec_source": self._effective_dec()[1],
             "dec_degrees_mount": self._dec_degrees(),
+            # The RA step given to PWI4 for a step on the sky, as `acquire_and_save_spirals` names
+            # it. Its presence is what tells `spiral_correlate_steps` the offsets are on the sky.
+            "ra_step_commanded_arcsec": self._ra_step_commanded,
+            "dec_for_ra_step_degs": self._ra_step_dec,
             # The reference frame's own WCS: where the field actually was, at what scale and
             # rotation. `pixel_scale` here is MEASURED, so it can be set against the
             # configured `pixel_scale_at_bin1` above that `commanded_offset_px` relies on.
@@ -1381,7 +1384,9 @@ class FluxMeteringSession:
 
         try:
             if self.unit.mount is not None and self.unit.mount.pw is not None:
-                self.unit.mount.pw.mount_spiral_offset_new(self.params.x_step_arcsec, self.params.y_step_arcsec)
+                # Only zeroes the offset; the step is the walk's, or any when no walk began.
+                ra_step = self._ra_step_commanded or self.params.x_step_arcsec
+                self.unit.mount.pw.mount_spiral_offset_new(ra_step, self.params.y_step_arcsec)
         except Exception as ex:  # noqa: BLE001
             logger.error(f"could not reset the spiral offset: {ex}")
 
@@ -1407,26 +1412,6 @@ class FluxMeteringSession:
         with MoveGuardian().protect(path), open(path, "w") as fp:
             json.dump(result, fp, indent=2, default=str)
         filer.move_ram_to_shared(path)
-
-
-def parse_target(
-    ra_j2000_hours: str | float | None, dec_j2000_degs: str | float | None
-) -> tuple[float | None, float | None]:
-    """Target coordinates as decimal hours and degrees, in whatever form they arrive.
-
-    One call, whatever the form. `float()` is NOT enough and never was: `RA_PATTERN`
-    deliberately accepts space-separated sexagesimal, so `"03 08 10.142"` passes the
-    query validation and then fails conversion -- the same defect `acquirer.py` records
-    having already fixed once, in the comment above its own parsing block. The parsers
-    take sexagesimal, decimal and surrounding whitespace alike.
-
-    None is passed through rather than defaulted: it means "take it from the mount", and
-    only the acquirer can do that. Note the emptiness test is explicit rather than
-    truthiness, so an RA of exactly 0 hours is a coordinate and not a missing value.
-    """
-    ra = None if ra_j2000_hours is None or ra_j2000_hours == "" else sexagesimal_hours_to_decimal(ra_j2000_hours)
-    dec = None if dec_j2000_degs is None or dec_j2000_degs == "" else sexagesimal_degrees_to_decimal(dec_j2000_degs)
-    return ra, dec
 
 
 def isoformat_utc() -> str:

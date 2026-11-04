@@ -28,10 +28,9 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
 
 from calibration.logging_context import init_calibration_log
-from common.filer import Filer, MoveGuardian
+from common.filer import Filer, FilingArea, MoveGuardian
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_calibration_log(logger)
@@ -145,14 +144,16 @@ def move_to_shared(folder: str | None) -> None:
         if not filer.ram:
             logger.debug("no RAM disk configured; leaving the run folder in place")
             return
-        # Compare POSIX-normalised: Filer's roots use forward slashes
-        # ("D:/MAST/") while PathMaker hands back a native Windows path
-        # ("D:\\MAST\\..."), so a naive startswith() is always False and
-        # silently skips the move -- which is exactly what happened on
-        # 2026-07-22 until eight runs' frames were found still on the RAM disk.
-        # Filer.move_ram_to_shared itself is fine: it as_posix()es before
-        # rewriting the root, so it is only this guard that needed normalising.
-        if not Path(folder).as_posix().startswith(Path(filer.ram.root).as_posix()):
+        # Asked of Filer, which takes either spelling and counts the RAM fallback as the RAM
+        # area: a naive startswith() between the forward-slashed root ("D:/MAST/") and a
+        # native Windows path ("D:\\MAST\\...") is always False and silently skipped the
+        # move -- which is what happened on 2026-07-22 until eight runs' frames were found
+        # still on the RAM disk -- and a prefix test on `ram.root` misses the fallback.
+        try:
+            on_ram_area = filer.area_of(folder)[0] is FilingArea.RAM
+        except ValueError:
+            on_ram_area = False
+        if not on_ram_area:
             logger.debug(f"{folder} is not on the RAM disk; leaving it in place")
             return
         filer.move_ram_to_shared(folder)

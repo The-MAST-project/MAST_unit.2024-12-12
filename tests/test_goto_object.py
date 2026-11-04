@@ -80,11 +80,13 @@ def resolver(monkeypatch):
 
     fake = Fake()
     fake.calls = []
-    import acquirer as acquirer_module
+    import common.object_resolver as object_resolver_module
     import mount as mount_module
 
     monkeypatch.setattr(mount_module, "resolve_object_name", fake)
-    monkeypatch.setattr(acquirer_module, "resolve_object_name", fake)
+    # The acquirer resolves through common's `target_coordinates`, which looks the resolver
+    # up on its module at call time.
+    monkeypatch.setattr(object_resolver_module, "resolve_object_name", fake)
     return fake
 
 

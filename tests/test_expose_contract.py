@@ -19,6 +19,8 @@ import unit as unit_module
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse_Ok
 from common.endpoints import declaration_of
+from common.models.latest import LatestExposure, LatestExposureFrame
+from spiral_search import SpiralSearch
 from unit import Unit
 
 
@@ -88,6 +90,9 @@ class Stub(FakeActivities):
         self.mount = FakeMount()
         self.raised = False
         self._expose_cancelled = threading.Event()
+        self.plan_owner = None  # read by `expose`, for its latest record
+        self.latest_exposure: LatestExposure | None = None  # replaced by `expose`
+        self.spiral = SpiralSearch(self)  # type: ignore[arg-type]  # asked by `expose` before it moves anything
 
     def _expose_repeatedly(self, *args, **kwargs):
         if self.raised:
@@ -112,8 +117,10 @@ class FakeThread:
 
 
 @pytest.fixture
-def dispatched(monkeypatch):
+def dispatched(monkeypatch, tmp_path):
     """The threads `expose` started during one test."""
+    # `expose` makes its products folder before it answers: keep it off the real disk.
+    monkeypatch.setattr(unit_module.PathMaker, "make_exposures_folder", lambda self: tmp_path.as_posix())
     monkeypatch.setattr(FakeThread, "started", [])
     monkeypatch.setattr(unit_module, "Thread", FakeThread)
     return FakeThread.started
@@ -265,6 +272,18 @@ class TestTheExposingFlag:
         assert stub.is_active(UnitActivities.Exposing), "the flag must be up by the time Ok is returned"
 
 
+class TestTheRecord:
+    def test_the_next_run_replaces_the_frames(self, dispatched):
+        """A finished run's frames stay reported until the next `expose` replaces its record."""
+        stub = Stub()
+        stub.latest_exposure = LatestExposure(repeats=1).begin()
+        stub.latest_exposure.frames.append(LatestExposureFrame(name="old.fits"))
+
+        Unit.expose(stub)  # type: ignore[arg-type]
+
+        assert stub.latest_exposure is not None and stub.latest_exposure.frames == []
+
+
 class TestOneRunAtATime:
     """One flag bit cannot represent two runs: the first to finish would clear it while the
     second was still exposing, publishing a completion that had not happened."""
@@ -349,3 +368,71 @@ class TestTheRenamedParameter:
 
         assert response == CanonicalResponse_Ok
         assert len(dispatched) == 1
+
+
+class TestBesideASpiralSession:
+    """`/expose` and an open spiral session (MAST_unit#385): an imaging session holds the
+    imager, so `expose` is refused; a frameless one leaves the frames to `expose`, which
+    then must not move the mount itself."""
+
+    @staticmethod
+    def _open(stub: Stub, frames: bool) -> None:
+        stub.spiral.folder = "D:/MAST/2026-10-29/Spirals/0001"
+        stub.spiral.frames = frames
+
+    def test_an_imaging_session_refuses_the_run_before_anything_moves(self, dispatched):
+        stub = Stub()
+        self._open(stub, frames=True)
+
+        response = Unit.expose(stub, ra_j2000_hours="10:00:00", dec_j2000_degs="20:00:00")  # type: ignore[arg-type]
+
+        assert response.failed and "spiral_end_path" in response.errors[0]
+        assert stub.mount.slews == [] and dispatched == []
+        assert not stub.is_active(UnitActivities.Exposing)
+
+    def test_a_frameless_session_takes_a_run_that_leaves_the_mount_alone(self, dispatched):
+        stub = Stub()
+        self._open(stub, frames=False)
+
+        response = Unit.expose(stub, repeats=3)  # type: ignore[arg-type]
+
+        assert response.succeeded and len(dispatched) == 1
+        assert stub.is_active(UnitActivities.Exposing)
+
+    @pytest.mark.parametrize(
+        "moves",
+        [
+            {"ra_j2000_hours": "10:00:00", "dec_j2000_degs": "20:00:00"},
+            {"ra_offsets": "1.5"},
+            {"dec_offsets": "-2"},
+        ],
+        ids=["coordinates", "ra offsets", "dec offsets"],
+    )
+    def test_a_frameless_session_refuses_a_run_that_would_move_the_mount(self, dispatched, moves):
+        stub = Stub()
+        self._open(stub, frames=False)
+
+        response = Unit.expose(stub, **moves)  # type: ignore[arg-type]
+
+        assert response.failed and "outside PWI4's spiral" in response.errors[0]
+        assert stub.mount.slews == [] and dispatched == []
+
+    def test_the_session_is_held_until_the_run_is_flagged(self, dispatched, monkeypatch):
+        """No step may start between the check and `Exposing`: the lock is still held when
+        the run's thread is dispatched, by which point the flag is up."""
+        stub = Stub()
+        self._open(stub, frames=False)
+        seen: list[tuple[bool, bool]] = []
+
+        def start(thread):
+            free = []
+            probe = threading.Thread(target=lambda: free.append(stub.spiral._lock.acquire(blocking=False)))
+            probe.start()
+            probe.join(5)
+            seen.append((free[0], stub.is_active(UnitActivities.Exposing)))
+
+        monkeypatch.setattr(FakeThread, "start", start)
+
+        Unit.expose(stub)  # type: ignore[arg-type]
+
+        assert seen == [(False, True)]

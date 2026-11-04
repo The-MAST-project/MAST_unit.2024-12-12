@@ -48,14 +48,14 @@ class CorrelationError(Exception):
 
 
 def _run_root() -> Path:
-    """This machine's product tree on the share.
+    """This machine's product tree on the share: `Filer().shared`.
 
-    `Filer().machine.root`, which is documented as already carrying the hostname on both
-    platforms. NOT `shared.root`, which is the share ROOT on Linux and would put one
-    machine's lookups across every machine's folders -- the mistake that filed 89 nights of
-    control's logs at the top of the share.
+    It read `Filer().machine` while `shared` was the share ROOT on Linux, which would have
+    put one machine's lookups across every machine's folders -- the mistake that filed 89
+    nights of control's logs at the top of the share. `shared` is per-machine on every
+    platform since MAST_common#187, and `machine` is going.
     """
-    return Path(Filer().machine.root)
+    return Path(Filer().shared.root)
 
 
 def run_folder(date: str, seq: str) -> Path:
@@ -229,8 +229,14 @@ def _commanded_difference(
     offset_a, offset_b = step_a.get("offset_arcsec"), step_b.get("offset_arcsec")
     if offset_a is None or offset_b is None:
         return None, "one of the steps recorded no commanded offset"
-    # cos(dec) on the RA axis only, as in the session: the step is RA COORDINATE arcsec and
-    # the sky moves by that times cos(dec). The run's declination, never the mount's now.
+    if document.get("ra_step_commanded_arcsec") is not None:
+        return (
+            ((offset_b[0] - offset_a[0]) / scale, (offset_b[1] - offset_a[1]) / scale),
+            f"{scale_source}; the offsets are on the sky",
+        )
+    # A run from before MAST_unit#136's fix, with no commanded RA step on record: its RA offsets
+    # are COORDINATE arcsec, and the sky moved by that times cos(dec). The run's declination,
+    # never the mount's now.
     ra_scale = math.cos(math.radians(dec)) if dec is not None else 1.0
     source = f"{scale_source}, and the run's recorded declination"
     if dec is None:

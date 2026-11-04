@@ -9,18 +9,17 @@ import time
 from collections.abc import Callable
 from enum import Enum, IntFlag
 from itertools import chain
-from pathlib import Path
 from threading import Thread
 from typing import TYPE_CHECKING, Annotated, Any, TypeVar
 
 import numpy as np
+from astropy.io import fits
 from fastapi import Query
 from fastapi.routing import APIRouter
 from PIL import Image
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from acquirer import Acquirer
-from acquisition import Acquisition
 from autofocusing import Autofocuser, AutofocusResult
 from calibration.calibrator import Calibrator
 from common import asi
@@ -45,16 +44,17 @@ from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 from common.interfaces.imager import ImagerTypes
 from common.mast_logging import DailyFileHandler, get_logger
-from common.models.assignments import AssignmentNotification, UnitAssignment
+from common.models.latest import LATEST_FILE, LatestExposure, LatestExposureFrame, LatestRecords, LatestSkyQuality
+from common.models.plans import PlanStage
 from common.opmode import OpmodeBase, OpState
 
 if TYPE_CHECKING:  # `guiding` imports `unit` back, so this stays type-only
     from guiding import Guider
 from common.models.statuses import FullUnitStatus, ImagerRoi, ImagerSettings, StatusType
-from common.notifications import Notifier
 from common.parsers import (
     DEC_PATTERN,
     RA_PATTERN,
+    parse_target,
     sexagesimal_degrees_to_decimal,
     sexagesimal_hours_to_decimal,
 )
@@ -64,11 +64,12 @@ from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers
 from expose_params import MAX_OFFSET_ARCSEC, MAX_OFFSET_DEGREES, resolve_exposure_roi, resolve_offsets
 from flux_metering import correlate
-from flux_metering.session import FluxMeteringParams, FluxMeteringSession, parse_target
+from flux_metering.session import FluxMeteringParams, FluxMeteringSession
 from focus_on_star.session import FocusOnStarParams, FocusOnStarSession
 from focuser import Focuser
 from imagers import Imager
 from mount import Mount, SettleMode
+from plan_products import announce_plan_products
 from PlaneWave import pwi4_client
 from solving import Solver
 from spiral_search import SpiralSearch, guiding_roi
@@ -174,6 +175,65 @@ def _start_exposure_or_raise(imager, settings: ImagerSettings) -> None:
         raise RuntimeError(f"{function_name()}: the imager refused the exposure: {response.errors}")
 
 
+#: The `error` of a frame an abort cut short.
+ABORTED_FRAME = "aborted"
+
+
+def _take_frame(
+    imager, settings: ImagerSettings, image_path: str, cancelled: threading.Event, latest: LatestExposure | None
+) -> LatestExposureFrame:
+    """Expose one frame of an `expose` run, and record in `latest` what became of it.
+
+    Every attempted frame gets an entry, appended whole: a refused start or a failed wait is
+    recorded before it is re-raised to end the run. Module-level for the reason
+    `_start_exposure_or_raise` is.
+    """
+    name = os.path.basename(image_path)
+    with MoveGuardian().protect(image_path):
+        try:
+            _start_exposure_or_raise(imager, settings)
+            imager.wait_for_image_saved()
+        except Exception as ex:
+            if latest is not None:
+                latest.frames.append(LatestExposureFrame(name=name, error=str(ex)))
+            raise
+        frame = LatestExposureFrame(name=name, error=ABORTED_FRAME) if cancelled.is_set() else _saved_frame(image_path)
+    if latest is not None:
+        latest.frames.append(frame)
+    return frame
+
+
+def _saved_frame(path: str) -> LatestExposureFrame:
+    """What `status.latest.exposure` reports for a frame the imager says it saved.
+
+    No file is the failure: PHD2 reports a failed frame (`SingleFrameComplete` with
+    `Success=false`, or the save timeout) by returning from `wait_for_image_saved` with
+    nothing written. PHD2 writes `DATE-OBS` with no zone, in UTC; it is reported aware, as
+    `started` is. `EXPTIME` is the ASCOM and ZWO backends' key for `EXPOSURE`.
+    """
+    name = os.path.basename(path)
+    try:
+        header = fits.getheader(path)
+    except OSError as ex:
+        return LatestExposureFrame(name=name, error=f"no frame was saved: {ex}")
+    date_obs = header.get("DATE-OBS")
+    if date_obs is not None:
+        stamp = datetime.datetime.fromisoformat(str(date_obs))
+        stamp = stamp.replace(tzinfo=datetime.UTC) if stamp.tzinfo is None else stamp.astimezone(datetime.UTC)
+        date_obs = stamp.isoformat()
+    exposure = header.get("EXPOSURE", header.get("EXPTIME"))
+    return LatestExposureFrame(
+        name=name, date_obs=date_obs, exposure_seconds=float(exposure) if exposure is not None else None
+    )
+
+
+def _expose_record_name(latest: LatestExposure) -> str:
+    """``expose-<UTC start>.json``: an exposure series without a subfolder shares the night's
+    Exposures/ folder with every other, so its record is named for its run."""
+    stamp = (latest.started or "").replace(":", "").replace("-", "").split(".")[0].split("+")[0]
+    return f"expose-{stamp}.json"
+
+
 class Unit(Component, OpmodeBase):
     MAX_UNITS = 20
     MAX_AUTOFOCUS_TRIES = 3
@@ -260,6 +320,10 @@ class Unit(Component, OpmodeBase):
         self.solver: Solver | None = _try_init("solver", lambda: Solver(self))
         self.acquirer: Acquirer | None = _try_init("acquirer", lambda: Acquirer(self))
         self.guider: Guider | None = _try_init("guider", lambda: Guider(self))
+        #: The plan this unit works for, under `UnitActivities.ExecutingPlan` (claim_plan).
+        self.plan_id: str | None = None
+        #: The latest exposure series' record, `FullUnitStatus.latest.exposure`.
+        self.latest_exposure: LatestExposure | None = None
 
         self.components: list[Component] = [
             c
@@ -310,7 +374,6 @@ class Unit(Component, OpmodeBase):
         self.spiral = SpiralSearch(self)
         self.flux_metering = FluxMeteringSession(self)
         self.focus_on_star = FocusOnStarSession(self)
-        self.latest_acquisition: Acquisition | None = None
 
         self._initialized = True
         logger.info("unit: initialized")
@@ -756,6 +819,11 @@ class Unit(Component, OpmodeBase):
             flux_metering=(
                 report("flux_metering.status", self.flux_metering.status) if self.flux_metering.has_run else None
             ),
+            # Each kind's latest run (focus_on_star, acquisition, exposure); None until one has run.
+            # Through `report`, like every other live read here -- and before `errors`, which is
+            # built when its argument is evaluated: a read after it would fail unreported.
+            latest=report("latest", self._latest_records),
+            plan_id=self.plan_owner,
             # solver= self.solver.status(),
             # A new list: `self.errors` is the unit's own standing errors, and a read that
             # failed on this request must not be appended to it.
@@ -809,6 +877,10 @@ class Unit(Component, OpmodeBase):
         Each sub-abort is attempted independently, and a failure in one is collected
         rather than allowed to skip the others.
 
+        An open spiral session is closed, as abandoned and without a final frame; one whose
+        step is in flight is closed when that step lets go. A spiral session has no activity
+        flag, so `status.latest.spiral` is where its end shows.
+
         **`UnitActivities.Aborting` says when it has all stopped.** Raised here, ended by
         `ontimer` once none of `_ABORTABLE_WORK` is active and no component reports its own
         `Aborting`. That is what `shutdown` waits on (opmode-design 5.3), and what a caller of
@@ -854,14 +926,62 @@ class Unit(Component, OpmodeBase):
         if self.is_active(UnitActivities.FocusingOnStar):
             attempt("focus_on_star", self.focus_on_star.abort)
 
+        # Closed rather than left to its hour: an imaging session holds the imager against
+        # `/expose`, and the mount's abort below turns its tracking off. Never waits on a
+        # step in flight; the imager abort below releases its frame.
+        if self.spiral.is_active:
+            attempt("spiral session", self.spiral.abort)
+
         if self.guider:
             attempt("guider", self.guider.abort)
         for comp in self.components:
             attempt(f"component {type(comp).__name__}", comp.abort)
 
+        # Last, after every specific activity was asked to stop: the unit no longer works for
+        # the plan, and takes requests from anyone again (plans/control_acquisition_design.md 6.6).
+        self.release_plan()
+
         if errors:
             return CanonicalResponse(errors=errors)
         return CanonicalResponse_Ok
+
+    def _latest_records(self) -> LatestRecords:
+        """Each kind's latest run, for `FullUnitStatus.latest` (common.models.latest)."""
+        return LatestRecords(
+            focus_on_star=self.focus_on_star.latest,
+            acquisition=self.acquirer.latest if self.acquirer is not None else None,
+            exposure=self.latest_exposure,
+            guiding=self.guider.latest_guiding if self.guider is not None else None,
+            spiral=self.spiral.latest,
+            sky_quality=self._latest_sky_quality(),
+        )
+
+    def _latest_sky_quality(self) -> LatestSkyQuality | None:
+        while_guiding = self.guider.sky_quality_while_guiding if self.guider is not None else None
+        return None if while_guiding is None else LatestSkyQuality(while_guiding=while_guiding)
+
+    # ------------------------------------------------------------------- the plan token
+    # Design: mast-claude-config plans/control_acquisition_design.md 6.6.
+
+    @property
+    def plan_owner(self) -> str | None:
+        """The plan the unit works for, or None. What `common.plan_token`'s middleware asks."""
+        return self.plan_id if self.is_active(UnitActivities.ExecutingPlan) else None
+
+    def claim_plan(self, plan_id: str | None) -> None:
+        """Work for ``plan_id`` from now on: raise `ExecutingPlan` and keep the token, until an
+        abort releases it. Called by an endpoint once it has accepted a request carrying the
+        token. A request carrying another plan's never gets this far: the middleware refuses it."""
+        if plan_id is None:
+            return
+        self.plan_id = plan_id
+        if not self.is_active(UnitActivities.ExecutingPlan):
+            self.start_activity(UnitActivities.ExecutingPlan, details=[plan_id])
+
+    def release_plan(self) -> None:
+        if self.is_active(UnitActivities.ExecutingPlan):
+            self.end_activity(UnitActivities.ExecutingPlan)
+        self.plan_id = None
 
     # ------------------------------------------------------------------- idleness
     # Design: mast-claude-config plans/unit_idleness_design.md (rev. 2026-10-13).
@@ -1322,7 +1442,9 @@ class Unit(Component, OpmodeBase):
             Query(
                 description=(
                     "#### Optional RA offsets applied between exposures.\n"
-                    "**Arcseconds, as plain decimals.**\n"
+                    "**Arcseconds of RA, as plain decimals.**\n"
+                    "- passed to PWI4's mount offset as they are: arcseconds of right ascension, "
+                    "not an angle on the sky, so the field moves `cos(dec)` times the value\n"
                     "- omitted or empty - no RA offsetting\n"
                     "- one value - used after every repeat (e.g. `1.5`)\n"
                     "- exactly `repeats` values - one each (e.g. `1.5 -2 0`)\n"
@@ -1353,6 +1475,24 @@ class Unit(Component, OpmodeBase):
         If the mount was already tracking, `expose` neither re-commands nor stops it: the
         caller that started tracking owns it. Otherwise `expose` starts tracking for the run
         and stops it afterwards, also when the run fails.
+
+        Answers before it exposes. `status.latest.exposure` describes the run from the first
+        status read after the answer; the `subfolder` sent ends its `local_products_path`.
+        Its `frames` lists every frame attempted, in order: `name` (on the share, under
+        `shared_products_path`), `date_obs` and `exposure_seconds` from the frame's header,
+        and `error` for a frame that failed or was aborted. A frame PHD2 failed to save is
+        reported there, not counted in `completed`, and the run goes on.
+
+        - PHD2, not guiding: `[date_obs, date_obs + exposure_seconds]` is the frame's real
+          window, in the unit's clock
+        - PHD2 while guiding: PHD2 saves the guide frame it already has, so `date_obs` can
+          predate the request and `exposure_seconds` is the guide exposure
+        - ASCOM and ZWO backends: `DATE-OBS` is stamped at save time, after the exposure
+
+        Beside an open spiral session: refused while one opened with frames is open (it holds
+        the imager; end it with `spiral_end_path` or `unit/abort`) and while a session's step
+        is moving the mount. With a session opened with `frames=false` it runs, but refuses
+        coordinates and offsets, which would move the mount outside PWI4's spiral.
         """
 
         if seconds_between_exposures is not None:
@@ -1418,42 +1558,56 @@ class Unit(Component, OpmodeBase):
         except ValueError as e:
             return CanonicalResponse(errors=[f"expose: {e}"])
 
-        assert self.mount is not None
-        # Read before the slew: PWI4 engages tracking at the end of an equatorial goto, so
-        # afterwards the mount always looks like someone else's.
-        mount_was_tracking = self.mount.is_tracking
-        if (ra_j2000_hours is not None and isinstance(ra_j2000_hours, float)) and (
-            dec_j2000_degs is not None and isinstance(dec_j2000_degs, float)
-        ):
-            logger.info(f"slewing mount to ra={ra_j2000_hours}, dec={dec_j2000_degs}")
-            self.mount.goto_ra_dec_j2000(ra=ra_j2000_hours, dec=dec_j2000_degs)
-            self.mount.wait_until_settled(SettleMode.SLEW)
+        # Held from here until `Exposing` is raised, which every spiral verb refuses on: a
+        # step cannot slip in between, and an imaging session's series is never overwritten
+        # (MAST_unit#232, #385).
+        moves_mount = ra_j2000_hours is not None or ra_offsets is not None or dec_offsets is not None
+        with self.spiral.held_for_expose(moves_mount) as refusal:
+            if refusal is not None:
+                return CanonicalResponse(errors=[f"expose: {refusal}"])
+            assert self.mount is not None
+            # Read before the slew: PWI4 engages tracking at the end of an equatorial goto, so
+            # afterwards the mount always looks like someone else's.
+            mount_was_tracking = self.mount.is_tracking
+            if (ra_j2000_hours is not None and isinstance(ra_j2000_hours, float)) and (
+                dec_j2000_degs is not None and isinstance(dec_j2000_degs, float)
+            ):
+                logger.info(f"slewing mount to ra={ra_j2000_hours}, dec={dec_j2000_degs}")
+                self.mount.goto_ra_dec_j2000(ra=ra_j2000_hours, dec=dec_j2000_degs)
+                self.mount.wait_until_settled(SettleMode.SLEW)
 
-        # Raised here, not in the thread body: Thread.start() returns once the thread has
-        # begun bootstrapping, not once the target runs, so a caller that polls the instant
-        # it sees this Ok would find the unit idle and read the run as already over.
-        # do_expose's outermost `finally` is what ends it.
-        self._expose_cancelled.clear()
-        self.start_activity(UnitActivities.Exposing, details=[f"{repeats} x {exposure_seconds}s"])
-        Thread(
-            name="expose-thread",
-            target=self.do_expose,
-            args=[
-                subfolder,
-                exposure_seconds,
-                repeats,
-                ra_offsets,
-                dec_offsets,
-                cadence_seconds,
-                fiber_x,
-                fiber_y,
-                width,
-                height,
-                binning,
-                gain,
-                mount_was_tracking,
-            ],
-        ).start()
+            # Raised here, not in the thread body: Thread.start() returns once the thread has
+            # begun bootstrapping, not once the target runs, so a caller that polls the instant
+            # it sees this Ok would find the unit idle and read the run as already over.
+            # do_expose's outermost `finally` is what ends it.
+            self._expose_cancelled.clear()
+            # The record before the run, so the first status read after this Ok describes it.
+            default_folder = PathMaker().make_exposures_folder()
+            self.latest_exposure = LatestExposure(exposure_seconds=exposure_seconds, repeats=repeats).begin(
+                os.path.join(default_folder, subfolder) if subfolder else default_folder, self.plan_owner
+            )
+            self._latest_exposure_file = LATEST_FILE if subfolder else None
+            self.start_activity(UnitActivities.Exposing, details=[f"{repeats} x {exposure_seconds}s"])
+            Thread(
+                name="expose-thread",
+                target=self.do_expose,
+                args=[
+                    subfolder,
+                    exposure_seconds,
+                    repeats,
+                    ra_offsets,
+                    dec_offsets,
+                    cadence_seconds,
+                    fiber_x,
+                    fiber_y,
+                    width,
+                    height,
+                    binning,
+                    gain,
+                    mount_was_tracking,
+                    self.latest_exposure,
+                ],
+            ).start()
         return CanonicalResponse_Ok
 
     def do_expose(
@@ -1471,6 +1625,7 @@ class Unit(Component, OpmodeBase):
         binning: asi.ASI_294MM_SUPPORTED_BINNINGS_LITERAL = 1,
         gain: int = asi.ASI_294MM_DEFAULT_GAIN,
         mount_was_tracking: bool = False,
+        latest: LatestExposure | None = None,
     ) -> CanonicalResponse:
 
         assert self.mount is not None
@@ -1478,6 +1633,7 @@ class Unit(Component, OpmodeBase):
 
         op = function_name()
         seconds = exposure_seconds
+        failure: str | None = None
 
         try:
             if not mount_was_tracking:
@@ -1497,13 +1653,15 @@ class Unit(Component, OpmodeBase):
                     ra_offsets,
                     dec_offsets,
                     cadence_seconds,
+                    latest,
                 )
-            except Exception:
+            except Exception as ex:
                 # This runs in `expose-thread`, where an exception would otherwise vanish
                 # entirely -- the endpoint has already returned "ok" to the caller. Logging
                 # is the only trace there is; the finally below is what keeps the exposure
                 # series from dangling and stops the tracking this run started.
                 logger.exception(f"{op}: exposure run failed")
+                failure = f"the exposure run failed: {ex!r}"
                 return CanonicalResponse(errors=[f"{op}: exposure run failed, see the log"])
             finally:
                 self.imager.end_exposure_series(exposure_series)
@@ -1515,6 +1673,15 @@ class Unit(Component, OpmodeBase):
             # are outside it too: either can raise, and the flag `expose` raised would then
             # be stranded set for the life of the process, with the run visibly never over.
             self.end_activity(UnitActivities.Exposing)
+            if latest is not None:
+                if failure is None and self._expose_cancelled.is_set():
+                    failure = "aborted"
+                if failure is None and latest.completed < (latest.repeats or 0):
+                    failure = f"{latest.completed} of {latest.repeats} frames"
+                latest.finish(failure is None, [failure] if failure else None)
+                # Its own folder (a subfolder) gets latest.json; the night's shared Exposures/
+                # folder gets one file per run, named after its start.
+                latest.write(getattr(self, "_latest_exposure_file", None) or _expose_record_name(latest))
 
     def _expose_repeatedly(
         self,
@@ -1530,6 +1697,7 @@ class Unit(Component, OpmodeBase):
         ra_offsets: list[float] | None,
         dec_offsets: list[float] | None,
         cadence_seconds: float,
+        latest: LatestExposure | None = None,
     ) -> None:
         assert self.mount is not None
         assert self.imager is not None
@@ -1567,15 +1735,16 @@ class Unit(Component, OpmodeBase):
             if image_path is None:
                 _start_exposure_or_raise(self.imager, imager_settings)
             else:
-                with MoveGuardian().protect(image_path):
-                    _start_exposure_or_raise(self.imager, imager_settings)
-                    self.imager.wait_for_image_saved()
+                frame = _take_frame(self.imager, imager_settings, image_path, self._expose_cancelled, latest)
                 # An aborted exposure is released without a readout, so there is no file
                 # here to move and `move_ram_to_shared` would be the next exception.
-                if self._expose_cancelled.is_set():
+                if frame.error == ABORTED_FRAME:
                     logger.info(f"{op}: cancelled during exposure #{repeat} (of {repeats}); no frame to move")
                     return
-                filer.move_ram_to_shared(image_path)
+                if frame.error is not None:
+                    logger.error(f"{op}: exposure #{repeat} (of {repeats}): {frame.error}")
+                else:
+                    filer.move_ram_to_shared(image_path)
 
             if next_start is not None:
                 # total_seconds(), not `.seconds`, which is the seconds-of-day component of
@@ -1711,79 +1880,6 @@ class Unit(Component, OpmodeBase):
         logger.info(f"{op}: done.")
         return CanonicalResponse_Ok
 
-    def do_execute_assignment(self, assignment: UnitAssignment):
-        """
-        Execute an assignment in a separate Thread
-        :param assignment:
-        :return:
-        """
-        assert self.acquirer is not None
-        assert self.autofocuser is not None
-        assert self.guider is not None
-        assert self.imager is not None
-
-        if assignment.plan.autofocus:
-            self.autofocuser.start_autofocus(
-                ra_j2000_hours=assignment.plan.target.ra_hours,
-                dec_j2000_degs=assignment.plan.target.dec_degrees,
-            )
-
-            while self.is_active(UnitActivities.Autofocusing):
-                time.sleep(10)
-
-            #
-            # If UnitActivities.Autofocusing ends in success, an autofocuser result should
-            #  be available
-            #
-            if not self.autofocuser.latest_result:
-                return  # should propagate errors as well
-
-            if assignment.plan.ulid is not None and self.imager.latest_settings and self.imager.latest_settings.image_path:
-                Notifier().assignment_notification(
-                    AssignmentNotification(
-                        assignment_id=assignment.plan.ulid,
-                        state="in-progress",
-                        # Relative to the shared root. This sent `.parent.name` -- the bare
-                        # directory name, with no path at all -- so the controller symlinked
-                        # something it could never resolve. MAST_spec#39.
-                        shared_top=os.path.relpath(Path(self.imager.latest_settings.image_path).parent, filer.shared.root),
-                        shared_subpath="autofocus",
-                    )
-                )
-
-            #
-            # At this point we have autofocused and can start acquisition
-            #
-            self.acquirer.endpoint_start_acquisition_and_guiding(
-                ra_j2000_hours=assignment.plan.target.ra_hours,
-                dec_j2000_degs=assignment.plan.target.dec_degrees,
-            )
-
-            if assignment.plan.ulid is not None and self.acquirer.latest_acquisition is not None:
-                Notifier().assignment_notification(
-                    AssignmentNotification(
-                        assignment_id=assignment.plan.ulid,
-                        state="in-progress",
-                        # Relative to the shared root, not the absolute ram path: the
-                        # controller symlinks this, and its shared root is spelled
-                        # differently from ours. MAST_spec#39.
-                        shared_top=os.path.relpath(self.acquirer.latest_acquisition.folder, filer.shared.root),
-                        shared_subpath="acquisition",
-                    )
-                )
-
-    @endpoint(tier=Tier.CONTRACT)
-    async def endpoint_execute_assignment(self, assignment: UnitAssignment):
-        if not self.operational:
-            return CanonicalResponse(errors=self.why_not_operational)
-
-        if not self.is_idle():
-            return CanonicalResponse(errors=[f"busy ({self.why_busy})"])
-
-        Thread(target=self.do_execute_assignment, args=[assignment]).start()
-
-        return CanonicalResponse_Ok
-
     @endpoint(tier=Tier.DEMO, completion=UnitActivities.Dancing)
     async def endpoint_start_dancing(self, style: str = "foxtrot"):
         logger.info(f"unit.dance: dancing the {style} ...")
@@ -1839,12 +1935,26 @@ class Unit(Component, OpmodeBase):
             usable_fraction: Annotated[
                 float, Query(description="Usable fraction of the frame, around (center_x, center_y) to avoid coma")
             ] = 0.66,
+            frames: bool = True,
         ):
             """
             Opens a spiral search session and takes the **reference** frame.<br>
             Tracking is started; `spiral_end_path()` stops it again.<br>
-            **NOTE**: an abandoned session closes itself after an hour, without a measurement.
+            **NOTE**: an abandoned session closes itself after an hour with no step, without a
+            measurement.
 
+            Returns `folder` (on the unit) and `reference_image`. The session is reported in
+            `status.latest.spiral`: its settings, steps taken, the folder on the share
+            (`shared_products_path`, null while the share is demoted and frames stay on the
+            unit), and, once closed, whether a shift was measured. A session the hour's
+            timeout closed shows there as failed. The move is queued, so a frame appears on
+            the share some time after it is taken.
+
+            - **x_step_arcsec**, **y_step_arcsec**: the spiral's steps along RA and Dec, both as
+              angles **on the sky**, so the cells are square at any declination. The RA step
+              given to PWI4 is `x_step_arcsec / cos(dec)`, sized for the mount's declination
+              now; both are in the response. Refused within 5.7 deg of the pole, where that
+              step exceeds ten times `x_step_arcsec`.
             - **exposure_seconds**: exposure for every frame in the session (binning is always 1)
             - **save_intermediate_exposures**: when false (default) only the reference and final
               frames are kept; every step is logged either way
@@ -1860,6 +1970,15 @@ class Unit(Component, OpmodeBase):
               correlates the whole sensor and costs ~15 s per measurement (MAST_unit#137).
 
             Whichever source was used for each is reported back in the result.
+
+            - **frames**: false opens a session that only moves the mount, for a caller that
+              takes the frames itself with `expose` at each cell. It takes no reference, step
+              or final frame and measures nothing; `exposure_seconds`, the centre and
+              `usable_fraction` are unused, and `save_intermediate_exposures` must be false.
+              `spiral_end_path` then leaves tracking as it was before `spiral_new_path`.
+
+            Refused while an `expose` run is in flight, and while a flux-metering run drives
+            PWI4's spiral.
             """
             return self.spiral.start(
                 x_step_arcsec=x_step_arcsec,
@@ -1869,6 +1988,7 @@ class Unit(Component, OpmodeBase):
                 center_x=center_x,
                 center_y=center_y,
                 usable_fraction=usable_fraction,
+                frames=frames,
             )
 
         return endpoint_spiral_new_path
@@ -1884,8 +2004,9 @@ class Unit(Component, OpmodeBase):
             "step#": 9,
             "cell": [2, 1],
             "ring": 2,
-            "offset": "+20.0arcsec RA, +10.0arcsec Dec (~115 px)",
+            "offset": "+20.0arcsec RA, +10.0arcsec Dec, on the sky (~86 px)",
             "revisit": "back at step#4",
+            "image": "//mast-ns-control/mast-share/MAST/mast01/2026-10-19/Spirals/0003/step-0009.fits",
         }
         ```
 
@@ -1895,8 +2016,13 @@ class Unit(Component, OpmodeBase):
           identifies a POSITION: the same cell is the same patch of sky
         - **revisit** names the earlier step occupying this cell, if any -- which is how
           you confirm you are back at the position you judged brightest
+        - **image** is where this step's frame lands on the share; null when the session
+          does not save intermediate exposures. When the exposure failed, or the frame will
+          not reach the share (the share is demoted), it is null and **image_error** says
+          why; the session carries on. Always null in a session opened with `frames=false`.
 
-        When PWI4 does not report a spiral offset, only `step#` and an `error` come back.
+        When PWI4 does not report a spiral offset, only `step#`, `image` and an `error` come back.
+        Refused while an `expose` run is in flight: the step would move the mount under its frame.
         """
         return self.spiral.step(forward=True)
 
@@ -1981,13 +2107,11 @@ class Unit(Component, OpmodeBase):
                 )
             ),
         ] = False,
-        x_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along RA")] = 0.5,
-        y_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along Dec")] = 0.5,
+        x_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along RA, arcsec on the sky")] = 0.5,
+        y_step_arcsec: Annotated[float, Query(gt=0, description="Spiral step along Dec, arcsec on the sky")] = 0.5,
         max_rings: Annotated[int, Query(ge=1, description="Ceiling on the search; what normally ends it")] = 6,
         patience_rings: Annotated[int, Query(ge=1, description="Complete rings without improvement before stopping")] = 1,
-        max_radius_arcsec: Annotated[
-            float, Query(gt=0, description="Runaway guard, cos(dec)-corrected on the RA axis")
-        ] = 10.0,
+        max_radius_arcsec: Annotated[float, Query(gt=0, description="Runaway guard, arcsec on the sky")] = 10.0,
         flux_gain: Annotated[
             int,
             Query(
@@ -2157,6 +2281,10 @@ class Unit(Component, OpmodeBase):
             int | None,
             Query(gt=0, description="Focuser ticks between images. Default from the configuration."),
         ] = None,
+        # Internal: set by MAST_control's plan execution, so the unit labels the products
+        # folder with a `plan_id` file and says where it is (plans/control_acquisition_design.md
+        # 5.10, 6.5). Accepted, but kept out of the OpenAPI schema: not for an operator.
+        plan_id: Annotated[str | None, Query(include_in_schema=False)] = None,
     ):
         """
         Refines focus on **one isolated star at the fibre pixel**, after `/calibrate/focuser`
@@ -2192,6 +2320,11 @@ class Unit(Component, OpmodeBase):
         outcome = self.focus_on_star.start(params)
         if isinstance(outcome, str):
             return CanonicalResponse(errors=[f"{function_name()}: {outcome}"])
+        # Accepted: the unit works for the plan from here. The run folder exists once `start`
+        # has answered; None for an imager with no files.
+        outcome.plan_id = plan_id
+        self.claim_plan(plan_id)
+        announce_plan_products(plan_id, PlanStage.Autofocus, outcome.local_products_path)
         return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
@@ -2319,6 +2452,10 @@ class Unit(Component, OpmodeBase):
         far the sky moved, not whether it was the position you wanted.
 
         The same result is written as `result.json` beside the two frames.
+
+        A session opened with `frames=false` takes no final frame and measures nothing: this
+        closes it, writes `result.json` with its steps, and leaves tracking as it was before
+        `spiral_new_path`. Refused while an `expose` run is in flight.
         """
         return self.spiral.end()
 
@@ -2383,12 +2520,6 @@ class Unit(Component, OpmodeBase):
             base_path + "/test_stage_repeatability",
             endpoint=self.endpoint_test_stage_repeatability,
             methods=["PUT"],
-        )
-        add_api_route(
-            router,
-            base_path + "/execute_assignment",
-            methods=["PUT"],
-            endpoint=self.endpoint_execute_assignment,
         )
         add_api_route(
             router,

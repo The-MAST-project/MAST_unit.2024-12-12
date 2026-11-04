@@ -26,6 +26,8 @@ import json
 import math
 import os
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from astropy.io import fits
@@ -36,6 +38,7 @@ from common.config import Config
 from common.config.rois import FcuVersion, SpecRoiConfig
 from common.filer import Filer, MoveGuardian
 from common.mast_logging import get_logger
+from common.models.latest import LatestSpiral, products_paths
 from common.models.statuses import ImagerSettings
 from common.paths import PathMaker
 from common.utils import function_name, isoformat_zulu
@@ -65,14 +68,38 @@ FINAL_IMAGE = "final.fits"
 RESULT_FILE = "result.json"
 
 #: An abandoned session holds tracking on and an exposure series open. After this long
-#: it is closed WITHOUT a final frame: an hour on, nobody has confirmed the star is
-#: centred, so a shift measured then would look like a result without being one.
+#: with no step it is closed WITHOUT a final frame: an hour on, nobody has confirmed the
+#: star is centred, so a shift measured then would look like a result without being one.
+#: Each step restarts it, so a long walk that is still being driven is not cut short.
 SESSION_TIMEOUT_SECONDS = 3600.0
 
 #: A frame with more trailing blank rows than this did not read out fully. Two, not zero:
 #: a single dark row at the sensor edge is unremarkable, a block of them is a truncated
 #: transfer.
 MAX_TRAILING_BLANK_ROWS = 2
+
+#: Above this |dec| a spiral is refused rather than walked: the RA coordinate step that
+#: covers a sky angle is 1/cos(dec) of it, ten times it at 84.3 deg and growing without
+#: bound towards the pole.
+MAX_RA_STEP_FACTOR = 10.0
+
+
+def commanded_ra_step(x_step_arcsec: float, dec_degrees: float | None) -> float:
+    """The RA step to give PWI4 so the spiral's RA step covers ``x_step_arcsec`` ON THE SKY.
+
+    PWI4 steps the RA coordinate, and a coordinate step covers ``cos(dec)`` of itself on the
+    sky (MAST_unit#136: 10" commanded at dec +41 moved the star 7.44"). Every spiral takes
+    its steps as sky angles, so its cells are square on the sky at any declination.
+    """
+    if dec_degrees is None:
+        raise SpiralSearchError("no declination to size the spiral's RA step for")
+    cos_dec = math.cos(math.radians(dec_degrees))
+    if cos_dec < 1.0 / MAX_RA_STEP_FACTOR:
+        raise SpiralSearchError(
+            f'at dec {dec_degrees:+.2f} an RA step of {x_step_arcsec:g}" on the sky needs '
+            f'{x_step_arcsec / max(cos_dec, 1e-9):.1f}" of RA; refusing beyond {MAX_RA_STEP_FACTOR:g} times the step'
+        )
+    return x_step_arcsec / cos_dec
 
 
 def _reject_truncated_frame(data, file_name: str) -> None:
@@ -117,6 +144,16 @@ class SpiralSearch:
     def __init__(self, unit: Unit):
         self.unit = unit
         self._lock = threading.RLock()
+        #: Which arming of the timer is current. Not reset by `_clear`, so a timer from a
+        #: closed session can never match a new one's.
+        self._timer_generation = 0
+        #: The latest session's record, published as `FullUnitStatus.latest.spiral`. Not
+        #: reset by `_clear`: a closed session stays reported until the next one starts.
+        self.latest: LatestSpiral | None = None
+        #: Counts sessions opened, so an abort that waited for the lock closes only the
+        #: session it was asked to close.
+        self._session_generation = 0
+        self._abort_waiter: threading.Thread | None = None
         self._clear()
 
     def _clear(self) -> None:
@@ -125,6 +162,9 @@ class SpiralSearch:
         self.reference: Any = None
         self.x_step_arcsec: float = 0.0
         self.y_step_arcsec: float = 0.0
+        #: The RA step given to PWI4, and the declination it was sized for.
+        self.ra_step_arcsec_commanded: float | None = None
+        self.dec_degrees: float | None = None
         self.exposure_seconds: float = 0.0
         self.margin_horizontal: int = DEFAULT_MARGIN_HORIZONTAL
         self.margin_vertical: int = DEFAULT_MARGIN_VERTICAL
@@ -133,9 +173,11 @@ class SpiralSearch:
         self.center_x: int = 0
         self.center_y: int = 0
         self.save_intermediate_exposures: bool = False
+        #: False: the session only moves the mount, and the frames are the caller's `/expose`.
+        self.frames: bool = True
+        self._tracking_was_on: bool = False
         self.steps: list[dict] = []
         self.started_at: str | None = None
-        self._dec_degrees: float | None = None
         self._timer: threading.Timer | None = None
 
     @property
@@ -200,11 +242,8 @@ class SpiralSearch:
         identical cell sequence (1,0), (1,-1), (0,-1) at 1" and 10" steps respectively,
         which is what settles it: the values do not scale with the angular step.
 
-        The declination is picked up from the same status call, for the pixel estimate in
-        the step message. Both reads go through getattr: PWI4Status hangs its sections off
-        `Section`, which declares no attributes at all, so nothing here is checkable
-        statically -- and a mount that reports one field but not the other should cost the
-        message only the part that is missing.
+        The read goes through getattr: PWI4Status hangs its sections off `Section`, which
+        declares no attributes at all, so nothing here is checkable statically.
 
         An absent offset is a BRANCH, not an exception. PWI4 older than 4.0.11 Beta 8 does
         not report it and pwi4_client sets the whole section to None, which is a version
@@ -213,7 +252,6 @@ class SpiralSearch:
         """
         try:
             status = self.unit.mount.pw.status()  # type: ignore[union-attr]
-            self._dec_degrees = getattr(status.mount, "dec_j2000_degs", None)
             offset = getattr(status.mount, "spiral_offset", None)
             if offset is None:
                 logger.warning("this PWI4 does not report the spiral offset (needs 4.0.11 Beta 8 or later)")
@@ -223,26 +261,30 @@ class SpiralSearch:
             logger.exception("could not read PWI4 spiral offset")
             return {"x": None, "y": None}
 
+    def _mount_dec(self) -> float | None:
+        """The mount's declination now, for sizing the RA step; None when it cannot be read."""
+        try:
+            status = self.unit.mount.pw.status()  # type: ignore[union-attr]
+        except Exception:
+            logger.exception("could not read the mount's declination")
+            return None
+        return getattr(status.mount, "dec_j2000_degs", None)
+
     def _pixels_from_reference(self, x: int, y: int) -> float | None:
         """Roughly how far the field has moved, in detector pixels, since the reference.
 
-        Meant to be comparable with the shift ``end`` reports, which is why the RA axis
-        carries a cos(dec) factor: ``x_step_arcsec`` is RA COORDINATE arcsec, so the sky
-        moves ``x * x_step_arcsec * cos(dec)`` along it (MAST_unit#136, measured at dec
-        +41 as 7.44" for 10" commanded). Without it the estimate reads 25% high there and
-        invites an operator to distrust a correct measurement.
+        Meant to be comparable with the shift ``end`` reports. The steps are sky angles in
+        both axes, so no cos(dec) enters here.
 
-        None -- so the caller can omit the clause -- when the plate scale is unset or the
-        declination is unknown. ``pixel_scale_at_bin1`` is 0.0 in the config DB today
-        (MAST_unit#138), so that is the live path, and no estimate at all beats "0 px".
+        None -- so the caller can omit the clause -- when there is no configuration to give
+        the plate scale: no estimate at all beats "0 px".
+        With a configuration the scale is positive, the model refusing anything else
+        (MAST_common `ImagerConfig.pixel_scale_at_bin1`, after MAST_unit#138 found 0.0 there).
         """
         conf = self.unit.unit_conf
-        scale = conf.imager.pixel_scale_at_bin1 if conf is not None else 0.0
-        if not scale or scale <= 0.0 or self._dec_degrees is None:
+        if conf is None:
             return None
-        dx = x * self.x_step_arcsec * math.cos(math.radians(self._dec_degrees))
-        dy = y * self.y_step_arcsec
-        return math.hypot(dx, dy) / scale
+        return math.hypot(x * self.x_step_arcsec, y * self.y_step_arcsec) / conf.imager.pixel_scale_at_bin1
 
     def _revisit_clause(self, entry: dict) -> str:
         """Whether this cell has been occupied before in this session, and when.
@@ -294,7 +336,7 @@ class SpiralSearch:
             # what the braces meant back when this line was an f-string.
             "cell": (x, y),
             "ring": max(abs(x), abs(y)),
-            "offset": f"{x * self.x_step_arcsec:+.1f}arcsec RA, {y * self.y_step_arcsec:+.1f}arcsec Dec",
+            "offset": f"{x * self.x_step_arcsec:+.1f}arcsec RA, {y * self.y_step_arcsec:+.1f}arcsec Dec, on the sky",
             "revisit": self._revisit_clause(entry),
         }
         pixels = self._pixels_from_reference(x, y)
@@ -313,9 +355,18 @@ class SpiralSearch:
         center_x: int | None = None,
         center_y: int | None = None,
         usable_fraction: float | None = None,
+        frames: bool = True,
     ) -> CanonicalResponse:
         op = function_name()
         with self._lock:
+            refusal = self._busy_refusal()
+            if refusal is None and self.unit.is_active(UnitActivities.FluxMetering):
+                refusal = "a flux-metering run is driving PWI4's spiral"
+            if refusal is None and not frames and save_intermediate_exposures:
+                refusal = "a session with frames=false takes no frames, so it cannot save intermediate exposures"
+            if refusal is not None:
+                return CanonicalResponse(errors=[f"{op}: {refusal}"])
+
             if self.is_active:
                 logger.warning(f"{op}: a spiral session was still open; closing it before starting a new one")
                 self._abandon("superseded by a new spiral session")
@@ -328,6 +379,20 @@ class SpiralSearch:
 
             assert self.unit.mount is not None and self.unit.mount.pw is not None and self.unit.imager is not None
 
+            dec_degrees = self._mount_dec()
+            try:
+                ra_step_arcsec = commanded_ra_step(x_step_arcsec, dec_degrees)
+            except SpiralSearchError as ex:
+                return CanonicalResponse(errors=[f"{op}: {ex}"])
+
+            self.latest = LatestSpiral(
+                frames=frames,
+                x_step_arcsec=x_step_arcsec,
+                y_step_arcsec=y_step_arcsec,
+                exposure_seconds=exposure_seconds if frames else None,
+                save_intermediate_exposures=save_intermediate_exposures,
+            ).begin()
+            self.frames = frames
             self.x_step_arcsec = x_step_arcsec
             self.y_step_arcsec = y_step_arcsec
             self.exposure_seconds = exposure_seconds
@@ -343,13 +408,27 @@ class SpiralSearch:
             # shift of (-0.0, 0.01) with confidence 0.93, an answer that was wrong and looked
             # healthy. Refusing here is the difference between one clear error and a night's
             # worth of unusable frames.
+            self._tracking_was_on = bool(self.unit.mount.is_tracking)
             response = self.unit.mount.start_tracking()
             if response is not None and response.failed:
                 logger.error(f"{op}: cannot start the session -- {response.errors}")
+                self.latest.finish(False, response.errors)
                 return response
 
-            self.unit.mount.pw.mount_spiral_offset_new(x_step_arcsec=x_step_arcsec, y_step_arcsec=y_step_arcsec)
+            self.unit.mount.pw.mount_spiral_offset_new(x_step_arcsec=ra_step_arcsec, y_step_arcsec=y_step_arcsec)
+            self.ra_step_arcsec_commanded, self.dec_degrees = ra_step_arcsec, dec_degrees
             self.folder = PathMaker().make_spirals_folder()
+            self.latest.products_at(self.folder)
+            self._session_generation += 1
+            if not frames:
+                self._log_step(direction="origin", image=None)
+                self._arm_timer()
+                logger.info(
+                    f"{op}: frameless spiral session open in '{self.folder}', "
+                    f"steps ({x_step_arcsec}, {y_step_arcsec}) arcsec"
+                )
+                return CanonicalResponse(value={"folder": self.folder, "reference_image": None})
+
             self.exposure_series = self.unit.imager.start_exposure_series(purpose="spiral")
 
             try:
@@ -360,9 +439,11 @@ class SpiralSearch:
                 # possible, but the mount still tracking and the series still open with
                 # nothing to close them.
                 logger.exception(f"{op}: the reference exposure failed; closing the session down")
+                errors = [f"{op}: reference exposure failed: {ex}"]
+                self.latest.finish(False, errors)
                 self._close()
                 self._clear()
-                return CanonicalResponse(errors=[f"{op}: reference exposure failed: {ex}"])
+                return CanonicalResponse(errors=errors)
 
             # Resolved here, not above: the frame-centre fallback needs a frame to exist.
             self.center_x, self.center_y, self.center_source = resolve_center(center_x, center_y, self.reference.shape)
@@ -374,19 +455,29 @@ class SpiralSearch:
                 f"margins ({self.margin_horizontal}, {self.margin_vertical}) from {self.margin_source}"
             )
             self._log_step(direction="reference", image=REFERENCE_IMAGE)
+            self._arm_timer()
 
-            self._timer = threading.Timer(SESSION_TIMEOUT_SECONDS, self._on_timeout)
-            self._timer.daemon = True
-            self._timer.start()
-
-            logger.info(f"{op}: spiral session open in '{self.folder}', steps ({x_step_arcsec}, {y_step_arcsec}) arcsec")
-            return CanonicalResponse(value={"folder": self.folder, "reference_image": REFERENCE_IMAGE})
+            logger.info(
+                f"{op}: spiral session open in '{self.folder}', steps ({x_step_arcsec}, {y_step_arcsec}) arcsec on the "
+                f"sky; RA step {ra_step_arcsec:.3f} arcsec commanded at dec {dec_degrees:+.3f}"
+            )
+            return CanonicalResponse(
+                value={
+                    "folder": self.folder,
+                    "reference_image": REFERENCE_IMAGE,
+                    "dec_for_ra_step_degs": dec_degrees,
+                    "ra_step_commanded_arcsec": ra_step_arcsec,
+                }
+            )
 
     def step(self, forward: bool) -> CanonicalResponse:
         op = function_name()
         with self._lock:
             if not self.is_active:
                 return CanonicalResponse(errors=[f"{op}: no spiral session is open; call spiral_new_path first"])
+            refusal = self._busy_refusal()
+            if refusal is not None:
+                return CanonicalResponse(errors=[f"{op}: {refusal}"])
 
             assert self.unit.mount is not None and self.unit.mount.pw is not None
 
@@ -395,22 +486,38 @@ class SpiralSearch:
             else:
                 self.unit.mount.pw.mount_spiral_offset_previous()
             self.unit.mount.wait_until_settled(SettleMode.OFFSET_STEP)
+            self._arm_timer()
 
             image = None
+            path = None
+            image_error = None
             if self.save_intermediate_exposures and self.folder:
                 image = "step-" + PathMaker().make_seq(self.folder) + ".fits"
                 try:
-                    self._expose(image)
-                except Exception:
+                    path, _data = self._expose(image)
+                except Exception as ex:
                     # A lost intermediate frame is a nuisance, not a reason to end the
                     # session: the measurement needs only the reference and the final.
                     logger.exception(f"{op}: intermediate exposure '{image}' failed; continuing")
                     image = None
+                    image_error = str(ex)
 
             entry = self._log_step(direction="next" if forward else "previous", image=image)
+            if self.latest is not None:
+                self.latest.stepped(path)
             # Not the raw entry: the operator is reading this between presses, and needs
             # where they ARE. The full log of every step is in result.json either way.
-            return CanonicalResponse(value=self._step_message(entry))
+            message = self._step_message(entry)
+            message["image"] = None
+            if path is not None:
+                # Asked now, not taken from the record: the share may have been demoted since
+                # the session started, and then the frame stays on this unit.
+                message["image"] = products_paths(path)[1]
+                if message["image"] is None:
+                    image_error = f"'{path}' is not on the share, so it stays on this unit: the share is demoted"
+            if image_error is not None:
+                message["image_error"] = image_error
+            return CanonicalResponse(value=message)
 
     def end(self) -> CanonicalResponse:
         """Measure the shift from the reference frame to HERE.
@@ -424,8 +531,21 @@ class SpiralSearch:
         with self._lock:
             if not self.is_active:
                 return CanonicalResponse(errors=[f"{op}: no spiral session is open"])
+            refusal = self._busy_refusal()
+            if refusal is not None:
+                return CanonicalResponse(errors=[f"{op}: {refusal}"])
 
             self._cancel_timer()
+            if not self.frames:
+                result = self._result()
+                self._write_result(result)
+                if self.latest is not None:
+                    self.latest.finish(True)
+                    self.latest.write()
+                self._close()
+                logger.info(f"{op}: frameless spiral session closed after {len(self.steps) - 1} steps")
+                return CanonicalResponse(value=result)
+
             try:
                 _path, final = self._expose(FINAL_IMAGE)
             except Exception as ex:
@@ -470,6 +590,10 @@ class SpiralSearch:
                 at_reference_position=at_reference_position,
             )
             self._write_result(result)
+            if self.latest is not None:
+                self.latest.shift = result["shift"]
+                self.latest.finish(True)
+                self.latest.write()
             self._close()
             logger.info(f"{op}: spiral session closed, dx={shift.dx} dy={shift.dy} px (confidence {shift.confidence})")
             return CanonicalResponse(value=result)
@@ -487,14 +611,17 @@ class SpiralSearch:
         self.steps.append(entry)
         return entry
 
-    def _result(self, **extra) -> dict:
+    def _result(self, reason: str | None = None, **extra) -> dict:
         shift = extra.get("shift")
         magnitude = extra.get("magnitude")
         result: dict = {
+            "frames": self.frames,
             "started_at": self.started_at,
             "ended_at": isoformat_zulu(datetime.datetime.now(datetime.UTC)),
             "x_step_arcsec": self.x_step_arcsec,
             "y_step_arcsec": self.y_step_arcsec,
+            "ra_step_commanded_arcsec": self.ra_step_arcsec_commanded,
+            "dec_for_ra_step_degs": self.dec_degrees,
             "exposure_seconds": self.exposure_seconds,
             "margin_horizontal": self.margin_horizontal,
             "margin_vertical": self.margin_vertical,
@@ -503,12 +630,14 @@ class SpiralSearch:
             "center_x": self.center_x,
             "center_y": self.center_y,
             "save_intermediate_exposures": self.save_intermediate_exposures,
-            "reference_image": REFERENCE_IMAGE,
+            "reference_image": REFERENCE_IMAGE if self.frames else None,
             "steps": self.steps,
             "aborted": False,
         }
-        if shift is None:
-            return result | {"final_image": None, "shift": None, "aborted": True, "abort_reason": extra.get("reason")}
+        if reason is not None:
+            return result | {"final_image": None, "shift": None, "aborted": True, "abort_reason": reason}
+        if shift is None:  # a frameless session, closed by spiral_end_path: nothing to measure
+            return result | {"final_image": None, "shift": None}
 
         result |= {
             "final_image": FINAL_IMAGE,
@@ -527,16 +656,22 @@ class SpiralSearch:
         }
         return result
 
-    def _on_timeout(self) -> None:
+    def _on_timeout(self, generation: int) -> None:
         with self._lock:
             if not self.is_active:
                 return  # end() got here first
+            if generation != self._timer_generation:
+                return  # fired while a step held the lock; that step re-armed it
+            if self.unit.is_active(UnitActivities.Exposing):
+                logger.info(f"spiral session in '{self.folder}': timeout reached during an exposure run; re-armed")
+                self._arm_timer()
+                return
             logger.warning(
-                f"spiral session in '{self.folder}' abandoned: no spiral_end_path within "
+                f"spiral session in '{self.folder}' abandoned: no step or spiral_end_path within "
                 f"{SESSION_TIMEOUT_SECONDS / 3600:.0f}h. Closing WITHOUT a final frame -- nobody confirmed the "
                 "star was centred, so any shift measured now would look like a result without being one."
             )
-            self._abandon(f"no spiral_end_path within {SESSION_TIMEOUT_SECONDS / 3600:.0f}h")
+            self._abandon(f"no step or spiral_end_path within {SESSION_TIMEOUT_SECONDS / 3600:.0f}h")
 
     def _abandon(self, reason: str) -> None:
         """Close the session with no measurement, leaving a result that says so.
@@ -549,7 +684,80 @@ class SpiralSearch:
             self._write_result(self._result(reason=reason))
         except Exception:
             logger.exception("could not write the aborted spiral result")
+        if self.latest is not None:
+            self.latest.finish(False, [reason])
+            self.latest.write()
         self._close()
+
+    def abort(self) -> None:
+        """Close an open session for `unit/abort`, as abandoned and without a final frame.
+
+        Never waits: a verb in flight holds the lock through an exposure, and `abort` has to
+        answer at once. The imager's own abort releases that frame; the session is closed
+        when the verb lets go, unless a new session has been opened by then.
+        """
+        if not self.is_active:
+            return
+        generation = self._session_generation
+        if self._lock.acquire(blocking=False):
+            try:
+                self._abort_session(generation)
+            finally:
+                self._lock.release()
+            return
+        self._abort_waiter = threading.Thread(
+            name="spiral-abort", target=self.do_abort_when_free, args=[generation], daemon=True
+        )
+        self._abort_waiter.start()
+
+    def do_abort_when_free(self, generation: int) -> None:
+        with self._lock:
+            self._abort_session(generation)
+
+    def _abort_session(self, generation: int) -> None:
+        if self.is_active and generation == self._session_generation:
+            logger.warning(f"spiral session in '{self.folder}' closed by unit/abort")
+            self._abandon("aborted")
+
+    @contextmanager
+    def held_for_expose(self, moves_mount: bool) -> Iterator[str | None]:
+        """Why `/expose` may not run now, or None, holding the session while it sets up.
+
+        `/expose` keeps this open from its checks until it has raised `Exposing`, which every
+        session verb refuses on; so no step can start between the check and the run.
+        `moves_mount`: the run slews or offsets the mount.
+        """
+        if not self._lock.acquire(blocking=False):
+            yield "a spiral session is busy moving the mount or taking its frame; try again once it answers"
+            return
+        try:
+            yield self._expose_refusal(moves_mount)
+        finally:
+            self._lock.release()
+
+    def _expose_refusal(self, moves_mount: bool) -> str | None:
+        if not self.is_active:
+            return None
+        if self.frames:
+            return (
+                f"a spiral session is open in '{self.folder}' and holds the imager; end it with spiral_end_path "
+                "or unit/abort, or open it with frames=false to take the frames with expose"
+            )
+        if moves_mount:
+            return "a frameless spiral session is open: coordinates and offsets would move the mount outside PWI4's spiral"
+        return None
+
+    def _busy_refusal(self) -> str | None:
+        if self.unit.is_active(UnitActivities.Exposing):
+            return "an exposure run is in flight; the spiral would move the mount or take the imager under its frame"
+        return None
+
+    def _arm_timer(self) -> None:
+        self._cancel_timer()
+        self._timer_generation += 1
+        self._timer = threading.Timer(SESSION_TIMEOUT_SECONDS, self._on_timeout, args=[self._timer_generation])
+        self._timer.daemon = True
+        self._timer.start()
 
     def _cancel_timer(self) -> None:
         if self._timer is not None:
@@ -560,7 +768,8 @@ class SpiralSearch:
         """Stop tracking, end the series, reap the folder. Caller holds the lock."""
         if self.unit.imager is not None and self.exposure_series is not None:
             self.unit.imager.end_exposure_series(self.exposure_series)
-        if self.unit.mount is not None:
+        # A frameless session leaves tracking as it found it (#302); the imaging one stops it (#304).
+        if self.unit.mount is not None and (self.frames or not self._tracking_was_on):
             self.unit.mount.stop_tracking()
         if self.folder is not None:
             # Removed once every protected artifact -- the two frames and result.json --

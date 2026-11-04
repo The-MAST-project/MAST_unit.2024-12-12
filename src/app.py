@@ -19,6 +19,7 @@ from common.config import Config, ConfigError
 from common.endpoints import TIER_GROUPS, Tier, operation_area_tag
 from common.filer import Filer
 from common.mast_logging import configure_logging, get_logger
+from common.plan_token import plan_ownership_middleware
 from common.process import ensure_process_is_running
 from common.utils import boxed_info
 from PlaneWave import pwi4_client
@@ -291,6 +292,10 @@ def create_app(unit=None) -> FastAPI:
             status_code=500,
             content={"message": f"{function_name()}: Exception occurred: {exc}"},
         )
+
+    # While the unit works for a plan, a state-changing request without the plan's token is
+    # refused; GET and abort pass (plans/control_acquisition_design.md 6.6). Asked live.
+    app.middleware("http")(plan_ownership_middleware(lambda: getattr(unit, "plan_owner", None)))
 
     @app.middleware("http")
     async def refuse_while_shutting_down(request: Request, call_next):

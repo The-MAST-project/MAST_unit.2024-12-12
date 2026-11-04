@@ -22,11 +22,14 @@ on-unit run instead.
 
 from __future__ import annotations
 
+import itertools
 import threading
 import time
 import types
+from typing import Any
 
 import pytest
+from astropy.io import fits
 
 from common.activities import ImagerActivities, UnitActivities
 from unit import Unit
@@ -36,17 +39,18 @@ FRAME_SECONDS = 5.0
 
 
 class Recorder:
-    """An imager that exposes instantly and remembers what it was asked to do."""
+    """An imager that exposes instantly, writes the frame, and remembers what it was asked to do."""
 
     def __init__(self):
         self.exposures = 0
-        self.latest_settings = None
+        self.latest_settings: Any = None
 
     def start_exposure(self, settings):
         self.exposures += 1
+        self.latest_settings = settings
 
     def wait_for_image_saved(self):
-        pass
+        fits.PrimaryHDU().writeto(self.latest_settings.image_path)
 
 
 class Mount:
@@ -78,15 +82,16 @@ class Runner:
 
 
 @pytest.fixture
-def moved(monkeypatch):
+def moved(monkeypatch, tmp_path):
     """The image paths `_expose_repeatedly` handed to the filer during one test."""
     import unit as unit_module
 
     paths: list[str] = []
+    numbers = itertools.count()
 
     class Settings:
         def __init__(self, **kwargs):
-            self.image_path = "ram/frame.fits"
+            self.image_path = (tmp_path / f"frame-{next(numbers):03d}.fits").as_posix()
 
     class Guardian:
         def protect(self, path):
@@ -179,6 +184,7 @@ class TestTheCadence:
 
         assert time.monotonic() - started < 1.0
         assert runner.imager.exposures == 3
+        assert len(moved) == 3, "every frame was written, so every frame is moved"
 
     def test_an_overrun_starts_the_next_exposure_without_holding(self, moved):
         runner = Runner()
@@ -213,6 +219,17 @@ class TestAbortReachesTheRun:
 
         flux_metering = _FluxMetering()
 
+        class _Spiral:
+            """No session open: `Unit.abort` closes one only when it is."""
+
+            is_active = False
+            aborted = 0
+
+            def abort(self):
+                self.aborted += 1
+
+        spiral = _Spiral()
+
         def __init__(self, exposing: bool):
             self.activities = {UnitActivities.Exposing} if exposing else set()
             self._expose_cancelled = threading.Event()
@@ -223,6 +240,10 @@ class TestAbortReachesTheRun:
         # abort() raises UnitActivities.Aborting (opmode-design 5.3); ontimer ends it.
         def start_activity(self, activity, **_):
             self.activities.add(activity)
+
+        # abort() ends by releasing the unit from any plan it works for (control acquisition 6.6).
+        def release_plan(self):
+            pass
 
         def end_activity(self, activity, **_):
             self.activities.discard(activity)
@@ -243,6 +264,25 @@ class TestAbortReachesTheRun:
         Unit.abort(stub)  # type: ignore[arg-type]
 
         assert stub.is_active(UnitActivities.Exposing), "abort must not clear the completion signal"
+
+    def test_abort_closes_an_open_spiral_session(self):
+        """Left open, an imaging session would hold the imager against `/expose` until its
+        hour ran out, with tracking already off (MAST_unit#385)."""
+        stub = self.Aborting(exposing=False)
+        stub.spiral = self.Aborting._Spiral()
+        stub.spiral.is_active = True
+
+        Unit.abort(stub)  # type: ignore[arg-type]
+
+        assert stub.spiral.aborted == 1
+
+    def test_abort_leaves_no_session_alone(self):
+        stub = self.Aborting(exposing=False)
+        stub.spiral = self.Aborting._Spiral()
+
+        Unit.abort(stub)  # type: ignore[arg-type]
+
+        assert stub.spiral.aborted == 0
 
     def test_abort_with_no_run_in_flight_cancels_nothing(self):
         stub = self.Aborting(exposing=False)
