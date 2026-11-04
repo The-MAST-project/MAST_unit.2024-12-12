@@ -1,4 +1,6 @@
 import datetime
+import functools
+import inspect
 import io
 import ipaddress
 import logging
@@ -50,7 +52,13 @@ from common.opmode import OpmodeBase, OpState
 
 if TYPE_CHECKING:  # `guiding` imports `unit` back, so this stays type-only
     from guiding import Guider
-from common.models.statuses import FullUnitStatus, ImagerRoi, ImagerSettings, StatusType
+from common.models.statuses import (
+    FullUnitStatus,
+    ImagerRoi,
+    ImagerSettings,
+    StatusType,
+    operational_but_for_cooling,
+)
 from common.parsers import (
     DEC_PATTERN,
     RA_PATTERN,
@@ -430,6 +438,12 @@ class Unit(Component, OpmodeBase):
         self._idle_since = self._active_since = None
         if self.is_active(UnitActivities.StartingUp):
             return
+        # Already up and fit to work: nothing to do, so a caller -- MAST_control, or an
+        # autostartup route -- may send `startup` without asking first. Up but sick, it runs
+        # again: re-starting the components is how a unit recovers from one that failed.
+        if self._started_up_and_fit():
+            logger.info("startup: already started up and operational; nothing to do")
+            return CanonicalResponse_Ok
 
         self._was_shut_down = False
         # Raised here rather than in the thread, so a second call arriving before the thread
@@ -438,6 +452,74 @@ class Unit(Component, OpmodeBase):
         self._startup_dispatching = True
         Thread(name="unit-startup-thread", target=self.do_startup).start()
         return CanonicalResponse_Ok
+
+    def _started_up_and_fit(self) -> bool:
+        """STARTED_UP, no lifecycle change under way, and operational -- or only cooling."""
+        return (
+            self.opstate == OpState.STARTED_UP
+            and not self._lifecycle_leaving()
+            and operational_but_for_cooling(self.operational, self.why_not_operational)
+        )
+
+    def _lifecycle_leaving(self) -> bool:
+        """A shutdown or powerdown is under way: the unit is on its way down, not up."""
+        return self.is_active(UnitActivities.ShuttingDown) or self.is_active(UnitActivities.PoweringDown)
+
+    def _autostartup(self, route: str) -> list[str] | None:
+        """Bring the unit up for `route`: None once it is fit to work, else the errors to answer.
+
+        Refused while it is shutting or powering down. Otherwise it starts the unit up -- or
+        joins a startup already running -- and waits up to `seconds_to_autostartup` (read live)
+        for the sequence to complete. Past that it answers with `why_not_operational` and leaves
+        the startup running, so a retry joins it. Up, it must be operational or only cooling,
+        the rule MAST_control applies (`operational_but_for_cooling`).
+        """
+        op = f"autostartup({route})"
+        if self._lifecycle_leaving():
+            return [f"{op}: the unit is shutting down; not starting it up"]
+
+        if self.opstate != OpState.STARTED_UP or self.is_active(UnitActivities.StartingUp):
+            conf = self.unit_conf
+            seconds = conf.seconds_to_autostartup if conf is not None else 120
+            started = time.monotonic()
+            if not self.is_active(UnitActivities.StartingUp):
+                logger.info(f"{op}: opstate is {self.opstate}; starting the unit up")
+                self.startup()
+            else:
+                logger.info(f"{op}: joining the startup already running")
+            while self.opstate != OpState.STARTED_UP or self.is_active(UnitActivities.StartingUp):
+                if self._lifecycle_leaving() or self._last_lifecycle_command != "startup":
+                    return [f"{op}: a shutdown arrived while starting up"]
+                if time.monotonic() - started >= seconds:
+                    return [
+                        f"{op}: not started up after {seconds} s (startup left running)",
+                        *self.why_not_operational,
+                    ]
+                time.sleep(0.5)
+            logger.info(f"{op}: started up in {time.monotonic() - started:.1f} s")
+
+        if not operational_but_for_cooling(self.operational, self.why_not_operational):
+            return [f"{op}: started up but not operational", *(self.why_not_operational or ["no reason given"])]
+        return None
+
+    def _autostarted(self, handler: Callable) -> Callable:
+        """`handler`, starting the unit up first: the `autostarter` for `autostartup=True` routes.
+
+        Sync only -- the wait sleeps, which in FastAPI's threadpool holds one worker and no
+        event loop. `functools.wraps` carries the signature and the declaration through.
+        """
+        if inspect.iscoroutinefunction(handler):
+            raise TypeError(f"{handler.__qualname__}: autostartup needs a sync handler; the wait would block the event loop")
+        route = handler.__name__
+
+        @functools.wraps(handler)
+        def wrapper(*args, **kwargs):
+            errors = self._autostartup(route)
+            if errors:
+                return CanonicalResponse(errors=errors)
+            return handler(*args, **kwargs)
+
+        return wrapper
 
     def do_shutdown(self):
         # ShuttingDown is raised by shutdown(), before this thread exists.
@@ -1368,7 +1450,7 @@ class Unit(Component, OpmodeBase):
             except Exception:
                 logger.exception("websocket.send error")
 
-    @endpoint(tier=Tier.OPERATION, completion=UnitActivities.Exposing)
+    @endpoint(tier=Tier.OPERATION, completion=UnitActivities.Exposing, autostartup=True)
     def expose(
         self,
         ra_j2000_hours: Annotated[
@@ -1778,7 +1860,7 @@ class Unit(Component, OpmodeBase):
         # Closing the series and stopping tracking belong to do_expose's `finally`, so
         # that they happen whether or not this returns normally. They must NOT be here.
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, autostartup=True)
     def endpoint_test_stage_repeatability(
         self,
         start_position: int | str = 50000,
@@ -1909,7 +1991,7 @@ class Unit(Component, OpmodeBase):
 
     #     return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.OPERATION, factory=True)
+    @endpoint(tier=Tier.OPERATION, factory=True, autostartup=True)
     def _spiral_new_path_endpoint(self):
         """Build the `spiral_new_path` endpoint with the configured ROI as its defaults.
 
@@ -1994,7 +2076,7 @@ class Unit(Component, OpmodeBase):
 
         return endpoint_spiral_new_path
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, autostartup=True)
     def endpoint_spiral_next_step(self):
         """
         Takes the next step in the currently defined spiral path.
@@ -2027,7 +2109,7 @@ class Unit(Component, OpmodeBase):
         """
         return self.spiral.step(forward=True)
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, autostartup=True)
     def endpoint_spiral_previous_step(self):
         """
         Goes back one step in the currently defined spiral path.
@@ -2037,7 +2119,7 @@ class Unit(Component, OpmodeBase):
         """
         return self.spiral.step(forward=False)
 
-    @endpoint(tier=Tier.OPERATION, completion=UnitActivities.FluxMetering)
+    @endpoint(tier=Tier.OPERATION, completion=UnitActivities.FluxMetering, autostartup=True)
     def endpoint_acquire_and_find_max_flux(
         self,
         seconds: Annotated[
@@ -2221,7 +2303,7 @@ class Unit(Component, OpmodeBase):
         """
         return self.flux_metering.status()
 
-    @endpoint(tier=Tier.OPERATION, completion=UnitActivities.FocusingOnStar)
+    @endpoint(tier=Tier.OPERATION, completion=UnitActivities.FocusingOnStar, autostartup=True)
     def endpoint_focus_on_star(
         self,
         zenith: Annotated[
@@ -2488,6 +2570,7 @@ class Unit(Component, OpmodeBase):
                 base_path + "/start_autofocus",
                 endpoint=self.autofocuser.start_autofocus,
                 methods=["PUT"],
+                autostarter=self._autostarted,
             )
             add_api_route(
                 router,
@@ -2501,6 +2584,7 @@ class Unit(Component, OpmodeBase):
                 base_path + "/start_acquisition_and_guiding",
                 endpoint=self.acquirer.endpoint_start_acquisition_and_guiding,
                 methods=["PUT"],
+                autostarter=self._autostarted,
             )
         if self.guider:
             add_api_route(
@@ -2508,6 +2592,7 @@ class Unit(Component, OpmodeBase):
                 base_path + "/start_guiding",
                 endpoint=self.guider.endpoint_start_guiding,
                 methods=["PUT"],
+                autostarter=self._autostarted,
             )
             add_api_route(
                 router,
@@ -2515,12 +2600,13 @@ class Unit(Component, OpmodeBase):
                 endpoint=self.guider.endpoint_stop_acquisition_and_guiding,
                 methods=["PUT"],
             )
-        add_api_route(router, base_path + "/expose", endpoint=self.expose, methods=["PUT"])
+        add_api_route(router, base_path + "/expose", endpoint=self.expose, methods=["PUT"], autostarter=self._autostarted)
         add_api_route(
             router,
             base_path + "/test_stage_repeatability",
             endpoint=self.endpoint_test_stage_repeatability,
             methods=["PUT"],
+            autostarter=self._autostarted,
         )
         add_api_route(
             router,
@@ -2539,13 +2625,26 @@ class Unit(Component, OpmodeBase):
         #     #     endpoint=self.set_sky_and_spec_pixel_values,
         # , methods=["PUT"])
 
-        add_api_route(router, base_path + "/spiral_new_path", endpoint=self._spiral_new_path_endpoint(), methods=["PUT"])
-        add_api_route(router, base_path + "/spiral_next_step", endpoint=self.endpoint_spiral_next_step, methods=["PUT"])
+        add_api_route(
+            router,
+            base_path + "/spiral_new_path",
+            endpoint=self._spiral_new_path_endpoint(),
+            methods=["PUT"],
+            autostarter=self._autostarted,
+        )
+        add_api_route(
+            router,
+            base_path + "/spiral_next_step",
+            endpoint=self.endpoint_spiral_next_step,
+            methods=["PUT"],
+            autostarter=self._autostarted,
+        )
         add_api_route(
             router,
             base_path + "/spiral_previous_step",
             endpoint=self.endpoint_spiral_previous_step,
             methods=["PUT"],
+            autostarter=self._autostarted,
         )
         add_api_route(router, base_path + "/spiral_end_path", endpoint=self.endpoint_spiral_end_path, methods=["PUT"])
 
@@ -2554,6 +2653,7 @@ class Unit(Component, OpmodeBase):
             base_path + "/acquire_and_find_max_flux",
             endpoint=self.endpoint_acquire_and_find_max_flux,
             methods=["PUT"],
+            autostarter=self._autostarted,
         )
         add_api_route(
             router,
@@ -2583,7 +2683,13 @@ class Unit(Component, OpmodeBase):
             methods=["PUT"],
         )
 
-        add_api_route(router, base_path + "/focus_on_star", endpoint=self.endpoint_focus_on_star, methods=["PUT"])
+        add_api_route(
+            router,
+            base_path + "/focus_on_star",
+            endpoint=self.endpoint_focus_on_star,
+            methods=["PUT"],
+            autostarter=self._autostarted,
+        )
         add_api_route(
             router,
             base_path + "/focus_on_star_status",

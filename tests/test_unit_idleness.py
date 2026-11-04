@@ -168,6 +168,17 @@ class TestTheClock:
         unit.start_activity = lambda *_a, **_k: None
         unit.is_active = lambda _a: False
         unit._idle_since = 500.0
+        unit._started_up_and_fit = lambda: False
+
+        unit.startup()
+
+        assert unit._idle_since is None
+
+    def test_a_startup_with_nothing_to_do_still_restarts_it(self, unit):
+        """Up and fit, `startup` is a no-op -- but it is still an explicit "I want this unit"."""
+        unit.is_active = lambda _a: False
+        unit._started_up_and_fit = lambda: True
+        unit._idle_since = 500.0
 
         unit.startup()
 

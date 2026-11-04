@@ -78,6 +78,7 @@ signal you never send leaves a client waiting forever with nothing looking wrong
 | `methods=` | generated verbs only. A hand-registered route carries its verb at the registration site, next to the path |
 | `factory=True` | when a default depends on loaded configuration. A signature default is evaluated at import, before `Config()` exists, so the handler has to come back from a closure instead. `/unit/spiral_new_path` binds this unit's own fiber position that way |
 | `stability=` | not yet: `DEMO` already implies deprecated, and nothing in this repo declares `DEPRECATED`. It is the retirement notice for the next route to be removed |
+| `autostartup=True` | high-level unit work only — `Unit`, `Acquirer`, `Guider`, `Autofocuser` — that should bring the unit up rather than fail on a unit not started up. Before the handler runs, `Unit._autostarted` starts the unit, or joins a startup already running, and waits up to `seconds_to_autostartup` (120 s by default, read live). If the startup does not finish in that time, or the unit is up but neither operational nor only cooling, it answers with `why_not_operational`. It refuses while the unit is shutting or powering down. Never on a component route, a stop or a read; refused outright on `INTERFACE` and `Completion.IMMEDIATE`. Published as `x-autostartup` |
 
 ## 2. Register through the helper
 
@@ -87,6 +88,8 @@ add_api_route(router, "/mount/park", endpoint=self.endpoint_park, methods=["PUT"
 
 - **Never `router.add_api_route`** — it bypasses the declaration refusal, the envelope and the
   tier tag at once. A check catches it, since the import-time refusal cannot.
+- **An `autostartup=True` route is registered with `autostarter=self._autostarted`**, in
+  `Unit.api_router`, and no other route is: `add_api_route` refuses either mismatch at import.
 - **`PUT` if it changes state, `GET` only for reads.** Nothing checks this; see *What is not
   enforced*.
 - Two components serving one path leaf must use **the same parameter names** (order is free —
@@ -187,6 +190,7 @@ Open this table when one goes red.
 | `test_dispatch_naming.py` | a thread target not named `do_<operation>` |
 | `test_route_parameter_names.py` | two components serving one path leaf with differently *named* parameters |
 | `test_abstract_declarations.py` | an `@abstractmethod` with no declared return type — the drift that let `/imager/status` 500 |
+| `test_autostartup_declarations.py` | `autostartup=True` outside `Unit` / `Acquirer` / `Guider` / `Autofocuser` or on a lifecycle verb, a change to the pinned set of autostarting routes, and a route in `Unit.api_router` whose `autostarter=` disagrees with its declaration |
 
 ### When the gate costs more than it catches
 

@@ -76,7 +76,7 @@ class Autofocuser:
             self.unit.is_active(UnitActivities.AutofocusingPWI4) and self.unit.required_pw.status().autofocus.is_running
         )
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, autostartup=True)
     def start_autofocus(
         self,
         ra_j2000_hours: Annotated[
