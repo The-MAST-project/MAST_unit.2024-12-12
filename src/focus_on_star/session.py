@@ -34,6 +34,7 @@ Design: mast-claude-config ``plans/focus_on_star_design.md``.
 
 from __future__ import annotations
 
+import datetime
 import os
 import threading
 from dataclasses import asdict, dataclass
@@ -595,7 +596,11 @@ class FocusOnStarRun(FocuserCalibrator):
                 record.finish(False, [f"{op}: stopped"])
                 return
             self.state.phase = "sky_quality"
+            # Mid-exposure, from just before the exposure is asked for: close enough for a
+            # header stamp, and it does not depend on what the imager reports.
+            asked_at = datetime.datetime.now(datetime.UTC)
             image = self._expose(st, folder, tag="SKYQUALITY")
+            record.observed_at = (asked_at + datetime.timedelta(seconds=st.exposure / 2)).isoformat()
             if image is None:
                 record.finish(False, [f"{op}: the exposure failed"])
                 return

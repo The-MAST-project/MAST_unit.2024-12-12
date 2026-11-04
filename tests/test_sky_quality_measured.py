@@ -179,6 +179,7 @@ def test_step_7_measures_the_frame(step7):
     assert record.zero_point_mag is not None and record.zero_point_spread_mag < 0.05
     assert record.airmass == pytest.approx(1.154, abs=0.01)
     assert record.background_adu == pytest.approx(1200, abs=20)
+    assert record.observed_at is not None and record.observed_at.endswith("+00:00")
 
 
 def test_step_7_never_raises(step7, monkeypatch):
