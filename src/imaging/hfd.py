@@ -19,11 +19,14 @@ self-calibration design section 1 (autofocus).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 from astropy.io import fits
 from astropy.stats import SigmaClip
 from photutils.background import Background2D, MedianBackground
 from photutils.segmentation import SourceCatalog, detect_sources, detect_threshold
+from scipy import ndimage
 
 
 def _load(image) -> np.ndarray:
@@ -479,3 +482,208 @@ def _far_or_empty(image) -> str:
     mad = np.median(np.abs(data - bg)) or 1.0
     bright_frac = float(np.mean(data > bg + 8 * 1.4826 * mad))
     return "far" if bright_frac > 0.002 else "empty"
+
+
+# ---------------------------------------------------------------------------
+# One star: focus_on_star measures only the star it chose.  Every other HFD
+# user measures all the sources in its field (frame_hfd, measure_sweep_hfd).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class StarMeasure:
+    """One star in one frame.  Positions in the frame's own pixels.
+
+    ``hfd`` and ``fwhm`` are ``nan`` when the star is saturated (both would be biased) or
+    cannot be measured.  ``flux`` is the background-subtracted sum within the HFD aperture --
+    a lower bound when saturated, since the core is clipped.
+    """
+
+    x: float
+    y: float
+    hfd: float
+    fwhm: float
+    peak: float  # raw ADU, the stamp's maximum
+    flux: float
+    saturated: bool
+
+
+def half_max_fwhm(stamp_sub: np.ndarray, x: float, y: float) -> float:
+    """FWHM from the area of the half-maximum footprint: ``2 * sqrt(N / pi)``.
+
+    The footprint-area method of ``flux_metering.aperture_photometry_single.measure_fwhm``:
+    it assumes no profile shape, and the reference peak is a 3x3 median so a hot pixel
+    cannot set it.  Unlike that one it returns ``nan`` rather than a guess when it cannot
+    measure -- here it is logged, and a guess would read as a measurement.  A diagnostic:
+    on a defocused (donut) star it measures the ring, which is why the V-curve uses HFD.
+    """
+    peak = float(ndimage.median_filter(stamp_sub, size=3).max())
+    if not np.isfinite(peak) or peak <= 0.0:
+        return float("nan")
+    labels, _ = ndimage.label(stamp_sub >= 0.5 * peak)
+    ny, nx = stamp_sub.shape
+    xc, yc = int(round(x)), int(round(y))
+    if not (0 <= xc < nx and 0 <= yc < ny):
+        return float("nan")
+    at = int(labels[yc, xc])
+    if at == 0:
+        # The centroid may sit in a donut's hole; take the footprint holding the peak.
+        filtered = ndimage.median_filter(stamp_sub, size=3)
+        at = int(labels[np.unravel_index(int(np.argmax(filtered)), filtered.shape)])
+        if at == 0:
+            return float("nan")
+    footprint = labels == at
+    if footprint[0, :].any() or footprint[-1, :].any() or footprint[:, 0].any() or footprint[:, -1].any():
+        return float("nan")  # runs off the stamp: not a measurement
+    return float(2.0 * np.sqrt(footprint.sum() / np.pi))
+
+
+def measure_star(
+    image,
+    near_xy: tuple[float, float],
+    *,
+    search_radius: float = 30.0,
+    nsigma: float = 3.0,
+    npixels: int = 5,
+    box_size: int = 64,
+    k_thresh: float = 3.0,
+    r_factor: float = 6.0,
+    r_min: float = 8.0,
+    r_max: float = 70.0,
+    stamp_pad: int = 6,
+    max_value: float = 63000.0,
+    min_area: int = 4,
+    max_area: float = 1e5,
+) -> StarMeasure | None:
+    """The brightest source within ``search_radius`` of ``near_xy``, measured; None if none.
+
+    Brightest, not nearest: focus_on_star chose a star with nothing brighter within its
+    isolation radius, which is wider than ``search_radius``, so the brightest source here
+    is that star even after it has drifted.
+    """
+    data = _load(image)
+    ny, nx = data.shape
+    half = int(np.ceil(search_radius + r_max + stamp_pad))
+    cx, cy = near_xy
+    crop = (
+        max(0, int(np.floor(cx - half))),
+        min(nx, int(np.ceil(cx + half)) + 1),
+        max(0, int(np.floor(cy - half))),
+        min(ny, int(np.ceil(cy + half)) + 1),
+    )
+    raw = _apply_crop(data, crop)
+    sub = _bg_subtract(raw, _box_bg_size(crop, box_size))
+    cat = _catalog(sub, nsigma, npixels)
+    if cat is None:
+        return None
+    x = np.asarray(cat.x_centroid, dtype=float)
+    y = np.asarray(cat.y_centroid, dtype=float)
+    s = np.asarray(cat.semimajor_axis.value, dtype=float)
+    a = np.asarray(cat.area.value, dtype=float)
+    f = np.asarray(cat.segment_flux, dtype=float)
+    lx, ly = cx - crop[0], cy - crop[2]
+    ok = (
+        np.isfinite(x)
+        & np.isfinite(y)
+        & np.isfinite(s)
+        & np.isfinite(f)
+        & (a >= min_area)
+        & (a <= max_area)
+        & (np.hypot(x - lx, y - ly) <= search_radius)
+    )
+    if not ok.any():
+        return None
+    i = int(np.flatnonzero(ok)[np.argmax(f[ok])])
+
+    r_out = float(np.clip(r_factor * s[i], r_min, r_max))
+    h = int(round(r_out + stamp_pad))
+    xc, yc = int(round(x[i])), int(round(y[i]))
+    sx0, sx1 = max(0, xc - h), min(raw.shape[1], xc + h + 1)
+    sy0, sy1 = max(0, yc - h), min(raw.shape[0], yc + h + 1)
+    stamp_raw = raw[sy0:sy1, sx0:sx1]
+    stamp_sub = sub[sy0:sy1, sx0:sx1]
+    peak = float(stamp_raw.max())
+    saturated = peak >= max_value
+
+    border = np.concatenate([stamp_sub[0], stamp_sub[-1], stamp_sub[1:-1, 0], stamp_sub[1:-1, -1]])
+    v = stamp_sub - np.median(border)
+    yy, xx = np.mgrid[0 : v.shape[0], 0 : v.shape[1]]
+    px, py = x[i] - sx0, y[i] - sy0
+    flux = float(v[np.hypot(xx - px, yy - py) <= r_out].sum())
+
+    if saturated or sx1 - sx0 < 5 or sy1 - sy0 < 5:
+        hfd = fwhm = float("nan")
+    else:
+        hfd = half_flux_diameter(stamp_sub, r_out, k_thresh)
+        fwhm = half_max_fwhm(v, px, py)
+    return StarMeasure(
+        x=float(x[i] + crop[0]),
+        y=float(y[i] + crop[2]),
+        hfd=float(hfd),
+        fwhm=float(fwhm),
+        peak=peak,
+        flux=flux,
+        saturated=bool(saturated),
+    )
+
+
+def measure_sweep_star(images, start_xy: tuple[float, float], **star_kw) -> list[StarMeasure | None]:
+    """:func:`measure_star` in each frame, following the star from frame to frame.
+
+    Each frame searches about where the star was in the last frame it was found in, so the
+    unguided drift of a sweep does not lose it.  A frame where it is not found is ``None``.
+    """
+    near = start_xy
+    out: list[StarMeasure | None] = []
+    for image in images:
+        m = measure_star(image, near, **star_kw)
+        out.append(m)
+        if m is not None:
+            near = (m.x, m.y)
+    return out
+
+
+def peak_fraction(
+    image,
+    box,
+    *,
+    nsigma: float = 5.0,
+    npixels: int = 5,
+    box_size: int = 64,
+    r_factor: float = 6.0,
+    r_min: float = 8.0,
+    r_max: float = 70.0,
+    stamp_pad: int = 6,
+    max_value: float = 63000.0,
+    min_peak_snr: float = 20.0,
+) -> float | None:
+    """Median ``peak / flux`` of the bright, unsaturated stars in ``box``; None if there are none.
+
+    The stars of one frame share the PSF, so this ratio carries over to a saturated star in
+    it: its true peak is about this times its (clipped, so lower-bound) flux.
+    """
+    data = _load(image)
+    crop = _fov_crop_box(data.shape, box, r_max + stamp_pad)
+    raw = _apply_crop(data, crop)
+    sub = _bg_subtract(raw, _box_bg_size(crop, box_size))
+    x, y, smaj = _detect(sub, nsigma, npixels, 4)
+    keep = _box_keep(x, y, _shift_box(box, crop))
+    noise = 1.4826 * float(np.median(np.abs(sub - np.median(sub)))) or 1.0
+    ratios = []
+    for xs, ys, s in zip(x[keep], y[keep], smaj[keep], strict=True):
+        r_out = float(np.clip(r_factor * s, r_min, r_max))
+        h = int(round(r_out + stamp_pad))
+        xc, yc = int(round(xs)), int(round(ys))
+        sx0, sx1 = max(0, xc - h), min(raw.shape[1], xc + h + 1)
+        sy0, sy1 = max(0, yc - h), min(raw.shape[0], yc + h + 1)
+        if sx1 - sx0 < 5 or sy1 - sy0 < 5 or raw[sy0:sy1, sx0:sx1].max() >= max_value:
+            continue
+        st = sub[sy0:sy1, sx0:sx1]
+        border = np.concatenate([st[0], st[-1], st[1:-1, 0], st[1:-1, -1]])
+        v = st - np.median(border)
+        yy, xx = np.mgrid[0 : v.shape[0], 0 : v.shape[1]]
+        flux = float(v[np.hypot(xx - (xs - sx0), yy - (ys - sy0)) <= r_out].sum())
+        peak = float(ndimage.median_filter(v, size=3).max())
+        if flux > 0 and peak >= min_peak_snr * noise:
+            ratios.append(peak / flux)
+    return float(np.median(ratios)) if ratios else None

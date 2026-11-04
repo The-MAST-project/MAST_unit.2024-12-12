@@ -73,17 +73,29 @@ def _status(best=None):
 def scripted(monkeypatch):
     """Replace the hardware steps; return the list of focuser moves and a knob for the analysis."""
     moves: list[int] = []
-    script = {"analysis": _status(best=20040), "sweep": [(1.0, None)] * 5}
+    script = {
+        "analysis": _status(best=20040),
+        "sweep": [(1.0, None)] * 7,
+        # What each probe answers, in turn: the star's pixel, or a fainter limit to pick at.
+        "probes": [session_mod._Probe(star_xy=(4100.0, 2750.0))],
+        "picked_at": [],  # the magnitude limit of each pick
+        "analysis_kw": {},
+    }
 
     star = FocusStar(
         ra_deg=90.0, dec_deg=30.0, mag=10.1, separation_deg=0.1, search_radius_deg=0.5, n_candidates=9, n_rejected=0
     )
     monkeypatch.setattr(FocusOnStarRun, "_sky_position", lambda self, params: (6.0, 30.0))
-    monkeypatch.setattr(FocusOnStarRun, "_select_star", lambda self, *a: star)
+
+    def select(self, sky, mag_limit, ls, iso):
+        script["picked_at"].append(mag_limit)
+        return star
+
+    monkeypatch.setattr(FocusOnStarRun, "_select_star", select)
     monkeypatch.setattr(FocusOnStarRun, "_position_stage", lambda self: None)
     monkeypatch.setattr(FocusOnStarRun, "_goto", lambda self, ra, dec: True)
     monkeypatch.setattr(FocusOnStarRun, "_acquire", lambda self, star, ls: True)
-    monkeypatch.setattr(FocusOnStarRun, "_probe", lambda self, st, position, box, ls, folder: st)
+    monkeypatch.setattr(FocusOnStarRun, "_probe", lambda self, *a: script["probes"].pop(0))
     monkeypatch.setattr(FocusOnStarRun, "_sweep", lambda self, seed, st, folder: script["sweep"])
 
     def move(self, position, st):
@@ -96,7 +108,12 @@ def scripted(monkeypatch):
         raise AssertionError("focus_on_star must never persist a calibration product")
 
     monkeypatch.setattr(FocusOnStarRun, "_persist", persist)
-    monkeypatch.setattr(session_mod, "analyze_focus_samples", lambda samples, **kw: script["analysis"])
+
+    def analyze(samples, **kw):
+        script["analysis_kw"] = kw
+        return script["analysis"]
+
+    monkeypatch.setattr(session_mod, "analyze_focus_samples", analyze)
     config = MagicMock()
     monkeypatch.setattr("calibration.phases.focuser.Config", config)
     return moves, script, config
@@ -123,6 +140,49 @@ def test_a_solved_run_leaves_the_focuser_at_best_focus_and_writes_nothing(script
     assert (x1 - x0, y1 - y0) == (829, 564)
     assert not unit.is_active(UnitActivities.FocusingOnStar)
     unit.mount.stop_tracking.assert_not_called()  # a solved run keeps tracking the star
+
+
+def test_the_sweep_measures_only_the_star_the_probe_found(scripted):
+    _, script, _ = scripted
+    _run(FakeUnit())
+    assert script["analysis_kw"]["star_xy"] == (4100.0, 2750.0)
+    assert "box" not in script["analysis_kw"]
+
+
+def test_the_exposure_is_the_fixed_one(scripted):
+    state = _run(FakeUnit())
+    assert state.exposure == 5.0
+
+
+def test_a_saturated_star_is_replaced_once_by_a_fainter_one(scripted):
+    _, script, _ = scripted
+    script["probes"] = [session_mod._Probe(fainter_limit=12.6), session_mod._Probe(star_xy=(4101.0, 2749.0))]
+    state = _run(FakeUnit())
+    assert state.outcome == "solved"
+    assert script["picked_at"] == [11.0, 12.6]
+    assert script["analysis_kw"]["star_xy"] == (4101.0, 2749.0)
+
+
+def test_a_replacement_that_saturates_too_fails_the_run(scripted):
+    moves, script, _ = scripted
+    script["probes"] = [session_mod._Probe(fainter_limit=12.6), session_mod._Probe(fainter_limit=13.8)]
+    state = _run(FakeUnit())
+    assert state.outcome == "failed"
+    assert script["picked_at"] == [11.0, 12.6]
+    assert any("saturated too" in e for e in state.errors)
+    assert moves == []  # no sweep, so the focuser never moved
+
+
+@pytest.mark.parametrize(
+    ("flux", "fraction", "expected"),
+    [
+        (None, None, 11.0 + session_mod.FALLBACK_FAINTER_MAG),  # nothing to estimate from
+        (1.0e6, 0.105, 12.5),  # true peak ~105k ADU -> 2.5 log10(105k / 25.2k) = 1.549 mag
+        (1.0e6, 0.03, 12.0),  # an estimate under the minimum step takes the minimum
+    ],
+)
+def test_the_fainter_limit(flux, fraction, expected):
+    assert session_mod.fainter_limit(11.0, flux or 0.0, fraction) == pytest.approx(expected)
 
 
 def test_an_unsolved_run_returns_the_focuser_to_where_it_was(scripted):

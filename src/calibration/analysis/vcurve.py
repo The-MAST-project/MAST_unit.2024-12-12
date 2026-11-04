@@ -38,7 +38,7 @@ from calibration.analysis.models import (
 )
 from calibration.logging_context import init_calibration_log
 from imaging.donut import DonutJump, frame_donut_metric, plan_donut_jump
-from imaging.hfd import measure_sweep_hfd
+from imaging.hfd import measure_sweep_hfd, measure_sweep_star
 
 logger = logging.getLogger("mast.unit." + __name__)
 init_calibration_log(logger)
@@ -150,9 +150,16 @@ def analyze_focus_samples(
     require_bracketed: bool = True,  # only solve when the sweep straddles focus
     min_fit_r2: float | None = 0.85,  # shape gate -- see vcurve_shape(); None skips
     min_edge_rise: float | None = 1.25,
+    star_xy: tuple[float, float] | None = None,
     **hfd_kw,
 ) -> HFDAutofocusStatus:
     """HFD V-curve analysis of an **in-memory** focus sweep.
+
+    **One star or the field.** ``star_xy`` (focus_on_star, and only it) measures just the
+    brightest source near that pixel, followed from frame to frame
+    (:func:`imaging.hfd.measure_sweep_star`; ``hfd_kw`` then goes to it, e.g.
+    ``search_radius``), and records its FWHM beside the HFD. Left ``None`` -- every other
+    caller -- the median over all the sources in the field, as below.
 
     ``samples`` is a list of ``(focuser_position, image)`` pairs, ``image`` being
     a 2D array -- e.g. ``imager.image_array`` after ``wait_for_image_ready()`` on
@@ -177,14 +184,25 @@ def analyze_focus_samples(
     positions = [p for p, _ in samples]
     images = [im for _, im in samples]
     errors: list[str] = []
-    try:
-        per_frame, n_consistent = measure_sweep_hfd(images, **hfd_kw)
-    except Exception:
-        logger.exception("measure_sweep_hfd failed")
-        per_frame, n_consistent = [(float("nan"), 0)] * len(images), 0
+    fwhms: list[float] = [float("nan")] * len(images)
+    if star_xy is not None:
+        try:
+            measures = measure_sweep_star(images, star_xy, **hfd_kw)
+        except Exception:
+            logger.exception("measure_sweep_star failed")
+            measures = [None] * len(images)
+        per_frame = [(m.hfd, 1) if m is not None and np.isfinite(m.hfd) else (float("nan"), 0) for m in measures]
+        fwhms = [m.fwhm if m is not None else float("nan") for m in measures]
+        n_consistent = int(any(n for _, n in per_frame))
+    else:
+        try:
+            per_frame, n_consistent = measure_sweep_hfd(images, **hfd_kw)
+        except Exception:
+            logger.exception("measure_sweep_hfd failed")
+            per_frame, n_consistent = [(float("nan"), 0)] * len(images), 0
 
     hfd_samples: list[HFDFocusSample] = []
-    for pos, (hfd, n) in zip(positions, per_frame, strict=True):
+    for pos, (hfd, n), fwhm in zip(positions, per_frame, fwhms, strict=True):
         valid = pos is not None and n > 0 and np.isfinite(hfd)
         hfd_samples.append(
             HFDFocusSample(
@@ -192,6 +210,7 @@ def analyze_focus_samples(
                 focus_position=pos,
                 num_stars=int(n),
                 hfd_pixels=(float(hfd) if np.isfinite(hfd) else None),
+                fwhm_pixels=(float(fwhm) if np.isfinite(fwhm) else None),
             )
         )
 

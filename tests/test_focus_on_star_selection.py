@@ -7,7 +7,6 @@ import pytest
 
 from focus_on_star.star_selection import (
     find_focus_star,
-    isolation_radius_deg,
     propagate_proper_motion,
     search_radii,
     select_focus_star,
@@ -71,12 +70,6 @@ def test_a_fainter_neighbour_does_not_count():
 
 def test_no_candidate_inside_the_search_radius_is_none():
     assert _select([(101.0, 30.0, 10.1)], search=0.5) is None
-
-
-def test_isolation_radius_is_the_box_half_diagonal_plus_margin():
-    # 829 x 564 px at 0.2616"/px: half-diagonal 501.4 px, + 80 px margin
-    r = isolation_radius_deg(829, 564, 0.2616, 80)
-    assert r * 3600 == pytest.approx((0.5 * np.hypot(829, 564) + 80) * 0.2616)
 
 
 def test_search_radii_grow_and_end_at_the_maximum():
