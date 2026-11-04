@@ -188,7 +188,9 @@ class TestTheCadence:
 
     def test_an_overrun_starts_the_next_exposure_without_holding(self, moved):
         runner = Runner()
-        cadence, repeats = 0.3, 2
+        # Real time on purpose: this measures the run falling behind. Small, with a margin
+        # (one cadence) that Windows' ~15 ms sleep granularity cannot eat.
+        cadence, repeats = 0.15, 2
         overrun_seconds = cadence * 2
 
         runner.imager.wait_for_image_saved = lambda: time.sleep(overrun_seconds)

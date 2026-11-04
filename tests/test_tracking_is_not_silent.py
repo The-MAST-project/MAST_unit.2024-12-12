@@ -21,9 +21,16 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from fake_clock import patch_time
 
 from common.canonical import CanonicalResponse
 from mount import Mount
+
+
+@pytest.fixture(autouse=True)
+def virtual_time(monkeypatch):
+    """`_await_tracking` polls once a second against a deadline; on a fake clock, instantly."""
+    return patch_time(monkeypatch, "mount")
 
 
 class FakePw:

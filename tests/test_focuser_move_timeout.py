@@ -17,8 +17,15 @@ import time
 from unittest.mock import MagicMock
 
 import pytest
+from fake_clock import patch_time
 
 from calibration.phases.focuser import FocuserCalibrator, FocuserMoveError
+
+
+@pytest.fixture(autouse=True)
+def virtual_time(monkeypatch):
+    """The wait's sleeps and deadline run on a fake clock: the logic is real, the seconds are not."""
+    return patch_time(monkeypatch, "calibration.phases.focuser")
 
 
 class FakeFocuser:
