@@ -1392,6 +1392,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def get_limit_frame(self) -> ImagerRoi | None:
         """The limit frame PHD2 is holding, or None when it holds none.
 
+        In the current binning's full-sensor pixels: `set_limit_frame` takes the rect
+        unbinned, and PHD2 keeps a copy divided by each binning and loads the one for
+        the binning in use. At binning 2 a rect sent as `992x800@3905,2007` reads back
+        as `496x400@1952,1003`.
+
         A read, not a recollection. The connector used to answer from what it last
         sent, which is a different question: a request can be accepted and not yet
         applied, an operator can change it by hand, and a restart drops it
@@ -1429,11 +1434,13 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
     def get_lock_position(self) -> tuple[float, float] | None:
         """PHD2's lock position, in the coordinates of the image it is delivering.
 
-        That frame is the limit frame when one is in force, while
-        :meth:`get_limit_frame` and :meth:`get_exclude_region` are in unbinned
-        full-sensor pixels. Anything comparing the two must add the crop origin
-        first -- 520 px on the derived frame, 6363 on the strip -- and the
-        comparison does not look wrong when it is (#234, #245).
+        That image is the limit frame when one is in force, at the current binning.
+        :meth:`get_limit_frame` is in the current binning's full-sensor pixels and
+        :meth:`get_exclude_region` in unbinned full-sensor pixels. Comparing the lock
+        with the exclusion region takes the limit frame's origin added first, then the
+        sum multiplied by the binning. Without the crop origin the comparison is wrong
+        by 520 px on the derived frame and 6363 on the strip, and does not look wrong
+        (#234, #245).
         """
         # Deliberately NOT unwrapped like its two siblings: PHD2 serialises a PHD_Point
         # as a bare [x, y] array here, while the two rectangle getters wrap theirs in
