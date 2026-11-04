@@ -1953,7 +1953,8 @@ class Unit(Component, OpmodeBase):
             - **x_step_arcsec**, **y_step_arcsec**: the spiral's steps along RA and Dec, both as
               angles **on the sky**, so the cells are square at any declination. The RA step
               given to PWI4 is `x_step_arcsec / cos(dec)`, sized for the mount's declination
-              now; both are in the response. Refused within 5.7 deg of the pole, where that
+              now; both are in `status.latest.spiral`, and in the response of a session that
+              takes frames. Refused within 5.7 deg of the pole, where that
               step exceeds ten times `x_step_arcsec`.
             - **exposure_seconds**: exposure for every frame in the session (binning is always 1)
             - **save_intermediate_exposures**: when false (default) only the reference and final
