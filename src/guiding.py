@@ -199,7 +199,7 @@ class Guider(GuiderInterface):
             save=save,
         )
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, autostartup=True)
     def endpoint_start_guiding(self):
         """
         Manually start guiding after an acquisition-tuning run (handover_automatically_to_guider

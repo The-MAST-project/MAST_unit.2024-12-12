@@ -181,8 +181,15 @@ class TestHiddenFromOperators:
             "/start_acquisition_and_guiding",
             endpoint=acquirer.endpoint_start_acquisition_and_guiding,
             methods=["PUT"],
+            autostarter=lambda handler: handler,  # both autostart; that is not what is tested here
         )
-        add_api_route(router, "/focus_on_star", endpoint=unit.endpoint_focus_on_star, methods=["PUT"])
+        add_api_route(
+            router,
+            "/focus_on_star",
+            endpoint=unit.endpoint_focus_on_star,
+            methods=["PUT"],
+            autostarter=lambda handler: handler,
+        )
         app = FastAPI()
         app.include_router(router)
         return TestClient(app)

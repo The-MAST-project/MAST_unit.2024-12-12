@@ -733,7 +733,7 @@ class Acquirer:
             handover_automatically_to_guider=handover_automatically_to_guider,
         )
 
-    @endpoint(tier=Tier.OPERATION)
+    @endpoint(tier=Tier.OPERATION, autostartup=True)
     def endpoint_start_acquisition_and_guiding(
         self,
         seconds: float | None = 5.0,
