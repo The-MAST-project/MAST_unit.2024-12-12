@@ -18,11 +18,12 @@ guide frames, moves the lock to the mean of their estimates, and refuses when th
 scatter by more than ``max_spread_arcsec``.
 
 It runs once per acquisition handover, after settle: on the mirror-first handover with
-the fold mirror already in, on the bracketed one before the mirror moves. With the
-mirror in, a mirror-induced shift of the image cannot be told from a real pointing
-error -- and if the shift is optical, correcting it with the mount drives the
-target off the fiber. That is why ``phd2.lock_nudge`` is off until the insertion
-has been measured to leave the image in place.
+the fold mirror already in, on the bracketed one before the mirror moves, or after it
+with ``phd2.handover.bracketed.nudge_after_insertion``. With the mirror in, a
+mirror-induced shift of the image cannot be told from a real pointing error -- and if
+the shift is optical, correcting it with the mount drives the target off the fiber.
+That is why ``phd2.lock_nudge`` is off until the insertion has been measured to leave
+the image in place.
 
 One coordinate note, because the alternative is a trap. PHD2 validates a lock
 position against the image it is currently delivering -- the limit frame when one
@@ -206,21 +207,18 @@ def detector_pixel_scale_arcsec(solution: SolvingSolution, downsample_factor: in
     return math.sqrt(abs(det)) * ARCSEC_PER_DEGREE / downsample_factor
 
 
-def _await_confirmation(connector, conf: LockNudgeConfig) -> float | None:
-    """Wait for `confirm_frames` guide steps under `confirm_px`; return the last step's distance.
+def await_steady_guide_steps(connector, frames: int, max_px: float, timeout: float) -> tuple[bool, float | None]:
+    """Wait for `frames` guide steps in a row within `max_px` of the lock; say whether they came.
 
-    `set_lock_position` starts no settling of its own, so there is no SettleDone
-    to wait on -- PHD2 skips the state machine's settle bookkeeping entirely for a
-    lock move. Counting guide steps here is the substitute. Each step counts once.
-    The first one after the move does not count: it is from the frame that was
-    exposing during the move, the unmoved star against the new lock. So the residual
-    is measured on the new lock. (Counting polls of the smoothed `AvgDist` instead
-    confirmed about 2 s after the move, on the old lock's distance.)
+    Returns whether they did within `timeout` seconds, and the last step's distance. Each
+    GuideStep counts once, and the first one after the call does not count: it is from the
+    frame that was exposing when the wait began (a lock move, a stage arriving), so what is
+    counted is measured on the new state. PHD2 starts no settle of its own for a lock move
+    or a field shift, so there is no SettleDone to wait on; counting steps is the
+    substitute. (Counting polls of the smoothed `AvgDist` instead confirmed about 2 s after
+    a lock move, on the old lock's distance.)
     """
-    if conf.confirm_frames <= 0:
-        return None
-
-    deadline = time.monotonic() + conf.confirm_timeout
+    deadline = time.monotonic() + timeout
     step = connector.latest_guide_step.count
     in_flight = step + 1
     seen = 0
@@ -234,10 +232,20 @@ def _await_confirmation(connector, conf: LockNudgeConfig) -> float | None:
         if step <= in_flight:
             continue
         last = latest.distance
-        seen = seen + 1 if last <= conf.confirm_px else 0
-        if seen >= conf.confirm_frames:
-            return last
-    logger.warning(f"{function_name()}: confirmation timed out after {conf.confirm_timeout}s, last distance={last}")
+        seen = seen + 1 if last <= max_px else 0
+        if seen >= frames:
+            return True, last
+    return False, last
+
+
+def _await_confirmation(connector, conf: LockNudgeConfig) -> float | None:
+    """Wait for `confirm_frames` guide steps under `confirm_px` after the lock moved; return
+    the last step's distance, the residual on the new lock."""
+    if conf.confirm_frames <= 0:
+        return None
+    confirmed, last = await_steady_guide_steps(connector, conf.confirm_frames, conf.confirm_px, conf.confirm_timeout)
+    if not confirmed:
+        logger.warning(f"{function_name()}: confirmation timed out after {conf.confirm_timeout}s, last distance={last}")
     return last
 
 

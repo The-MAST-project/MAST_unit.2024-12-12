@@ -2,6 +2,29 @@
 
 ---
 
+## [2026-11-05] The bracketed handover takes options: no pause, and the nudge after insertion
+
+**Why:** On mast01 a guide strip at x < 2000, kept by the exclusion region, is unchanged by
+inserting the fold mirror (star flux, noise, SNR and position within a few percent and 0.3 px
+over 23 arms of 2026-11-04). Guiding on it can run through the insertion, and a nudge with the
+mirror in then corrects what the insertion and the acquisition drift left. The next mast01
+night compares that against mirror-first.
+
+**What:** `phd2.handover.bracketed.pause` (default true) and `.nudge_after_insertion` (default
+false) on the existing style rather than a third `HandoverStyle`: bracketed already keeps the
+stage at SKY and has the guider insert, and a new style would need a case at both `match` sites,
+which have no default. Unpaused, ready waits for `steady_frames` guide frames in a row within
+`phd2.settle.pixels`, counted by `lock_nudge.await_steady_guide_steps` (the counter the nudge's
+confirmation already used): `wait_for_settle` follows the settle of the latest `guide`, already
+done, and PHD2 starts none for a field shift. A star that does not hold, or a stage that does not
+arrive, stops guiding, as a failed settle does on mirror-first (`_stop_unready_session`). The
+nudge's per-frame estimates are now logged as one JSON line.
+
+**Implications:** The defaults leave the bracketed handover as it was. The paused insertion keeps
+no settle gate after resume. Configs that never set `handover.bracketed` are unaffected.
+
+---
+
 ## [2026-10-20] `ImagerSettings.roi` is unbinned sensor pixels for every writer, `/expose` included
 
 **Why:** `/unit/expose` was the one writer that stored a binned rect. PHD2's `set_limit_frame` and

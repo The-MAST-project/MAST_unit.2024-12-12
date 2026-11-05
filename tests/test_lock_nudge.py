@@ -547,6 +547,43 @@ class TestConfirmation:
         assert residual == pytest.approx(0.2)
 
 
+class TestSteadyGuideSteps:
+    """The counter behind both the nudge's confirmation and the unpaused insertion's wait:
+    guide frames in a row within a distance, the frame exposing when it starts excluded."""
+
+    def _feed(self, clock, monkeypatch, distances, default):
+        phd2 = SimpleNamespace(latest_guide_step=GuideStep(0, 3.0, 0.0))
+
+        def sleep(seconds):
+            clock.now += seconds
+            n = int(clock.now // CADENCE_S)
+            phd2.latest_guide_step = GuideStep(n, distances.get(n, default), 0.0)
+
+        import lock_nudge
+
+        monkeypatch.setattr(lock_nudge.time, "sleep", sleep)
+        return phd2
+
+    def test_steady_once_enough_frames_in_a_row_are_within_reach(self, clock, monkeypatch):
+        from lock_nudge import await_steady_guide_steps
+
+        phd2 = self._feed(clock, monkeypatch, {1: 9.0, 2: 4.0, 3: 1.0, 4: 0.8}, 0.5)
+        steady, last = await_steady_guide_steps(phd2, frames=2, max_px=5.0, timeout=60.0)
+
+        assert steady
+        assert last == pytest.approx(1.0)
+        assert clock.now >= 3 * CADENCE_S
+
+    def test_not_steady_when_the_star_never_comes_back(self, clock, monkeypatch):
+        from lock_nudge import await_steady_guide_steps
+
+        phd2 = self._feed(clock, monkeypatch, {}, 8.0)
+        steady, last = await_steady_guide_steps(phd2, frames=2, max_px=5.0, timeout=30.0)
+
+        assert not steady
+        assert last == pytest.approx(8.0)
+
+
 class TestTheOutcomeIsPublished:
     """An operator sees a refused nudge in `status.latest.acquisition.nudge`, without the log."""
 
@@ -576,6 +613,39 @@ class TestTheOutcomeIsPublished:
         assert latest.nudge.applied is False
         assert latest.nudge.reason == refusal.reason
         assert (latest.nudge.spread_arcsec, latest.nudge.frames_used) == (1.41, 4)
+
+    def test_the_per_frame_estimates_reach_the_log(self, monkeypatch, caplog):
+        """`to_status` leaves the telemetry out, so the log is its only record: the
+        per-frame estimates are what split a nudge's spread into star, solve and
+        multi-star effects."""
+        import json
+        import logging
+
+        import phd2.phd2 as phd2_module
+        from common.config.phd2 import LockNudgeConfig
+        from common.models.latest import AcquisitionState, LatestAcquisition
+        from lock_nudge import NudgeOutcome
+        from phd2.phd2 import PHD2Connector
+
+        estimates = [((100.0, 200.0), (101.5, 199.0), 0.4, -0.2, 31)]
+        outcome = NudgeOutcome(applied=True, reason="nudged", telemetry={"estimates": estimates, "residual_px": 0.3})
+        monkeypatch.setattr(phd2_module, "nudge_lock_to_target", lambda *args, **kwargs: outcome)
+        monkeypatch.setattr(
+            PHD2Connector, "conf", property(lambda self: SimpleNamespace(lock_nudge=LockNudgeConfig(enabled=True)))
+        )
+        latest = LatestAcquisition(state=AcquisitionState.RUNNING).begin()
+        acquisition = SimpleNamespace(target_ra=TARGET_RA_H, target_dec=TARGET_DEC, latest=latest, folder=None)
+        connector = object.__new__(PHD2Connector)
+        connector._nudge_onto_target = True
+        connector.parent = SimpleNamespace(unit=SimpleNamespace(acquirer=SimpleNamespace(latest_acquisition=acquisition)))
+
+        with caplog.at_level(logging.INFO):
+            connector._nudge_lock_onto_target(session=1)
+
+        line = next(r.getMessage() for r in caplog.records if "nudge telemetry" in r.getMessage())
+        logged = json.loads(line.split("nudge telemetry ", 1)[1])
+        assert logged["estimates"] == [[[100.0, 200.0], [101.5, 199.0], 0.4, -0.2, 31]]
+        assert logged["residual_px"] == 0.3
 
 
 def test_the_connector_counts_guide_steps_with_their_own_offset():
