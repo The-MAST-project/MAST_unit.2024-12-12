@@ -2,6 +2,27 @@
 
 ---
 
+## [2026-11-05] The lock nudge places the lock from the primary's own offset, and the sky judges it
+
+**Why:** with multi-star guiding on, PHD2 re-baselines its secondary stars after a lock move while
+the primary is still short of the new lock, and from then on the secondaries hold the field where
+it was. GuideStep `dx`/`dy` is then their weighted average, which reads about zero while the primary
+sits off the lock. On mast01, 4 November, that left the pole and b07 nudges 1.3-1.7" short, matching
+their measured pointing error, while in two other arms the primary sat 1.0-1.4" off with the target
+on the fiber. Neither PHD2 number says whether a nudge worked. MAST_unit#401.
+
+**What:** PHD2 `2.6.14dev1mastbuild6` adds `PrimaryDx`/`PrimaryDy` to GuideStep. The nudge places
+the lock from them and refuses on an older build, read as a number by `phd2.builds.mastbuild_number`.
+Its confirmation is unchanged as a gate and records the primary's distance too. The pointing check
+gives an applied nudge its sky verdict from the next `verify_samples` solves in the same session and
+mirror state, taken after the confirmation. Team decision, 2026-11-05: the sky decides; the
+primary's raw offset is a diagnostic, carried on every pointing sample.
+
+**Implications:** a unit must run mastbuild6 before its nudge can be enabled. `reason` stays
+`nudged` for an applied nudge, so `applied` keeps its meaning and `sky_verdict` is read beside it.
+A client that stops guiding right after ready (the A/B runner) waits for a final verdict first, or
+the nudge ends Unverified. Fixing the re-baseline in PHD2 itself was not done: it makes the primary
+authoritative, which the two arms with the target on the fiber argue against.
 ## [2026-10-20] `ImagerSettings.roi` is unbinned sensor pixels for every writer, `/expose` included
 
 **Why:** `/unit/expose` was the one writer that stored a binned rect. PHD2's `set_limit_frame` and

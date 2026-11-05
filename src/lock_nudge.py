@@ -35,8 +35,11 @@ it moves the mount.
 This nudge never converts a solved position. It computes an offset, which is the
 same in both frames because they differ only by origin, and adds it to the guide
 star's position on the very frame that was solved, as PHD2 measured it: the lock
-plus that frame's GuideStep dx/dy, PHD2's own centroid, in the frame PHD2 delivers
-and saves, whatever that is. There is deliberately no sensor-to-image conversion
+plus that frame's GuideStep PrimaryDx/PrimaryDy, PHD2's own centroid of the primary
+star, in the frame PHD2 delivers and saves, whatever that is. Not dx/dy: with
+multi-star refinement on, those are the weighted average of the primary and its
+secondaries, which can sit pixels from the primary (MAST_unit#401). PrimaryDx/Dy
+arrive from PHD2 mastbuild6 on, and an older build is not nudged. There is deliberately no sensor-to-image conversion
 here to get wrong, and no star detection of our own: one, measuring sky and noise
 in the box the star filled, found no star in any of the 14 frames PHD2 was guiding
 on, on 2026-10-28.
@@ -51,6 +54,7 @@ See MAST_unit#19.
 
 from __future__ import annotations
 
+import datetime
 import math
 import os
 import time
@@ -69,7 +73,8 @@ from common.interfaces.solving import (
 )
 from common.mast_logging import get_logger
 from common.models.latest import LockNudgeOutcome
-from common.utils import Coord, function_name
+from common.utils import Coord, function_name, isoformat_zulu
+from phd2.builds import PRIMARY_OFFSET_MASTBUILD, mastbuild_number
 from pointing_check import place_guide_frame, unplaced_frame_reason
 
 logger = get_logger(__name__)
@@ -94,6 +99,9 @@ class NudgeOutcome:
     lock_before: tuple[float, float] | None = None
     lock_after: tuple[float, float] | None = None
     residual_px: float | None = None
+    residual_primary_px: float | None = None
+    lock_moved_at: str | None = None
+    confirmed_at: str | None = None
     spread_arcsec: float | None = None
     frames_used: int | None = None
     telemetry: dict = field(default_factory=dict)
@@ -104,7 +112,8 @@ class NudgeOutcome:
             f"offset_arcsec={self.offset_arcsec}, offset_px={self.offset_px}, "
             f"spread_arcsec={self.spread_arcsec}, frames_used={self.frames_used}, "
             f"lock_before={self.lock_before}, lock_after={self.lock_after}, "
-            f"residual_px={self.residual_px})"
+            f"residual_px={self.residual_px}, residual_primary_px={self.residual_primary_px}, "
+            f"confirmed_at={self.confirmed_at})"
         )
 
     def to_status(self) -> LockNudgeOutcome:
@@ -117,21 +126,49 @@ class NudgeOutcome:
             spread_arcsec=self.spread_arcsec,
             frames_used=self.frames_used,
             residual_px=self.residual_px,
+            residual_primary_px=self.residual_primary_px,
+            lock_moved_at=self.lock_moved_at,
+            confirmed_at=self.confirmed_at,
         )
 
 
 @dataclass(frozen=True)
 class GuideStep:
-    """PHD2's latest GuideStep: how many the connector has seen, and that frame's guide star
-    offset from the lock, in the frame's pixels (PHD2's own centroid)."""
+    """PHD2's latest GuideStep: how many the connector has seen, and that frame's offsets
+    from the lock, in the frame's pixels.
+
+    `dx`/`dy` are what PHD2 guided on: the primary star's offset, or with multi-star
+    refinement the weighted average of the primary and its secondaries. `primary_dx` /
+    `primary_dy` are the primary's own offset (PHD2's centroid of it), from mastbuild6 on;
+    None on an older build and on a step that measured no star (an AO bump).
+    """
 
     count: int
     dx: float
     dy: float
+    primary_dx: float | None = None
+    primary_dy: float | None = None
 
     @property
     def distance(self) -> float:
         return math.hypot(self.dx, self.dy)
+
+    @property
+    def primary_distance(self) -> float | None:
+        if self.primary_dx is None or self.primary_dy is None:
+            return None
+        return math.hypot(self.primary_dx, self.primary_dy)
+
+
+@dataclass(frozen=True)
+class Confirmation:
+    """How the moved lock was confirmed: the last step's guided-on and primary distances,
+    and when `confirm_frames` steps had come in under `confirm_px` (None on a timeout)."""
+
+    confirmed: bool
+    distance: float | None
+    primary_distance: float | None
+    at: str | None
 
 
 class NudgeRefusedError(Exception):
@@ -206,8 +243,13 @@ def detector_pixel_scale_arcsec(solution: SolvingSolution, downsample_factor: in
     return math.sqrt(abs(det)) * ARCSEC_PER_DEGREE / downsample_factor
 
 
-def _await_confirmation(connector, conf: LockNudgeConfig) -> float | None:
-    """Wait for `confirm_frames` guide steps under `confirm_px`; return the last step's distance.
+def _await_confirmation(connector, conf: LockNudgeConfig) -> Confirmation | None:
+    """Wait for `confirm_frames` guide steps under `confirm_px`, judged on the distance PHD2
+    guided on, and record the primary's own distance on the same step.
+
+    The primary's distance is recorded, not judged: on a faint primary its centroid scatters
+    by pixels from frame to frame, and whether the target reached the fiber is for the
+    pointing check's sky verdict to say.
 
     `set_lock_position` starts no settling of its own, so there is no SettleDone
     to wait on -- PHD2 skips the state machine's settle bookkeeping entirely for a
@@ -224,7 +266,7 @@ def _await_confirmation(connector, conf: LockNudgeConfig) -> float | None:
     step = connector.latest_guide_step.count
     in_flight = step + 1
     seen = 0
-    last = None
+    last: GuideStep | None = None
     while time.monotonic() < deadline:
         time.sleep(CONFIRM_POLL_SECONDS)
         latest = connector.latest_guide_step
@@ -233,12 +275,23 @@ def _await_confirmation(connector, conf: LockNudgeConfig) -> float | None:
         step = latest.count
         if step <= in_flight:
             continue
-        last = latest.distance
-        seen = seen + 1 if last <= conf.confirm_px else 0
+        last = latest
+        seen = seen + 1 if latest.distance <= conf.confirm_px else 0
         if seen >= conf.confirm_frames:
-            return last
-    logger.warning(f"{function_name()}: confirmation timed out after {conf.confirm_timeout}s, last distance={last}")
-    return last
+            return Confirmation(
+                confirmed=True,
+                distance=latest.distance,
+                primary_distance=latest.primary_distance,
+                at=isoformat_zulu(datetime.datetime.now(datetime.UTC)),
+            )
+    distance = None if last is None else last.distance
+    logger.warning(f"{function_name()}: confirmation timed out after {conf.confirm_timeout}s, last distance={distance}")
+    return Confirmation(
+        confirmed=False,
+        distance=distance,
+        primary_distance=None if last is None else last.primary_distance,
+        at=None,
+    )
 
 
 def _estimate_from_frame(
@@ -348,6 +401,9 @@ def _collect_estimates(
             time.sleep(FRAME_POLL_SECONDS)
             continue
         step = latest.count
+        if latest.primary_dx is None or latest.primary_dy is None:
+            skipped = f"guide step {step} carries no PrimaryDx/PrimaryDy"
+            continue
 
         image_path = connector.save_image()
         try:
@@ -358,7 +414,7 @@ def _collect_estimates(
             if taken in used:
                 continue
             used.add(taken)
-            star = (lock[0] + latest.dx, lock[1] + latest.dy)
+            star = (lock[0] + latest.primary_dx, lock[1] + latest.primary_dy)
             estimates.append(_estimate_from_frame(unit, connector, image_path, star, target, solves_folder))
         except FrameUnusableError as ex:
             skipped = str(ex)
@@ -390,6 +446,16 @@ def nudge_lock_to_target(
 
     if not conf.enabled:
         return NudgeOutcome(applied=False, reason="disabled")
+
+    build = mastbuild_number(connector.sub_version)
+    if build is None or build < PRIMARY_OFFSET_MASTBUILD:
+        return NudgeOutcome(
+            applied=False,
+            reason=(
+                f"PHD2 {connector.sub_version or '(version not reported)'} predates "
+                f"mastbuild{PRIMARY_OFFSET_MASTBUILD}: its GuideStep has no PrimaryDx/PrimaryDy to place the lock from"
+            ),
+        )
 
     lock_before = connector.get_lock_position()
     if lock_before is None:
@@ -459,12 +525,25 @@ def nudge_lock_to_target(
         return NudgeOutcome(applied=False, reason="the guide session ended before the lock was moved", **measured)
 
     connector.set_lock_position(lock_after[0], lock_after[1])
+    lock_moved_at = isoformat_zulu(datetime.datetime.now(datetime.UTC))
     logger.info(
         f"{op}: moved the lock from {lock_before} to {lock_after}, the mean of {count} guide frames "
         f'(offset ({offset_px[0]:+.2f}, {offset_px[1]:+.2f}) px, {magnitude_arcsec:.2f}"; spread {spread_arcsec:.2f}")'
     )
 
-    residual = _await_confirmation(connector, conf)
+    confirmation = _await_confirmation(connector, conf)
+    residual = None if confirmation is None else confirmation.distance
+    residual_primary = None if confirmation is None else confirmation.primary_distance
     telemetry["lock_after"] = lock_after
     telemetry["residual_px"] = residual
-    return NudgeOutcome(applied=True, reason="nudged", lock_after=lock_after, residual_px=residual, **measured)
+    telemetry["residual_primary_px"] = residual_primary
+    return NudgeOutcome(
+        applied=True,
+        reason="nudged",
+        lock_after=lock_after,
+        residual_px=residual,
+        residual_primary_px=residual_primary,
+        lock_moved_at=lock_moved_at,
+        confirmed_at=None if confirmation is None else confirmation.at,
+        **measured,
+    )

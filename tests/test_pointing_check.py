@@ -35,6 +35,7 @@ from common.config.phd2 import GuideSolveMaskConfig
 from common.interfaces.solving import SolvingResult, SolvingSolution
 from common.models.statuses import ImagerRoi, PointingCheckStatus, PointingSampleOutcome
 from failure_streaks import FailureStreaks
+from lock_nudge import GuideStep
 from pointing_check import PointingMonitor
 
 #: 15h 00m 00s, +30 deg -- an arbitrary target away from both RA wrap and the pole.
@@ -102,6 +103,9 @@ class FakeConnector:
         self.app_state = "Guiding"
         self.avg_dist = 0.4
         self.saved: list[str] = []
+        #: The latest GuideStep; `steps_during_save` newer ones arrive while a frame is saved.
+        self.latest_guide_step = GuideStep(count=3, dx=0.1, dy=0.2, primary_dx=-4.0, primary_dy=1.0)
+        self.steps_during_save = 0
         self.lock_validity = SimpleNamespace(state=SimpleNamespace(validity="OnStar"))
         self.parent = SimpleNamespace(
             unit=SimpleNamespace(
@@ -131,6 +135,10 @@ class FakeConnector:
     def save_image(self) -> str:
         path = self.tmp_path / f"sav{len(self.saved):04d}.tmp"
         self.saved.append(write_frame(path, *self.frame_size))
+        step = self.latest_guide_step
+        self.latest_guide_step = GuideStep(
+            step.count + self.steps_during_save, step.dx, step.dy, step.primary_dx, step.primary_dy
+        )
         return str(path)
 
     def get_lock_position(self):
@@ -468,3 +476,182 @@ class TestTheConnector:
         status = c.guider_status()
 
         assert status.pointing_check is not None and status.pointing_check.solved == 3
+
+
+# MAST_unit#401: each sample carries PHD2's guide-step offsets, and an applied nudge gets a
+# sky verdict from the samples after it
+
+
+class TestTheGuideStepOffsets:
+    def test_a_sample_carries_the_primarys_own_offset_and_the_one_guided_on(self, tmp_path, journal_dir):
+        monitor = PointingMonitor(FakeConnector(tmp_path, backend=FakeBackend(solved())))
+        monitor.start_session()
+
+        sample = monitor.sample_once()
+
+        assert sample is not None
+        assert sample.primary_offset_px == (-4.0, 1.0)
+        assert sample.guide_offset_px == (0.1, 0.2)
+        assert sample.guide_step_paired is True
+
+    def test_a_step_arriving_during_the_save_marks_the_offsets_unpaired(self, tmp_path, journal_dir):
+        connector = FakeConnector(tmp_path, backend=FakeBackend(solved()))
+        connector.steps_during_save = 1
+        monitor = PointingMonitor(connector)
+        monitor.start_session()
+
+        sample = monitor.sample_once()
+
+        assert sample is not None and sample.guide_step_paired is False
+
+    def test_before_any_guide_step_there_are_no_offsets(self, tmp_path, journal_dir):
+        connector = FakeConnector(tmp_path, backend=FakeBackend(solved()))
+        connector.latest_guide_step = GuideStep(count=0, dx=0.0, dy=0.0)
+        monitor = PointingMonitor(connector)
+        monitor.start_session()
+
+        sample = monitor.sample_once()
+
+        assert sample is not None
+        assert (sample.primary_offset_px, sample.guide_offset_px, sample.guide_step_paired) == (None, None, None)
+
+
+def _nudged():
+    from common.models.latest import LockNudgeOutcome
+
+    return LockNudgeOutcome(applied=True, reason="nudged", confirmed_at="2026-11-04T20:15:52.728Z")
+
+
+def _off_by_dec(arcsec: float) -> SolvingResult:
+    return solved(dec_degs=TARGET_DEC_DEGS - arcsec / 3600.0)
+
+
+class SequencedBackend(FakeBackend):
+    """Solves the i-th frame with `results[i]` (the last repeats)."""
+
+    def __init__(self, results):
+        super().__init__()
+        self.results = list(results)
+
+    def solve(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.results[min(len(self.calls) - 1, len(self.results) - 1)]
+
+
+class TestTheSkyVerdict:
+    """The pointing check says whether an applied nudge put the target on the fiber. PHD2
+    cannot: with multi-star refinement on, the guide loop can hold the field 1-2\" off the
+    nudged lock while every number PHD2 reports reads zero (mast01, 4 November)."""
+
+    @pytest.fixture(autouse=True)
+    def samples_only_when_asked(self, monkeypatch):
+        """A non-zero cadence is what switches the verdict on; the test takes the samples itself."""
+        monkeypatch.setattr(PointingMonitor, "do_run", lambda self, stop, session: None)
+
+    def _watching(self, tmp_path, results, *, interval=60.0, mirror_in=True, verify_samples=2, verify_arcsec=0.5):
+        from common.models.latest import NudgeSkyVerdict
+
+        connector = FakeConnector(tmp_path, backend=SequencedBackend(results), interval=interval, mirror_in=mirror_in)
+        monitor = PointingMonitor(connector)
+        monitor.start_session()
+        outcome = _nudged()
+        monitor.watch_nudge(outcome, verify_samples=verify_samples, verify_arcsec=verify_arcsec)
+        return connector, monitor, outcome, NudgeSkyVerdict
+
+    def test_two_solves_on_target_confirm_it(self, tmp_path, journal_dir):
+        _, monitor, outcome, verdict = self._watching(tmp_path, [_off_by_dec(0.2), _off_by_dec(0.4)])
+        assert outcome.sky_verdict is verdict.Pending
+
+        monitor.sample_once()
+        assert outcome.sky_verdict is verdict.Pending
+        monitor.sample_once()
+
+        assert outcome.sky_verdict is verdict.Confirmed
+        assert outcome.sky_offset_arcsec == pytest.approx(0.3, abs=1e-3)
+
+    def test_two_solves_off_target_leave_it_unconfirmed(self, tmp_path, journal_dir):
+        _, monitor, outcome, verdict = self._watching(tmp_path, [_off_by_dec(1.3), _off_by_dec(1.7)])
+
+        monitor.sample_once()
+        monitor.sample_once()
+
+        assert outcome.sky_verdict is verdict.Unconfirmed
+        assert outcome.sky_offset_arcsec == pytest.approx(1.5, abs=1e-3)
+
+    def test_a_sample_begun_before_the_watch_does_not_count(self, tmp_path, journal_dir, monkeypatch):
+        _, monitor, outcome, verdict = self._watching(tmp_path, [_off_by_dec(0.1)])
+        early = pointing_check.isoformat_zulu(
+            pointing_check.datetime.datetime(2000, 1, 1, tzinfo=pointing_check.datetime.UTC)
+        )
+        monkeypatch.setattr(pointing_check, "isoformat_zulu", lambda dt: early)
+
+        monitor.sample_once()
+        monitor.sample_once()
+
+        assert outcome.sky_verdict is verdict.Pending
+
+    def test_a_sample_taken_in_the_other_mirror_state_does_not_count(self, tmp_path, journal_dir):
+        connector, monitor, outcome, verdict = self._watching(tmp_path, [_off_by_dec(0.1)], mirror_in=False)
+        connector.parent.unit.stage = SimpleNamespace(at_preset=lambda preset: True)  # the mirror went in
+
+        monitor.sample_once()
+        monitor.sample_once()
+
+        assert outcome.sky_verdict is verdict.Pending
+
+    def test_failed_solves_end_it_unverified(self, tmp_path, journal_dir):
+        _, monitor, outcome, verdict = self._watching(tmp_path, [SolvingResult(succeeded=False)])
+
+        for _ in range(3):
+            monitor.sample_once()
+        assert outcome.sky_verdict is verdict.Pending
+        monitor.sample_once()
+
+        assert outcome.sky_verdict is verdict.Unverified
+
+    def test_a_session_ending_first_leaves_it_unverified(self, tmp_path, journal_dir):
+        _, monitor, outcome, verdict = self._watching(tmp_path, [_off_by_dec(0.1)])
+        monitor.sample_once()
+
+        monitor.stop_session()
+
+        assert outcome.sky_verdict is verdict.Unverified
+        assert outcome.sky_offset_arcsec is None
+
+    def test_with_the_check_off_it_is_unverified_at_once(self, tmp_path, journal_dir):
+        _, _, outcome, verdict = self._watching(tmp_path, [_off_by_dec(0.1)], interval=0)
+
+        assert outcome.sky_verdict is verdict.Unverified
+
+    def test_a_verdict_once_given_stays(self, tmp_path, journal_dir):
+        _, monitor, outcome, verdict = self._watching(tmp_path, [_off_by_dec(0.1), _off_by_dec(0.1), _off_by_dec(3.0)])
+        for _ in range(4):
+            monitor.sample_once()
+
+        monitor.stop_session()
+
+        assert outcome.sky_verdict is verdict.Confirmed
+
+
+def test_an_applied_nudge_is_handed_to_the_pointing_check(monkeypatch):
+    import phd2.phd2 as phd2_module
+    from common.config.phd2 import LockNudgeConfig
+    from common.models.latest import AcquisitionState, LatestAcquisition
+    from lock_nudge import NudgeOutcome
+    from phd2.phd2 import PHD2Connector
+
+    applied = NudgeOutcome(applied=True, reason="nudged", residual_px=0.2)
+    monkeypatch.setattr(phd2_module, "nudge_lock_to_target", lambda *args, **kwargs: applied)
+    conf = LockNudgeConfig(enabled=True, verify_samples=3, verify_arcsec=0.7)
+    monkeypatch.setattr(PHD2Connector, "conf", property(lambda self: SimpleNamespace(lock_nudge=conf)))
+    latest = LatestAcquisition(state=AcquisitionState.RUNNING).begin()
+    acquisition = SimpleNamespace(target_ra=TARGET_RA_HOURS, target_dec=TARGET_DEC_DEGS, latest=latest, folder=None)
+    watched: list = []
+    connector = object.__new__(PHD2Connector)
+    connector._nudge_onto_target = True
+    connector.pointing_monitor = SimpleNamespace(watch_nudge=lambda outcome, **kw: watched.append((outcome, kw)))
+    connector.parent = SimpleNamespace(unit=SimpleNamespace(acquirer=SimpleNamespace(latest_acquisition=acquisition)))
+
+    connector._nudge_lock_onto_target(session=1)
+
+    assert watched == [(latest.nudge, {"verify_samples": 3, "verify_arcsec": 0.7})]

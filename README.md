@@ -71,12 +71,21 @@ sits on the target (`src/lock_nudge.py`). It collects `solve_frames` (4) distinc
 (one per new GuideStep; a repeated `DATE-OBS` does not count), plate-solves each in its own
 coordinates (a limit-frame crop with its origin, as the pointing check does), and takes each
 frame's lock estimate: the guide star where PHD2 measured it on that frame (its GuideStep
-`dx`/`dy` from the lock) plus the solved offset. It refuses when fewer than
+`PrimaryDx`/`PrimaryDy`, the primary star's own offset from the lock, not the multi-star
+average in `dx`/`dy`) plus the solved offset. It needs PHD2 `2.6.14dev1mastbuild6` or later for
+those fields and refuses on an older build; a step without them gives no estimate. It refuses when fewer than
 `solve_frames` frames give an estimate within `frames_timeout` (90 s), when the guide session
 ends meanwhile, when the estimates scatter (RMS radial) by more than `max_spread_arcsec` (1.0",
 provisional), or when the lock would move more than `max_offset_px`. Otherwise it moves the lock
 to the mean estimate and confirms the move over `confirm_frames` new guide steps under
-`confirm_px`. What it did is published as `status.latest.acquisition.nudge`. solve-field's records of each frame's solve (`.corr`, `.match`, `-indx.xyls`, `.rdls`,
+`confirm_px`, recording the primary's own distance beside the guided-on one. What it did is
+published as `status.latest.acquisition.nudge`. An applied nudge then gets a sky verdict from the
+pointing check: the first `verify_samples` (2) solves taken after the confirmation, in the same
+mirror state, set `sky_offset_arcsec` (their median) and `sky_verdict` Confirmed (within
+`verify_arcsec`, 0.5") or Unconfirmed; it reads Pending until then, and Unverified when the guide
+session ends first, the pointing check is off, or `verify_samples` + 2 samples in a row cannot be
+solved. Each pointing sample also records the GuideStep offsets (`primary_offset_px`,
+`guide_offset_px`, and `guide_step_paired`, False when a newer step arrived during the save). solve-field's records of each frame's solve (`.corr`, `.match`, `-indx.xyls`, `.rdls`,
 result text) are kept in the acquisition's `guiding/solves/` on the share, as the pointing check's are;
 an acquisition's own solves keep theirs beside the solved FITS. Collecting the frames
 adds about 30-60 s before ready.
