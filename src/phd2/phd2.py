@@ -685,6 +685,13 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         logger.info(f"{op}: {outcome}")
         if acquisition.latest is not None:
             acquisition.latest.nudge = outcome.to_status()
+            if outcome.applied:
+                # PHD2 cannot say whether the target reached the fiber: with multi-star
+                # refinement on, its loop can hold the field off the moved lock while every
+                # offset it reports reads zero. The sky can (MAST_unit#401).
+                self.pointing_monitor.watch_nudge(
+                    acquisition.latest.nudge, verify_samples=conf.verify_samples, verify_arcsec=conf.verify_arcsec
+                )
 
     def do_fcu_v2_spec_handover(self, session: int, stage_timeout: int = 60):
         """Insert the fold mirror only after guiding has locked and settled,
@@ -927,7 +934,14 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
                 with self.lock:
                     self.app_state = "Guiding"
                     self.avg_dist = ev["AvgDist"]
-                    self.latest_guide_step = GuideStep(count=self.latest_guide_step.count + 1, dx=ev["dx"], dy=ev["dy"])
+                    # PrimaryDx/Dy: PHD2 mastbuild6 on, and absent on a step that measured no star.
+                    self.latest_guide_step = GuideStep(
+                        count=self.latest_guide_step.count + 1,
+                        dx=ev["dx"],
+                        dy=ev["dy"],
+                        primary_dx=ev.get("PrimaryDx"),
+                        primary_dy=ev.get("PrimaryDy"),
+                    )
                     if self.accumulators_active:
                         self.stats = stats
                 lines = []

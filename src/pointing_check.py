@@ -8,6 +8,12 @@ no separate exposure -- and records how far the target sits from the fiber.
 
 It is a monitor, not a corrector. Nothing here moves the mount or the lock.
 
+**It also judges an applied lock nudge.** PHD2 cannot say whether a nudge put the target
+on the fiber: with multi-star refinement on, its loop can hold the field off the moved
+lock while every offset it reports reads zero (mast01, 4 November). The first
+`verify_samples` solves taken after the nudge, in the mirror state it ran in, give its
+sky verdict (MAST_unit#401).
+
 **The frame is placed on the sensor before it is solved.** While a guide session
 exists the only frame there is, is the guide frame, and the solver's SPEC reference
 pixel is in full-sensor coordinates. A limit-frame crop moves that pixel by the crop
@@ -24,10 +30,11 @@ from __future__ import annotations
 
 import datetime
 import os
+import statistics
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from astropy.coordinates import Angle
@@ -37,6 +44,7 @@ from common.asi import ASI_294MM_HEIGHT, ASI_294MM_WIDTH
 from common.filer import Filer, FilingArea
 from common.interfaces.solving import offset_on_sky_arcsec, target_offset_arcsec
 from common.mast_logging import get_logger
+from common.models.latest import LockNudgeOutcome, NudgeSkyVerdict
 from common.models.statuses import ImagerRoi, PointingCheckStatus, PointingSample, PointingSampleOutcome
 from common.utils import Coord, function_name, isoformat_zulu
 from stage import StagePresetPosition
@@ -64,6 +72,38 @@ GUIDING_STATE = "Guiding"
 #: The SPEC phase puts the solved position at the fiber, which is what the target
 #: has to stay on.
 SOLVING_PHASE = "spec"
+
+#: Unusable samples in a row (not solved, or not placeable) a watched nudge tolerates
+#: beyond the `verify_samples` it needs, before it is left Unverified.
+VERDICT_GRACE_SAMPLES = 2
+
+
+@dataclass
+class NudgeWatch:
+    """An applied nudge waiting for its sky verdict, in the session it was applied in."""
+
+    session: int
+    outcome: LockNudgeOutcome
+    #: Samples begun before this cannot count: one started between the lock move and its
+    #: confirmation would judge the old pointing.
+    since: datetime.datetime
+    mirror_in: bool | None
+    verify_samples: int
+    verify_arcsec: float
+    offsets: list[float] = field(default_factory=list)
+    unusable: int = 0
+
+
+def guide_step_context(before, after) -> dict:
+    """The offsets of the GuideStep a saved frame belongs to, for its sample. `before` and
+    `after` are the connector's latest step either side of the save: a newer step arriving
+    during it means the frame may be the newer one."""
+    if before.count == 0:
+        return {}
+    context: dict = {"guide_offset_px": (before.dx, before.dy), "guide_step_paired": before.count == after.count}
+    if before.primary_dx is not None and before.primary_dy is not None:
+        context["primary_offset_px"] = (before.primary_dx, before.primary_dy)
+    return context
 
 
 @dataclass(frozen=True)
@@ -131,6 +171,7 @@ class PointingMonitor:
         self._status = PointingCheckStatus()
         self._recent: deque[PointingSample] = deque(maxlen=RECENT_SAMPLES)
         self._journal: Path | None = None
+        self._watch: NudgeWatch | None = None
 
     def start_session(self) -> None:
         """Begin a new record and its sampling thread, ending any previous one."""
@@ -160,8 +201,65 @@ class PointingMonitor:
         Not joined: this is called from PHD2's event reader, and a solve in flight
         can take tens of seconds. A sample that finishes after its session ended is
         dropped by `_record`, so it cannot leak into the next session's record.
+
+        A nudge still waiting for its verdict ends Unverified: no later solve belongs to it.
         """
         self._stop.set()
+        with self._lock:
+            self._end_watch(NudgeSkyVerdict.Unverified, "the guide session ended")
+
+    def watch_nudge(self, outcome: LockNudgeOutcome, *, verify_samples: int, verify_arcsec: float) -> None:
+        """Give `outcome`, an applied nudge just confirmed in this session, its sky verdict from
+        the next `verify_samples` solves: Confirmed when their median offset is within
+        `verify_arcsec`. `outcome` is the record the status publishes, updated in place."""
+        since = datetime.datetime.now(datetime.UTC)
+        mirror_in = self._mirror_in()
+        with self._lock:
+            self._end_watch(NudgeSkyVerdict.Unverified, "a newer nudge was applied")
+            if self._connector.conf.validation_interval <= 0:
+                outcome.sky_verdict = NudgeSkyVerdict.Unverified
+                logger.warning(f"{function_name()}: the pointing check is off; the nudge stays Unverified")
+                return
+            outcome.sky_verdict = NudgeSkyVerdict.Pending
+            self._watch = NudgeWatch(
+                session=self._session,
+                outcome=outcome,
+                since=since,
+                mirror_in=mirror_in,
+                verify_samples=verify_samples,
+                verify_arcsec=verify_arcsec,
+            )
+
+    def _end_watch(self, verdict: NudgeSkyVerdict, why: str) -> None:
+        """Under `_lock`."""
+        watch, self._watch = self._watch, None
+        if watch is None:
+            return
+        watch.outcome.sky_verdict = verdict
+        if verdict is not NudgeSkyVerdict.Unverified:
+            watch.outcome.sky_offset_arcsec = statistics.median(watch.offsets)
+        logger.info(
+            f"{function_name()}: lock nudge sky verdict {verdict} ({why}; solves {watch.offsets}, "
+            f'median {watch.outcome.sky_offset_arcsec}", within {watch.verify_arcsec}")'
+        )
+
+    def _advance_watch(self, session: int, sample: PointingSample) -> None:
+        """Under `_lock`: let one recorded sample count toward the watched nudge's verdict."""
+        watch = self._watch
+        if watch is None or watch.session != session:
+            return
+        if datetime.datetime.fromisoformat(sample.time) <= watch.since or sample.mirror_in != watch.mirror_in:
+            return
+        if sample.outcome is PointingSampleOutcome.Solved and sample.offset_arcsec is not None:
+            watch.offsets.append(sample.offset_arcsec)
+            watch.unusable = 0
+            if len(watch.offsets) >= watch.verify_samples:
+                within = statistics.median(watch.offsets) <= watch.verify_arcsec
+                self._end_watch(NudgeSkyVerdict.Confirmed if within else NudgeSkyVerdict.Unconfirmed, "solved")
+            return
+        watch.unusable += 1
+        if watch.unusable >= watch.verify_samples + VERDICT_GRACE_SAMPLES:
+            self._end_watch(NudgeSkyVerdict.Unverified, f"{watch.unusable} unusable samples in a row")
 
     def status(self) -> PointingCheckStatus:
         with self._lock:
@@ -218,7 +316,9 @@ class PointingMonitor:
 
         # save_image() hands the caller a file it owns: 94 MB at full size, so it is
         # never kept.
+        step = connector.latest_guide_step
         image_path = connector.save_image()
+        context |= guide_step_context(step, connector.latest_guide_step)
         try:
             sample = self._judge(image_path, target, context)
         finally:
@@ -287,6 +387,7 @@ class PointingMonitor:
             if session != self._session:
                 return sample
             self._recent.append(sample)
+            self._advance_watch(session, sample)
             match sample.outcome:
                 case PointingSampleOutcome.Solved:
                     self._status.solved += 1

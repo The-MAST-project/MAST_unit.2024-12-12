@@ -165,7 +165,9 @@ class FakePHD2:
     """The connector as the nudge sees it.
 
     A GuideStep arrives every `CADENCE_S` of the fake clock (`latest_guide_step`), with
-    PHD2's measurement of the guide star: `star - lock` as (dx, dy). From step `lost_from`
+    PHD2's measurement of the guide star: `star - lock` as (primary_dx, primary_dy), and as
+    (dx, dy) too unless `refined` gives the multi-star average PHD2 guided on instead
+    (`primary_reported=False`: a build or a step without the primary's own offset). From step `lost_from`
     on PHD2 has lost the star, so no further GuideStep arrives. `save_image` writes the
     latest guide frame -- a flat sky: the nudge takes the star from PHD2, never from the
     pixels -- stamped with the next of `dates` (the last repeats once they run out), as
@@ -186,8 +188,14 @@ class FakePHD2:
         limit=MATCHING,
         lost_from=None,
         slow_saves=(),
+        refined=None,
+        primary_reported=True,
+        sub_version="dev1mastbuild6",
     ):
         self.tmp_path, self.clock = tmp_path, clock
+        self.refined = refined
+        self.primary_reported = primary_reported
+        self.sub_version = sub_version
         self.data = _frame_data(size, None)
         self.star, self.lock = star, lock
         self.lost_from = lost_from
@@ -208,7 +216,11 @@ class FakePHD2:
         n = int(self.clock.now // CADENCE_S)
         if self.lost_from is not None:
             n = min(n, self.lost_from)
-        return GuideStep(count=n, dx=self.star[0] - self.lock[0], dy=self.star[1] - self.lock[1])
+        primary = (self.star[0] - self.lock[0], self.star[1] - self.lock[1])
+        dx, dy = primary if self.refined is None else self.refined
+        if not self.primary_reported:
+            return GuideStep(count=n, dx=dx, dy=dy)
+        return GuideStep(count=n, dx=dx, dy=dy, primary_dx=primary[0], primary_dy=primary[1])
 
     def get_lock_position(self):
         return self.lock
@@ -524,7 +536,7 @@ class TestConfirmation:
         residual = _await_confirmation(phd2, LockNudgeConfig(confirm_frames=2, confirm_px=1.0, confirm_timeout=60.0))
 
         assert clock.now >= 3 * CADENCE_S
-        assert residual == pytest.approx(0.3)
+        assert residual.distance == pytest.approx(0.3)
 
     def test_a_step_over_confirm_px_restarts_the_count(self, clock, monkeypatch):
         from common.config.phd2 import LockNudgeConfig
@@ -544,7 +556,7 @@ class TestConfirmation:
         residual = _await_confirmation(phd2, LockNudgeConfig(confirm_frames=2, confirm_px=1.0, confirm_timeout=60.0))
 
         assert clock.now >= 5 * CADENCE_S
-        assert residual == pytest.approx(0.2)
+        assert residual.distance == pytest.approx(0.2)
 
 
 class TestTheOutcomeIsPublished:
@@ -630,3 +642,129 @@ def test_the_handover_gives_the_nudge_the_acquisitions_solves_folder(monkeypatch
     connector._nudge_lock_onto_target(session=1)
 
     assert seen["solves_folder"] == tmp_path / "share" / "acq-1" / "guiding" / "solves"
+
+
+# MAST_unit#401: the primary star's own offset, from PHD2 mastbuild6
+
+
+@pytest.mark.usefixtures("mastrometry_importable")
+class TestThePrimarysOwnOffset:
+    """With multi-star refinement on, GuideStep dx/dy is the weighted average of the primary
+    and its secondaries, not where the primary sits. The nudge places the lock from the
+    star the frame was solved around, so it reads the primary's own offset."""
+
+    def test_the_lock_is_placed_from_the_primary_not_the_refined_average(self, tmp_path, clock):
+        on_target = FakePHD2(tmp_path, clock, star=(102.0, 101.0), lock=(100.0, 100.0), refined=(0.1, -0.2))
+
+        outcome = _nudge(on_target, FakeSolver([0.0]))
+
+        assert outcome.applied, outcome.reason
+        (moved,) = on_target.moved
+        assert moved == pytest.approx((102.0, 101.0), abs=1e-6)
+
+    @pytest.mark.parametrize("sub_version", ["dev1mastbuild5", "dev3", ""])
+    def test_a_build_without_the_primary_offset_is_refused(self, tmp_path, clock, sub_version):
+        phd2 = FakePHD2(tmp_path, clock, sub_version=sub_version)
+
+        outcome = _nudge(phd2, FakeSolver([1.0]))
+
+        assert not outcome.applied
+        assert "mastbuild6" in outcome.reason
+        assert phd2.moved == [] and phd2.saved == []
+
+    def test_a_step_without_the_primary_offset_gives_no_estimate(self, tmp_path, clock):
+        phd2 = FakePHD2(tmp_path, clock, primary_reported=False)
+
+        outcome = _nudge(phd2, FakeSolver([1.0]), frames_timeout=30.0)
+
+        assert not outcome.applied
+        assert "PrimaryDx" in outcome.reason
+        assert phd2.saved == []
+
+
+@pytest.mark.parametrize(
+    ("sub_version", "number"),
+    [("dev1mastbuild6", 6), ("dev1mastbuild10", 10), ("dev1mastbuild5", 5), ("dev3", None), ("", None)],
+)
+def test_the_mastbuild_number_is_read_as_a_number(sub_version, number):
+    from phd2.builds import mastbuild_number
+
+    assert mastbuild_number(sub_version) == number
+
+
+class TestTheConfirmationRecordsBothDistances:
+    def _run(self, clock, monkeypatch, steps, **conf):
+        from common.config.phd2 import LockNudgeConfig
+        from lock_nudge import _await_confirmation
+
+        phd2 = SimpleNamespace(latest_guide_step=GuideStep(0, 3.0, 0.0, primary_dx=3.0, primary_dy=0.0))
+
+        def sleep(seconds):
+            clock.now += seconds
+            n = int(clock.now // CADENCE_S)
+            refined, primary = steps.get(n, (0.2, 4.0))
+            phd2.latest_guide_step = GuideStep(n, refined, 0.0, primary_dx=primary, primary_dy=0.0)
+
+        import lock_nudge
+
+        monkeypatch.setattr(lock_nudge.time, "sleep", sleep)
+        settings = {"confirm_frames": 2, "confirm_px": 1.0, "confirm_timeout": 60.0, **conf}
+        return _await_confirmation(phd2, LockNudgeConfig(**settings))
+
+    def test_a_primary_held_off_the_lock_still_confirms_and_is_recorded(self, clock, monkeypatch):
+        confirmation = self._run(clock, monkeypatch, {})
+
+        assert confirmation.confirmed
+        assert confirmation.distance == pytest.approx(0.2)
+        assert confirmation.primary_distance == pytest.approx(4.0)
+        assert confirmation.at is not None
+
+    def test_a_timeout_is_not_a_confirmation(self, clock, monkeypatch):
+        confirmation = self._run(clock, monkeypatch, {n: (3.0, 3.0) for n in range(100)}, confirm_timeout=30.0)
+
+        assert not confirmation.confirmed
+        assert confirmation.at is None
+        assert confirmation.distance == pytest.approx(3.0)
+
+
+def test_the_outcome_publishes_the_lock_move_times_and_the_primarys_distance():
+    from lock_nudge import NudgeOutcome
+
+    outcome = NudgeOutcome(
+        applied=True,
+        reason="nudged",
+        residual_px=0.2,
+        residual_primary_px=4.0,
+        lock_moved_at="2026-11-04T20:15:15.104Z",
+        confirmed_at="2026-11-04T20:15:52.728Z",
+    )
+
+    status = outcome.to_status()
+
+    assert (status.residual_px, status.residual_primary_px) == (0.2, 4.0)
+    assert (status.lock_moved_at, status.confirmed_at) == ("2026-11-04T20:15:15.104Z", "2026-11-04T20:15:52.728Z")
+    assert status.sky_verdict is None
+
+
+def test_the_connector_reads_the_primarys_own_offset_off_a_guide_step():
+    import threading
+
+    from phd2.phd2 import PHD2Connector
+
+    c = object.__new__(PHD2Connector)
+    c.lock = threading.Lock()
+    c.accumulators_active = False
+    c.latest_guide_step = GuideStep(0, 0.0, 0.0)
+    c.start_activity = lambda *a, **kw: None
+    c.is_active = lambda activity: False
+    c.sky_quality = SimpleNamespace(running=True, guide_step=lambda ev: None)
+    c._update_lock_validity = lambda ev: None
+    step = {"Event": "GuideStep", "Frame": 7, "Time": 40.0, "RADistanceRaw": 0.0, "DECDistanceRaw": 0.0}
+    step |= {"SNR": 50.0, "HFD": 2.5, "StarMass": 1e5, "AvgDist": 1.0}
+
+    c._handle_event({**step, "dx": 0.1, "dy": 0.2, "PrimaryDx": -4.06, "PrimaryDy": -1.03})
+    assert c.latest_guide_step == GuideStep(1, 0.1, 0.2, primary_dx=-4.06, primary_dy=-1.03)
+
+    c._handle_event({**step, "dx": 0.3, "dy": 0.4})  # an older build, or an AO bump
+    assert c.latest_guide_step == GuideStep(2, 0.3, 0.4)
+    assert c.latest_guide_step.primary_distance is None
