@@ -60,7 +60,13 @@ when `Guiding` is up and `PreGuiding` is not. `phd2.handover.style` (MAST_common
   waits for PHD2 to settle and, if `phd2.lock_nudge.enabled`, nudges the lock onto the target.
   A failed or timed-out settle stops guiding.
 - `bracketed`: the mirror stays out while PHD2 picks a star and settles; the handover then
-  pauses guiding, inserts the mirror and resumes.
+  nudges, pauses guiding, inserts the mirror and resumes. `phd2.handover.bracketed` changes it:
+  `pause: false` keeps guiding through the stage travel (for a guide star on a strip the
+  insertion leaves unchanged, kept by the exclusion region) and holds ready until
+  `steady_frames` guide frames in a row are within `phd2.settle.pixels`, stopping guiding if
+  they do not come within `phd2.settle.timeout` or the stage does not arrive;
+  `nudge_after_insertion: true` nudges with the mirror in, after the insertion. The unpaused
+  insertion logs its start and end with the guide step count.
 
 With `phd2.handover.auto_insert: false` no handover runs and nothing inserts the mirror.
 
@@ -76,7 +82,8 @@ frame's lock estimate: the guide star where PHD2 measured it on that frame (its 
 ends meanwhile, when the estimates scatter (RMS radial) by more than `max_spread_arcsec` (1.0",
 provisional), or when the lock would move more than `max_offset_px`. Otherwise it moves the lock
 to the mean estimate and confirms the move over `confirm_frames` new guide steps under
-`confirm_px`. What it did is published as `status.latest.acquisition.nudge`. solve-field's records of each frame's solve (`.corr`, `.match`, `-indx.xyls`, `.rdls`,
+`confirm_px`. What it did is published as `status.latest.acquisition.nudge`; its per-frame
+estimates go to the unit log as one `nudge telemetry {json}` line. solve-field's records of each frame's solve (`.corr`, `.match`, `-indx.xyls`, `.rdls`,
 result text) are kept in the acquisition's `guiding/solves/` on the share, as the pointing check's are;
 an acquisition's own solves keep theirs beside the solved FITS. Collecting the frames
 adds about 30-60 s before ready.

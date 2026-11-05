@@ -27,10 +27,11 @@ import pytest
 
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config.phd2 import HandoverConfig, HandoverStyle, LockNudgeConfig, PHD2SettleConfig
+from common.config.phd2 import BracketedOptions, HandoverConfig, HandoverStyle, LockNudgeConfig, PHD2SettleConfig
 from common.config.rois import FcuVersion
 
 try:
+    from lock_nudge import GuideStep, NudgeOutcome
     from phd2.phd2 import PHD2Connector, SettleOutcome, SettleResult
 except Exception as ex:  # noqa: BLE001 -- the import chain is Windows-and-hardware-only
     pytest.skip(f"unit import chain unavailable here ({ex!r})", allow_module_level=True)
@@ -39,16 +40,17 @@ except Exception as ex:  # noqa: BLE001 -- the import chain is Windows-and-hardw
 class FakeUnit:
     """The activity bookkeeping the handover reads and writes, in the order it happened."""
 
-    def __init__(self, *, style=HandoverStyle.MIRROR_FIRST, auto_insert=True, fcu=FcuVersion.v2, nudge=True):
+    def __init__(self, *, style=HandoverStyle.MIRROR_FIRST, auto_insert=True, fcu=FcuVersion.v2, nudge=True, bracketed=None):
         self.fcu_version = fcu
         self.unit_conf = SimpleNamespace(
             phd2=SimpleNamespace(
-                handover=HandoverConfig(style=style, auto_insert=auto_insert),
+                handover=HandoverConfig(style=style, auto_insert=auto_insert, bracketed=bracketed or BracketedOptions()),
                 lock_nudge=LockNudgeConfig(enabled=nudge),
                 settle=PHD2SettleConfig(pixels=1, time=0, timeout=1),
             )
         )
         self.active: set = set()
+        self.required_stage: object = None
         self.events: list[tuple[str, UnitActivities]] = []
         self.acquirer = SimpleNamespace(
             latest_acquisition=SimpleNamespace(target_ra=1.0, target_dec=2.0, latest=None, folder=None),
@@ -76,12 +78,18 @@ def connector(unit: FakeUnit, settle: SettleResult | None = None) -> tuple[PHD2C
     result = settle or SettleResult(SettleOutcome.SETTLED, 1.0)
     c.wait_for_settle = lambda timeout: result
     c.stop_guiding = lambda: calls.append("stop_guiding")
+    c.latest_guide_step = GuideStep(0, 0.0, 0.0)
     return c, calls
 
 
 def nudges(calls: list):
     """Patch the nudge itself, recording that it ran."""
-    return patch("phd2.phd2.nudge_lock_to_target", lambda *a, **kw: calls.append("nudge"))
+
+    def nudge(*a, **kw):
+        calls.append("nudge")
+        return NudgeOutcome(applied=False, reason="test")
+
+    return patch("phd2.phd2.nudge_lock_to_target", nudge)
 
 
 def begin(c: PHD2Connector, unit: FakeUnit, *, acquiring: bool) -> None:
@@ -200,6 +208,7 @@ class TestStopped:
             calls.append("nudge")
             unit.end_activity(UnitActivities.PreGuiding)  # what stop_acquisition_and_guiding does
             unit.end_activity(UnitActivities.Guiding)
+            return NudgeOutcome(applied=False, reason="the guide session ended before the lock was moved")
 
         with patch("phd2.phd2.nudge_lock_to_target", stopped_meanwhile):
             c.do_fcu_v2_spec_handover(c._guide_session)
@@ -296,3 +305,117 @@ class TestTheSession:
         c.stop_guiding = dead
         c.do_mirror_first_handover(c._guide_session)
         assert not unit.active & {UnitActivities.PreGuiding, UnitActivities.Guiding}
+
+
+class TestBracketedOptions:
+    """`phd2.handover.bracketed`: the insertion paused or not, and the nudge before or after it.
+
+    Unpaused, guiding runs through the stage travel -- for a guide star on area the
+    insertion leaves unchanged -- and the unit is ready only once the star holds again:
+    `wait_for_settle` cannot gate that, since it follows the settle of the latest `guide`,
+    already done, so the handover counts guide frames.
+    """
+
+    def _bracketed(self, calls, *, steady=True, stage_fails=False, stop_during=None, **options):
+        unit = FakeUnit(style=HandoverStyle.BRACKETED, bracketed=BracketedOptions(**options))
+        c, _ = connector(unit)
+        c.pause = lambda full=False: calls.append("pause")
+        c.unpause = lambda: calls.append("unpause")
+        c.stop_guiding = lambda: calls.append("stop_guiding")
+
+        def stop():
+            """What stop_acquisition_and_guiding (or /unit/abort) does to the flags."""
+            unit.end_activity(UnitActivities.PreGuiding)
+            unit.end_activity(UnitActivities.Guiding)
+
+        def move(preset):
+            calls.append("stage")
+            if stop_during == "travel":
+                stop()
+            if stage_fails:
+                raise RuntimeError("stage stalled")
+
+        unit.required_stage = SimpleNamespace(move_to_preset=move, at_preset=lambda preset: True)
+        begin(c, unit, acquiring=True)
+
+        def await_steady(connector, frames, max_px, timeout):
+            calls.append(("steady", frames, max_px, timeout))
+            if stop_during == "steady":
+                stop()
+            return steady, 0.4 if steady else 9.0
+
+        return unit, c, patch("phd2.phd2.await_steady_guide_steps", await_steady)
+
+    def test_the_default_pauses_and_nudges_before_the_insertion(self):
+        calls: list = []
+        unit, c, steady = self._bracketed(calls)
+        with nudges(calls), steady:
+            c.do_fcu_v2_spec_handover(c._guide_session)
+        assert calls == ["nudge", "pause", "stage", "unpause"]
+        assert UnitActivities.PreGuiding not in unit.active
+
+    def test_unpaused_guides_through_the_insertion_and_waits_for_the_star_to_hold(self):
+        calls: list = []
+        unit, c, steady = self._bracketed(calls, pause=False, steady_frames=3)
+        with nudges(calls), steady:
+            c.do_fcu_v2_spec_handover(c._guide_session)
+        settle = unit.unit_conf.phd2.settle
+        assert calls == ["nudge", "stage", ("steady", 3, settle.pixels, settle.timeout)]
+        assert UnitActivities.PreGuiding not in unit.active
+        assert UnitActivities.Guiding in unit.active
+
+    def test_nudge_after_insertion_runs_once_the_star_holds(self):
+        calls: list = []
+        unit, c, steady = self._bracketed(calls, pause=False, nudge_after_insertion=True)
+        with nudges(calls), steady:
+            c.do_fcu_v2_spec_handover(c._guide_session)
+        assert [call if isinstance(call, str) else call[0] for call in calls] == ["stage", "steady", "nudge"]
+        assert UnitActivities.PreGuiding not in unit.active
+
+    def test_paused_with_the_nudge_after_resumes_then_nudges(self):
+        calls: list = []
+        unit, c, steady = self._bracketed(calls, nudge_after_insertion=True)
+        with nudges(calls), steady:
+            c.do_fcu_v2_spec_handover(c._guide_session)
+        assert calls == ["pause", "stage", "unpause", "nudge"]
+        assert UnitActivities.PreGuiding not in unit.active
+
+    def test_a_star_that_never_holds_after_insertion_stops_guiding_not_ready(self):
+        calls: list = []
+        unit, c, steady = self._bracketed(calls, pause=False, nudge_after_insertion=True, steady=False)
+        with nudges(calls), steady:
+            c.do_fcu_v2_spec_handover(c._guide_session)
+        assert "nudge" not in calls
+        assert calls[-1] == "stop_guiding"
+        assert not unit.active & {UnitActivities.PreGuiding, UnitActivities.Guiding}
+
+    def test_a_failed_unpaused_insertion_stops_guiding_not_ready(self):
+        calls: list = []
+        unit, c, steady = self._bracketed(calls, pause=False, stage_fails=True)
+        with nudges(calls), steady:
+            c.do_fcu_v2_spec_handover(c._guide_session)
+        assert calls == ["nudge", "stage", "stop_guiding"]
+        assert not unit.active & {UnitActivities.PreGuiding, UnitActivities.Guiding}
+
+    @pytest.mark.parametrize(
+        ("stop_during", "options", "stage_fails"),
+        [
+            ("travel", {"pause": False}, False),
+            ("travel", {"pause": False}, True),
+            ("steady", {"pause": False}, False),
+            ("steady", {"pause": False, "nudge_after_insertion": True}, False),
+            ("travel", {"pause": True}, False),
+            ("travel", {"pause": True}, True),
+        ],
+    )
+    def test_a_stop_during_the_insertion_is_final(self, stop_during, options, stage_fails):
+        """A stop (or an abort, which also halts the stage) while the stage travels or the star
+        settles leaves the session alone: no stop sent, no unpause, no `Guiding` raised again --
+        a newer session may already be running."""
+        calls: list = []
+        unit, c, steady = self._bracketed(calls, stop_during=stop_during, stage_fails=stage_fails, **options)
+        with nudges(calls), steady:
+            c.do_fcu_v2_spec_handover(c._guide_session)
+        assert not {"stop_guiding", "unpause"} & {call for call in calls if isinstance(call, str)}
+        assert "nudge" not in calls[calls.index("stage") :]
+        assert UnitActivities.Guiding not in unit.active

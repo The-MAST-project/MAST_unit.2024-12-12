@@ -39,7 +39,7 @@ from common.process import WatchedProcess
 from common.utils import Coord, Timeout, boxed_debug, function_name
 from failure_streaks import FailureStreaks
 from imaging.fits_cards import unit_fits_cards
-from lock_nudge import GuideStep, NudgeOutcome, nudge_lock_to_target
+from lock_nudge import GuideStep, NudgeOutcome, await_steady_guide_steps, nudge_lock_to_target
 from phd2.fits_header import stamp_cooling
 from phd2.limit_frame import limit_frame_accepted, limit_frame_covers_sensor, limit_frame_extent
 from phd2.phd2_locate import locate_phd2_exe
@@ -683,23 +683,33 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             outcome = NudgeOutcome(applied=False, reason=f"nudge failed: {ex!r}")
 
         logger.info(f"{op}: {outcome}")
+        if outcome.telemetry:
+            logger.info(f"{op}: nudge telemetry {json.dumps(outcome.telemetry, default=repr)}")
         if acquisition.latest is not None:
             acquisition.latest.nudge = outcome.to_status()
 
     def do_fcu_v2_spec_handover(self, session: int, stage_timeout: int = 60):
-        """Insert the fold mirror only after guiding has locked and settled,
-        bracketing the stage travel with a full pause: the lock position
-        survives the pause, so open-loop drift during the ~30 s travel is
-        corrected back on resume instead of frozen into the exposure.
+        """Insert the fold mirror only after guiding has locked and settled.
 
-        Ready-for-exposure (UnitActivities.Guiding) means stage at SPEC and
-        guiding resumed.  There is deliberately no settle gate after resume -
-        the few-pixel pull-back decays into the science integration
+        By default the stage travel is bracketed with a full pause: the lock position
+        survives the pause, so open-loop drift during the ~30 s travel is corrected back
+        on resume instead of frozen into the exposure, and there is deliberately no settle
+        gate after resume -- the few-pixel pull-back decays into the science integration
         (2026-07-03 exclusion-region proposal).
+
+        `phd2.handover.bracketed` changes two things. With `pause` off, guiding runs
+        through the travel, for a guide star on area the insertion leaves unchanged, and
+        the unit is ready once `steady_frames` guide frames in a row hold within the settle
+        distance; a star that does not hold, or a stage that does not arrive, stops guiding
+        rather than reading ready. With `nudge_after_insertion` the lock nudge runs with
+        the mirror in, after the insertion, instead of before it.
+
+        Ready-for-exposure is `Guiding` without `PreGuiding`, with the stage at SPEC.
         """
         op = f"{function_name()}"
         assert self.parent is not None and self.parent.unit is not None
         unit = self.parent.unit
+        options = self.conf.handover.bracketed
 
         settle = self.wait_for_settle(timeout=self.settling_settings.timeout + SETTLE_WAIT_GRACE_SECONDS)
         if not self._handover_is_current(session):
@@ -710,29 +720,113 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             unit.end_activity(UnitActivities.PreGuiding)
             return
 
-        # The last moment the target is observable: from here the stage travels and the
-        # target goes into the fiber. Correct the lock onto it now or not at all.
-        self._nudge_lock_onto_target(session)
-        if not self._handover_is_current(session):
-            logger.info(f"{op}: guiding stopped during the lock nudge; abandoning the handover")
+        if not options.nudge_after_insertion:
+            # The last moment the target is observable: from here the stage travels and
+            # the target goes into the fiber. Correct the lock onto it now or not at all.
+            self._nudge_lock_onto_target(session)
+            if not self._handover_is_current(session):
+                logger.info(f"{op}: guiding stopped during the lock nudge; abandoning the handover")
+                return
+
+        if options.pause:
+            if not self._insert_paused(session, stage_timeout):
+                return
+        elif not self._insert_while_guiding(session, stage_timeout, options.steady_frames):
             return
 
+        if options.nudge_after_insertion:
+            self._nudge_lock_onto_target(session)
+            if not self._handover_is_current(session):
+                logger.info(f"{op}: guiding stopped during the lock nudge; abandoning the handover")
+                return
+
+        unit.end_activity(UnitActivities.PreGuiding)
+        unit.start_activity(UnitActivities.Guiding)
+        boxed_debug(logger, ["stage at SPEC, guiding", "ready for exposure"])
+
+    def _insert_paused(self, session: int, stage_timeout: int) -> bool:
+        """Pause guiding, move the stage to SPEC and resume; say whether the unit can go on to ready.
+
+        A failed insertion leaves guiding paused, deliberately: resuming with the mirror
+        mid-field would guide on a half-occulted field. A session stopped during the travel
+        (an abort also halts the stage) is left alone: a newer one may be running.
+        """
+        op = function_name()
+        assert self.parent is not None and self.parent.unit is not None
+        unit = self.parent.unit
         self.pause(full=True)
         try:
             unit.required_stage.move_to_preset(StagePresetPosition.Spec)
             with Timeout(stage_timeout) as t:
                 t.run(self._wait_for_stage_at_spec, unit.required_stage)
         except Exception as ex:
-            # deliberately left paused: resuming with the mirror mid-field
-            # would guide on a half-occulted field
+            if not self._handover_is_current(session):
+                logger.info(f"{op}: guiding stopped during the insertion ({ex!r}); abandoning the handover")
+                return False
             logger.error(f"{op}: fold-mirror insertion failed ({ex!r}); guiding stays paused")
             unit.end_activity(UnitActivities.PreGuiding)
-            return
-
+            return False
+        if not self._handover_is_current(session):
+            logger.info(f"{op}: guiding stopped during the insertion; abandoning the handover")
+            return False
         self.unpause()
-        unit.end_activity(UnitActivities.PreGuiding)
-        unit.start_activity(UnitActivities.Guiding)
-        boxed_debug(logger, ["stage at SPEC, guiding resumed", "ready for exposure"])
+        return True
+
+    def _insert_while_guiding(self, session: int, stage_timeout: int, steady_frames: int) -> bool:
+        """Move the stage to SPEC with guiding running, then wait for the guide star to hold;
+        say whether the unit can go on to ready.
+
+        The travel's start and end are logged with the guide step count, so PHD2's own
+        frames can be matched to the insertion. A stage that does not arrive, or a star
+        that does not hold, stops guiding: the unit is then visibly not guiding.
+        """
+        op = function_name()
+        assert self.parent is not None and self.parent.unit is not None
+        unit = self.parent.unit
+        started = time.monotonic()
+        logger.info(f"{op}: fold mirror moving to SPEC with guiding running, at guide step {self.latest_guide_step.count}")
+        try:
+            unit.required_stage.move_to_preset(StagePresetPosition.Spec)
+            with Timeout(stage_timeout) as t:
+                t.run(self._wait_for_stage_at_spec, unit.required_stage)
+        except Exception as ex:
+            if not self._handover_is_current(session):
+                logger.info(f"{op}: guiding stopped during the insertion ({ex!r}); abandoning the handover")
+                return False
+            logger.error(f"{op}: fold-mirror insertion failed ({ex!r}); stopping guiding, not ready for exposure")
+            self._stop_unready_session(op)
+            return False
+        logger.info(
+            f"{op}: fold mirror at SPEC after {time.monotonic() - started:.1f} s, "
+            f"at guide step {self.latest_guide_step.count}"
+        )
+        if not self._handover_is_current(session):
+            logger.info(f"{op}: guiding stopped during the insertion; abandoning the handover")
+            return False
+
+        settle = self.settling_settings
+        steady, last = await_steady_guide_steps(self, steady_frames, settle.pixels, settle.timeout)
+        if not self._handover_is_current(session):
+            logger.info(f"{op}: guiding stopped while waiting for the star to hold; abandoning the handover")
+            return False
+        if not steady:
+            logger.error(
+                f"{op}: the guide star did not hold within {settle.pixels} px for {steady_frames} frames "
+                f"in {settle.timeout} s after the insertion (last {last}); stopping guiding, not ready for exposure"
+            )
+            self._stop_unready_session(op)
+            return False
+        logger.info(f"{op}: guide star holding after the insertion ({last} px)")
+        return True
+
+    def _stop_unready_session(self, op: str) -> None:
+        """End a session that will not reach ready: both flags down, then PHD2 stopped."""
+        # Flags first: a PHD2 that let the settle time out may not answer the stop either.
+        self._end_guide_session()
+        try:
+            self.stop_guiding()
+        except Exception:
+            logger.exception(f"{op}: could not stop PHD2 guiding")
 
     def do_mirror_first_handover(self, session: int) -> None:
         """Hold the unit not-ready until guiding has settled; the fold mirror is already in.
@@ -753,12 +847,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
             return
         if not settle.settled:
             logger.error(f"{op}: {settle}; stopping guiding, not ready for exposure")
-            # Flags first: a PHD2 that let the settle time out may not answer the stop either.
-            self._end_guide_session()
-            try:
-                self.stop_guiding()
-            except Exception:
-                logger.exception(f"{op}: could not stop PHD2 guiding")
+            self._stop_unready_session(op)
             return
 
         self._nudge_lock_onto_target(session)
