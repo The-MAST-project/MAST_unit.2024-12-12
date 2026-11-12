@@ -202,7 +202,7 @@ class Imager(ImagerInterface, SwitchedOutlet):
         """Hold `ImagerActivities.CoolingDown` until the sensor reaches the set point.
 
         Called whenever the cooler is switched on: by `startup`, by `turn_cooler_on`, and by a
-        backend that switches it on itself (PHD2's constructor and exposure path). A watcher
+        backend that switches it on itself (PHD2's startup and exposure path). A watcher
         thread reads the camera every `imager.temp_check_interval` seconds and ends the flag
         once the sensor is within COOLING_TOLERANCE_DEGREES of the set point. While it is up
         the imager is not operational. One implementation for every backend.
