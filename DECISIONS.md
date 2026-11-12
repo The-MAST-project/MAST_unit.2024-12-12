@@ -2,6 +2,27 @@
 
 ---
 
+## [2026-11-12] PHD2's cooler comes on at `startup()`, never at construction
+
+**Why:** a `production` unit waits in `INITIALIZED` until `PUT /unit/startup`, commanding no
+hardware it does not have to. `PHD2Connector.__init__` switched the guide camera's cooler on, so
+such a unit sat cooling with nothing watching the cool-down. PHD2 was the only backend that did
+this; ASCOM and ZWO switch the cooler on in `startup()`. MAST_unit#111; team decision,
+2026-11-04 (the supervisor deployment plan, step 4).
+
+**What:**
+- `__init__` no longer switches the cooler on. It switches it **off** when it finds it on:
+  `phd2.exe` outlives the app, so after a restart that skipped `shutdown()` (the supervisor's
+  `TerminateProcess`) the cooler would otherwise still run in `INITIALIZED`.
+- `startup()` switches the cooler on and starts the cool-down whether or not PHD2 was already
+  connected. On the first startup after `__init__` it used to do nothing. It does so before
+  `Imager.startup()`'s set-point check, since PHD2 reports no set point while the cooler is off.
+
+**Implications:** a `development` unit is unchanged in effect, since `start_lifespan` runs
+`startup()` at once. Under `production` the cooler is off until startup. The stage still homes at
+construction, which the same team decision kept. The exposure path still switches an off cooler
+on lazily.
+
 ## [2026-10-20] `ImagerSettings.roi` is unbinned sensor pixels for every writer, `/expose` included
 
 **Why:** `/unit/expose` was the one writer that stored a binned rect. PHD2's `set_limit_frame` and

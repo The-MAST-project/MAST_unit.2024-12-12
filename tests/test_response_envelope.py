@@ -213,13 +213,15 @@ def test_zwo_startup_returns_an_envelope():
 
 
 def test_phd2_startup_returns_ok_when_already_connected():
-    """`PHD2Connector.__init__` launches phd2.exe and connects, so the first startup has
-    nothing left to do and `Ok` is the honest answer. (Reconnecting after a shutdown, and
-    never launching a second phd2.exe (#84), are in test_phd2_lifecycle.py.)"""
+    """`PHD2Connector.__init__` launches phd2.exe and connects, so the first startup only
+    switches the cooler on, and `Ok` is the honest answer. (Reconnecting after a shutdown,
+    the cooler, and never launching a second phd2.exe (#84), are in test_phd2_lifecycle.py.)"""
     from phd2.phd2 import PHD2Connector
 
     connector = object.__new__(PHD2Connector)
     connector._connected = True
+    connector.parent = None
+    connector.call = lambda method, *args, **kwargs: None
     assert_ok(connector.startup())
 
 

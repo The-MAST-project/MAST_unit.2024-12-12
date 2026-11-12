@@ -1,5 +1,5 @@
 """PHD2's startup and shutdown connect and disconnect (and switch the cooler); they never launch
-or kill phd2.exe.
+or kill phd2.exe. The cooler comes on at startup, never at construction.
 
 `shutdown()` used to terminate phd2.exe and `startup()` did nothing (the constructor had
 launched it), so under the opmode lifecycle -- startup -> shutdown -> startup in one process --
@@ -154,11 +154,15 @@ class TestShutdown:
 
 
 class TestStartup:
-    def test_already_connected_it_does_nothing(self):
+    def test_already_connected_it_switches_the_cooler_on_and_starts_the_cool_down(self):
+        """The first startup after `__init__` finds PHD2 connected. The constructor no longer
+        switches the cooler on, so this is where it comes on (a `production` unit waits in
+        `INITIALIZED` with the cooler off)."""
         c = _connector(connected=True)
 
         assert c.startup().succeeded
-        assert c.calls == []
+        assert c.calls == ["cooler=True"]
+        assert c.parent.cooling_calls == ["start"]
 
     def test_after_a_shutdown_it_reconnects_without_launching(self):
         c = _connector(connected=True)
@@ -209,6 +213,19 @@ class TestTheCooler:
         c._start_cooling_down()
 
         assert c.operational is True
+
+    @pytest.mark.parametrize(("reads", "sent"), [(True, ["cooler=False"]), (False, []), (None, [])])
+    def test_construction_switches_off_a_cooler_left_on(self, monkeypatch, reads, sent):
+        """`phd2.exe` outlives the app: after a restart that skipped `shutdown()`, the new app
+        finds the cooler still on. It goes off, so `INITIALIZED` holds no running cooler."""
+        cooler = property(lambda self: reads, lambda self, value: self.calls.append(f"cooler={value}"))
+        monkeypatch.setattr(PHD2Connector, "cooler_on", cooler)
+        c = _connector(connected=True)
+
+        c._switch_off_a_cooler_left_on()
+
+        assert c.calls == sent
+        assert c.parent.cooling_calls == []
 
     def test_it_cannot_set_the_set_point(self):
         c = _connector(connected=True)
