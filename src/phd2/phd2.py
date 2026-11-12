@@ -442,13 +442,7 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         try:
             self._await_phd2()
             self.connect_equipment()
-            # Inside the guard: its setter is a bare `call()`, so on a torn-down
-            # connection it raises the cleanup's own error over the real one.
-            # Cooler on only -- not `_start_cooling_down()`: this runs inside `Imager.__init__`,
-            # before the wrapper's `_backend` is assigned, and the cool-down watcher reads it
-            # (AttributeError on mast00, 2026-10-13). The wrapper's `startup()` starts the
-            # cool-down for a cooler that is on.
-            self.cooler_on = True
+            self._switch_off_a_cooler_left_on()
         except Exception as ex:
             # Not `self.connected = False`: that property's setter disconnects, which nulls
             # self.conn and makes the next call raise "no connection to PHD2 server" -- the
@@ -1544,12 +1538,25 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
     # ----------------------------------------------------------------- cooling down
 
+    def _switch_off_a_cooler_left_on(self) -> None:
+        """At construction: the cooler comes on at `startup()`, so an app that is not started
+        up holds it off. `phd2.exe` outlives the app, so after a restart that skipped
+        `shutdown()` the cooler can still be on, with no cool-down watching it.
+
+        Through the setter, which records a failure rather than raising: a cooler that will
+        not switch off is no reason to fail the imager. Not `_cooler_off()`: this runs inside
+        `Imager.__init__`, before the wrapper can track a cool-down.
+        """
+        if self.cooler_on:
+            logger.info(f"{function_name()}: the cooler was left on; switching it off until startup")
+            self.cooler_on = False
+
     def _start_cooling_down(self) -> None:
         """Switch the cooler on, and have the imager hold `CoolingDown` until it gets there.
 
         The cool-down itself (the flag, the watcher, the "not operational meanwhile") is the
         `Imager` wrapper's, shared by every backend. This only switches PHD2's cooler on and
-        tells the wrapper -- from the places PHD2 does that itself: its constructor and the
+        tells the wrapper -- from the places PHD2 does that itself: `startup()` and the
         exposure path. The set point is PHD2's own, from its profile.
         """
         self.cooler_on = True
@@ -1728,19 +1735,19 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         (#84). `shutdown()` disconnects but leaves the process up, so the next startup -- the
         normal start -> shut -> start of the opmode lifecycle -- reconnects here.
 
-        Already connected, as on the first startup after `__init__`, it does nothing.
-        `_await_phd2` retries until PHD2 answers, so a PHD2 that the supervisor is restarting
-        is waited for, up to PHD2_STARTUP_TIMEOUT, rather than failed at once.
+        Already connected, as on the first startup after `__init__`, it only switches the
+        cooler on: the constructor leaves it off. `_await_phd2` retries until PHD2 answers,
+        so a PHD2 that the supervisor is restarting is waited for, up to
+        PHD2_STARTUP_TIMEOUT, rather than failed at once.
         """
-        if self.connected:
-            return CanonicalResponse_Ok
-        try:
-            self._await_phd2()
-            self.connect_equipment()
-            self._start_cooling_down()
-        except Exception as ex:  # noqa: BLE001 -- reported; the unit's operational says why
-            logger.exception(f"phd2 startup: could not connect: {ex}")
-            return CanonicalResponse(errors=[f"phd2 startup: could not connect: {ex}"])
+        if not self.connected:
+            try:
+                self._await_phd2()
+                self.connect_equipment()
+            except Exception as ex:  # noqa: BLE001 -- reported; the unit's operational says why
+                logger.exception(f"phd2 startup: could not connect: {ex}")
+                return CanonicalResponse(errors=[f"phd2 startup: could not connect: {ex}"])
+        self._start_cooling_down()
         return CanonicalResponse_Ok
 
     def abort(self) -> CanonicalResponse:
