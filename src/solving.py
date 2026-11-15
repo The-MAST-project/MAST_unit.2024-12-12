@@ -180,7 +180,8 @@ class Solver(SolverInterface):
         :param parent_activity: If the parent_activity (e.g. UnitActivities.Acquiring, UnitActivities.Guiding)
                is stopped, this function stops as well
         :param max_tries: How many times to try to get withing the solving_tolerance
-        :param phase: One of ['sky', 'spec', 'guiding']
+        :param phase: One of ['sky', 'spec', 'guiding'], or, on FCU v2, 'spec-mirror-out' / 'spec-mirror-in'.
+               The name picks the folder and the corrections record; any phase but 'sky' solves as 'spec'.
 
         :rtype: bool
         :return: True if succeeded to achieve tolerances within max_tries, False otherwise
