@@ -33,8 +33,9 @@ this; ASCOM and ZWO switch the cooler on in `startup()`. MAST_unit#111; team dec
 
 **What:**
 - `__init__` no longer switches the cooler on. It switches it **off** when it finds it on:
-  `phd2.exe` outlives the app, so after a restart that skipped `shutdown()` (the supervisor's
-  `TerminateProcess`) the cooler would otherwise still run in `INITIALIZED`.
+  `phd2.exe` outlives an app that dies alone (a crash, a kill by PID, the supervisor's
+  `TerminateProcess`), so after such a restart the cooler would otherwise still run in
+  `INITIALIZED`. A VS Code debugger stop ends PHD2 with the app.
 - `startup()` switches the cooler on and starts the cool-down whether or not PHD2 was already
   connected. On the first startup after `__init__` it used to do nothing. It does so before
   `Imager.startup()`'s set-point check, since PHD2 reports no set point while the cooler is off.
@@ -42,7 +43,8 @@ this; ASCOM and ZWO switch the cooler on in `startup()`. MAST_unit#111; team dec
 **Implications:** a `development` unit is unchanged in effect, since `start_lifespan` runs
 `startup()` at once. Under `production` the cooler is off until startup. The stage still homes at
 construction, which the same team decision kept. The exposure path still switches an off cooler
-on lazily.
+on lazily. Checked on mast01 on 2026-11-16 from a cooler left on in a surviving PHD2, in `production`
+and `development`.
 
 ## [2026-10-20] `ImagerSettings.roi` is unbinned sensor pixels for every writer, `/expose` included
 

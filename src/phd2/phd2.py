@@ -1540,8 +1540,9 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
 
     def _switch_off_a_cooler_left_on(self) -> None:
         """At construction: the cooler comes on at `startup()`, so an app that is not started
-        up holds it off. `phd2.exe` outlives the app, so after a restart that skipped
-        `shutdown()` the cooler can still be on, with no cool-down watching it.
+        up holds it off. `phd2.exe` outlives an app that dies alone (a crash, a kill by PID,
+        the supervisor's `TerminateProcess`), so after such a restart the cooler can still be
+        on, with no cool-down watching it. Stopping the VS Code debugger ends PHD2 with it.
 
         Through the setter, which records a failure rather than raising: a cooler that will
         not switch off is no reason to fail the imager. Not `_cooler_off()`: this runs inside
@@ -1578,9 +1579,11 @@ class PHD2Connector(GuiderInterface, ImagerInterface):
         startup -> shutdown -> startup in one process, and the second startup found no PHD2 and
         the unit stayed non-operational (mast00, 2026-10-12). The design is that the supervisor
         starts and watches `phd2.exe`, restarting it if it dies; the unit only connects and
-        disconnects. Until the supervisor owns it, `__init__` still launches it -- and
-        `WatchedProcess.start` kills any instance left from a previous run first, so leaving
-        it running here cannot produce a second `phd2.exe` (#84).
+        disconnects. Until the supervisor owns it, `__init__` still launches it.
+        `WatchedProcess.start` does not stop an instance left from a previous run: its kill by
+        name is given the full path, which never matches. A start beside a surviving
+        `phd2.exe` therefore adds a second one, and the unit connects to the first, which
+        holds the RPC port (mast01, 2026-11-16).
 
         The equipment is released, not just the socket: with the process staying up, PHD2
         would otherwise hold the guide camera and its ASCOM connection to the mount all day.
