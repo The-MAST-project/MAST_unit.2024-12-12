@@ -44,7 +44,6 @@ from .astscan import (
 #: implied. Each names where the chain leaves.
 KNOWN_UNVERIFIABLE = {
     "imagers/__init__.py:shutdown": "delegates to self._backend.shutdown()",
-    "endpoint_acquire_and_find_max_flux": "delegates to self.flux_metering.start(), which raises the flag",
     "endpoint_focus_on_star": "delegates to self.focus_on_star.start(), which raises the flag",
 }
 

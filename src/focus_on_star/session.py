@@ -122,7 +122,6 @@ BUSY = (
     | UnitActivities.AutofocusingPWI4
     | UnitActivities.Acquiring
     | UnitActivities.Guiding
-    | UnitActivities.FluxMetering
     | UnitActivities.Exposing
     | UnitActivities.StartingUp
     | UnitActivities.ShuttingDown

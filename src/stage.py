@@ -538,7 +538,7 @@ from pyximc import *
         """At `preset`, and stopped there.
 
         Not while moving: within `close_enough` of a preset is not at it while the stage is
-        still leaving it or still arriving -- a wait on this (flux metering's, for SPEC) used
+        still leaving it or still arriving -- a wait on this used
         to return with the mirror still moving. `is_moving` is set when a move is commanded
         and cleared by the 2-second `ontimer`, so this lags the stop by up to that.
         """
