@@ -9,6 +9,8 @@ mast-ns-control against the operational share -- and writes, **only into --out**
                         ones (vermillion crosses, labelled with the reason), and the tested
                         exclusion half-widths drawn across the band
 - `<stem>-sources.csv`  every detected source with its measurements and its fate
+- `<stem>-solve.txt`    with --solve: the solve-field command and its own output, and `<stem>.xyls`,
+                        `.wcs`, `.corr`, the files it was given and left
 
 and, for the whole run:
 
@@ -18,7 +20,7 @@ and, for the whole run:
 - `consistency.csv`     with --same-field: per star of the first frame, in how many frames it was
                         detected, kept and rejected
 
-It never writes beside the frames, and it does not solve (no `solve-field`, no unit, no mount).
+It never writes beside the frames. It does not solve unless asked to (--solve); it never touches a unit or a mount.
 
 Usage:
     python tools/source_survey.py PATH [PATH ...] --out DIR [options]
@@ -38,6 +40,19 @@ Usage:
     --same-field             treat the frames as repeated exposures of one field and match their stars
     --match-radius R         pixels, for --same-field (default 5)
     --limit N                stop after N frames
+    --solve                  also solve the kept list with solve-field and mark the stars the solver
+                             used (sky-blue rings, radius ~ how far the fibre pointing would move
+                             without the star). Needs --index-dir and a solve-field.
+    --index-dir D            astrometry.net index files (required with --solve)
+    --solve-field PATH       default: solve-field on the PATH (the cygwin one on Windows)
+    --pixel-scale S          arcsec / pixel of the frames, unbinned (default 0.2616)
+    --bin N                  solve on an N x N binned grid, as the unit does (default 2; 1 = the
+                             frame's own pixels)
+    --xylist-origin 0|1      1 (default) writes FITS 1-based positions; 0 writes 0-based. Changes the
+                             solved WCS by a constant offset, not which stars are used
+    --ra DEG --dec DEG       a position hint (default: blind; RA / DEC in the FITS header are used)
+    --radius DEG             the hint's search radius (default 2)
+    --cpulimit S             solve-field's CPU limit (default 60)
     --no-rejected            do not mark the rejected sources on the picture
     --show-faint             mark the faint rejects too (hundreds of noise blobs; hidden by default)
 """
@@ -68,14 +83,23 @@ from solvers.source_selection import (  # noqa: E402
     select_sources,
 )
 from solvers.star_map import font, stretch  # noqa: E402
+from solvers.survey_solve import (  # noqa: E402
+    DEFAULT_PIXEL_SCALE_ARCSEC,
+    SolveOutcome,
+    SolveSettings,
+    default_solve_field,
+    match_used_to_sources,
+    solve_filtered_list,
+)
 
 #: Okabe-Ito colours, so the picture does not rest on telling red from green.
 KEPT_COLOR = (0, 158, 115)  # bluish green
 REJECTED_COLOR = (213, 94, 0)  # vermillion
 SWEEP_COLOR = (240, 228, 66)  # yellow
+USED_COLOR = (86, 180, 233)  # sky blue: the stars the solver used (as in the star map)
 UMBRA_TINT = (204, 121, 167)  # reddish purple
 PENUMBRA_TINT = (0, 114, 178)  # blue
-CAPTION_HEIGHT = 108
+CAPTION_HEIGHT = 126
 REASON_CODES = {
     "shadow": "SH",
     "saturated": "SA",
@@ -246,6 +270,7 @@ def draw_overlay(
     out_path: Path,
     mark_rejected: bool = True,
     show_faint: bool = False,
+    solve: SolveOutcome | None = None,
 ) -> None:
     """The frame with the shadow masked and the kept, spare and rejected sources marked."""
     gray, factor = stretch(image)
@@ -300,6 +325,21 @@ def draw_overlay(
             draw.line([(cx - 6, cy + 6), (cx + 6, cy - 6)], fill=REJECTED_COLOR, width=2)
             draw.text((cx + 8, cy - 7), REASON_CODES.get(fate, fate[:2].upper()), fill=REJECTED_COLOR, font=code_font)
 
+    if solve is not None and solve.used:
+        shifts = solve.fibre_shift_arcsec
+        relative = (
+            shifts / float(np.max(shifts)) if shifts is not None and float(np.max(shifts)) > 0 else np.full(solve.used, 0.3)
+        )
+        for k in range(solve.used):
+            cx, cy = to_display(solve.used_x[k], solve.used_y[k])
+            radius = 15 + 12 * relative[k]
+            draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius], outline=USED_COLOR, width=2)
+        if shifts is not None:
+            label_font = font(13)
+            for k in np.argsort(shifts)[::-1][:3]:
+                cx, cy = to_display(solve.used_x[k], solve.used_y[k])
+                draw.text((cx + 15 + 12 * relative[k] + 3, cy - 8), f'{shifts[k]:.3f}"', fill=USED_COLOR, font=label_font)
+
     caption_font = font(15)
     for row, line in enumerate(caption):
         draw.text((8, 4 + row * 17), line, fill=(235, 235, 235), font=caption_font)
@@ -327,6 +367,9 @@ SOURCE_COLUMNS = (
     "shadow_deficit",
     "shadow_distance",
     "sigma",
+    "used_by_solver",
+    "solver_weight",
+    "solver_fibre_shift_arcsec",
 )
 
 
@@ -334,7 +377,12 @@ def _round(value: float, digits: int = 3):
     return "" if not np.isfinite(value) else round(float(value), digits)
 
 
-def write_sources(selection: Selection, origin: tuple[int, int], path: Path) -> None:
+def write_sources(selection: Selection, origin: tuple[int, int], path: Path, solve: SolveOutcome | None = None) -> None:
+    used_index = (
+        match_used_to_sources(solve.used_x, solve.used_y, selection.x, selection.y)
+        if solve is not None and solve.used
+        else np.full(selection.n_detected, -1)
+    )
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(SOURCE_COLUMNS)
@@ -359,6 +407,13 @@ def write_sources(selection: Selection, origin: tuple[int, int], path: Path) -> 
                     _round(selection.shadow_deficit[i], 4),
                     _round(selection.shadow_distance[i], 1),
                     _round(selection.sigma[i], 4),
+                    ("" if solve is None else (used_index[i] >= 0)),
+                    ""
+                    if solve is None or used_index[i] < 0 or solve.weight is None
+                    else _round(solve.weight[used_index[i]], 4),
+                    ""
+                    if solve is None or used_index[i] < 0 or solve.fibre_shift_arcsec is None
+                    else _round(solve.fibre_shift_arcsec[used_index[i]], 4),
                 ]
             )
 
@@ -409,6 +464,10 @@ def survey_frame(
         else []
     )
 
+    solve: SolveOutcome | None = None
+    if args.solve:
+        solve = _solve(selection, data.shape, path.stem, args, out_dir)
+
     counts = selection.counts()
     shadow_text = (
         f"shadow: depth {shadow.depth:.2f}, umbra +-{shadow.umbra_half_width:.0f} px, "
@@ -427,6 +486,8 @@ def survey_frame(
         f"snr cut {'relaxed' if selection.snr_relaxed else selection.params.min_snr}   "
         f"saturation {'tested' if selection.saturation_tested else 'NOT tested (no full scale)'}",
     ]
+    if solve is not None:
+        caption.append(_solve_caption(solve))
     stem = path.stem
     draw_overlay(
         data,
@@ -437,8 +498,9 @@ def survey_frame(
         out_dir / f"{stem}-survey.jpg",
         mark_rejected=not args.no_rejected,
         show_faint=args.show_faint,
+        solve=solve,
     )
-    write_sources(selection, (x0, y0), out_dir / f"{stem}-sources.csv")
+    write_sources(selection, (x0, y0), out_dir / f"{stem}-sources.csv", solve)
 
     row = {
         "frame": path.name,
@@ -460,7 +522,51 @@ def survey_frame(
         "repeat_runs": len(runs),
         "repeat_identical": identical,
     }
+    if solve is not None:
+        row.update(
+            {
+                "solve_status": solve.status,
+                "solve_seconds": _round(solve.seconds, 2),
+                "fed": solve.fed,
+                "used": solve.used,
+                "solve_residual_rms_arcsec": ""
+                if solve.residual_rms_arcsec is None
+                else _round(solve.residual_rms_arcsec, 4),
+                "solve_crval_ra_deg": "" if solve.crval is None else _round(solve.crval[0], 7),
+                "solve_crval_dec_deg": "" if solve.crval is None else _round(solve.crval[1], 7),
+            }
+        )
     return row, selection, sweep
+
+
+def _solve(selection: Selection, shape: tuple[int, int], stem: str, args: argparse.Namespace, out_dir: Path) -> SolveOutcome:
+    """Solve the kept list of one frame, apart from the picture: the files it leaves are the survey's."""
+    log_path = out_dir / f"{stem}-solve.txt"
+    if selection.status != "ok" or selection.fit_order is None:
+        outcome = SolveOutcome(status=f"skipped: {selection.status}", fed=int(selection.kept.sum()), log_path=log_path)
+        log_path.write_text(f"not solved: {selection.status} ({int(selection.kept.sum())} kept)\n", encoding="utf-8")
+        return outcome
+    settings = SolveSettings(
+        index_dir=args.index_dir,
+        solve_field=args.solve_field or default_solve_field(),
+        pixel_scale_arcsec=args.pixel_scale,
+        factor=args.bin,
+        origin=args.xylist_origin,
+        cpulimit=args.cpulimit,
+        ra_deg=args.ra,
+        dec_deg=args.dec,
+        radius_deg=args.radius,
+    )
+    return solve_filtered_list(
+        selection.xylist(), shape, selection.fit_order, settings, out_dir / f"{stem}-solve-files", log_path, stem
+    )
+
+
+def _solve_caption(solve: SolveOutcome) -> str:
+    if solve.status != "ok":
+        return f"solve: {solve.status}"
+    rms = "" if solve.residual_rms_arcsec is None else f'   residual rms {solve.residual_rms_arcsec:.3f}"'
+    return f"solve: fed {solve.fed} (green o)   used {solve.used} (blue o){rms}   {solve.seconds:.1f} s"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -478,6 +584,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--same-field", action="store_true")
     parser.add_argument("--match-radius", type=float, default=5.0)
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--solve", action="store_true")
+    parser.add_argument("--index-dir")
+    parser.add_argument("--solve-field")
+    parser.add_argument("--pixel-scale", type=float, default=DEFAULT_PIXEL_SCALE_ARCSEC)
+    parser.add_argument("--bin", type=int, default=2)
+    parser.add_argument("--xylist-origin", type=int, choices=(0, 1), default=1)
+    parser.add_argument("--ra", type=float)
+    parser.add_argument("--dec", type=float)
+    parser.add_argument("--radius", type=float, default=2.0)
+    parser.add_argument("--cpulimit", type=int, default=60)
     parser.add_argument("--no-rejected", action="store_true")
     parser.add_argument("--show-faint", action="store_true")
     return parser
@@ -489,6 +605,9 @@ def main(argv: list[str] | None = None) -> int:
     if not frames:
         print("no frames found", file=sys.stderr)
         return 1
+    if args.solve and not args.index_dir:
+        print("--solve needs --index-dir (the astrometry.net index files)", file=sys.stderr)
+        return 2
     out_dir: Path = args.out
     for frame in frames:
         if out_dir.resolve() == frame.resolve().parent:
