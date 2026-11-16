@@ -91,7 +91,11 @@ RESULT_MAP = {
 # *array* enum (`[["sky"], ["spec"], ...]`) and left `value` a tuple no caller could compare
 # against.
 class StagePresetPosition(Enum):
-    """Preset stage positions: `sky`, `spec`, `min`, `mid`, `max`."""
+    """Preset stage positions: `sky`, `spec`, `min`, `mid`, `max`.
+
+    `min` is the lowest position the stage is parked at, not the end of travel: it is kept
+    `MIN_PRESET_CLEARANCE` steps clear of the lower border (see `Stage.presets`).
+    """
 
     Sky = "sky"
     Spec = "spec"
@@ -99,6 +103,11 @@ class StagePresetPosition(Enum):
     Middle = "mid"
     Max = "max"
 
+
+#: How far from the end of travel the `Min` preset stays. On limit-switch borders `min_travel` is 0,
+#: which is the switch itself; parking the mirror exactly there leans on it. `Min` is therefore
+#: `max(min_travel, MIN_PRESET_CLEARANCE)`. `Middle` is still computed from the real `min_travel`.
+MIN_PRESET_CLEARANCE = 100
 
 #: Where the stage is sent on startup. Deliberately not an enum member: as an alias of `Sky`
 #: it published a duplicate "sky" in the OpenAPI enum, and it is a policy choice rather than
@@ -169,7 +178,7 @@ class Stage(Component, SwitchedOutlet):
             StagePresetPosition.Spec: self.conf.presets.spec,
         }
         if self.min_travel is not None and self.max_travel is not None:
-            presets[StagePresetPosition.Min] = self.min_travel
+            presets[StagePresetPosition.Min] = max(self.min_travel, MIN_PRESET_CLEARANCE)
             presets[StagePresetPosition.Max] = self.max_travel
             presets[StagePresetPosition.Middle] = int((self.max_travel - self.min_travel) / 2)
         return presets

@@ -85,7 +85,7 @@ class _Solver:
 
 class _Guider:
     def make_guiding_settings(self, base_folder):
-        return SimpleNamespace()
+        return SimpleNamespace(tags={})
 
 
 _SKY_ROI = SkyRoiConfig(sky_x=4000, sky_y=2800, width=1024, height=1024)

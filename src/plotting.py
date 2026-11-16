@@ -5,7 +5,7 @@ import math
 import os
 import re
 import sys
-from typing import NamedTuple, get_args
+from typing import NamedTuple
 
 import astropy.units as u
 import matplotlib
@@ -15,7 +15,6 @@ from astropy.coordinates import Angle
 from matplotlib.patches import Patch
 
 from calibration.analysis.protocols import FocusAnalysisResultLike
-from common.const import Const
 from common.corrections import Corrections
 from common.filer import MoveGuardian
 from common.mast_logging import get_logger
@@ -276,8 +275,11 @@ def plot_phase_corrections(  # noqa: C901
     if phase == "acquisition" and tolerances:
         # The RA tolerance is plain RA, scaled by 1/cos(Dec) from the on-sky one, so it
         # differs from the Dec tolerance away from the equator.
-        for tolerance_phase, linestyle in (("sky", ":"), ("spec", "-.")):
-            phase_tolerances = tolerances.get(tolerance_phase, {})
+        # One line style per phase, in the order the phases ran: `sky` is ':' and `spec` '-.'
+        # for FCU v1, `spec-mirror-out` ':' and `spec-mirror-in` '-.' for FCU v2.
+        for (tolerance_phase, phase_tolerances), linestyle in zip(
+            tolerances.items(), (":", "-.", "--", (0, (1, 4))), strict=False
+        ):
             if "ra" in phase_tolerances:
                 plt.axhline(
                     y=phase_tolerances["ra"],
@@ -327,6 +329,25 @@ def plot_phase_corrections(  # noqa: C901
     logger.info(f"plot saved to '{file}'")
 
 
+def acquisition_phases(acquisition_folder: str) -> list[str]:
+    """The acquisition phases under `acquisition_folder` that left a `corrections.json`.
+
+    `sky` and `spec` (FCU v1), or `spec-mirror-out` and `spec-mirror-in` (FCU v2). Read from
+    the folders rather than from a list of names, so a phase added later is not silently
+    left off the plot -- and a v2 acquisition is still found as having corrections.
+    """
+    try:
+        names = sorted(os.listdir(acquisition_folder))
+    except OSError:
+        return []
+    return [
+        name
+        for name in names
+        if (name == "sky" or name.startswith("spec"))
+        and os.path.isfile(os.path.join(acquisition_folder, name, "corrections.json"))
+    ]
+
+
 def plot_acquisition_corrections(acquisition_folder: str | None = None):  # noqa: C901
     """
     Plots the existing corrections.json files underneath a given Acquisition folder
@@ -337,10 +358,7 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):  # noqa
     op = function_name()
 
     def has_corrections(_folder: str) -> bool:
-        return any(
-            os.path.exists(os.path.join(_folder, _phase, "corrections.json"))
-            for _phase in list(get_args(Const.CorrectionPhase))
-        )
+        return bool(acquisition_phases(_folder))
 
     acquisition_top = None
     if acquisition_folder is not None:
@@ -365,10 +383,11 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):  # noqa
     end_of_phase: list[datetime.datetime] = []
     tolerances = {}
 
-    for phase in ["sky", "spec"]:
+    # Every acquisition phase that left corrections, ordered by when each began, which is
+    # the order the corrections were made in.
+    phase_corrections: dict[str, Corrections] = {}
+    for phase in acquisition_phases(acquisition_top):
         file = os.path.join(acquisition_top, phase, "corrections.json")
-        if not os.path.isfile(file):
-            continue
 
         try:
             with open(file) as fp:
@@ -380,8 +399,14 @@ def plot_acquisition_corrections(acquisition_folder: str | None = None):  # noqa
         if not corrections:
             continue
         sequence = corrections.sequence
-        if phase != "guiding" and corrections.last_delta:
+        if corrections.last_delta:
             sequence.append(corrections.last_delta)
+        if not sequence:
+            continue
+        phase_corrections[phase] = corrections
+
+    for phase, corrections in sorted(phase_corrections.items(), key=lambda item: item[1].sequence[0].time):
+        sequence = corrections.sequence
 
         if combined_corrections is None:
             combined_corrections = Corrections(

@@ -388,7 +388,7 @@ def profile_case(expected_before: int, expected_after: int):
 
 
 def stage_presets_case():
-    from stage import StagePresetPosition
+    from stage import MIN_PRESET_CLEARANCE, StagePresetPosition
 
     stage = object.__new__(component("stage", "Stage"))
     stage.min_travel, stage.max_travel = None, None
@@ -402,7 +402,7 @@ def stage_presets_case():
     after = {
         StagePresetPosition.Sky: 191000,
         StagePresetPosition.Spec: 321297,
-        StagePresetPosition.Min: 0,
+        StagePresetPosition.Min: MIN_PRESET_CLEARANCE,
         StagePresetPosition.Max: 343544,
         StagePresetPosition.Middle: 171772,
     }

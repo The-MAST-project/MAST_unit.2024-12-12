@@ -37,6 +37,13 @@ from stage import StagePresetPosition
 
 logger = get_logger(__name__)
 
+#: FCU v2 solves twice at SPEC: once with the folding mirror parked at the `Min` preset
+#: (out of the beam), once with it at the SPEC preset. Each is a phase of its own, so each
+#: keeps its own folder of frames, solver results and corrections. Only the second is the
+#: reference for guiding. FCU v1 has the single phase `spec`.
+SPEC_MIRROR_OUT = "spec-mirror-out"
+SPEC_MIRROR_IN = "spec-mirror-in"
+
 
 #: The `Unit` attributes an acquisition dereferences. Each is `None` when its component
 #: failed to build, which is a routine state -- a PHD2 connect failure leaves `imager` and
@@ -289,6 +296,76 @@ class Acquirer:
         self.unit.required_mount.stop_tracking()
         return None
 
+    def _move_stage(self, op: str, preset: StagePresetPosition, acquisition_exposure_series) -> str | None:
+        """Move the stage to `preset` and wait until it has stopped and settled.
+
+        None when it is there; else why not, with the acquisition already unwound (a cancel
+        as `ACQUISITION_CANCELLED`, a refused move as its reason).
+        """
+        response = self.unit.required_stage.move_to_preset(preset)
+        # `move_to_preset` answers with a CanonicalResponse; an error is a refusal (not
+        # detected, out of range, no such preset) that used to go unnoticed and let the
+        # solve run wherever the stage happened to be.
+        if response is not None and response.failed:
+            failure = f"cannot move the stage to '{preset.value}': {response.errors}"
+            logger.error(f"{op}: {failure}")
+            self._unwind_failed_phase(acquisition_exposure_series)
+            return failure
+        if not self._await_stage():
+            self._abandon(op, acquisition_exposure_series)
+            return ACQUISITION_CANCELLED
+        logger.info("sleeping additional 5 seconds to let the stage stop moving ...")
+        if not self._cancellable_sleep(5):
+            self._abandon(op, acquisition_exposure_series)
+            return ACQUISITION_CANCELLED
+        logger.info(f"stage now at {self.unit.required_stage.position} ('{preset.value}')")
+        return None
+
+    def _unwind_failed_phase(self, acquisition_exposure_series) -> None:
+        self.unit.end_activity(UnitActivities.Acquiring)
+        if self.unit.is_active(UnitActivities.Positioning):
+            self.unit.end_activity(UnitActivities.Positioning)
+        self.unit.required_mount.stop_tracking()
+        self.unit.required_imager.end_exposure_series(acquisition_exposure_series)
+
+    def _spec_cycle(
+        self,
+        op: str,
+        acquisition: Acquisition,
+        target: Coord,
+        exposure: float,
+        tries: int,
+        phase: str,
+        acquisition_exposure_series,
+    ) -> str | None:
+        """One solve-and-correct cycle at the stage's present position, as phase `phase`.
+
+        None when it reached tolerance; else why not, with the acquisition unwound. The
+        frames are tagged with the stage position, so a file says where the mirror was even
+        when it is copied out of its phase folder.
+        """
+        settings = self.spec_phase_imager_settings(acquisition, exposure, phase)
+        settings.tags = {**(settings.tags or {}), "stage": self.unit.required_stage.position}
+
+        achieved_tolerances = self.unit.required_solver.solve_and_correct(
+            target=target,
+            approach_mode=acquisition.approach_mode,
+            solver_id=acquisition.solver_id,
+            make_corrections=acquisition.make_corrections,
+            imager_settings=settings,
+            solving_tolerance=self.spec_phase_tolerance(),
+            parent_activity=UnitActivities.Acquiring,
+            phase=phase,
+            max_tries=tries,
+        )
+        self.latest_acquisition.save_corrections(phase)
+        logger.info(f"{op}: phase '{phase.upper()}' {achieved_tolerances=}")
+        if not achieved_tolerances:
+            failure = self._phase_failure(phase, tries)
+            self._unwind_failed_phase(acquisition_exposure_series)
+            return failure
+        return None
+
     def _phase_failure(self, phase: str, tries: int) -> str:
         """Why a phase ended without reaching tolerance: `solve_and_correct` returns False
         for a cancellation too, and the two call for different responses."""
@@ -517,23 +594,18 @@ class Acquirer:
                 self.unit.required_imager.end_exposure_series(acquisition_exposure_series)
                 return failure
 
-        phase = "spec"
+        # FCU v2 solves twice: with the mirror parked at `Min`, then once more with it at SPEC,
+        # after it has arrived and settled. The hand-over to guiding follows only a solve taken
+        # with the mirror at SPEC, and that solve alone is the reference.
+        is_v2 = self.unit.fcu_version == FcuVersion.v2
+        phase = SPEC_MIRROR_OUT if is_v2 else "spec"
         boxed_log(logger, [f"starting phase '{phase.upper()}'"])
 
-        match self.unit.fcu_version:
-            case FcuVersion.v1:
-                self.unit.required_stage.move_to_preset(StagePresetPosition.Spec)
-            case FcuVersion.v2:
-                self.unit.required_stage.move_to_preset(StagePresetPosition.Sky)
-
-        if not self._await_stage():
-            self._abandon(op, acquisition_exposure_series)
-            return ACQUISITION_CANCELLED
-        logger.info("sleeping additional 5 seconds to let the stage stop moving ...")
-        if not self._cancellable_sleep(5):
-            self._abandon(op, acquisition_exposure_series)
-            return ACQUISITION_CANCELLED
-        logger.info(f"stage now at {self.unit.required_stage.position}")
+        failure = self._move_stage(
+            op, StagePresetPosition.Min if is_v2 else StagePresetPosition.Spec, acquisition_exposure_series
+        )
+        if failure is not None:
+            return failure
         if not self._await_slew(slew_commanded_at):
             self._abandon(op, acquisition_exposure_series)
             return ACQUISITION_CANCELLED
@@ -541,27 +613,22 @@ class Acquirer:
         if self.unit.is_active(UnitActivities.Positioning):
             self.unit.end_activity(UnitActivities.Positioning)
 
-        spec_imager_settings = self.spec_phase_imager_settings(acquisition, exposure, phase)
-
-        achieved_tolerances = self.unit.required_solver.solve_and_correct(
-            target=target,
-            approach_mode=acquisition.approach_mode,
-            solver_id=acquisition.solver_id,
-            make_corrections=acquisition.make_corrections,
-            imager_settings=spec_imager_settings,
-            solving_tolerance=self.spec_phase_tolerance(),
-            parent_activity=UnitActivities.Acquiring,
-            phase=phase,
-            max_tries=tries,
-        )
-        self.latest_acquisition.save_corrections(phase)
-        logger.info(f"{op}: phase '{phase.upper()}' {achieved_tolerances=}")
-        if not achieved_tolerances:
-            failure = self._phase_failure(phase, tries)
-            self.unit.end_activity(UnitActivities.Acquiring)
-            self.unit.required_mount.stop_tracking()
-            self.unit.required_imager.end_exposure_series(acquisition_exposure_series)
+        failure = self._spec_cycle(op, acquisition, target, exposure, tries, phase, acquisition_exposure_series)
+        if failure is not None:
             return failure
+
+        if is_v2:
+            phase = SPEC_MIRROR_IN
+            boxed_log(logger, [f"starting phase '{phase.upper()}'", "mirror moving to SPEC"])
+            self.unit.start_activity(UnitActivities.Positioning)
+            failure = self._move_stage(op, StagePresetPosition.Spec, acquisition_exposure_series)
+            if failure is not None:
+                return failure
+            self.unit.end_activity(UnitActivities.Positioning)
+
+            failure = self._spec_cycle(op, acquisition, target, exposure, tries, phase, acquisition_exposure_series)
+            if failure is not None:
+                return failure
 
         if self.unit.required_imager.can_image_to_memory:
             self.unit.reference_image = self.unit.required_imager.image_array
@@ -580,19 +647,8 @@ class Acquirer:
             lines.append(f"camera disconnected imager={type(imager._backend)}, guider={type(guider._backend)}")
             imager.disconnect()
 
-        # Move the stage to SPEC (FCU v2 was left at Sky by the solve; v1 is already there)
-        # and wait for it to settle -- needed by BOTH the auto-handover and the manual
-        # acquisition-tuning paths, so guiding always starts with the stage at SPEC.
-        if self.unit.fcu_version == FcuVersion.v2:
-            self.unit.required_stage.move_to_preset(StagePresetPosition.Spec)
-            lines.append("moving stage to SPEC")
-        if not self._await_stage():
-            self._abandon(op)
-            return ACQUISITION_CANCELLED
-        logger.info("sleeping additional 5 seconds to let the stage stop moving ...")
-        if not self._cancellable_sleep(5):
-            self._abandon(op)
-            return ACQUISITION_CANCELLED
+        # The stage is already at SPEC and settled: both versions moved it there and waited
+        # before their last solve, so guiding starts with it there, by either hand-over path.
 
         if self.latest_acquisition.handover_automatically_to_guider:
             lines.append("starting PHD2 guiding")
