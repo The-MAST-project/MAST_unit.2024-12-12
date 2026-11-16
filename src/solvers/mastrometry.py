@@ -35,8 +35,7 @@ if TYPE_CHECKING:
 #:
 #: Module level because it is not private arithmetic: a solved `pixel_scale` is per
 #: DOWNSAMPLED pixel, so anyone converting it back to a detector scale must divide by
-#: exactly this. A caller that hardcoded 2 would be silently wrong the day it changed --
-#: and the flux-metering run now derives its plate scale from a solve.
+#: exactly this. A caller that hardcoded 2 would be silently wrong the day it changed.
 DOWNSAMPLE_FACTOR: int = 2
 
 

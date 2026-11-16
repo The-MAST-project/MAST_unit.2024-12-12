@@ -2,6 +2,30 @@
 
 ---
 
+## [2026-11-16] Flux metering leaves the unit
+
+**Why:** flux metering runs off the unit now. flux-meter-orchestrator drives the unit's public
+API (acquisition, the spiral endpoints, `/expose`, `status.latest`) and the Zelux camera on
+mast-ns-spec, and ran end to end on sky on mast03 against `main` on 2026-11-15. The in-unit
+`acquire_and_find_max_flux` was a second implementation nobody called, with its own ThorCam
+driver. MAST_unit#407.
+
+**What:** `src/flux_metering/` is deleted with its tests, and with it the endpoints
+`acquire_and_find_max_flux`, `find_max_flux_status`, `flux_metering_runs`,
+`flux_metering_run_steps` and `spiral_correlate_steps`, the `flux_metering` field of `/status`,
+and the refusals other activities made against a running flux-metering session. `tifffile` is
+no longer a direct requirement. The spiral endpoints, `imaging/frame_shift.py` and the
+`FluxMetering/NNNN` folder layout on the share stay; the orchestrator files there.
+**Supersedes** the clause of the 2026-10-29 entry "A spiral session that takes no frames, and
+the guards between spiral and expose" that has a spiral session and a flux-metering run refuse
+each other.
+
+**Implications:** a caller of the removed endpoints gets 404, and `status.flux_metering` is
+always null until MAST_common drops the field. Two steps of an old in-unit run can no longer be
+re-correlated through the unit; the runs' files stay on the share. `UnitActivities.FluxMetering`
+stays declared in MAST_common, never raised, so the members after it keep their bits; the
+contract test lists it as known (MAST_common#232).
+
 ## [2026-10-20] `ImagerSettings.roi` is unbinned sensor pixels for every writer, `/expose` included
 
 **Why:** `/unit/expose` was the one writer that stored a binned rect. PHD2's `set_limit_frame` and

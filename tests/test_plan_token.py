@@ -73,7 +73,6 @@ def test_abort_releases_it_last(monkeypatch):
         autofocuser = None
         guider = None
         components: list = []
-        flux_metering = type("F", (), {"is_active": False})()
         spiral = type("S", (), {"is_active": False})()
 
         def __init__(self):

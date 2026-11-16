@@ -918,17 +918,6 @@ class TestKeepingOutOfAnExposeRun:
         session.end()
 
 
-class TestKeepingOutOfFluxMetering:
-    def test_a_session_cannot_open_during_a_flux_metering_run(self, session):
-        """Flux metering drives PWI4's spiral itself; the two would reset it under each other."""
-        session.unit.active.add(UnitActivities.FluxMetering)
-
-        response = session.start(1.0, 1.0, exposure_seconds=1.0)
-
-        assert response.failed and "flux-metering" in response.errors[0]
-        assert session.unit.mount.pw.calls == []
-
-
 class TestAbort:
     def test_an_imaging_session_closes_as_abandoned_without_a_final_frame(self, session):
         session.start(1.0, 1.0, exposure_seconds=1.0)

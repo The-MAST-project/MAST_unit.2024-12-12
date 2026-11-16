@@ -360,8 +360,6 @@ class SpiralSearch:
         op = function_name()
         with self._lock:
             refusal = self._busy_refusal()
-            if refusal is None and self.unit.is_active(UnitActivities.FluxMetering):
-                refusal = "a flux-metering run is driving PWI4's spiral"
             if refusal is None and not frames and save_intermediate_exposures:
                 refusal = "a session with frames=false takes no frames, so it cannot save intermediate exposures"
             if refusal is not None:

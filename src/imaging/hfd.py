@@ -511,11 +511,10 @@ class StarMeasure:
 def half_max_fwhm(stamp_sub: np.ndarray, x: float, y: float) -> float:
     """FWHM from the area of the half-maximum footprint: ``2 * sqrt(N / pi)``.
 
-    The footprint-area method of ``flux_metering.aperture_photometry_single.measure_fwhm``:
-    it assumes no profile shape, and the reference peak is a 3x3 median so a hot pixel
-    cannot set it.  Unlike that one it returns ``nan`` rather than a guess when it cannot
-    measure -- here it is logged, and a guess would read as a measurement.  A diagnostic:
-    on a defocused (donut) star it measures the ring, which is why the V-curve uses HFD.
+    It assumes no profile shape, and the reference peak is a 3x3 median so a hot pixel
+    cannot set it.  It returns ``nan`` rather than a guess when it cannot measure -- here
+    it is logged, and a guess would read as a measurement.  A diagnostic: on a defocused
+    (donut) star it measures the ring, which is why the V-curve uses HFD.
     """
     peak = float(ndimage.median_filter(stamp_sub, size=3).max())
     if not np.isfinite(peak) or peak <= 0.0:

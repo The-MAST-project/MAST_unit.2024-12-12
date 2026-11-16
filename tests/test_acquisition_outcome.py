@@ -1,7 +1,7 @@
 """An acquisition records how it ended, so a caller waiting on it can tell success from failure.
 
 `Acquiring` clears on every exit -- converged, a phase out of tolerance, cancelled -- so the flag
-alone cannot say which. Flux metering read it as success and walked the spiral from an
+alone cannot say which, and a caller that read its clearing as success would go on from an
 unconverged pointing (MAST_unit#316).
 
 Needs no hardware: every path here returns before touching a component.
