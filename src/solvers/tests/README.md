@@ -57,6 +57,11 @@ If solve-field, the index dir, or the fixture is missing the test reports
 
 ## Coverage notes
 
+`test_star_map_integration.py` has one test: a real `solve-field --corr <path>` leaves a
+correspondences file and an extraction list with the columns `star_map.py` reads, and a used star's
+catalogue position, projected through the solved WCS, falls on the star that was measured. Run it
+after touching the solve-field flags or `star_map.py`; skipped, it is not a pass.
+
 `test_equivalence_integration.py` has two tests:
 
 - `test_numpy_downsample_matches_native_downsample` — numpy pre-downsample vs

@@ -25,6 +25,7 @@ from phd2.limit_frame import derived_guiding_roi
 from .astrometry_dot_net import generate_random_string, parse_solver_output, win_to_cygwin
 from .pixel_grid import roi_center_to_crpix
 from .ram_area import index_dir, missing_indexes, scratch_dir
+from .star_map import write_star_map
 
 logger = get_logger(__name__)
 if TYPE_CHECKING:
@@ -38,6 +39,15 @@ if TYPE_CHECKING:
 #: exactly this. A caller that hardcoded 2 would be silently wrong the day it changed --
 #: and the flux-metering run now derives its plate scale from a solve.
 DOWNSAMPLE_FACTOR: int = 2
+
+
+def downsampled_frame_path(scratch: Path, input_image_path: str) -> Path:
+    """Where the frame `solve-field` is given is written: in the scratch folder, `downsampled_<input name>`.
+
+    One place, because the star map has to find that exact file. Not by a glob: `solve-field`
+    leaves `downsampled_<input stem>.axy` beside it, which a pattern would match first.
+    """
+    return scratch / f"downsampled_{Path(input_image_path).name!s}"
 
 
 class MastrometryDotNet(SolverInterface):
@@ -148,6 +158,8 @@ class MastrometryDotNet(SolverInterface):
                     [result_file, new_fits_path] if keep_artifacts else [],
                     Path(full_frame_input_image_path).parent,
                     win_tmp_dir,
+                    new_fits_path if keep_artifacts else None,
+                    downsampled_frame_path(win_tmp_dir, full_frame_input_image_path),
                 ),
             ).start()
 
@@ -285,7 +297,7 @@ class MastrometryDotNet(SolverInterface):
 
             # Save downsampled image to temporary directory
             assert full_frame_input_image_path is not None
-            downsampled_image_path = win_tmp_dir / f"downsampled_{Path(full_frame_input_image_path).name!s}"
+            downsampled_image_path = downsampled_frame_path(win_tmp_dir, full_frame_input_image_path)
             fits.writeto(downsampled_image_path, downsampled, header, overwrite=True)
             logger.info(f"{function_name()}: Saved downsampled image to '{downsampled_image_path}'")
 
@@ -315,8 +327,11 @@ class MastrometryDotNet(SolverInterface):
                 "none",
                 "--rdls",
                 "none",
+                # The correspondences -- the field stars matched to the index -- are the stars
+                # the solution used. Kept in the scratch folder for the star map (see
+                # solvers/star_map.py); the artifact name comes from the solved FITS's stem.
                 "--corr",
-                "none",
+                win_to_cygwin(str(new_fits_path.parent / f"{new_fits_path.stem}.corr")),
                 # Output control
                 "--dir",
                 win_to_cygwin(str(win_tmp_dir)),
@@ -471,14 +486,56 @@ class MastrometryDotNet(SolverInterface):
             # would only duplicate it.
             logger.exception(f"{function_name()}: {getattr(target, '__name__', target)} failed")
 
-    def cleanup(self, files_to_move: list[Path], target_folder: Path, tmp_dir: Path):
+    def _star_map_files(self, tmp_dir: Path, solved_fits: Path, frame: Path) -> list[Path]:
+        """The annotated JPEG and the per-star JSON of this solve, written in the scratch folder.
+
+        `[]` for a solve that left no correspondences (it failed), and for anything that goes
+        wrong here: a picture must never cost the artifacts that were kept before it existed.
+        """
+        stem = solved_fits.stem
+        jpeg_path = tmp_dir / f"{stem}-stars.jpg"
+        json_path = tmp_dir / f"{stem}-stars.json"
+        try:
+            if not frame.exists():
+                return []
+            # Protected like the other artifacts: no half-written file for the mover, and a
+            # product, not scratch, when the folder is discarded.
+            with MoveGuardian().protect(str(jpeg_path), str(json_path)):
+                summary = write_star_map(
+                    image_path=frame,
+                    corr_path=tmp_dir / f"{stem}.corr",
+                    solved_fits=solved_fits,
+                    scratch=tmp_dir,
+                    jpeg_path=jpeg_path,
+                    json_path=json_path,
+                )
+            if summary is None:
+                return []
+            logger.info(f"{function_name()}: star map of '{stem}': {summary}")
+            return [jpeg_path, json_path]
+        except Exception:
+            logger.exception(f"{function_name()}: could not make the star map of '{stem}'")
+            return []
+
+    def cleanup(
+        self,
+        files_to_move: list[Path],
+        target_folder: Path,
+        tmp_dir: Path,
+        solved_fits: Path | None = None,
+        solved_frame: Path | None = None,
+    ):
         """Keep the solver's own artifacts, discard its scratch.
 
         `target_folder` is the acquisition folder holding the input frame, so the solved
         FITS and the result text land beside it and are then handed to the mover -- the
-        frame itself is moved by Solver.solve, which owns it.
+        frame itself is moved by Solver.solve, which owns it. With `solved_fits` and
+        `solved_frame` -- given when the artifacts are kept -- the star map of the solve goes
+        with them.
         """
         filer = Filer(logger)
+        if solved_fits is not None and solved_frame is not None:
+            files_to_move = [*files_to_move, *self._star_map_files(tmp_dir, solved_fits, solved_frame)]
         files_to_move = [f for f in files_to_move if f.exists()]
         if files_to_move:
             target_folder.mkdir(parents=True, exist_ok=True)
