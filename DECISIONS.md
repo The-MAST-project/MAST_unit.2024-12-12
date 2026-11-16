@@ -2,6 +2,22 @@
 
 ---
 
+## [2026-11-16] The source selection exists as a pure function and a survey; it is not in the solve
+
+**Why:** the plan for filtering the sources MASTrometry hands to astrometry.net
+(`mast-claude-config`, `plans/mastrometry_source_selection_design.md`) rests on simulation. Stage 0
+is to see what the selection does on real frames before anything is wired into a solve.
+
+**What:** `solvers/source_selection.py` (`select_sources`) and `tools/source_survey.py`, which runs it
+on saved FITS frames and writes a picture, CSVs, an exclusion-width sweep and a cross-frame
+consistency table under `--out` only. `MastrometryDotNet` is untouched.
+
+**Implications:** the parameters are the design's starting values, to be tuned from the survey. The
+survey does not solve, so it has no "stars the solver used" layer yet. `faint` is the first reason
+reported for a source that fails several tests, which differs from the order the design lists them
+in; all failed tests are recorded.
+
+---
 ## [2026-11-16] Each kept solve leaves a star map: the stars it extracted and the stars it used
 
 **Why:** the unit kept only the solved FITS, so nothing showed which stars astrometry.net found or

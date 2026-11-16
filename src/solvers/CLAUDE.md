@@ -53,6 +53,28 @@ failure there is logged and costs none of the other artifacts.
 - The frame is found by `downsampled_frame_path`, never by a glob: `solve-field` leaves
   `downsampled_<stem>.axy` beside it, which a pattern matches first.
 
+## Source selection (`source_selection.py`) and the survey (`tools/source_survey.py`)
+
+Stage 0 of the source-filtering plan (`mast-claude-config`, `plans/mastrometry_source_selection_design.md`).
+`select_sources` detects with `extract_sources`, measures each source with a fixed-window centroid,
+rejects the ones that bias a fit (faint, shadow, saturated, hot pixel, blended, truncated, bad
+centroid), ranks and selects the rest, and chooses the fit order. It is **pure and not wired into
+`MastrometryDotNet`**: nothing here changes a solve. The survey runs it on saved frames and writes a
+picture (shadow masked, kept / spare / rejected marked), per-source and per-frame CSVs, an
+exclusion-width sweep and a cross-frame consistency table, only under `--out`.
+
+- Coordinates are 0-based array coordinates of the array given (the crop, with `--roi`).
+- Every failed test is kept in `Selection.all_reasons`; `fate` carries the first, `faint` first, so
+  the noise blobs a 2 sigma detection finds are not called blends.
+- A neighbour counts toward a blend only with SNR >= `neighbour_min_snr`; a merged pair is caught
+  by its width, only where the width is reliable (SNR >= 30).
+- Detections along the shadow's penumbra edges (the sky step the 50 px mesh leaves) turn up as
+  blends; they are not kept, but they are what the survey is meant to show.
+- A full 8288 x 5644 frame takes ~8 s per selection run and ~2.8 GB; use `--repeat 1` for a batch,
+  or `--roi`.
+- The solver layer ("the stars the solver used") is not in the survey: it needs `solve-field` and the
+  xylist handover (Stage 2).
+
 ## Artifact names come from the input's stem
 
 `MastrometryDotNet.solve` names its outputs `<input stem>,solver=<name>.fits` and
