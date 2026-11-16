@@ -10,6 +10,7 @@ Needs no hardware: every component is a stub that records what it was asked to d
 
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -127,7 +128,7 @@ def test_each_solve_is_taken_with_the_mirror_where_its_phase_says(monkeypatch):
 def test_each_phase_has_its_own_folder_and_tags_its_frames_with_the_stage_position(monkeypatch):
     unit, _ = _acquire(FcuVersion.v2, monkeypatch)
 
-    assert unit.guider.base_folders == [f"acq/{SPEC_MIRROR_OUT}", f"acq/{SPEC_MIRROR_IN}"]
+    assert unit.guider.base_folders == [os.path.join("acq", SPEC_MIRROR_OUT), os.path.join("acq", SPEC_MIRROR_IN)]
     tags = [call["imager_settings"].tags for call in unit.solver.calls]
     assert tags == [{"stage": 100}, {"stage": 321297}]
 
