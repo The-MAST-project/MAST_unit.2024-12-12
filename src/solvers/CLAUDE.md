@@ -33,6 +33,26 @@ integer-division ROI `refpix` that biased pointing by ~0.4").
    `--no-tweak` without reading the comment there; it breaks agreement with the
    reference solver and with full-frame pixel consistency.
 
+## The star map (`star_map.py`)
+
+Each kept solve leaves `<stem>,solver=mastrometry.net-stars.jpg` and `-stars.json` beside the solved
+FITS: the frame with the stars astrometry.net **extracted** (orange ticks) and the ones it **used**
+(blue circles, the radius growing with how far the reported point would move without the star), and
+the per-star numbers. It is made in the cleanup thread, so it adds nothing to the solve, and a
+failure there is logged and costs none of the other artifacts.
+
+- It needs `--corr <path>` (the solver used to pass `--corr none`); the extraction list is the
+  `.axy` `solve-field` already leaves in the scratch folder. `--rdls` and `--match` stay `none`.
+- It draws on the frame `solve-field` was given, in that frame's own pixel grid, so it does not
+  use `pixel_grid.py` and does not touch the coordinate surface. It does change the solve-field
+  flags, so rule 3 above applies: run `solvers/tests/test_star_map_integration.py` by hand on a
+  unit, which is what confirms the real column names of the `.corr`.
+- The influence numbers (leverage, Cook's distance, fibre shift) are a **proxy** from a
+  least-squares polynomial fit of astrometry.net's tweak order, not its own arithmetic. They rank
+  the stars; they do not reproduce the solver. See the module docstring.
+- The frame is found by `downsampled_frame_path`, never by a glob: `solve-field` leaves
+  `downsampled_<stem>.axy` beside it, which a pattern matches first.
+
 ## Artifact names come from the input's stem
 
 `MastrometryDotNet.solve` names its outputs `<input stem>,solver=<name>.fits` and

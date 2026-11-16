@@ -2,6 +2,28 @@
 
 ---
 
+## [2026-11-16] Each kept solve leaves a star map: the stars it extracted and the stars it used
+
+**Why:** the unit kept only the solved FITS, so nothing showed which stars astrometry.net found or
+which it matched, and there was no way to see whether a bad solve leaned on a blend, a hot pixel or a
+star in the fold-mirror shadow. The source-selection design (`mast-claude-config`,
+`plans/mastrometry_source_selection_design.md`, Step 0) needs the same picture.
+
+**What:** `solve-field` is given `--corr <scratch>/<stem>.corr` instead of `--corr none`. After the
+solve, the cleanup thread reads that file and the `.axy` extraction list and writes
+`<stem>,solver=mastrometry.net-stars.jpg` and `-stars.json` beside the solved FITS (`solvers/star_map.py`).
+The JSON carries, per used star, its residual, leverage, Cook's distance and fibre shift. The shift is
+how far the reported point (CRPIX, the fibre on the spec path) would move if the star were left out.
+
+**Implications:** the influence numbers are a proxy from a least-squares polynomial fit, not
+astrometry.net's own fit; they rank stars. The picture is on the solved frame's binned, cropped grid, so
+the coordinate surface is not touched, but the solve-field flags changed, so
+`solvers/tests/test_star_map_integration.py` has to be run by hand on a unit. A solve with
+`keep_artifacts=False` (the guiding validation) makes no star map.
+
+---
+
+
 ## [2026-10-20] `ImagerSettings.roi` is unbinned sensor pixels for every writer, `/expose` included
 
 **Why:** `/unit/expose` was the one writer that stored a binned rect. PHD2's `set_limit_frame` and
