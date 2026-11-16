@@ -23,8 +23,8 @@ each other.
 **Implications:** a caller of the removed endpoints gets 404, and `status.flux_metering` is
 always null until MAST_common drops the field. Two steps of an old in-unit run can no longer be
 re-correlated through the unit; the runs' files stay on the share. `UnitActivities.FluxMetering`
-stays declared in MAST_common, never raised, so the members after it keep their bits; the
-contract test lists it as known (MAST_common#232).
+is no longer raised; MAST_common#232 deletes it, and until then the contract test lists it as
+known.
 
 ## [2026-10-20] `ImagerSettings.roi` is unbinned sensor pixels for every writer, `/expose` included
 

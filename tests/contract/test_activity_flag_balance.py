@@ -75,8 +75,8 @@ KNOWN_UNBALANCED = {
     # Started only in the uncalled cooldown(); its ontimer end is commented out. Unreachable
     # today, and a waiter would hang if it were ever reached.
     ("ImagerActivities", "CoolingDown: started, never ended"): "MAST_unit#149",
-    # Nothing raises it since in-unit flux metering went. Kept in the enum, not deleted, so the
-    # members after it keep their bits.
+    # Nothing raises it since in-unit flux metering went. MAST_common#232 deletes it from the
+    # enum; this entry goes then.
     ("UnitActivities", "FluxMetering: declared, never started or ended"): "MAST_common#232",
 }
 
