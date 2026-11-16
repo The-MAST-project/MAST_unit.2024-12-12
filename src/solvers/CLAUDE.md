@@ -72,8 +72,14 @@ exclusion-width sweep and a cross-frame consistency table, only under `--out`.
   blends; they are not kept, but they are what the survey is meant to show.
 - A full 8288 x 5644 frame takes ~8 s per selection run and ~2.8 GB; use `--repeat 1` for a batch,
   or `--roi`.
-- The solver layer ("the stars the solver used") is not in the survey: it needs `solve-field` and the
-  xylist handover (Stage 2).
+- `--solve` (needs `--index-dir` and a `solve-field`) hands the kept list to `solve-field` as an
+  xylist (`solvers/survey_solve.py`) and marks the stars the solver used with sky-blue rings, radius
+  ~ how far the fibre pointing would move without the star. The same flags as `_solve_in`, tweak on,
+  plus the xylist input, `--uniformize 0` and `--corr`. It solves on the 2x2 binned grid by default
+  (`--bin 2`), through `pixel_grid`, as Stage 2 would. Written without a `solve-field` at hand: it
+  assumes the xylist is read as FITS 1-based and that a `.xyls` input is read as a source list
+  (`--xylist-origin` changes the first; the WCS shifts by a constant, the used stars do not); every
+  run keeps `<stem>-solve.txt` with the command and `solve-field`'s own output, so a wrong guess shows.
 
 ## Artifact names come from the input's stem
 

@@ -12,8 +12,11 @@ is to see what the selection does on real frames before anything is wired into a
 on saved FITS frames and writes a picture, CSVs, an exclusion-width sweep and a cross-frame
 consistency table under `--out` only. `MastrometryDotNet` is untouched.
 
-**Implications:** the parameters are the design's starting values, to be tuned from the survey. The
-survey does not solve, so it has no "stars the solver used" layer yet. `faint` is the first reason
+**Implications:** the parameters are the design's starting values, to be tuned from the survey. With
+`--solve` the survey also hands the kept list to `solve-field` (`solvers/survey_solve.py`) and marks
+the stars the solver used; that was written without a `solve-field` at hand and is checked only
+against a stub, so its xylist assumptions (1-based positions, a `.xyls` input) are to be confirmed
+on a unit from the `-solve.txt` it keeps. `faint` is the first reason
 reported for a source that fails several tests, which differs from the order the design lists them
 in; all failed tests are recorded.
 
