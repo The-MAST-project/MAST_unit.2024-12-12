@@ -472,7 +472,7 @@ class Unit(Component, OpmodeBase):
         joins a startup already running -- and waits up to `seconds_to_autostartup` (read live)
         for the sequence to complete. Past that it answers with `why_not_operational` and leaves
         the startup running, so a retry joins it. Up, it must be operational or only cooling,
-        the rule MAST_control applies (`operational_but_for_cooling`).
+        the rule MAST_control applies (`operational_but_for_cooling`) -- in production only.
         """
         op = f"autostartup({route})"
         if self._lifecycle_leaving():
@@ -498,7 +498,11 @@ class Unit(Component, OpmodeBase):
                 time.sleep(0.5)
             logger.info(f"{op}: started up in {time.monotonic() - started:.1f} s")
 
-        if not operational_but_for_cooling(self.operational, self.why_not_operational):
+        # Production only: there MAST_control reads the status and decides whether to call, and the
+        # unit refuses what it should not have been sent. In development nothing marshals the
+        # requests, and a developer must reach an endpoint although some aspect of being
+        # operational is of no concern to them.
+        if self.is_production and not operational_but_for_cooling(self.operational, self.why_not_operational):
             return [f"{op}: started up but not operational", *(self.why_not_operational or ["no reason given"])]
         return None
 
