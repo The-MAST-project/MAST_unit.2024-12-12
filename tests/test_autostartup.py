@@ -21,7 +21,7 @@ import unit as unit_module
 from common.activities import UnitActivities
 from common.canonical import CanonicalResponse
 from common.models.statuses import COOLING_DOWN_REASON
-from common.opmode import OpmodeBase, OpState
+from common.opmode import OpMode, OpmodeBase, OpState
 from unit import Unit
 
 
@@ -71,6 +71,7 @@ def clock(monkeypatch):
 def unit(clock):
     u = object.__new__(_Unit)
     OpmodeBase.__init__(u)
+    u._opmode = OpMode.PRODUCTION  # the fitness gate is production's; development has its own tests
     u.activities = UnitActivities(0)
     u.lock = threading.RLock()
     u.conf = SimpleNamespace(seconds_to_autostartup=120)
@@ -173,6 +174,22 @@ class TestTheGate:
         unit.fit = False
 
         assert unit._autostartup("expose")[1:] == ["no reason given"]
+
+    def test_development_does_not_check_fitness(self, unit):
+        """Nothing marshals requests in development: the developer reaches the endpoint regardless."""
+        unit._opmode = OpMode.DEVELOPMENT
+        unit._set_opstate(OpState.STARTED_UP)
+        unit.fit = False
+        unit.reasons = ["mount: not connected"]
+
+        assert unit._autostartup("expose") is None
+
+    def test_development_still_waits_for_startup(self, unit, clock):
+        unit._opmode = OpMode.DEVELOPMENT
+
+        assert unit._autostartup("expose") is None
+        assert unit.startups == 1
+        assert unit.opstate == OpState.STARTED_UP
 
     def test_only_cooling_is_fit(self, unit):
         """The rule MAST_control applies: a unit kept from operational only by cooling may work."""
