@@ -2,6 +2,54 @@
 
 ---
 
+## [2026-11-18] Source selection: four fixes from the review of the Stage 0 code
+
+**Why:** a review of `select_sources` (`mast-claude-config`, `plans/mastrometry_source_selection_design.md`,
+"Known issues in the Stage 0 code") found four faults that would have shaped what the first real-frame
+survey shows. MAST has no field corrector, so coma is at full strength and the first fault mattered.
+
+**What:** (1) the centroid-shift test (`bad_centroid`) applies inside the low-coma radius only: off axis
+coma makes that shift, and the coma term of the ranking handles it; a centroid that did not converge is
+bad anywhere. (2) The saturation level comes from the FITS header when `--full-scale` is not given:
+`SATURATE`, `MAXADU`, `DATAMAX`, else what `BITPIX`/`BSCALE`/`BZERO` allow (BITPIX 16 with BZERO 32768 is
+65535), else the dtype. A float frame stored as floats with none of those is still not tested;
+`Selection.full_scale_source` says where the level came from. (3) The half-maximum FWHM counts the
+source's own segment only (`extract_sources` now also returns `segment_map` and `labels`). (4)
+`n_target` is counted after the grid quota, so crowded stars do not stop the radius from widening.
+
+**Implications:** the unit does not write a saturation keyword today, so a header-derived level is the
+integer range, not the sensor's. A faint star whose half maximum is below the detection threshold now
+has its width undercounted; it is below the SNR cuts that use the width anyway. Not changed: order 2
+from central stars still extrapolates to the corners (acceptable while only the fibre matters), and
+`faint` stays the first reported reason.
+
+**Update, same day:** the fit order is always 1 (`FIT_ORDER`); `order_one_below` is gone. This was
+issue 5 of the review (order 2 fitted from central stars extrapolates to the corners). Decided because
+only the position accuracy at CRPIX matters here -- production gives astrometry.net the fibre pixel as
+CRPIX -- not the distortion elsewhere in the frame. Note: the survey's `--solve` still passes
+`--crpix-center`, which is the fibre pixel only when the ROI is centred on it.
+
+---
+
+## [2026-11-16] The source selection exists as a pure function and a survey; it is not in the solve
+
+**Why:** the plan for filtering the sources MASTrometry hands to astrometry.net
+(`mast-claude-config`, `plans/mastrometry_source_selection_design.md`) rests on simulation. Stage 0
+is to see what the selection does on real frames before anything is wired into a solve.
+
+**What:** `solvers/source_selection.py` (`select_sources`) and `tools/source_survey.py`, which runs it
+on saved FITS frames and writes a picture, CSVs, an exclusion-width sweep and a cross-frame
+consistency table under `--out` only. `MastrometryDotNet` is untouched.
+
+**Implications:** the parameters are the design's starting values, to be tuned from the survey. With
+`--solve` the survey also hands the kept list to `solve-field` (`solvers/survey_solve.py`) and marks
+the stars the solver used; that was written without a `solve-field` at hand and is checked only
+against a stub, so its xylist assumptions (1-based positions, a `.xyls` input) are to be confirmed
+on a unit from the `-solve.txt` it keeps. `faint` is the first reason
+reported for a source that fails several tests, which differs from the order the design lists them
+in; all failed tests are recorded.
+
+---
 ## [2026-11-16] Each kept solve leaves a star map: the stars it extracted and the stars it used
 
 **Why:** the unit kept only the solved FITS, so nothing showed which stars astrometry.net found or

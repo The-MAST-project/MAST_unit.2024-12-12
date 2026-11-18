@@ -184,7 +184,7 @@ def influence(
     return {"leverage": leverage, "cooks_distance": cooks, "fibre_shift_arcsec": shift_px * pixel_scale_arcsec}
 
 
-def _stretch(image: np.ndarray) -> tuple[np.ndarray, int]:
+def stretch(image: np.ndarray) -> tuple[np.ndarray, int]:
     """An 8-bit asinh stretch of `image`, block-averaged down to at most MAX_DISPLAY_WIDTH wide.
 
     Returns the stretched array and the integer factor it was reduced by.
@@ -203,7 +203,7 @@ def _stretch(image: np.ndarray) -> tuple[np.ndarray, int]:
     return (np.clip(stretched, 0.0, 1.0) * 255).astype(np.uint8), factor
 
 
-def _font(size: int):
+def font(size: int):
     try:
         return ImageFont.load_default(size=size)
     except TypeError:  # Pillow without a sized default font
@@ -223,7 +223,7 @@ def render(
 
     A used star's circle grows with its fibre shift, so the stars the solution leaned on stand out.
     """
-    gray, factor = _stretch(image)
+    gray, factor = stretch(image)
     picture = Image.fromarray(gray, mode="L").convert("RGB")
     canvas = Image.new("RGB", (picture.width, picture.height + CAPTION_HEIGHT), (0, 0, 0))
     canvas.paste(picture, (0, CAPTION_HEIGHT))
@@ -249,7 +249,7 @@ def render(
         draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius], outline=USED_COLOR, width=2)
 
     if fibre_shift_arcsec is not None:
-        label_font = _font(14)
+        label_font = font(14)
         for k in np.argsort(fibre_shift_arcsec)[::-1][:LABELLED_STARS]:
             cx, cy = to_display(matched.x[k], matched.y[k])
             draw.text((cx + radii[k] + 3, cy - 8), f'{fibre_shift_arcsec[k]:.3f}"', fill=USED_COLOR, font=label_font)
@@ -259,7 +259,7 @@ def render(
         draw.line([(cx - 14, cy), (cx + 14, cy)], fill=REPORTED_COLOR, width=1)
         draw.line([(cx, cy - 14), (cx, cy + 14)], fill=REPORTED_COLOR, width=1)
 
-    caption_font = _font(15)
+    caption_font = font(15)
     for row, line in enumerate(caption):
         draw.text((8, 4 + row * 17), line, fill=(235, 235, 235), font=caption_font)
     canvas.save(out_path, "JPEG", quality=85)
