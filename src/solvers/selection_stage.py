@@ -47,14 +47,16 @@ class SourceSelectionSettings:
     mode: Mode = "off"
     params: SelectionParams = field(default_factory=SelectionParams)
     exclusion_half_width: float | None = None
-    #: 1: `solve-field` reads xylist positions FITS 1-based; 0: 0-based. Unsettled -- see survey_solve.
+    #: 1: `solve-field` reads xylist positions FITS 1-based (verified against image2xy, see survey_solve); 0: 0-based.
     xylist_origin: int = 1
-    #: the shadow is looked for only this close to the frame centre, pixels. The fold mirror is in the
-    #: middle of the beam; an off-centre "shadow" is the frame's edge roll-off. None: anywhere.
-    shadow_max_center_offset: float | None = 1200.0
-    #: the shadow must be two-sided: it is a valley between two shoulders: the trough lies at least min_depth
-    #: below the lower of the profile maxima on either side. A roll-off has a plateau on one side only.
-    shadow_require_two_sided: bool = True
+    #: Where the shadow may be. None (the default): anywhere. The shadow is a band whose position depends
+    #: on where the stage puts the mirror: centred when the mirror is in (a 4000 px wide band, depth ~0.5),
+    #: and with its edge at the right edge of the frame at the `sky` position (a partial band, depth ~0.65).
+    #: Restricting the search to the centre, as was tried, rejects every `sky` frame's shadow.
+    shadow_max_center_offset: float | None = None
+    #: require a trough lower than both shoulders. Off: a partial shadow at the frame's edge has no far
+    #: shoulder, and would fail it.
+    shadow_require_two_sided: bool = False
 
     def __post_init__(self):
         if self.mode not in MODES:

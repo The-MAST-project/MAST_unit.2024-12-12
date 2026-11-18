@@ -16,14 +16,17 @@ conversion a Stage 2 solve would use -- and the used stars are mapped back to th
 with its inverse. With `factor` == 1 the xylist is the array's own pixels, and there is no
 conversion at all.
 
-**Two things are assumed, not known**, because this was written where there is no `solve-field`:
+**Two things were assumed; the first is now verified, the second shown by use.**
 
 - that astrometry.net reads xylist positions as FITS 1-based (the centre of the first pixel is
-  1.0), as it does for the lists it makes itself (`origin=1`). `origin=0` writes them 0-based
-  instead. The choice changes the solved WCS by a constant pixel offset and nothing else: which
-  stars were used, and the residuals, are the same either way. Compare the two on a frame to see
-  the offset; it is the question Stage 2 has to settle before anything is built on it.
-- that a file named `*.xyls` given as the input is read as a source list.
+  1.0), as it does for the lists it makes itself (`origin=1`). **Verified 2026-11-18** on a
+  traverse frame (mast01, 10 s): astrometry.net's own `image2xy` run on the 2x2 binned image
+  put 36 of our 37 selected stars at a median of (-0.018, -0.033) binned px from where
+  `to_solve_grid(..., origin=1)` puts them; `origin=0` was out by (+0.98, +0.97) px. So the
+  conversion through `pixel_grid` is the solver's own convention. `origin=0` writes them 0-based
+  instead, which changes the solved WCS by a constant pixel offset (0.74" at the unit's scale) and
+  nothing else: which stars were used, and the residuals, are the same either way.
+- that a file named `*.xyls` given as the input is read as a source list (it is: the solves ran).
 
 Both show up in the `-solve.txt` log the survey keeps for each frame, with the full command and
 `solve-field`'s own output.
