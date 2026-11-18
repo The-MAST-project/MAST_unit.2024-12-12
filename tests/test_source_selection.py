@@ -210,7 +210,7 @@ def test_the_kept_sources_reach_the_target_and_are_listed_brightest_first(scene)
     assert selection.counts()["kept"] >= PARAMS.n_target
     assert xylist.shape == (selection.counts()["kept"], 3)
     assert np.all(np.diff(xylist[:, 2]) <= 0)
-    assert selection.fit_order in (1, 2)
+    assert selection.fit_order == 1
 
 
 def test_without_a_shadow_nothing_is_rejected_for_one():
@@ -247,10 +247,10 @@ def test_the_exclusion_width_replaces_the_deficit_test():
 
 @pytest.mark.parametrize(
     ("n_clean", "status", "order"),
-    [(5, "too_few_sources", None), (12, "ok", 1), (30, "ok", 2)],
+    [(5, "too_few_sources", None), (12, "ok", 1), (30, "ok", 1)],
     ids=["five", "twelve", "thirty"],
 )
-def test_the_fit_order_follows_how_many_were_kept(n_clean, status, order):
+def test_the_fit_is_order_one_and_needs_enough_stars(n_clean, status, order):
     frame, _ = _frame(planted=False, n_clean=n_clean, seed=3)
     params = SelectionParams(n_target=n_clean, min_snr=25.0)
 

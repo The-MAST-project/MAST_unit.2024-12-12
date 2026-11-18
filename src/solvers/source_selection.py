@@ -15,7 +15,8 @@ The steps, as in the design:
 3. **Hard-reject** what biases a fit while still being matched: shadow, saturated, hot pixel,
    blended, truncated by an edge, too faint, bad centroid.
 4. **Rank** the survivors by expected positional error, **select** them (inside the low-coma
-   radius, widened until `n_target`; a grid quota; capped at `n_max`), and decide the fit order.
+   radius, widened until `n_target`; a grid quota; capped at `n_max`), and decide whether the frame
+   can be solved (the fit is order 1).
 
 All coordinates are 0-based array coordinates of the array given (`x` is the column), the pixel
 *centre* at an integer. The caller crops a region of interest first and adds its origin back.
@@ -51,6 +52,9 @@ KEPT = "kept"
 FWHM_PER_SIGMA = 2.3548200450309493
 #: Stamp half-size for the first, seeing-free pass that measures peak and half-maximum width.
 PRELIMINARY_HALF_SIZE = 15
+#: The `--tweak-order` handed to the solver. Always 1: the stars are chosen inside the low-coma disk,
+#: where an order-2 distortion fit is poorly constrained at the corners (decided 2026-11-18).
+FIT_ORDER = 1
 #: Sources brighter than this (preliminary SNR) are the seeing sample.
 SEEING_SAMPLE_MIN_SNR = 30.0
 
@@ -92,9 +96,8 @@ class SelectionParams:
     coma_px: float = 2.0
     radius_growth: float = 1.25
     grid: tuple[int, int] = (4, 3)  # cells across x, across y
-    # fit order
+    # fewer kept than this and the frame is not solved; the fit is always `FIT_ORDER`
     fail_below: int = 8
-    order_one_below: int = 20
     #: a fraction of the shorter side, the low-coma radius when none is calibrated
     geometric_low_coma_fraction: float = 0.25
 
@@ -476,7 +479,7 @@ def select_sources(
     n_kept = len(chosen)
     if n_kept < params.fail_below:
         result.status = "too_few_sources"
-    result.fit_order = None if n_kept < params.fail_below else (1 if n_kept < params.order_one_below else 2)
+    result.fit_order = None if n_kept < params.fail_below else FIT_ORDER
     return result
 
 

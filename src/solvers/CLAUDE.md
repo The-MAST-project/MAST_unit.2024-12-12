@@ -58,7 +58,7 @@ failure there is logged and costs none of the other artifacts.
 Stage 0 of the source-filtering plan (`mast-claude-config`, `plans/mastrometry_source_selection_design.md`).
 `select_sources` detects with `extract_sources`, measures each source with a fixed-window centroid,
 rejects the ones that bias a fit (faint, shadow, saturated, hot pixel, blended, truncated, bad
-centroid), ranks and selects the rest, and chooses the fit order. It is **pure and not wired into
+centroid), ranks and selects the rest, and decides whether the frame can be solved (always `--tweak-order 1`). It is **pure and not wired into
 `MastrometryDotNet`**: nothing here changes a solve. The survey runs it on saved frames and writes a
 picture (shadow masked, kept / spare / rejected marked), per-source and per-frame CSVs, an
 exclusion-width sweep and a cross-frame consistency table, only under `--out`.
