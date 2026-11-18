@@ -28,6 +28,12 @@ the real solver in each mode.
 - **Results (median residual):** `shadow_only` is 11-20% below `off` on all six frames, `full` 2-3 times below.
   Plain RMS is dominated by single bad stars (3-13" in every mode), so the survey now reports the median.
 
+**The shadow's depth gate stays at 0.04.** Seventeen mast01 `direct-c5-full` frames (1 s, bright, 2026-11-16) show,
+by eye in ds9, a very faint shadow (near mid-frame or a bit right of centre); the detector finds the same width
+(penumbra ~2100 px, umbra ~1330 px) but at depth 0.024-0.028, so it reports them absent. Left so: a shadow that
+shallow is below the selection's own tolerance (`max_shadow_deficit` 0.05), so it rejects no star and needs no
+darkening. The detector's centre for them is 250-450 px left of where the eye puts it; not investigated.
+
 **The fit order stays 1.** On the same stars, order 1 puts CRVAL 0.54" west of order 2 at CRPIX = frame centre,
 which is the whole offset between `full` and `off`. We are interested in accuracy at the *fibre position*, so
 order 1 fits better; the distortion elsewhere does not matter. This is not measured against a truth yet: the
