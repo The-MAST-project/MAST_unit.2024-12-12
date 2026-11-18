@@ -25,7 +25,6 @@
   "radius_growth": 1.25,
   "grid": [4, 3],
   "fail_below": 8,
-  "order_one_below": 20,
   "geometric_low_coma_fraction": 0.25,
   "exclusion_half_width": null
 }
