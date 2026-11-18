@@ -430,3 +430,32 @@ def test_on_windows_solve_field_is_started_as_a_shell_string_like_the_unit_does(
 
     assert seen["command"] == "C:/cygwin64/usr/local/astrometry/bin/solve-field --width 5"
     assert seen["shell"] is True and seen["env"]["PATH"].startswith("C:\\cygwin64\\bin")
+
+
+def test_crpix_at_the_fibre_replaces_the_centre(tmp_path):
+    """With a CRPIX the solve reports the sky at that pixel; without one it is the frame's centre."""
+    settings = SolveSettings(index_dir="idx", solve_field="solve-field", crpix=(2200.75, 1203.25))
+    args = survey_solve.build_args(
+        settings, tmp_path / "a.xyls", tmp_path / "a.wcs", tmp_path / "a.corr", tmp_path, (4144, 2822), 1
+    )
+    assert "--crpix-center" not in args
+    assert args[args.index("--crpix-x") + 1] == "2200.75" and args[args.index("--crpix-y") + 1] == "1203.25"
+    centred = survey_solve.build_args(
+        SolveSettings(index_dir="idx", solve_field="solve-field"),
+        tmp_path / "a.xyls",
+        tmp_path / "a.wcs",
+        tmp_path / "a.corr",
+        tmp_path,
+        (4144, 2822),
+        1,
+    )
+    assert "--crpix-center" in centred and "--crpix-x" not in centred
+
+
+def test_the_fibre_pixel_becomes_crpix_as_an_rois_centre_does():
+    """The whole frame is a crop that starts at 0: the fibre's CRPIX is the ROI-centre conversion with start 0."""
+    from solvers.pixel_grid import roi_center_to_crpix
+
+    fibre = (4401, 2407)  # mast01, fcu_v2
+    assert roi_center_to_crpix(fibre[0], 0, 2) == pytest.approx((4401 + 1 + 0.5) / 2)
+    assert roi_center_to_crpix(fibre[1], 0, 2) == pytest.approx((2407 + 1 + 0.5) / 2)

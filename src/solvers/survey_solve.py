@@ -117,6 +117,8 @@ class SolveSettings:
     ra_deg: float | None = None
     dec_deg: float | None = None
     radius_deg: float = 2.0
+    #: CRPIX on the solve grid (FITS 1-based, binned): where the solved RA/Dec is reported. None: the centre.
+    crpix: tuple[float, float] | None = None
 
 
 @dataclass
@@ -197,7 +199,11 @@ def build_args(
         "FLUX",
         "--uniformize",
         "0",  # the selection has already spread the stars
-        "--crpix-center",
+        *(
+            ["--crpix-center"]
+            if settings.crpix is None
+            else ["--crpix-x", f"{settings.crpix[0]}", "--crpix-y", f"{settings.crpix[1]}"]
+        ),
         "--tweak-order",
         str(tweak_order),  # tweak is left ON, as in production
     ]
