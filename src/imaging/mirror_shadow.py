@@ -129,6 +129,8 @@ def detect_mirror_shadow(
     bin_px=16.0,  # perpendicular binning (full-res pix)
     continuum_frac=0.5,  # sky-continuum closing element, as a fraction of the profile
     search_downsample=8,  # decimation factor (speed)
+    sky_window=41,  # decimated px: the median that defines the local sky above which a pixel is clipped
+    sky_headroom=0.05,  # fraction above the local sky a pixel may be and still count
     max_center_offset=None,  # if given: only a band whose centre is within this many pixels of the frame centre
     require_two_sided=False,  # a trough with a higher shoulder on one side only is not a band
 ) -> ShadowModel:
@@ -181,6 +183,14 @@ def detect_mirror_shadow(
             raise ValueError(f"reference shape {ref.shape} != image shape {data.shape}")
         base = data / np.maximum(ref, 1.0)
     sup = ndi.median_filter(base[::ds, ::ds].astype(float), size=star_kernel)
+    # Remove what rises above the local sky. The star kernel above is a few pixels: a saturated or bloated
+    # star 100+ px wide survives it, and each profile bin is a *mean* over thousands of pixels, so such a
+    # star lifts every bin it crosses and the sky continuum with them -- flat sky then reads as a 20% dip
+    # (on a frame whose left end was flat, the "shadow" was found there, and the real penumbra on the
+    # right lost). A shadow only lowers the sky, so clipping to a little above the local sky (a median
+    # over `sky_window` decimated pixels, wider than any star) loses nothing of it.
+    sky = ndi.median_filter(sup, size=max(3, int(sky_window)), mode="nearest")
+    sup = np.minimum(sup, sky * (1.0 + sky_headroom))
     yyd, xxd = np.mgrid[0:ny:ds, 0:nx:ds]
     xcd = xxd.ravel() - cx
     ycd = yyd.ravel() - cy
@@ -190,15 +200,13 @@ def detect_mirror_shadow(
     #    and score the deepest localized dip (depth / noise).
     edge_bins = int(edge_margin / bin_px)
     angles = np.deg2rad(_near_vertical_angles(near_vertical_deg, angle_step_deg))
-    best = None
+    found = []
     for a in angles:
         s_c, prof, counts = _project(xcd, ycd, w, a, bin_px)
         res = _band_dip(s_c, prof, counts, continuum_frac, edge_bins, max_center_offset, penumbra_frac)
-        # By depth, not score: the band is deepest in the projection that lines up with it, while a
-        # tilted projection smears its edges, which lowers the point-to-point noise and so *raises*
-        # depth / noise -- it would pick the blurriest angle.
-        if res is not None and (best is None or res["depth"] > best["depth"]):
-            best = {**res, "angle": a}
+        if res is not None:
+            found.append({**res, "angle": a})
+    best = _pick_angle(found)
 
     if best is None:
         return ShadowModel(present=False, image_shape=(ny, nx))
@@ -404,6 +412,28 @@ def _band_dip(s_centers, profile, counts, cont_frac, edge_bins, max_center_offse
         "v_lo": int(vi[0]),
         "v_hi": int(vi[-1]),
     }
+
+
+#: Angles whose dip is within this fraction of the deepest one are ties, and the one nearest vertical wins.
+_ANGLE_TIE_FRACTION = 0.99
+
+
+def _pick_angle(found: list[dict]) -> dict | None:
+    """The band's tilt: the angle at which the dip is deepest -- among angles tied for deepest, the one
+    nearest vertical.
+
+    Not by score (depth / noise): a tilted projection smears the band's edges, which lowers the
+    point-to-point noise and raises the score, so the blurriest angle won. By depth: the band is deepest in
+    the projection that lines up with it. But a partial shadow at the frame's edge is the same depth at every
+    angle (0.400 at all of them), and the angle that happened to be 0.0001 deeper was 21 degrees off vertical,
+    giving a mask 730 px too wide; so near-ties go to vertical. (Edge steepness was tried instead and fails on
+    real frames: stars and noise decide it.)
+    """
+    if not found:
+        return None
+    deepest = max(f["depth"] for f in found)
+    ties = [f for f in found if f["depth"] >= _ANGLE_TIE_FRACTION * deepest]
+    return min(ties, key=lambda f: (abs(abs(np.rad2deg(f["angle"])) - 90.0), -f["depth"]))
 
 
 def _central_peak(frac, srch, s_centers, max_center_offset, penumbra_frac):

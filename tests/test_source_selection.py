@@ -446,3 +446,17 @@ def test_a_hot_pixel_beside_a_star_does_not_blend_it_when_asked():
     assert near.any()
     assert asked.counts()["blended"] <= default.counts()["blended"]
     assert asked.counts()["kept"] >= default.counts()["kept"]
+
+
+def test_local_noise_does_not_flood_the_noisy_side_of_a_frame_with_detections():
+    """Noise that grows across the frame (photon noise follows the sky): one global threshold is 2 sigma where
+    the noise is lowest and ~0.7 sigma where it is highest, and finds pure noise there."""
+    rng = np.random.default_rng(5)
+    sigma = (10.0 + 20.0 * np.arange(NX)[None, :] / NX) * np.ones((NY, 1))  # noise 10 -> 30 on a flat sky
+    frame = 1000.0 + rng.normal(0.0, 1.0, (NY, NX)) * sigma
+    global_noise = select_sources(frame, params=SelectionParams(local_noise=False))
+    local = select_sources(frame, params=SelectionParams(local_noise=True))
+
+    assert global_noise.n_detected > 100
+    assert np.sum(global_noise.x > 3 * NX / 4) > 0.8 * global_noise.n_detected  # all of it on the noisy side
+    assert local.n_detected < 0.1 * global_noise.n_detected

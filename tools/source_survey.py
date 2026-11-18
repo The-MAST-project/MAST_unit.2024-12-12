@@ -34,11 +34,11 @@ Usage:
     --param NAME=VALUE       override a SelectionParams field (repeatable), e.g. --param min_sep_fwhm=1.5
     --stretch zscale|asinh   the picture's display scale: zscale (as ds9's scale zscale, reduced by block
                              maximum so that faint stars survive; default) or the star map's asinh
-    --no-shadow-two-sided-test  do not require the shadow to be two-sided (a trough lower than both its
-                             shoulders, which a roll-off toward one edge is not)
-    --shadow-max-center-offset PX   look for the shadow only this close to the frame centre (default
-                             1200: the mirror is in the middle of the beam, an off-centre "shadow" is
-                             the frame's edge roll-off); 0 looks anywhere
+    --shadow-two-sided       require the shadow to be a trough lower than both its shoulders (a partial
+                             shadow at the frame's edge is not)
+    --shadow-max-center-offset PX   look for the shadow only this close to the frame centre (default 0:
+                             anywhere -- it is centred when the mirror is in, and has its edge at the
+                             frame's edge at the sky position)
     --optical-center X Y     from the unit's calibration (full-frame pixels); default the frame centre
     --low-coma-radius R      likewise, pixels
     --fwhm F                 the seeing in pixels; default measured from the stars
@@ -476,7 +476,7 @@ def survey_frame(
         found = detect_mirror_shadow(
             full,
             max_center_offset=args.shadow_max_center_offset or None,
-            require_two_sided=not args.no_shadow_two_sided_test,
+            require_two_sided=args.shadow_two_sided,
         )
         shadow = shadow_for_roi(found, full_shape, roi) if roi else found
 
@@ -632,7 +632,7 @@ def _solve_via_solver(
             params=params,
             xylist_origin=args.xylist_origin,
             shadow_max_center_offset=args.shadow_max_center_offset or None,
-            shadow_require_two_sided=not args.no_shadow_two_sided_test,
+            shadow_require_two_sided=args.shadow_two_sided,
         )
         outcome = SolveOutcome(status="ok")
         outcome.solved_from = "image"
@@ -745,15 +745,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="the picture's display scale: zscale (as ds9, block maximum; default) or the star map's asinh",
     )
     parser.add_argument(
-        "--no-shadow-two-sided-test",
+        "--shadow-two-sided",
         action="store_true",
-        help="do not require the shadow to be two-sided (a trough lower than both its shoulders)",
+        help="require the shadow to be a trough lower than both its shoulders (a partial shadow at the edge fails)",
     )
     parser.add_argument(
         "--shadow-max-center-offset",
         type=float,
-        default=1200.0,
-        help="look for the shadow only this close to the frame centre, pixels (default 1200; 0: anywhere)",
+        default=0.0,
+        help="look for the shadow only this close to the frame centre, pixels (default 0: anywhere; it is centred "
+        "when the mirror is in, and has its edge at the frame's edge at the sky position)",
     )
     parser.add_argument("--optical-center", nargs=2, type=float, metavar=("X", "Y"))
     parser.add_argument("--low-coma-radius", type=float)

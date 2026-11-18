@@ -68,6 +68,8 @@ class SelectionParams:
     nsigma: float = 2.0
     npixels: int = 5
     box_size: int = 50
+    #: detect and measure against the *local* noise, not one figure for the frame (see `extract_sources`)
+    local_noise: bool = True
     # seeing: measured on the frame unless given; the default is 2 arcsec at 0.2616 arcsec/px
     seeing_fwhm_px: float | None = None
     default_fwhm_px: float = 7.6
@@ -175,6 +177,15 @@ def _load(image) -> np.ndarray:
     if isinstance(image, np.ndarray):
         return image
     return np.asarray(fits.getdata(Path(image)))
+
+
+def _noise_at_sources(detected: dict, params: SelectionParams, frame_noise: float) -> np.ndarray:
+    """The noise to measure each source against: the local background RMS at its peak, or the frame's figure."""
+    n = detected["n_detected"]
+    if not params.local_noise:
+        return np.full(n, frame_noise)
+    rms = detected["background_rms"]
+    return np.maximum(rms[np.asarray(detected["peak_y"], dtype=int), np.asarray(detected["peak_x"], dtype=int)], 1e-9)
 
 
 def window_centroid(
@@ -351,16 +362,20 @@ def select_sources(
     result.full_scale = full_scale
     result.saturation_tested = full_scale is not None
 
-    detected = extract_sources(data, nsigma=params.nsigma, npixels=params.npixels, box_size=params.box_size)
+    detected = extract_sources(
+        data, nsigma=params.nsigma, npixels=params.npixels, box_size=params.box_size, local_noise=params.local_noise
+    )
     if detected is None or detected["n_detected"] == 0:
         result.status = "no_sources"
         return result
     sub = detected["data_sub"]
     n = detected["n_detected"]
 
-    # one noise figure for the frame: a robust sigma of the background-subtracted image
+    # the frame's noise figure (reported), and the noise at each source (used): the local background RMS
+    # at its peak, or the frame's figure when not measuring locally
     noise = 1.4826 * float(np.median(np.abs(sub - np.median(sub))))
     result.noise_px = noise = max(noise, 1e-9)
+    noise_at = _noise_at_sources(detected, params, noise)
 
     # -- preliminary pass: raw peak and half-maximum FWHM, to find the seeing ------------------------
     peak_x = np.asarray(detected["peak_x"], dtype=int)
@@ -376,7 +391,7 @@ def select_sources(
         peak = float(sub[peak_y[i], peak_x[i]])
         # only the source's own segment: a neighbour in the stamp must not widen it
         prelim_fwhm[i] = half_maximum_fwhm(sub[rows, columns], peak, segment_map[rows, columns] == labels[i])
-        prelim_snr[i] = detected["flux"][i] / (noise * math.sqrt(max(detected["area"][i], 1.0)))
+        prelim_snr[i] = detected["flux"][i] / (noise_at[i] * math.sqrt(max(detected["area"][i], 1.0)))
 
     r_first = np.hypot(detected["x"] - center[0], detected["y"] - center[1])
     if params.seeing_fwhm_px is not None:
@@ -408,7 +423,7 @@ def select_sources(
         )
         xw[i], yw[i], converged[i], flux_w[i] = xc, yc, ok, mass
         if sum_w2 > 0:
-            snr[i] = mass / (noise * math.sqrt(sum_w2))
+            snr[i] = mass / (noise_at[i] * math.sqrt(sum_w2))
 
     x_use = np.where(np.isfinite(xw), xw, detected["x"])
     y_use = np.where(np.isfinite(yw), yw, detected["y"])
