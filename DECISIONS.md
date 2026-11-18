@@ -23,9 +23,9 @@ has its width undercounted; it is below the SNR cuts that use the width anyway. 
 from central stars still extrapolates to the corners (acceptable while only the fibre matters), and
 `faint` stays the first reported reason.
 
-**Update, same day:** the fit order is always 1 (`FIT_ORDER`); `order_one_below` is gone. Order 2 was
-issue 5 of the review: stars chosen inside the low-coma disk leave an order-2 distortion fit
-poorly constrained at the corners.
+**Update, same day:** the fit order is always 1 (`FIT_ORDER`); `order_one_below` is gone. This was
+issue 5 of the review (order 2 fitted from central stars extrapolates to the corners). Decided because
+only the position accuracy at CRPIX matters here, not the distortion elsewhere in the frame.
 
 ---
 
