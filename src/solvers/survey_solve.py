@@ -131,6 +131,10 @@ class SolveOutcome:
     weight: np.ndarray | None = None
     fibre_shift_arcsec: np.ndarray | None = None
     residual_rms_arcsec: float | None = None
+    #: the median of the stars' residuals, and their RMS after a 3-sigma clip about the median. The plain RMS
+    #: is dominated by a single bad star (one star at 13" made a better solve read worse, 1.58" against 1.10").
+    residual_median_arcsec: float | None = None
+    residual_clipped_rms_arcsec: float | None = None
     scale_arcsec: float | None = None
     crval: tuple[float, float] | None = None
     fed: int = 0
@@ -305,6 +309,11 @@ def _read_back(outcome: SolveOutcome, matched: Matched, wcs: Path, settings: Sol
     rx, ry, crpix, scale = projected
     outcome.scale_arcsec = scale
     outcome.residual_rms_arcsec = float(math.sqrt(float(np.mean(rx**2 + ry**2)))) * scale
+    r = np.hypot(rx, ry) * scale
+    median = float(np.median(r))
+    outcome.residual_median_arcsec = median
+    kept = r <= median + 3.0 * 1.4826 * median  # a 3-sigma clip about the median (MAD of a half-normal ~ the median)
+    outcome.residual_clipped_rms_arcsec = float(math.sqrt(float(np.mean(r[kept] ** 2)))) if kept.any() else None
     measure = influence(matched.x, matched.y, rx, ry, crpix, scale)
     if measure is not None:
         outcome.fibre_shift_arcsec = measure["fibre_shift_arcsec"]
