@@ -121,7 +121,7 @@ def test_a_lock_makes_the_outcome_guiding_and_guiding_ending_is_not_a_failure():
     assert unit.observed == ["Calibrating", "Guiding", "LostLock", "Guiding"]
     # GUIDING from the first lock; a later LostLock does not take it back.
     assert outcome.state == AcquisitionState.GUIDING
-    assert UnitActivities.Acquiring not in unit.active
+    assert UnitActivities.Acquiring in unit.active, "run_acquisition clears it, once, after the outcome"
 
 
 def test_still_calibrating_is_still_running():
@@ -161,7 +161,7 @@ def test_a_refused_handover_is_a_failure_not_a_success():
     assert failure.startswith("handover to guiding failed: ")
     assert "cannot guide" in failure
     assert outcome.state == AcquisitionState.RUNNING
-    assert UnitActivities.Acquiring not in unit.active  # unwound like a failed phase
+    assert UnitActivities.Acquiring in unit.active, "run_acquisition clears it, once, after the outcome"
 
 
 def test_a_cancellation_before_a_lock_is_a_cancellation():
@@ -191,6 +191,7 @@ def no_thread(monkeypatch):
 
 def test_start_publishes_a_fresh_running_outcome_before_the_thread_runs(no_thread):
     acquirer = object.__new__(Acquirer)
+    acquirer.unit = _acquiring()
     previous = LatestAcquisition(state=AcquisitionState.FAILED, errors=["old"]).begin()
     acquirer.latest = previous
     acquisition = SimpleNamespace(folder="unused", failure=None)
@@ -204,6 +205,17 @@ def test_start_publishes_a_fresh_running_outcome_before_the_thread_runs(no_threa
     assert len(no_thread) == 1  # and the run was handed to a thread, not run here
 
 
+def _acquiring() -> SimpleNamespace:
+    """A unit with `Acquiring` raised, as `Acquirer.begin` leaves it."""
+    active = {UnitActivities.Acquiring}
+    return SimpleNamespace(
+        is_active=lambda activity: activity in active,
+        start_activity=lambda activity, **kwargs: active.add(activity),
+        end_activity=lambda activity, **kwargs: active.discard(activity),
+        active=active,
+    )
+
+
 @pytest.mark.parametrize(
     ("failure", "state"),
     [
@@ -215,6 +227,7 @@ def test_start_publishes_a_fresh_running_outcome_before_the_thread_runs(no_threa
 )
 def test_run_acquisition_settles_the_outcome(monkeypatch, failure, state):
     acquirer = object.__new__(Acquirer)
+    acquirer.unit = _acquiring()
     monkeypatch.setattr(acquirer, "do_acquire", lambda acquisition: failure, raising=False)
     outcome = LatestAcquisition(state=AcquisitionState.GUIDING).begin()
     acquisition = SimpleNamespace(folder="unused", failure=None, latest=outcome)
@@ -228,6 +241,7 @@ def test_run_acquisition_settles_the_outcome(monkeypatch, failure, state):
 
 def test_an_acquisition_that_raises_settles_as_failed(monkeypatch):
     acquirer = object.__new__(Acquirer)
+    acquirer.unit = _acquiring()
 
     def boom(acquisition):
         raise RuntimeError("the solver fell over")

@@ -23,6 +23,16 @@ class _Unit:
             setattr(self, name, None if name in missing else object())
         self.errors: list[str] = []
         self.reference_image = None
+        self.active: set = set()
+
+    def start_activity(self, activity, **kwargs):
+        self.active.add(activity)
+
+    def end_activity(self, activity, **kwargs):
+        self.active.discard(activity)
+
+    def is_active(self, activity):
+        return activity in self.active
 
 
 def _acquirer(missing=()):

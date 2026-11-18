@@ -802,9 +802,10 @@ def test_an_abort_during_positioning_stops_the_run(session):
 
 
 class FakeAcquirer:
-    """Shaped like the real one: `run_acquisition` raises `Acquiring` only after a delay,
-    and the endpoint spawns it on a thread and returns at once. The delay is the window in
-    which "not started yet" used to read as "finished" (MAST_unit#316)."""
+    """Shaped like the real one: `begin` raises `Acquiring` before the run starts, the run
+    takes a while to get going and clears the flag when it ends, and the endpoint spawns it
+    on a thread and returns at once. The delay is the window in which "not started yet"
+    used to read as "finished" (MAST_unit#316)."""
 
     START_DELAY_S = 0.3
     RUN_S = 0.3
@@ -824,11 +825,15 @@ class FakeAcquirer:
             return CanonicalResponse(errors=[self.refusal])
         return SimpleNamespace(failure=None)
 
+    def begin(self):
+        from common.activities import UnitActivities
+
+        self.unit.start_activity(UnitActivities.Acquiring)
+
     def run_acquisition(self, acquisition):
         from common.activities import UnitActivities
 
         time.sleep(self.START_DELAY_S)
-        self.unit.start_activity(UnitActivities.Acquiring)
         time.sleep(self.RUN_S)
         acquisition.failure = self.failure
         self.unit.end_activity(UnitActivities.Acquiring)
@@ -842,6 +847,7 @@ class FakeAcquirer:
         prepared = self.prepare_acquisition(**kwargs)
         if isinstance(prepared, CanonicalResponse):
             return prepared
+        self.begin()
         Thread(target=self.run_acquisition, args=[prepared]).start()
         return CanonicalResponse_Ok
 
