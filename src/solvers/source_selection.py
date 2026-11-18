@@ -78,6 +78,11 @@ class SelectionParams:
     #: BSCALE and BZERO allow), else the dtype's maximum for an integer frame, else not tested.
     full_scale: float | None = None
     min_area: int = 5
+    #: the window centroid's convergence: a step below `centroid_tolerance` px, within
+    #: `centroid_max_iterations` passes. A comatic star (a head with a tail) iterates slowly, and the
+    #: strict defaults reject it as a bad centroid.
+    centroid_tolerance: float = 2e-4
+    centroid_max_iterations: int = 16
     sharp_fwhm_frac: float = 0.5
     min_sep_fwhm: float = 3.0
     #: a source this much wider than the seeing is a merged pair (or not a star); tested only where
@@ -86,6 +91,9 @@ class SelectionParams:
     blend_flux_ratio: float = 0.10
     #: a neighbour counts toward a blend only if it is itself a source (a noise blob cannot bias a star)
     neighbour_min_snr: float = 8.0
+    #: a source rejected as a hot pixel is not a neighbour: it is no star, and one 25 px away does not
+    #: bias a star's window. On a raw frame with ~1000 of them it made most stars "blended".
+    blend_ignores_hot: bool = True
     edge_margin_sigmas: float = 3.0
     edge_margin_extra_px: float = 5.0
     min_snr: float = 15.0
@@ -390,7 +398,14 @@ def select_sources(
     flux_w = np.zeros(n)
     converged = np.zeros(n, bool)
     for i in range(n):
-        xc, yc, mass, sum_w2, ok = window_centroid(sub, detected["x"][i], detected["y"][i], sigma_w)
+        xc, yc, mass, sum_w2, ok = window_centroid(
+            sub,
+            detected["x"][i],
+            detected["y"][i],
+            sigma_w,
+            max_iterations=params.centroid_max_iterations,
+            tolerance=params.centroid_tolerance,
+        )
         xw[i], yw[i], converged[i], flux_w[i] = xc, yc, ok, mass
         if sum_w2 > 0:
             snr[i] = mass / (noise * math.sqrt(sum_w2))
@@ -416,10 +431,12 @@ def select_sources(
     if n > 1:
         tree = cKDTree(np.column_stack([x_use, y_use]))
         flux = np.asarray(detected["flux"], dtype=float)
+        # a source counts as a neighbour if it is itself a source: bright enough, and (if asked) no hot pixel
+        neighbour = (snr >= params.neighbour_min_snr) & ~(hot if params.blend_ignores_hot else False)
         for i, j in sorted(tree.query_pairs(min_sep)):
-            if snr[j] >= params.neighbour_min_snr and flux[j] > params.blend_flux_ratio * flux[i]:
+            if neighbour[j] and flux[j] > params.blend_flux_ratio * flux[i]:
                 blended[i] = True
-            if snr[i] >= params.neighbour_min_snr and flux[i] > params.blend_flux_ratio * flux[j]:
+            if neighbour[i] and flux[i] > params.blend_flux_ratio * flux[j]:
                 blended[j] = True
 
     margin = params.edge_margin_sigmas * sigma_w + params.edge_margin_extra_px

@@ -31,6 +31,14 @@ Usage:
     --roi X Y W H            crop first (the spec / sky ROI); coordinates in the CSVs are reported
                              both in the crop and in the full frame
     --no-shadow              the fold mirror is out: do not look for a shadow
+    --param NAME=VALUE       override a SelectionParams field (repeatable), e.g. --param min_sep_fwhm=1.5
+    --stretch zscale|asinh   the picture's display scale: zscale (as ds9's scale zscale, reduced by block
+                             maximum so that faint stars survive; default) or the star map's asinh
+    --no-shadow-two-sided-test  do not require the shadow to be two-sided (a trough lower than both its
+                             shoulders, which a roll-off toward one edge is not)
+    --shadow-max-center-offset PX   look for the shadow only this close to the frame centre (default
+                             1200: the mirror is in the middle of the beam, an off-centre "shadow" is
+                             the frame's edge roll-off); 0 looks anywhere
     --optical-center X Y     from the unit's calibration (full-frame pixels); default the frame centre
     --low-coma-radius R      likewise, pixels
     --fwhm F                 the seeing in pixels; default measured from the stars
@@ -61,7 +69,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import dataclasses
+import hashlib
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -82,7 +93,7 @@ from solvers.source_selection import (  # noqa: E402
     SelectionParams,
     select_sources,
 )
-from solvers.star_map import font, stretch  # noqa: E402
+from solvers.star_map import MAX_DISPLAY_WIDTH, font, stretch  # noqa: E402
 from solvers.survey_solve import (  # noqa: E402
     DEFAULT_PIXEL_SCALE_ARCSEC,
     SolveOutcome,
@@ -261,6 +272,26 @@ def _tint(rgb: np.ndarray, mask: np.ndarray, color: tuple[int, int, int], alpha:
     rgb[mask] = ((1 - alpha) * rgb[mask] + alpha * np.array(color)).astype(np.uint8)
 
 
+def zscale_display(image: np.ndarray) -> tuple[np.ndarray, int]:
+    """An 8-bit linear display of `image` between its zscale limits (as ds9's scale zscale), at most
+    MAX_DISPLAY_WIDTH wide, reduced by block *maximum*.
+
+    Two things hid the faint stars of the old picture: the asinh stretch is anchored on the sky and
+    saturates a few sigma above it, and the block *mean* divides a point source's peak by the block's
+    area (25 at the usual factor of 5). The zscale range (from a subsample, as ds9 samples) shows the
+    faint stars, and the block maximum keeps them -- and, as in ds9, the hot pixels.
+    """
+    from astropy.visualization import ZScaleInterval  # noqa: PLC0415
+
+    height, width = image.shape
+    factor = max(1, -(-width // MAX_DISPLAY_WIDTH))
+    h, w = height // factor * factor, width // factor * factor
+    z1, z2 = ZScaleInterval().get_limits(image[::4, ::4])
+    small = image[:h, :w].astype(np.float32).reshape(h // factor, factor, w // factor, factor).max(axis=(1, 3))
+    scaled = np.clip((small - z1) / max(float(z2 - z1), 1e-6), 0.0, 1.0)
+    return (scaled * 255).astype(np.uint8), factor
+
+
 def draw_overlay(
     image: np.ndarray,
     selection: Selection,
@@ -271,9 +302,10 @@ def draw_overlay(
     mark_rejected: bool = True,
     show_faint: bool = False,
     solve: SolveOutcome | None = None,
+    display: str = "zscale",
 ) -> None:
     """The frame with the shadow masked and the kept, spare and rejected sources marked."""
-    gray, factor = stretch(image)
+    gray, factor = zscale_display(image) if display == "zscale" else stretch(image)
     rgb = np.stack([gray, gray, gray], axis=-1)
     ny, nx = image.shape
 
@@ -441,7 +473,11 @@ def survey_frame(
 
     shadow = None
     if not args.no_shadow:
-        found = detect_mirror_shadow(full)
+        found = detect_mirror_shadow(
+            full,
+            max_center_offset=args.shadow_max_center_offset or None,
+            require_two_sided=not args.no_shadow_two_sided_test,
+        )
         shadow = shadow_for_roi(found, full_shape, roi) if roi else found
 
     center = None
@@ -473,7 +509,11 @@ def survey_frame(
     )
 
     solve: SolveOutcome | None = None
-    if args.solve:
+    via: dict[str, SolveOutcome] = {}
+    if args.via_solver:
+        via = _solve_via_solver(path, args, params, out_dir)
+        solve = via.get("full")  # the picture's second set of ticks: what the xylist solve used
+    elif args.solve:
         solve = _solve(selection, data.shape, path.stem, args, out_dir)
 
     counts = selection.counts()
@@ -507,6 +547,7 @@ def survey_frame(
         mark_rejected=not args.no_rejected,
         show_faint=args.show_faint,
         solve=solve,
+        display=args.stretch,
     )
     write_sources(selection, (x0, y0), out_dir / f"{stem}-sources.csv", solve)
 
@@ -544,7 +585,95 @@ def survey_frame(
                 "solve_crval_dec_deg": "" if solve.crval is None else _round(solve.crval[1], 7),
             }
         )
+    for mode, outcome in via.items():
+        row.update(
+            {
+                f"{mode}_status": outcome.status,
+                f"{mode}_solved_from": outcome.solved_from,
+                f"{mode}_seconds": _round(outcome.seconds, 2),
+                f"{mode}_used": outcome.used,
+                f"{mode}_crval_ra_deg": "" if outcome.crval is None else _round(outcome.crval[0], 7),
+                f"{mode}_crval_dec_deg": "" if outcome.crval is None else _round(outcome.crval[1], 7),
+                f"{mode}_residual_rms_arcsec": ""
+                if outcome.residual_rms_arcsec is None
+                else _round(outcome.residual_rms_arcsec, 4),
+            }
+        )
     return row, selection, sweep
+
+
+_SOLVER = None  # one MastrometryDotNet for the run: it checks the RAM disk and the indexes once
+
+
+def _solve_via_solver(
+    path: Path, args: argparse.Namespace, params: SelectionParams, out_dir: Path
+) -> dict[str, SolveOutcome]:
+    """Solve the frame with the unit's own `MastrometryDotNet`, once per mode in `--solver-modes`.
+
+    The frame is only read; each mode's artifacts (result text, solved FITS, correspondences, xylist,
+    WCS, star map) are put in `<out>/<hash of the frame name>-<mode>/`, never beside the frame and never on the share.
+    The frame is solved whole: the phase is neither `sky` nor `spec`, so the solver does not crop.
+    """
+    from solvers.selection_stage import SourceSelectionSettings  # noqa: PLC0415 -- needs the unit's configuration
+
+    global _SOLVER
+    if _SOLVER is None:
+        from solvers.mastrometry import MastrometryDotNet  # noqa: PLC0415
+
+        _SOLVER = MastrometryDotNet()
+    # A short folder name: the solver's artifacts are named after the (long) frame, and Windows without
+    # long paths refuses a destination past 260 characters. `<hash of the frame name>-<mode>`.
+    tag = hashlib.sha1(path.name.encode()).hexdigest()[:8]
+    outcomes: dict[str, SolveOutcome] = {}
+    for mode in args.solver_modes:
+        folder = out_dir / f"{tag}-{mode}"
+        settings = SourceSelectionSettings(
+            mode=mode,  # type: ignore[arg-type]
+            params=params,
+            xylist_origin=args.xylist_origin,
+            shadow_max_center_offset=args.shadow_max_center_offset or None,
+            shadow_require_two_sided=not args.no_shadow_two_sided_test,
+        )
+        outcome = SolveOutcome(status="ok")
+        outcome.solved_from = "image"
+        start = time.monotonic()
+        try:
+            result = _SOLVER.solve(
+                unit=None,
+                phase="full",  # type: ignore[arg-type]
+                full_frame_input_image_path=str(path),
+                source_selection=settings,
+                artifacts_dir=folder,
+            )
+        except Exception as e:  # noqa: BLE001 -- one mode failing must not end the survey of the frame
+            outcome.status = f"failed: {e!r}"
+            result = None
+        outcome.seconds = time.monotonic() - start
+        if result is not None:
+            if result.selection:
+                outcome.solved_from = result.selection.get("solved_from", "image")
+                outcome.fed = (result.selection.get("counts") or {}).get("kept", 0)
+            if not result.succeeded:
+                outcome.status = "failed: " + "; ".join(result.errors or ["not solved"])
+            else:
+                _read_back_artifacts(outcome, folder, args)
+        outcomes[mode] = outcome
+    return outcomes
+
+
+def _read_back_artifacts(outcome: SolveOutcome, folder: Path, args: argparse.Namespace) -> None:
+    """The used stars and the solution of a `MastrometryDotNet` solve, from the files it left in `folder`."""
+    from solvers.star_map import read_matched  # noqa: PLC0415
+    from solvers.survey_solve import SolveSettings as _Settings  # noqa: PLC0415
+    from solvers.survey_solve import _read_back  # noqa: PLC0415
+
+    solved = next(iter(sorted(folder.glob("*,solver=*.fits"))), None)
+    corr = solved.with_suffix(".corr") if solved is not None else None
+    matched = read_matched(corr) if corr is not None else None
+    if solved is None or matched is None or len(matched.x) == 0:
+        outcome.status = "failed: the solve left no solved FITS or correspondences"
+        return
+    _read_back(outcome, matched, solved, _Settings(index_dir="", factor=args.bin, origin=args.xylist_origin))
 
 
 def _solve(selection: Selection, shape: tuple[int, int], stem: str, args: argparse.Namespace, out_dir: Path) -> SolveOutcome:
@@ -577,12 +706,55 @@ def _solve_caption(solve: SolveOutcome) -> str:
     return f"solve: fed {solve.fed} (green o)   used {solve.used} (blue o){rms}   {solve.seconds:.1f} s"
 
 
+def parse_param_overrides(items: list[str] | None) -> dict[str, object]:
+    """`--param name=value` overrides of `SelectionParams`, each value read as the field's own type."""
+    valid = {f.name: f for f in dataclasses.fields(SelectionParams)}
+    out: dict[str, object] = {}
+    for item in items or []:
+        name, sep, text = item.partition("=")
+        if not sep or name not in valid:
+            raise ValueError(f"'{item}' is not name=value of a SelectionParams field ({', '.join(valid)})")
+        default = getattr(SelectionParams(), name)
+        if isinstance(default, bool):
+            out[name] = text.lower() in ("1", "true", "yes", "on")
+        elif isinstance(default, tuple):
+            out[name] = tuple(int(v) for v in text.split(","))
+        elif isinstance(default, int):
+            out[name] = int(text)
+        else:
+            out[name] = None if text.lower() == "none" else float(text)
+    return out
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("paths", nargs="+", type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--roi", nargs=4, type=int, metavar=("X", "Y", "W", "H"))
     parser.add_argument("--no-shadow", action="store_true")
+    parser.add_argument(
+        "--param",
+        action="append",
+        metavar="NAME=VALUE",
+        help="override a SelectionParams field, e.g. --param min_sep_fwhm=1.5 (repeatable)",
+    )
+    parser.add_argument(
+        "--stretch",
+        choices=("zscale", "asinh"),
+        default="zscale",
+        help="the picture's display scale: zscale (as ds9, block maximum; default) or the star map's asinh",
+    )
+    parser.add_argument(
+        "--no-shadow-two-sided-test",
+        action="store_true",
+        help="do not require the shadow to be two-sided (a trough lower than both its shoulders)",
+    )
+    parser.add_argument(
+        "--shadow-max-center-offset",
+        type=float,
+        default=1200.0,
+        help="look for the shadow only this close to the frame centre, pixels (default 1200; 0: anywhere)",
+    )
     parser.add_argument("--optical-center", nargs=2, type=float, metavar=("X", "Y"))
     parser.add_argument("--low-coma-radius", type=float)
     parser.add_argument("--fwhm", type=float)
@@ -593,6 +765,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--match-radius", type=float, default=5.0)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--solve", action="store_true")
+    parser.add_argument(
+        "--via-solver",
+        action="store_true",
+        help="solve with the unit's MastrometryDotNet (needs the unit's configuration and RAM disk) instead of "
+        "--solve's own solve-field; see --solver-modes",
+    )
+    parser.add_argument(
+        "--solver-modes",
+        type=lambda s: s.split(","),
+        default=["off", "shadow_only", "full"],
+        help="with --via-solver: the source-selection modes to solve each frame in (default: off,shadow_only,full)",
+    )
     parser.add_argument("--index-dir")
     parser.add_argument("--solve-field")
     parser.add_argument("--pixel-scale", type=float, default=DEFAULT_PIXEL_SCALE_ARCSEC)
@@ -613,7 +797,10 @@ def main(argv: list[str] | None = None) -> int:
     if not frames:
         print("no frames found", file=sys.stderr)
         return 1
-    if args.solve and not args.index_dir:
+    if args.via_solver and args.roi:
+        print("--via-solver solves the whole frame: it cannot be combined with --roi", file=sys.stderr)
+        return 2
+    if args.solve and not args.via_solver and not args.index_dir:
         print("--solve needs --index-dir (the astrometry.net index files)", file=sys.stderr)
         return 2
     out_dir: Path = args.out
@@ -626,7 +813,11 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    params = SelectionParams(seeing_fwhm_px=args.fwhm, full_scale=args.full_scale)
+    try:
+        params = SelectionParams(seeing_fwhm_px=args.fwhm, full_scale=args.full_scale, **parse_param_overrides(args.param))
+    except (TypeError, ValueError) as e:
+        print(f"--param: {e}", file=sys.stderr)
+        return 2
     summary: list[dict] = []
     sweeps: list[dict] = []
     selections: list[Selection] = []

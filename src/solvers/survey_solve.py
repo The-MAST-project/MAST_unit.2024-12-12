@@ -131,6 +131,8 @@ class SolveOutcome:
     scale_arcsec: float | None = None
     crval: tuple[float, float] | None = None
     fed: int = 0
+    #: with the unit's solver: "xylist", "image", or "fallback" (the xylist solve failed)
+    solved_from: str = ""
 
     @property
     def used(self) -> int:

@@ -60,6 +60,10 @@ class ShadowModel:
     depth: float = 0.0  # peak fractional flux deficit (0..1)
     prominence: float = 0.0  # trough prominence / noise (detection SNR)
     baseline: float = 0.0  # deficit floor away from the band
+    #: The trough's depth below the *lower* of its two shoulders (the brightest part of the profile on
+    #: each side of it), as a fraction of that shoulder. A band has sky on both sides, so this is about
+    #: its depth; a roll-off toward one edge has a plateau on one side only, so this is ~0.
+    two_sided_depth: float = 0.0
 
     # perpendicular cross-section kept for plotting / inspection (not persisted)
     s: np.ndarray | None = field(default=None, repr=False)  # perpendicular coordinate (pix)
@@ -125,6 +129,8 @@ def detect_mirror_shadow(
     bin_px=16.0,  # perpendicular binning (full-res pix)
     continuum_frac=0.5,  # sky-continuum closing element, as a fraction of the profile
     search_downsample=8,  # decimation factor (speed)
+    max_center_offset=None,  # if given: only a band whose centre is within this many pixels of the frame centre
+    require_two_sided=False,  # a trough with a higher shoulder on one side only is not a band
 ) -> ShadowModel:
     """Detect a folding-mirror shadow band, or report its absence.
 
@@ -139,6 +145,25 @@ def detect_mirror_shadow(
     ~0.6%).  The near-vertical restriction matches every observed shadow on this
     hardware and keeps the search from locking onto spurious off-axis features;
     widen ``near_vertical_deg`` (toward 90) if a genuinely tilted band appears.
+
+    ``max_center_offset`` restricts the search to bands near the frame centre. The fold mirror sits in
+    the middle of the beam, so on a science frame its shadow is centred; what lies off-centre -- a
+    roll-off toward one edge, a dark strip at the sensor's border -- is not it, yet scores as a dip
+    (on 66 mirror-out frames of three units, 59 "had a shadow", all of them such features). Left
+    ``None`` (the default) the search is unrestricted, which the stage-geometry calibration needs: it
+    maps the shadow as the stage moves it across the frame.
+
+    The prominence is the dip's depth over the profile's *point-to-point* noise. It used to be over
+    the median absolute deviation of the whole profile, which a wide band inflates -- a band covering
+    half the profile read as its own noise, and a 25% deep, 4000 px wide shadow scored ~3 against a
+    threshold of 6.
+
+    ``require_two_sided`` demands that the band be a valley between two shoulders: the trough must lie at
+    least ``min_depth`` below the *lower* of the profile's maxima on either side of it
+    (``ShadowModel.two_sided_depth``). The gradual roll-off toward one edge that every unit shows has a
+    "centre" too, which passes the centred search, but it has a plateau on one side only and so scores ~0.
+    (Not tested by comparing the profile's *ends* with the depth: the frame's outermost columns are
+    vignetted by much more than a shadow is deep.)
 
     Always returns a :class:`ShadowModel`; check ``.present``.
     """
@@ -168,8 +193,11 @@ def detect_mirror_shadow(
     best = None
     for a in angles:
         s_c, prof, counts = _project(xcd, ycd, w, a, bin_px)
-        res = _band_dip(s_c, prof, counts, continuum_frac, edge_bins)
-        if res is not None and (best is None or res["score"] > best["score"]):
+        res = _band_dip(s_c, prof, counts, continuum_frac, edge_bins, max_center_offset, penumbra_frac)
+        # By depth, not score: the band is deepest in the projection that lines up with it, while a
+        # tilted projection smears its edges, which lowers the point-to-point noise and so *raises*
+        # depth / noise -- it would pick the blurriest angle.
+        if res is not None and (best is None or res["depth"] > best["depth"]):
             best = {**res, "angle": a}
 
     if best is None:
@@ -187,7 +215,13 @@ def detect_mirror_shadow(
     penumbra_half = 0.5 * (p_hi - p_lo) * bin_px
     score = float(best["score"])
 
+    pf, v_lo, v_hi = best["pf"], best["v_lo"], best["v_hi"]
+    trough = int(p_lo + np.argmin(pf[p_lo : p_hi + 1]))
+    shoulder = min(float(np.max(pf[v_lo : trough + 1])), float(np.max(pf[trough : v_hi + 1])))
+    two_sided_depth = float((shoulder - pf[trough]) / shoulder) if shoulder > 0 else 0.0
     present = depth >= min_depth and score >= min_prominence and penumbra_half >= min_penumbra_half_width
+    if require_two_sided:
+        present = present and two_sided_depth >= min_depth
 
     return ShadowModel(
         present=bool(present),
@@ -199,6 +233,7 @@ def detect_mirror_shadow(
         depth=depth,
         prominence=score,
         baseline=0.0,
+        two_sided_depth=two_sided_depth,
         s=s_c,
         profile=frac,
     )
@@ -281,6 +316,13 @@ def darken_shadow(
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+#: Width, in profile bins, of the median that removes one-bin spikes before the sky continuum is taken.
+_SPIKE_BINS = 5
+
+#: A floor on the profile noise (a fraction of the sky): a smooth, noiseless profile must not score infinitely.
+_MIN_PROFILE_NOISE = 1e-3
+
+
 def _project(xc, yc, w, angle, bin_width):
     """Project deficit weights ``w`` onto the band-normal axis at ``angle``.
 
@@ -305,7 +347,7 @@ def _near_vertical_angles(near_vertical_deg, step):
     return np.unique(np.concatenate([lo, hi]))
 
 
-def _band_dip(s_centers, profile, counts, cont_frac, edge_bins):
+def _band_dip(s_centers, profile, counts, cont_frac, edge_bins, max_center_offset=None, penumbra_frac=0.1):
     """Score the deepest localized dip in a star-suppressed perpendicular profile.
 
     References ``profile`` to a sky continuum via a grey-scale morphological
@@ -316,12 +358,21 @@ def _band_dip(s_centers, profile, counts, cont_frac, edge_bins):
     ``frac = (continuum - profile)/continuum`` dip.  This works for both wide-
     deep and wide-shallow bands and scales with frame size (a fixed wide median
     instead went near-global on small frames and got poisoned by a deep band).
+    With ``max_center_offset`` only a dip whose *centre* (the middle of its penumbra run) is within that
+    distance of ``s = 0`` (the frame centre) is considered: the deepest such dip, not the deepest bin,
+    which may be the shoulder of a band that lies off-centre. The score is the depth over the profile's point-to-point noise.
     Returns ``dict(score, depth, frac, s, peak_i)`` or ``None``.
     """
     valid = counts >= 0.3 * counts.max()
     if valid.sum() < 5:
         return None
     pf = np.where(valid, profile, np.median(profile[valid]))
+    # A median over a few bins first: the closing follows the brightest bin, so one bright column (a
+    # star's halo, a hot pixel line) would lift the continuum over a whole stretch of sky and turn it into
+    # a dip -- a 4% spike made a flat 2030 ADU plateau a 6% "shadow", and a bright bin beside a roll-off
+    # made it a 0.4 deep one. A band is hundreds of pixels wide; a spike is one or two bins (16 px each).
+    pf = ndi.median_filter(pf, size=_SPIKE_BINS, mode="nearest")
+    profile = np.where(valid, pf, profile)
     se = max(3, int(cont_frac * len(pf)) | 1)
     cont = ndi.grey_closing(pf, size=se)
     frac = np.where(valid, (cont - profile) / np.maximum(cont, 1e-9), 0.0)
@@ -332,10 +383,47 @@ def _band_dip(s_centers, profile, counts, cont_frac, edge_bins):
     srch[vi[-1] - edge_bins + 1 :] = False
     if not srch.any():
         return None
-    noise = 1.4826 * np.median(np.abs(frac[valid] - np.median(frac[valid]))) or 1e-3
+    # Point-to-point scatter, not the spread of the whole profile: a band that covers a large part of
+    # the profile *is* most of that spread, and would be scored against itself.
+    steps = np.diff(frac[valid])
+    noise = 1.4826 * np.median(np.abs(steps - np.median(steps))) / np.sqrt(2.0)
+    noise = max(noise, _MIN_PROFILE_NOISE)
     peak_i = int(np.argmax(np.where(srch, frac, -np.inf)))
+    if max_center_offset is not None:
+        peak_i = _central_peak(frac, srch, s_centers, max_center_offset, penumbra_frac)
+        if peak_i is None:
+            return None
     depth = float(frac[peak_i])
-    return {"score": depth / noise, "depth": depth, "frac": frac, "s": s_centers, "peak_i": peak_i}
+    return {
+        "score": depth / noise,
+        "depth": depth,
+        "frac": frac,
+        "s": s_centers,
+        "peak_i": peak_i,
+        "pf": pf,  # the spike-filtered profile
+        "v_lo": int(vi[0]),
+        "v_hi": int(vi[-1]),
+    }
+
+
+def _central_peak(frac, srch, s_centers, max_center_offset, penumbra_frac):
+    """The deepest dip whose centre is within ``max_center_offset`` of s = 0, or ``None``.
+
+    Dips are tried deepest first; each one's penumbra run is then set aside, so the next candidate is a
+    different dip and not the same band's shoulder.
+    """
+    consumed = np.zeros(len(frac), dtype=bool)
+    positions = np.arange(len(frac))
+    for i in np.argsort(-np.where(srch, frac, -np.inf)):
+        if not srch[i] or frac[i] <= 0.0:
+            break
+        if consumed[i]:
+            continue
+        lo, hi = _run_bounds(frac, int(i), penumbra_frac * frac[i])
+        consumed[lo : hi + 1] = True
+        if abs(float(np.interp(0.5 * (lo + hi), positions, s_centers))) <= max_center_offset:
+            return int(i)
+    return None
 
 
 def _load(image) -> np.ndarray:

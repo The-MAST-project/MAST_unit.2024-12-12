@@ -432,3 +432,17 @@ def test_n_target_counts_what_the_grid_quota_leaves():
 
     assert selection.counts()["kept"] == 6
     assert selection.radius_used_px > 600.0
+
+
+def test_a_hot_pixel_beside_a_star_does_not_blend_it_when_asked():
+    """A raw frame has ~1000 hot pixels: with `blend_ignores_hot` one near a star is no neighbour."""
+    frame, positions = _frame(planted=True)
+    x, y = positions["clean"] if "clean" in positions else next(iter(positions.values()))
+    frame = frame.copy()
+    frame[int(y) + 12, int(x) + 12] += 20000.0  # a one-pixel spike 17 px from the star, well inside 3 x seeing
+    default = select_sources(frame, params=PARAMS)
+    asked = select_sources(frame, params=SelectionParams(**{**PARAMS.__dict__, "blend_ignores_hot": True}))
+    near = np.hypot(default.x - x, default.y - y) < 3.0
+    assert near.any()
+    assert asked.counts()["blended"] <= default.counts()["blended"]
+    assert asked.counts()["kept"] >= default.counts()["kept"]

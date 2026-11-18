@@ -14,6 +14,7 @@
   "max_fwhm_ratio": 1.35,
   "blend_flux_ratio": 0.1,
   "neighbour_min_snr": 8.0,
+  "blend_ignores_hot": true,
   "edge_margin_sigmas": 3.0,
   "edge_margin_extra_px": 5.0,
   "min_snr": 15.0,

@@ -194,3 +194,27 @@ def test_the_picture_masks_the_shadow_and_marks_the_sources(tmp_path):
     kx, ky = selection.x[kept], selection.y[kept]
     ring = np.array(picture.getpixel((int(round(kx + 11)), int(round(ky + survey.CAPTION_HEIGHT)))), dtype=int)
     assert ring[1] > ring[0] + 20
+
+
+def test_zscale_display_keeps_a_faint_point_source_that_the_block_mean_loses():
+    """A star 6 sigma over the sky, one pixel wide, in a 5 x 5 block: the mean dilutes it, the maximum keeps it."""
+    from source_survey import zscale_display
+
+    rng = np.random.default_rng(1)
+    image = rng.normal(1000.0, 10.0, (500, 10000))  # wide enough that the display is reduced by a factor > 1
+    image[250, 5003] += 60.0
+    gray, factor = zscale_display(image)
+    assert factor > 1
+    star = gray[250 // factor, 5003 // factor]
+    assert star > np.percentile(gray, 99.9) or star > 200
+
+
+def test_param_overrides_are_read_as_the_fields_own_types():
+    from source_survey import parse_param_overrides
+
+    got = parse_param_overrides(
+        ["min_sep_fwhm=1.5", "n_target=40", "blend_ignores_hot=false", "grid=5,4", "full_scale=none"]
+    )
+    assert got == {"min_sep_fwhm": 1.5, "n_target": 40, "blend_ignores_hot": False, "grid": (5, 4), "full_scale": None}
+    with pytest.raises(ValueError):
+        parse_param_overrides(["no_such_field=1"])
