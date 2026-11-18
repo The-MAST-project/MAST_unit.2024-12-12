@@ -52,8 +52,9 @@ KEPT = "kept"
 FWHM_PER_SIGMA = 2.3548200450309493
 #: Stamp half-size for the first, seeing-free pass that measures peak and half-maximum width.
 PRELIMINARY_HALF_SIZE = 15
-#: The `--tweak-order` handed to the solver. Always 1: only the position at CRPIX (the ROI centre,
-#: `--crpix-center`) matters, not the distortion toward the corners (decided 2026-11-18).
+#: The `--tweak-order` handed to the solver. Always 1: only the position at CRPIX matters, and
+#: production hands the solver the fibre pixel as CRPIX; the distortion toward the corners does not
+#: (decided 2026-11-18).
 FIT_ORDER = 1
 #: Sources brighter than this (preliminary SNR) are the seeing sample.
 SEEING_SAMPLE_MIN_SNR = 30.0

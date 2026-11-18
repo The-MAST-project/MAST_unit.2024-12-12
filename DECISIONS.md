@@ -25,7 +25,9 @@ from central stars still extrapolates to the corners (acceptable while only the 
 
 **Update, same day:** the fit order is always 1 (`FIT_ORDER`); `order_one_below` is gone. This was
 issue 5 of the review (order 2 fitted from central stars extrapolates to the corners). Decided because
-only the position accuracy at CRPIX matters here, not the distortion elsewhere in the frame.
+only the position accuracy at CRPIX matters here -- production gives astrometry.net the fibre pixel as
+CRPIX -- not the distortion elsewhere in the frame. Note: the survey's `--solve` still passes
+`--crpix-center`, which is the fibre pixel only when the ROI is centred on it.
 
 ---
 
