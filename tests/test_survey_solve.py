@@ -196,6 +196,8 @@ def test_residuals_and_influence_are_read_back(tmp_path, solve_field_binary, mon
     outcome, _ = _solve(tmp_path, solve_field_binary, monkeypatch)
 
     assert outcome.residual_rms_arcsec == pytest.approx(0.0, abs=1e-3)  # the stub's index is the same WCS
+    assert outcome.residual_median_arcsec == pytest.approx(0.0, abs=1e-3)
+    assert outcome.residual_clipped_rms_arcsec == pytest.approx(0.0, abs=1e-3)
     assert outcome.scale_arcsec == pytest.approx(0.2616 * 2, rel=1e-3)
     assert outcome.crval == pytest.approx(CRVAL)
     assert outcome.fibre_shift_arcsec is not None and len(outcome.fibre_shift_arcsec) == 12

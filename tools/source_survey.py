@@ -581,6 +581,9 @@ def survey_frame(
                 "solve_residual_rms_arcsec": ""
                 if solve.residual_rms_arcsec is None
                 else _round(solve.residual_rms_arcsec, 4),
+                "solve_residual_median_arcsec": ""
+                if solve.residual_median_arcsec is None
+                else _round(solve.residual_median_arcsec, 4),
                 "solve_crval_ra_deg": "" if solve.crval is None else _round(solve.crval[0], 7),
                 "solve_crval_dec_deg": "" if solve.crval is None else _round(solve.crval[1], 7),
             }
@@ -597,6 +600,12 @@ def survey_frame(
                 f"{mode}_residual_rms_arcsec": ""
                 if outcome.residual_rms_arcsec is None
                 else _round(outcome.residual_rms_arcsec, 4),
+                f"{mode}_residual_median_arcsec": ""
+                if outcome.residual_median_arcsec is None
+                else _round(outcome.residual_median_arcsec, 4),
+                f"{mode}_residual_clipped_rms_arcsec": ""
+                if outcome.residual_clipped_rms_arcsec is None
+                else _round(outcome.residual_clipped_rms_arcsec, 4),
             }
         )
     return row, selection, sweep
@@ -702,7 +711,11 @@ def _solve(selection: Selection, shape: tuple[int, int], stem: str, args: argpar
 def _solve_caption(solve: SolveOutcome) -> str:
     if solve.status != "ok":
         return f"solve: {solve.status}"
-    rms = "" if solve.residual_rms_arcsec is None else f'   residual rms {solve.residual_rms_arcsec:.3f}"'
+    rms = (
+        ""
+        if solve.residual_rms_arcsec is None
+        else f'   residual rms {solve.residual_rms_arcsec:.3f}" median {solve.residual_median_arcsec or 0.0:.3f}"'
+    )
     return f"solve: fed {solve.fed} (green o)   used {solve.used} (blue o){rms}   {solve.seconds:.1f} s"
 
 
