@@ -626,10 +626,10 @@ class FluxMeteringSession:
         to the guider.
 
         Run on this thread rather than through the endpoint, so the call returns exactly
-        when the acquisition ends. Started on another thread, its end could only be read
-        from `Acquiring`, which is not yet set for a moment after the start -- and a spiral
-        once walked right through that moment (MAST_unit#316). An abort clears `Acquiring`,
-        which the acquisition honors, so this call still returns promptly.
+        when the acquisition ends (a spiral once walked into an acquisition that had not yet
+        raised `Acquiring`, MAST_unit#316). `begin` raises it first, as the endpoint's
+        `start` does. An abort clears `Acquiring`, which the acquisition honors, so this
+        call still returns promptly.
         """
         acquirer = self.unit.acquirer
         if acquirer is None:
@@ -652,6 +652,7 @@ class FluxMeteringSession:
             self.state.last_error = f"acquisition refused: {acquisition.errors}"
             return False
 
+        acquirer.begin()
         acquirer.run_acquisition(acquisition)
 
         if self._stop.is_set():

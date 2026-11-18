@@ -72,11 +72,13 @@ def _phases_of(acquisition) -> dict[str, LatestAcquisitionPhase]:
     return phases
 
 
-def _settle(latest: LatestAcquisition | None, acquisition, failure: str | None) -> None:
+def _settle(latest: LatestAcquisition | None, acquisition, failure: str | None, stopped: bool = False) -> None:
     """Give the record its final state, from how `do_acquire` returned, and write it out.
 
-    A failure string is `FAILED` (or `ABORTED`, for a cancellation); no failure after a
-    lock is `ENDED`, which the handover has already reached. No failure and no lock is the
+    A failure is `ABORTED` when the run was stopped (`stopped`: a stop cleared `Acquiring`),
+    whatever its text says -- a stop mid-phase names the phase, and a solve whose exposure
+    was stopped can raise -- and `FAILED` otherwise. No failure after a lock is `ENDED`,
+    which the handover has already reached. No failure and no lock is the
     acquisition-tuning path (no handover), which also ends here: `ENDED`, nothing wrong.
     Succeeded: it locked, or (tuning) it ended without a failure.
     """
@@ -86,7 +88,7 @@ def _settle(latest: LatestAcquisition | None, acquisition, failure: str | None) 
     if failure is None:
         latest.state = AcquisitionState.ENDED
         latest.finish(True)
-    elif failure == ACQUISITION_CANCELLED:
+    elif stopped or failure == ACQUISITION_CANCELLED:
         latest.state = AcquisitionState.ABORTED
         latest.finish(False, [failure])
     else:
@@ -136,7 +138,18 @@ class Acquirer:
         ).begin(getattr(acquisition, "folder", None), plan_id)
         acquisition.latest = latest
         self.latest = latest
+        self.begin()
         Thread(name="acquisition", target=self.run_acquisition, args=[acquisition]).start()
+
+    def begin(self) -> None:
+        """Raise `Acquiring` for a run about to start, before the caller is answered.
+
+        Raised on the run's own thread, it left a window after the request in which status
+        said "not acquiring" and `/unit/abort` found nothing to stop. `run_acquisition`
+        clears it, once, after the outcome is settled. A synchronous caller of
+        `run_acquisition` calls this first.
+        """
+        self.unit.start_activity(UnitActivities.Acquiring)
 
     def run_acquisition(self, acquisition: Acquisition):
         """Thread entry point for an acquisition: run it, then always release its folder.
@@ -160,11 +173,14 @@ class Acquirer:
         finally:
             # Before the folder release, which can wait on artifacts still moving: a caller
             # polling the outcome should learn how this ended as soon as it has.
-            _settle(getattr(acquisition, "latest", None), acquisition, acquisition.failure)
+            _settle(getattr(acquisition, "latest", None), acquisition, acquisition.failure, self._cancelled())
             # Removed once every protected artifact has reached the shared area, and never
             # before -- so a frame that failed to move keeps its folder instead of being
             # deleted with it.
             MoveGuardian().release_folder(acquisition.folder, logger=logger)
+            # The one clear, last: a caller that waits for it reads a settled outcome, and a
+            # run that raised no longer leaves the unit busy (mast01, 2026-10-25).
+            self.unit.end_activity(UnitActivities.Acquiring)
 
     def _cancelled(self) -> bool:
         """True once `Acquiring` has been cleared -- the protocol's cancel signal.
@@ -226,7 +242,6 @@ class Acquirer:
         the stage moves, which is precisely where a cancellation now lands.
         """
         logger.info(f"{op}: acquisition cancelled; unwinding")
-        self.unit.end_activity(UnitActivities.Acquiring)
         if self.unit.is_active(UnitActivities.Positioning):
             self.unit.end_activity(UnitActivities.Positioning)
         try:
@@ -292,7 +307,6 @@ class Acquirer:
                 return ACQUISITION_CANCELLED if cancelled else GUIDING_NEVER_LOCKED
 
         # Guiding was stopped, after a lock
-        self.unit.end_activity(UnitActivities.Acquiring)
         self.unit.required_mount.stop_tracking()
         return None
 
@@ -322,7 +336,6 @@ class Acquirer:
         return None
 
     def _unwind_failed_phase(self, acquisition_exposure_series) -> None:
-        self.unit.end_activity(UnitActivities.Acquiring)
         if self.unit.is_active(UnitActivities.Positioning):
             self.unit.end_activity(UnitActivities.Positioning)
         self.unit.required_mount.stop_tracking()
@@ -479,7 +492,6 @@ class Acquirer:
             if st.ra_j2000_hours is None or st.dec_j2000_degs is None:
                 msg = "cannot get coordinates from mount (mount not connected)"
                 self.unit.errors.append(msg)
-                self.unit.end_activity(UnitActivities.Acquiring)
                 return msg
 
             acquisition.target_ra = st.ra_j2000_hours
@@ -497,8 +509,6 @@ class Acquirer:
             ra=Angle(target_ra_j2000_hours, unit="hour"),
             dec=Angle(target_dec_j2000_degs, unit="deg"),
         )
-
-        self.unit.start_activity(UnitActivities.Acquiring)
 
         if not self.unit.required_imager.connected:
             self.unit.required_imager.connected = True
@@ -589,7 +599,6 @@ class Acquirer:
 
             if not achieved_tolerances:
                 failure = self._phase_failure(phase, tries)
-                self.unit.end_activity(UnitActivities.Acquiring)
                 self.unit.required_mount.stop_tracking()
                 self.unit.required_imager.end_exposure_series(acquisition_exposure_series)
                 return failure
@@ -661,7 +670,7 @@ class Acquirer:
             boxed_log(logger, lines)
             # End the acquisition but KEEP the mount tracking: the operator fine-tunes the
             # pointing with external tools, then starts guiding via the /start_guiding endpoint.
-            self.unit.end_activity(UnitActivities.Acquiring)
+            # `run_acquisition` ends `Acquiring` once the outcome is settled.
 
         if self.unit.required_acquirer.latest_acquisition is not None:
             self.unit.required_acquirer.latest_acquisition.post_process()

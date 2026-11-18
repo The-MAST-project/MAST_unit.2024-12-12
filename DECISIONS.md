@@ -2,6 +2,27 @@
 
 ---
 
+## [2026-11-18] `Acquiring` is raised before the endpoint answers and cleared once, after the outcome
+
+**Why:** the flag was raised inside `do_acquire`, on the run's thread, so for a moment after
+`start_acquisition_and_guiding` answered, status said "not acquiring" and `/unit/abort` (which gates
+on `Acquiring` or `Guiding`) found nothing to stop. It was cleared at `do_acquire`'s own exits, so a
+run that raised never cleared it: on mast01 (2026-10-25 17:48Z) the unit read busy for about nine
+minutes. And `_settle` recorded a stop as `ABORTED` only for the exact `ACQUISITION_CANCELLED` text,
+so a stop mid-phase, or a solve that raised because its exposure was stopped, was `FAILED`
+(MAST_unit#326, narrowed 2026-11-18).
+
+**What:** `Acquirer.begin()` raises `Acquiring`; `start()` calls it before starting the thread, and
+flux metering before its synchronous `run_acquisition`. `run_acquisition`'s `finally` settles the
+outcome, releases the folder, then ends `Acquiring`: the only clear inside the acquirer. `_settle`
+takes `stopped` (the flag already cleared by a stop when the run ends) and records any failure of a
+stopped run as `ABORTED`.
+
+**Implications:** cancellation is unchanged: a stop still clears `Acquiring` from outside, and the
+run reads that as its cancel signal. `do_acquire` called directly (tests) needs `begin()` first, or
+it reads as cancelled. The larger rework #326 first proposed (a cancel event, the flag held until
+the run unwinds, `completion=` on the endpoint) is left out until a consumer needs it.
+
 ## [2026-11-16] Each kept solve leaves a star map: the stars it extracted and the stars it used
 
 **Why:** the unit kept only the solved FITS, so nothing showed which stars astrometry.net found or

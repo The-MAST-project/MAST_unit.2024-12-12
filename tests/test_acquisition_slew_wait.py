@@ -149,6 +149,7 @@ def _acquisition(slew_to_target=True, skip_sky=False):
 def _acquire(unit, acquisition, monkeypatch):
     a = object.__new__(Acquirer)
     a.unit = unit
+    a.begin()
     monkeypatch.setattr(a, "_cancellable_sleep", lambda seconds: not a._cancelled())
     monkeypatch.setattr(acquirer_module, "time", SimpleNamespace(monotonic=unit.clock.monotonic, sleep=lambda s: None))
     return Acquirer.do_acquire(a, acquisition)

@@ -18,6 +18,7 @@ from test_acquisition_slew_wait import _acquisition, _in_tmp_path, _Unit  # noqa
 
 import acquirer as acquirer_module
 from acquirer import ACQUISITION_CANCELLED, SPEC_MIRROR_IN, SPEC_MIRROR_OUT, Acquirer
+from common.activities import UnitActivities
 from common.canonical import CanonicalResponse
 from common.config.rois import FcuVersion
 
@@ -96,6 +97,7 @@ def _acquire(fcu_version, monkeypatch, results=None, refuse=None, skip_sky=False
     acquisition.handover_automatically_to_guider = False
     acquisition.folder = "acq"
     acquisition.post_process = lambda: None
+    a.begin()
     return unit, Acquirer.do_acquire(a, acquisition)
 
 
@@ -155,7 +157,7 @@ def test_a_failed_mirror_in_solve_fails_the_acquisition_without_a_reference(monk
     assert failure is not None
     assert SPEC_MIRROR_IN.upper() in failure
     assert unit.reference_image is None
-    assert unit.activities == set()
+    assert unit.activities == {UnitActivities.Acquiring}, "only the flag run_acquisition clears"
 
 
 @pytest.mark.parametrize("refused", ["min", "spec"])
@@ -165,7 +167,7 @@ def test_a_refused_stage_move_fails_the_acquisition_instead_of_solving_in_the_wr
     assert failure is not None
     assert f"cannot move the stage to '{refused}'" in failure
     assert ACQUISITION_CANCELLED not in failure
-    assert unit.activities == set()
+    assert unit.activities == {UnitActivities.Acquiring}, "only the flag run_acquisition clears"
     solved = [e for e in unit.events if e.startswith("solve:")]
     assert solved == ([] if refused == "min" else [f"solve:{SPEC_MIRROR_OUT}"])
 
