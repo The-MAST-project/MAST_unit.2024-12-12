@@ -2,6 +2,44 @@
 
 ---
 
+## [2026-11-18] Source selection in the solver (off | shadow_only | full); the fit order stays 1
+
+**Why:** Stage 2 of the source-filtering plan, run on real frames (mast01 traverse, 10 s, full frame, three
+`spec` and three `sky` frames, plus the detector on 255 frames of three units).
+
+**What:** `MastrometryDotNet` takes `solving.source_selection.mode` (MAST_common `SourceSelectionConfig`;
+default `off`): `shadow_only` darkens the fold-mirror shadow's band and solves the image; `full` solves the
+selected sources as an xylist and falls back to the image solve. `tools/source_survey.py --via-solver` drives
+the real solver in each mode.
+
+- **The shadow is not at a fixed place.** Centred when the mirror is in (~4000 px wide, depth ~0.5), and with
+  its edge at a vertical edge of the frame at the `sky` position (partial, depth ~0.65; even only a penumbra).
+  Nothing about its position or size is assumed; checked on 18 real frames and their mirror images.
+- **Detector faults found on real frames:** a saturated star lifted a profile bin's *mean* and the continuum, so
+  flat sky read as a 20% dip (fixed by clipping to 5% above the local sky); the whole-profile MAD as noise made
+  wide bands score ~3; the tilt picked by score or by arbitrary depth ties gave a mask 730 px too wide.
+- **Selection:** detection and SNR use the *local* background RMS. One global threshold was 1.7 sigma in the
+  bright flanks and 2.7 in the dark centre; 3073 detections fell to 1455. The `hot_pixel` reject is a
+  size/sharpness test and mostly catches noise peaks (0.0-0.3% recur at the same sensor position); real hot
+  pixels exist (55 at 10 sigma in three frames) but never form the 5 connected pixels detection needs.
+- **The xylist route is exact.** astrometry.net's own `image2xy` agrees with `to_solve_grid(origin=1)` to
+  (-0.02, -0.03) binned px, and solving its 342 sources through the `full` route at order 2 reproduces the
+  image solve to 0.004". Origin, binning conversion and flags are verified.
+- **Results (median residual):** `shadow_only` is 11-20% below `off` on all six frames, `full` 2-3 times below.
+  Plain RMS is dominated by single bad stars (3-13" in every mode), so the survey now reports the median.
+
+**The fit order stays 1.** On the same stars, order 1 puts CRVAL 0.54" west of order 2 at CRPIX = frame centre,
+which is the whole offset between `full` and `off`. We are interested in accuracy at the *fibre position*, so
+order 1 fits better; the distortion elsewhere does not matter. This is not measured against a truth yet: the
+further stage is an on-sky test with a Gaia star at the fibre, comparing the solution with its Gaia position.
+Until then the survey's `--crpix-center` (not the fibre pixel) is the caveat on every number here.
+
+**Open:** a per-camera hot-pixel mask and renaming the reject; the 2-sigma / 5-pixel detection threshold; `full`
+on frames with strong coma outside the shadow needs the loosened centroid and blend parameters (they are
+parameters, not yet defaults); `solvers/tests` by hand on a unit with the indexes.
+
+---
+
 ## [2026-11-18] Source selection: four fixes from the review of the Stage 0 code
 
 **Why:** a review of `select_sources` (`mast-claude-config`, `plans/mastrometry_source_selection_design.md`,

@@ -104,6 +104,7 @@ class MastrometryDotNet(SolverInterface):
         keep_artifacts: bool = True,
         source_selection: SourceSelectionSettings | None = None,
         artifacts_dir: Path | None = None,
+        fibre_xy: tuple[int, int] | None = None,
     ) -> SolvingResult | None:
         """
         MAST specific astrometry.net solver implementation.
@@ -125,6 +126,11 @@ class MastrometryDotNet(SolverInterface):
         FITS, the correspondences, the xylist and WCS of an xylist solve, the star map -- are put
         there, synchronously, and are not handed to the mover or put beside the input frame, which
         is only read. Without it, the artifacts follow the frame to the shared area as always.
+
+        `fibre_xy` (the survey passes it): the fibre's pixel, 0-based, in the full unbinned frame, as the unit's
+        `guiding.rois[...]` holds it. For a frame solved whole (no ROI) it becomes CRPIX, so the solved RA/Dec is
+        the sky at the fibre -- as it is in production, where the guiding ROI is centred on the fibre. Without it,
+        a whole frame is solved with CRPIX at its centre.
         """
 
         self.unit: Unit | None = unit
@@ -158,7 +164,14 @@ class MastrometryDotNet(SolverInterface):
 
         try:
             return self._solve_in(
-                win_tmp_dir, new_fits_path, result_file, phase, full_frame_input_image_path, target, source_selection
+                win_tmp_dir,
+                new_fits_path,
+                result_file,
+                phase,
+                full_frame_input_image_path,
+                target,
+                source_selection,
+                fibre_xy,
             )
         finally:
             # The solved frame (it carries the WCS -- MAST_unit#27) and the solver's own
@@ -199,6 +212,7 @@ class MastrometryDotNet(SolverInterface):
         full_frame_input_image_path: str,
         target: Coord | None,
         source_selection: SourceSelectionSettings | None = None,
+        fibre_xy: tuple[int, int] | None = None,
     ) -> SolvingResult | None:
         unit = self.unit
 
@@ -289,6 +303,13 @@ class MastrometryDotNet(SolverInterface):
                 )
 
                 logger.info(f"{function_name()}: Cropped to {imager_roi=}, {refpix=}")
+            elif fibre_xy is not None:
+                # The whole frame, with CRPIX at the fibre: the crop starts at 0, so the same conversion as an ROI's.
+                refpix = (
+                    roi_center_to_crpix(fibre_xy[0], 0, downsample_factor),
+                    roi_center_to_crpix(fibre_xy[1], 0, downsample_factor),
+                )
+                logger.info(f"{function_name()}: No ROI, using full frame, refpix at the fibre {fibre_xy} -> {refpix}")
             else:
                 logger.info(f"{function_name()}: No ROI, using full frame, refpix=center")
 

@@ -85,6 +85,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from imaging.mirror_shadow import ShadowModel, detect_mirror_shadow  # noqa: E402
+from solvers.pixel_grid import roi_center_to_crpix  # noqa: E402
 from solvers.source_selection import (  # noqa: E402
     KEPT,
     REJECT_REASONS,
@@ -514,7 +515,7 @@ def survey_frame(
         via = _solve_via_solver(path, args, params, out_dir)
         solve = via.get("full")  # the picture's second set of ticks: what the xylist solve used
     elif args.solve:
-        solve = _solve(selection, data.shape, path.stem, args, out_dir)
+        solve = _solve(selection, data.shape, path.stem, args, out_dir, (x0, y0))
 
     counts = selection.counts()
     shadow_text = (
@@ -570,6 +571,7 @@ def survey_frame(
         "saturation_tested": selection.saturation_tested,
         "repeat_runs": len(runs),
         "repeat_identical": identical,
+        **({"fibre_x": args.fibre_pixel[0], "fibre_y": args.fibre_pixel[1]} if args.fibre_pixel is not None else {}),
     }
     if solve is not None:
         row.update(
@@ -653,6 +655,7 @@ def _solve_via_solver(
                 full_frame_input_image_path=str(path),
                 source_selection=settings,
                 artifacts_dir=folder,
+                fibre_xy=args.fibre_pixel,
             )
         except Exception as e:  # noqa: BLE001 -- one mode failing must not end the survey of the frame
             outcome.status = f"failed: {e!r}"
@@ -685,7 +688,14 @@ def _read_back_artifacts(outcome: SolveOutcome, folder: Path, args: argparse.Nam
     _read_back(outcome, matched, solved, _Settings(index_dir="", factor=args.bin, origin=args.xylist_origin))
 
 
-def _solve(selection: Selection, shape: tuple[int, int], stem: str, args: argparse.Namespace, out_dir: Path) -> SolveOutcome:
+def _solve(
+    selection: Selection,
+    shape: tuple[int, int],
+    stem: str,
+    args: argparse.Namespace,
+    out_dir: Path,
+    origin: tuple[int, int] = (0, 0),
+) -> SolveOutcome:
     """Solve the kept list of one frame, apart from the picture: the files it leaves are the survey's."""
     log_path = out_dir / f"{stem}-solve.txt"
     if selection.status != "ok" or selection.fit_order is None:
@@ -702,6 +712,13 @@ def _solve(selection: Selection, shape: tuple[int, int], stem: str, args: argpar
         ra_deg=args.ra,
         dec_deg=args.dec,
         radius_deg=args.radius,
+        # CRPIX at the fibre: its 0-based pixel in the full frame, less the crop's origin, on the binned grid
+        crpix=None
+        if args.fibre_pixel is None
+        else (
+            roi_center_to_crpix(args.fibre_pixel[0], origin[0], args.bin),
+            roi_center_to_crpix(args.fibre_pixel[1], origin[1], args.bin),
+        ),
     )
     return solve_filtered_list(
         selection.xylist(), shape, selection.fit_order, settings, out_dir / f"{stem}-solve-files", log_path, stem
@@ -717,6 +734,32 @@ def _solve_caption(solve: SolveOutcome) -> str:
         else f'   residual rms {solve.residual_rms_arcsec:.3f}" median {solve.residual_median_arcsec or 0.0:.3f}"'
     )
     return f"solve: fed {solve.fed} (green o)   used {solve.used} (blue o){rms}   {solve.seconds:.1f} s"
+
+
+def resolve_fibre(args: argparse.Namespace) -> tuple[int, int] | None:
+    """The fibre's pixel (0-based, full unbinned frame), from --fibre-xy or from the unit's configuration.
+
+    The FITS headers do not hold it (they carry the mount's RA/Dec, the camera and its temperatures); the unit's
+    `guiding.rois[<fcu version>]` does. `--fibre mast01` reads it from the configuration database, so it needs a
+    MAST machine; `--fibre mast01:fcu_v1` picks the coupling version (default fcu_v2, as the solver assumes).
+    """
+    if args.fibre_xy:
+        return int(args.fibre_xy[0]), int(args.fibre_xy[1])
+    if not args.fibre:
+        return None
+    unit, _, version = args.fibre.partition(":")
+    from common.config import Config  # noqa: PLC0415 -- the unit's configuration, on a MAST machine
+    from common.config.local import load_local_config  # noqa: PLC0415
+    from common.config.rois import FcuVersion  # noqa: PLC0415
+
+    config = Config().get_unit(load_local_config().site, unit)
+    if config is None:
+        raise ValueError(f"no configuration for unit '{unit}'")
+    rois = config.guiding.rois
+    key = FcuVersion(version or "fcu_v2")
+    if key not in rois:
+        raise ValueError(f"unit '{unit}' has no guiding ROI for {key} (it has {[str(k) for k in rois]})")
+    return int(rois[key].fiber_x), int(rois[key].fiber_y)  # type: ignore[union-attr]
 
 
 def parse_param_overrides(items: list[str] | None) -> dict[str, object]:
@@ -744,7 +787,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("paths", nargs="+", type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--roi", nargs=4, type=int, metavar=("X", "Y", "W", "H"))
+    parser.set_defaults(fibre_pixel=None)  # set by main() from --fibre / --fibre-xy
     parser.add_argument("--no-shadow", action="store_true")
+    parser.add_argument(
+        "--fibre",
+        metavar="UNIT[:FCU]",
+        help="solve with CRPIX at this unit's fibre pixel, read from the configuration database (a MAST machine); "
+        "FCU defaults to fcu_v2. The solved RA/Dec is then the sky at the fibre",
+    )
+    parser.add_argument(
+        "--fibre-xy",
+        nargs=2,
+        type=int,
+        metavar=("X", "Y"),
+        help="solve with CRPIX at this pixel (0-based, full unbinned frame, as in the unit's guiding ROI)",
+    )
     parser.add_argument(
         "--param",
         action="append",
@@ -827,6 +884,13 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    try:
+        args.fibre_pixel = resolve_fibre(args)
+    except (ValueError, OSError, ImportError) as e:
+        print(f"--fibre: {e}", file=sys.stderr)
+        return 2
+    if args.fibre_pixel is not None:
+        print(f"solving with CRPIX at the fibre pixel {args.fibre_pixel} (0-based, full frame)")
     try:
         params = SelectionParams(seeing_fwhm_px=args.fwhm, full_scale=args.full_scale, **parse_param_overrides(args.param))
     except (TypeError, ValueError) as e:
