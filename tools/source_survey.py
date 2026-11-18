@@ -433,6 +433,7 @@ def survey_frame(
     """Run the selection on one frame, and write its picture and its sources. Returns the summary row,
     the selection, and the sweep rows."""
     full = np.asarray(fits.getdata(path))
+    header = fits.getheader(path)
     full_shape = full.shape
     roi = tuple(args.roi) if args.roi else None
     x0, y0 = (roi[0], roi[1]) if roi else (0, 0)
@@ -448,7 +449,14 @@ def survey_frame(
         center = (args.optical_center[0] - x0, args.optical_center[1] - y0)
 
     runs = [
-        select_sources(data, shadow=shadow, optical_center=center, low_coma_radius=args.low_coma_radius, params=params)
+        select_sources(
+            data,
+            shadow=shadow,
+            optical_center=center,
+            low_coma_radius=args.low_coma_radius,
+            params=params,
+            header=header,
+        )
         for _ in range(max(1, args.repeat))
     ]
     selection = runs[0]

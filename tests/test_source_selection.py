@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from astropy.io import fits
 
 from imaging.mirror_shadow import ShadowModel
 from solvers.source_selection import (
@@ -15,6 +16,8 @@ from solvers.source_selection import (
     KEPT,
     SPARE,
     SelectionParams,
+    full_scale_from_header,
+    half_maximum_fwhm,
     select_sources,
     window_centroid,
 )
@@ -312,3 +315,120 @@ def test_a_full_scale_can_be_given_for_a_float_frame():
 
     assert selection.saturation_tested
     assert _fate_at(selection, positions["saturated"]) == "saturated"
+
+
+# -- the four fixes of the 2026-11-18 review -------------------------------------------------------------
+
+
+def test_the_centroid_shift_test_is_applied_inside_the_low_coma_radius_only():
+    """Coma shifts the centroid off axis, so there the shift is no fault; inside it still is."""
+    frame, _ = _frame(planted=False, n_clean=24, seed=9)
+    # any shift at all counts, so the radius is the only thing that decides
+    params = SelectionParams(n_target=10, min_snr=25.0, max_centroid_shift_fwhm=1e-4)
+
+    selection = select_sources(frame, params=params, low_coma_radius=400.0)
+
+    bad = np.array(["bad_centroid" in reasons.split("|") for reasons in selection.all_reasons])
+    inside = selection.radius <= 400.0
+    real = selection.snr >= 25.0  # the stars, not the noise blobs
+    assert (inside & real).any() and (~inside & real).any()
+    assert bad[inside & real].all()
+    assert not bad[~inside & real].any()
+
+
+def test_a_neighbour_in_the_stamp_does_not_widen_the_star():
+    star = np.zeros((31, 31))
+    ys, xs = np.mgrid[0:31, 0:31]
+    star += np.exp(-((xs - 10) ** 2 + (ys - 15) ** 2) / (2 * 3.0**2))
+    alone = half_maximum_fwhm(star, 1.0)
+    star += np.exp(-((xs - 22) ** 2 + (ys - 15) ** 2) / (2 * 3.0**2))  # a second star, in the same stamp
+    own = (xs - 10) ** 2 + (ys - 15) ** 2 <= 8**2
+
+    assert half_maximum_fwhm(star, 1.0) > 1.3 * alone  # all pixels: both stars are counted
+    assert half_maximum_fwhm(star, 1.0, own) == pytest.approx(alone, rel=0.15)
+
+
+def test_the_seeing_is_measured_from_each_stars_own_segment():
+    """Two stars 20 px apart (separate detections, each a source) do not call the seeing wider."""
+    rng = np.random.default_rng(3)
+    frame = rng.normal(SKY, NOISE, (NY, NX))
+    for x, y in ((300, 300), (320, 300), (800, 600), (500, 700), (900, 200), (200, 700), (1000, 700), (700, 150)):
+        _star(frame, x, y, 20000.0)
+
+    selection = select_sources(
+        frame.astype(np.float32), params=SelectionParams(n_target=5, min_snr=25.0, seeing_fwhm_px=None)
+    )
+
+    assert selection.fwhm_seeing_px == pytest.approx(SIGMA * FWHM_PER_SIGMA, rel=0.2)
+
+
+@pytest.mark.parametrize(
+    ("cards", "expected", "source"),
+    [
+        ({"BITPIX": 16, "BZERO": 32768, "BSCALE": 1}, 65535.0, "BITPIX"),
+        ({"BITPIX": 8}, 255.0, "BITPIX"),
+        ({"BITPIX": 16}, 32767.0, "BITPIX"),
+        ({"BITPIX": 16, "BZERO": 100.0, "BSCALE": 2.0}, 2 * 32767 + 100.0, "BITPIX"),
+        ({"BITPIX": 16, "BZERO": 32768, "SATURATE": 40000}, 40000.0, "SATURATE"),
+        ({"BITPIX": -32, "MAXADU": 16383}, 16383.0, "MAXADU"),
+        ({"BITPIX": -32, "DATAMAX": 3000.0}, 3000.0, "DATAMAX"),
+        ({"BITPIX": -32}, None, None),
+        ({"BITPIX": -32, "SATURATE": "junk"}, None, None),
+        ({"BITPIX": -32, "SATURATE": 0}, None, None),
+    ],
+)
+def test_the_full_scale_a_header_gives(cards, expected, source):
+    assert full_scale_from_header(fits.Header(cards)) == (expected, source)
+
+
+def test_no_header_gives_no_full_scale():
+    assert full_scale_from_header(None) == (None, None)
+
+
+def test_a_float_frame_takes_its_full_scale_from_the_header():
+    frame, positions = _frame()
+    header = fits.Header({"BITPIX": 16, "BZERO": 32768, "BSCALE": 1})
+
+    selection = select_sources(frame.astype(np.float32), shadow=_shadow(), params=PARAMS, header=header)
+
+    assert selection.saturation_tested
+    assert (selection.full_scale, selection.full_scale_source) == (65535.0, "BITPIX")
+    assert _fate_at(selection, positions["saturated"]) == "saturated"
+
+
+def test_a_fits_file_is_read_with_its_header(tmp_path):
+    frame, _ = _frame()
+    path = tmp_path / "frame.fits"
+    fits.PrimaryHDU(np.clip(frame, 0, 65535).astype(np.uint16), header=fits.Header({"SATURATE": 50000})).writeto(path)
+
+    selection = select_sources(path, shadow=_shadow(), params=PARAMS)
+
+    assert (selection.full_scale, selection.full_scale_source) == (50000.0, "SATURATE")
+
+
+def test_the_parameter_outranks_the_header_and_the_dtype_comes_last():
+    frame, _ = _frame()
+    header = fits.Header({"SATURATE": 50000})
+
+    given = select_sources(
+        frame.astype(np.uint16), params=SelectionParams(n_target=10, min_snr=25.0, full_scale=1e5), header=header
+    )
+    plain = select_sources(frame.astype(np.uint16), params=PARAMS)
+
+    assert (given.full_scale, given.full_scale_source) == (1e5, "params")
+    assert (plain.full_scale, plain.full_scale_source) == (65535.0, "dtype")
+
+
+def test_n_target_counts_what_the_grid_quota_leaves():
+    """Twelve crowded stars inside the radius are two, by the quota: the radius must still widen."""
+    frame = np.random.default_rng(5).normal(SKY, NOISE, (NY, NX))
+    crowd = [(x, y) for x in (200, 230, 260, 290) for y in (200, 230, 260)]  # the top-left cell, 350-470 px out
+    for x, y in [*crowd, (600, 830), (1100, 800), (1100, 100), (100, 800)]:  # and one in each of four others
+        _star(frame, x, y, 9000.0)
+    frame = np.clip(frame, 0, 65535).astype(np.uint16)
+    params = SelectionParams(n_target=6, n_max=24, min_snr=25.0)  # two per cell
+
+    selection = select_sources(frame, params=params, low_coma_radius=480.0)
+
+    assert selection.counts()["kept"] == 6
+    assert selection.radius_used_px > 600.0

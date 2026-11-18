@@ -66,6 +66,12 @@ exclusion-width sweep and a cross-frame consistency table, only under `--out`.
 - Coordinates are 0-based array coordinates of the array given (the crop, with `--roi`).
 - Every failed test is kept in `Selection.all_reasons`; `fate` carries the first, `faint` first, so
   the noise blobs a 2 sigma detection finds are not called blends.
+- The saturation level is `--full-scale`, else the FITS header (`SATURATE`, `MAXADU`, `DATAMAX`, else
+  `BITPIX`/`BSCALE`/`BZERO`), else an integer dtype's maximum; `Selection.full_scale_source` says which.
+  The unit writes no saturation keyword, so the header gives the integer range, not the sensor's.
+- `bad_centroid`'s shift test is applied inside the low-coma radius only (coma shifts centroids off
+  axis); an unconverged centroid is bad anywhere. The half-maximum FWHM counts the source's own
+  segment, and `n_target` is counted after the grid quota.
 - A neighbour counts toward a blend only with SNR >= `neighbour_min_snr`; a merged pair is caught
   by its width, only where the width is reliable (SNR >= 30).
 - Detections along the shadow's penumbra edges (the sky step the 50 px mesh leaves) turn up as
