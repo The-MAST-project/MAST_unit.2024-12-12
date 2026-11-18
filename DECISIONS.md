@@ -2,6 +2,29 @@
 
 ---
 
+## [2026-11-18] Source selection: four fixes from the review of the Stage 0 code
+
+**Why:** a review of `select_sources` (`mast-claude-config`, `plans/mastrometry_source_selection_design.md`,
+"Known issues in the Stage 0 code") found four faults that would have shaped what the first real-frame
+survey shows. MAST has no field corrector, so coma is at full strength and the first fault mattered.
+
+**What:** (1) the centroid-shift test (`bad_centroid`) applies inside the low-coma radius only: off axis
+coma makes that shift, and the coma term of the ranking handles it; a centroid that did not converge is
+bad anywhere. (2) The saturation level comes from the FITS header when `--full-scale` is not given:
+`SATURATE`, `MAXADU`, `DATAMAX`, else what `BITPIX`/`BSCALE`/`BZERO` allow (BITPIX 16 with BZERO 32768 is
+65535), else the dtype. A float frame stored as floats with none of those is still not tested;
+`Selection.full_scale_source` says where the level came from. (3) The half-maximum FWHM counts the
+source's own segment only (`extract_sources` now also returns `segment_map` and `labels`). (4)
+`n_target` is counted after the grid quota, so crowded stars do not stop the radius from widening.
+
+**Implications:** the unit does not write a saturation keyword today, so a header-derived level is the
+integer range, not the sensor's. A faint star whose half maximum is below the detection threshold now
+has its width undercounted; it is below the SNR cuts that use the width anyway. Not changed: order 2
+from central stars still extrapolates to the corners (acceptable while only the fibre matters), and
+`faint` stays the first reported reason.
+
+---
+
 ## [2026-11-16] The source selection exists as a pure function and a survey; it is not in the solve
 
 **Why:** the plan for filtering the sources MASTrometry hands to astrometry.net

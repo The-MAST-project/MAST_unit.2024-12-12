@@ -69,7 +69,9 @@ class SelectionParams:
     # hard rejects
     max_shadow_deficit: float = 0.05
     sat_frac: float = 0.8
-    full_scale: float | None = None  # None: the dtype's maximum for an integer frame, else not tested
+    #: The saturation level. None: from the FITS header (SATURATE, MAXADU, DATAMAX, else what BITPIX,
+    #: BSCALE and BZERO allow), else the dtype's maximum for an integer frame, else not tested.
+    full_scale: float | None = None
     min_area: int = 5
     sharp_fwhm_frac: float = 0.5
     min_sep_fwhm: float = 3.0
@@ -110,6 +112,8 @@ class Selection:
     low_coma_radius_px: float = float("nan")
     radius_used_px: float = float("nan")
     full_scale: float | None = None
+    #: where `full_scale` came from: "params", a header keyword, "BITPIX", "dtype", or None (not tested)
+    full_scale_source: str | None = None
     saturation_tested: bool = False
     snr_relaxed: bool = False
     shadow_present: bool = False
@@ -214,11 +218,51 @@ def window_centroid(
     return xc, yc, mass, sum_w2, converged
 
 
-def half_maximum_fwhm(stamp: np.ndarray, peak: float) -> float:
-    """FWHM of the star in `stamp` from the count of pixels at or above half its peak: 2 sqrt(n / pi)."""
+def half_maximum_fwhm(stamp: np.ndarray, peak: float, own: np.ndarray | None = None) -> float:
+    """FWHM of the star in `stamp` from the count of pixels at or above half its peak: 2 sqrt(n / pi).
+
+    `own` is a boolean mask of the star's own segment. Given, only those pixels are counted, so a
+    neighbour in the stamp does not widen the star.
+    """
     if peak <= 0:
         return 0.0
-    return 2.0 * math.sqrt(float(np.count_nonzero(stamp >= 0.5 * peak)) / math.pi)
+    above = stamp >= 0.5 * peak
+    if own is not None:
+        above &= own
+    return 2.0 * math.sqrt(float(np.count_nonzero(above)) / math.pi)
+
+
+#: Header keywords that state the saturation level directly, in the order they are tried.
+FULL_SCALE_KEYWORDS = ("SATURATE", "MAXADU", "DATAMAX")
+
+
+def full_scale_from_header(header) -> tuple[float | None, str | None]:
+    """The saturation level a FITS header gives, and which part of it: `(None, None)` if none.
+
+    A keyword (`FULL_SCALE_KEYWORDS`) wins. Otherwise, for a frame stored as integers, the largest
+    value those can hold once BSCALE and BZERO are applied (BITPIX 16, BZERO 32768 gives 65535). That
+    is right whatever dtype the data comes back as, which is the point for a frame that was scaled or
+    binned into floats. A frame stored as floats (BITPIX < 0) says nothing: its header gives no level.
+    """
+    if header is None:
+        return None, None
+    for key in FULL_SCALE_KEYWORDS:
+        try:
+            value = float(header[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value > 0:
+            return value, key
+    bitpix = header.get("BITPIX")
+    if bitpix in (8, 16, 32, 64):
+        stored_max = 255 if bitpix == 8 else 2 ** (bitpix - 1) - 1  # 8 is unsigned in FITS, the others signed
+        try:
+            value = float(header.get("BSCALE", 1.0)) * stored_max + float(header.get("BZERO", 0.0))
+        except (TypeError, ValueError):
+            return None, None
+        if math.isfinite(value) and value > 0:
+            return value, "BITPIX"
+    return None, None
 
 
 def _shadow_deficit(shadow, x: np.ndarray, y: np.ndarray, shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
@@ -244,6 +288,18 @@ def _shadow_deficit(shadow, x: np.ndarray, y: np.ndarray, shape: tuple[int, int]
     return np.clip(deficit, 0.0, 1.0), distance
 
 
+def _resolve_full_scale(params: SelectionParams, header, raw: np.ndarray) -> tuple[float | None, str | None]:
+    """The saturation level and where it came from: the parameter, then the header, then an integer dtype."""
+    if params.full_scale is not None:
+        return params.full_scale, "params"
+    from_header = full_scale_from_header(header)
+    if from_header[0] is not None:
+        return from_header
+    if np.issubdtype(raw.dtype, np.integer):
+        return float(np.iinfo(raw.dtype).max), "dtype"
+    return None, None
+
+
 def select_sources(
     image,
     *,
@@ -252,6 +308,7 @@ def select_sources(
     low_coma_radius: float | None = None,
     params: SelectionParams | None = None,
     exclusion_half_width: float | None = None,
+    header=None,
 ) -> Selection:
     """Detect, measure, reject and select the sources of `image` (a 2D array or a FITS path).
 
@@ -276,9 +333,9 @@ def select_sources(
         float(low_coma_radius) if low_coma_radius else float(params.geometric_low_coma_fraction * min(nx, ny))
     )
 
-    full_scale = params.full_scale
-    if full_scale is None and np.issubdtype(raw.dtype, np.integer):
-        full_scale = float(np.iinfo(raw.dtype).max)
+    if header is None and not isinstance(image, np.ndarray):
+        header = fits.getheader(Path(image))
+    full_scale, result.full_scale_source = _resolve_full_scale(params, header, raw)
     result.full_scale = full_scale
     result.saturation_tested = full_scale is not None
 
@@ -300,10 +357,13 @@ def select_sources(
     prelim_fwhm = np.zeros(n)
     prelim_snr = np.zeros(n)
     half = PRELIMINARY_HALF_SIZE
+    segment_map, labels = detected["segment_map"], detected["labels"]
     for i in range(n):
-        stamp = sub[max(0, peak_y[i] - half) : peak_y[i] + half + 1, max(0, peak_x[i] - half) : peak_x[i] + half + 1]
+        rows = slice(max(0, peak_y[i] - half), peak_y[i] + half + 1)
+        columns = slice(max(0, peak_x[i] - half), peak_x[i] + half + 1)
         peak = float(sub[peak_y[i], peak_x[i]])
-        prelim_fwhm[i] = half_maximum_fwhm(stamp, peak)
+        # only the source's own segment: a neighbour in the stamp must not widen it
+        prelim_fwhm[i] = half_maximum_fwhm(sub[rows, columns], peak, segment_map[rows, columns] == labels[i])
         prelim_snr[i] = detected["flux"][i] / (noise * math.sqrt(max(detected["area"][i], 1.0)))
 
     r_first = np.hypot(detected["x"] - center[0], detected["y"] - center[1])
@@ -363,7 +423,11 @@ def select_sources(
 
     def reasons_with(min_snr: float) -> dict[str, np.ndarray]:
         shift = np.hypot(x_use - detected["x"], y_use - detected["y"])
-        bad_centroid = ~converged | ~np.isfinite(xw) | (shift > params.max_centroid_shift_fwhm * fwhm_seeing)
+        # A shift between the window centroid and the first moment is what coma itself makes off
+        # axis, so it is a fault only inside the low-coma radius. Outside, a star that did not
+        # converge is still bad, and the coma term of `sigma` ranks the rest down.
+        shifted = (shift > params.max_centroid_shift_fwhm * fwhm_seeing) & (radius <= result.low_coma_radius_px)
+        bad_centroid = ~converged | ~np.isfinite(xw) | shifted
         return {
             "shadow": shadow_fail,
             "saturated": saturated,
@@ -427,29 +491,38 @@ def _choose(
     params: SelectionParams,
     result: Selection,
 ) -> np.ndarray:
-    """From the surviving sources: inside the low-coma radius, widened until `n_target`, with a grid
-    quota, lowest expected error first, at most `n_max`. Returns the indices chosen."""
+    """From the surviving sources: inside the low-coma radius, widened until `n_target` are *chosen*,
+    with a grid quota, lowest expected error first, at most `n_max`. Returns the indices chosen.
+
+    `n_target` counts what the quota leaves, not what lies inside the radius: stars crowded into one
+    cell do not count for more than the cell's share.
+    """
     if candidates.size == 0:
         result.radius_used_px = low_coma_radius
         return candidates
     ny, nx = shape
-    max_radius = float(np.max(radius[candidates]))
-    reach = low_coma_radius
-    while np.count_nonzero(radius[candidates] <= reach) < params.n_target and reach < max_radius:
-        reach *= params.radius_growth
-    result.radius_used_px = reach
-    inside = candidates[radius[candidates] <= reach]
-
     cells_x, cells_y = params.grid
     per_cell = max(1, int(math.ceil(params.n_max / (cells_x * cells_y))))
-    cell = np.minimum((x[inside] / nx * cells_x).astype(int), cells_x - 1) + cells_x * np.minimum(
-        (y[inside] / ny * cells_y).astype(int), cells_y - 1
-    )
-    taken: list[int] = []
-    for c in np.unique(cell):
-        members = inside[cell == c]
-        taken.extend(members[np.argsort(sigma[members], kind="stable")][:per_cell].tolist())
-    chosen = np.array(taken, dtype=int)
-    if chosen.size > params.n_max:
-        chosen = chosen[np.argsort(sigma[chosen], kind="stable")][: params.n_max]
-    return np.sort(chosen)
+
+    def choose_within(reach: float) -> np.ndarray:
+        inside = candidates[radius[candidates] <= reach]
+        cell = np.minimum((x[inside] / nx * cells_x).astype(int), cells_x - 1) + cells_x * np.minimum(
+            (y[inside] / ny * cells_y).astype(int), cells_y - 1
+        )
+        taken: list[int] = []
+        for c in np.unique(cell):
+            members = inside[cell == c]
+            taken.extend(members[np.argsort(sigma[members], kind="stable")][:per_cell].tolist())
+        chosen = np.array(taken, dtype=int)
+        if chosen.size > params.n_max:
+            chosen = chosen[np.argsort(sigma[chosen], kind="stable")][: params.n_max]
+        return np.sort(chosen)
+
+    max_radius = float(np.max(radius[candidates]))
+    reach = low_coma_radius
+    chosen = choose_within(reach)
+    while chosen.size < params.n_target and reach < max_radius:
+        reach *= params.radius_growth
+        chosen = choose_within(reach)
+    result.radius_used_px = reach
+    return chosen
