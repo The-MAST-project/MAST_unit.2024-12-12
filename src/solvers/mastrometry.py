@@ -319,7 +319,7 @@ class MastrometryDotNet(SolverInterface):
             #
             selection_settings = resolve_settings(unit_conf, source_selection)
             stage: StageResult | None = None
-            if selection_settings.mode != "off":
+            if selection_settings.mode != "original":
                 stage = prepare(
                     data,
                     header,
@@ -333,7 +333,7 @@ class MastrometryDotNet(SolverInterface):
                     failure = SolvingResult(succeeded=False, errors=[f"source selection: {why}"])
                     failure.selection = stage.record()
                     return failure
-                data = stage.data  # darkened, for shadow_only; the input otherwise
+                data = stage.data  # darkened, for shadowed; the input otherwise
 
             # Downsample by factor downsample_factor (binning)
             downsampled_height = data.shape[0] // downsample_factor

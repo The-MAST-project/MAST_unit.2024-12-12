@@ -6,10 +6,10 @@ cropped frame* (`prepare`), and *what do we say about it afterwards* (`StageResu
 
 Modes (`solving.source_selection.mode`, MAST_common `SourceSelectionConfig`)
 ---------------------------------------------------------------------------
-``off``          nothing happens; this module is not even consulted beyond `resolve_settings`.
-``shadow_only``  the fold-mirror shadow is detected and its band (umbra *and* penumbra) darkened
+``original``     nothing happens; this module is not even consulted beyond `resolve_settings`.
+``shadowed``     the fold-mirror shadow is detected and its band (umbra *and* penumbra) darkened
                  with `imaging.mirror_shadow.darken_shadow`; the image is then solved as before.
-``full``         the shadow is detected, `select_sources` chooses the sources on the *undarkened*
+``selective``    the shadow is detected, `select_sources` chooses the sources on the *undarkened*
                  frame (it needs the shadow's dimming to reject stars inside it), and that list is
                  solved as an xylist. The image solve remains the fallback.
 
@@ -21,8 +21,8 @@ for in the frame itself, so a frame that has none is found to have none; the mir
 
 Before anything else the camera's hot pixels, if a map of them is known, are filled with the median of their
 neighbours (`imaging/hot_pixels.py`; the map is `<this unit's folder on the share>/Calibration/hot_pixels.json`):
-a hot pixel inside a star's window pulls its centroid. The solved image of `shadow_only`, and the fallback
-image of `full`, are the filled ones; `off` is not touched.
+a hot pixel inside a star's window pulls its centroid. The solved image of `shadowed`, and the fallback
+image of `selective`, are the filled ones; `original` is not touched.
 
 Where the frame is cropped (the ROI) the selection runs on the cropped array, with the crop's own
 centre as the optical centre -- the unit does not yet hold a calibrated optical centre or low-coma
@@ -45,13 +45,13 @@ from .source_selection import FIT_ORDER, Selection, SelectionParams, select_sour
 
 logger = get_logger(__name__)
 
-Mode = Literal["off", "shadow_only", "full"]
-MODES = ("off", "shadow_only", "full")
+Mode = Literal["original", "shadowed", "selective"]
+MODES = ("original", "shadowed", "selective")
 
 
 @dataclass(frozen=True)
 class SourceSelectionSettings:
-    mode: Mode = "off"
+    mode: Mode = "original"
     params: SelectionParams = field(default_factory=SelectionParams)
     exclusion_half_width: float | None = None
     #: 1: `solve-field` reads xylist positions FITS 1-based (verified against image2xy, see survey_solve); 0: 0-based.
@@ -91,7 +91,7 @@ def resolve_settings(unit_conf: Any, override: SourceSelectionSettings | None) -
     if cfg is None:
         return SourceSelectionSettings()
     settings = SourceSelectionSettings.from_config(cfg)
-    if settings.mode == "off":
+    if settings.mode == "original":
         return settings
     return replace(settings, hot_pixels=load_machine_hot_pixels())
 
@@ -115,7 +115,7 @@ def load_machine_hot_pixels() -> HotPixels | None:
 @dataclass
 class StageResult:
     settings: SourceSelectionSettings
-    #: the frame to solve as an image (darkened for `shadow_only`); the input otherwise
+    #: the frame to solve as an image (darkened for `shadowed`); the input otherwise
     data: np.ndarray
     shadow: ShadowModel | None = None
     selection: Selection | None = None
@@ -182,12 +182,12 @@ def prepare(
     origin: tuple[int, int] = (0, 0),
     frame_shape: tuple[int, int] | None = None,
 ) -> StageResult:
-    """Run the stage on the (cropped, unbinned) frame. `settings.mode` must not be ``off``.
+    """Run the stage on the (cropped, unbinned) frame. `settings.mode` must not be ``original``.
 
     `origin` is the crop's top-left pixel (x, y) in the full frame and `frame_shape` the full frame's (ny, nx):
     the hot pixel map is in full-frame pixels.
     """
-    assert settings.mode != "off", "prepare() is not called when the selection is off"
+    assert settings.mode != "original", "prepare() is not called for the original stage"
     result = StageResult(settings=settings, data=data)
     data, result.hot_pixels_filled = _fill_hot_pixels(data, settings, origin, frame_shape)
     result.data = data
@@ -202,7 +202,7 @@ def prepare(
     logger.info(f"source selection: shadow present={result.shadow.present}")
     shadow_present = result.shadow is not None and result.shadow.present
 
-    if settings.mode == "shadow_only":
+    if settings.mode == "shadowed":
         if shadow_present:
             result.data = _as_dtype(darken_shadow(data, result.shadow, include_penumbra=True), data.dtype)  # type: ignore[arg-type]
             logger.info("source selection: shadow band darkened (umbra and penumbra)")

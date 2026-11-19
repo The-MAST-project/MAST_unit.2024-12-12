@@ -33,22 +33,22 @@ def shadowed(monkeypatch):
     monkeypatch.setattr(selection_stage, "detect_mirror_shadow", lambda data, **kw: _shadow())
 
 
-def test_unconfigured_is_off():
-    assert resolve_settings(object(), None).mode == "off"
+def test_unconfigured_is_original():
+    assert resolve_settings(object(), None).mode == "original"
 
 
 def test_the_callers_settings_win_over_the_configuration():
-    given = SourceSelectionSettings(mode="full")
+    given = SourceSelectionSettings(mode="selective")
     assert resolve_settings(object(), given) is given
 
 
 def test_config_gives_only_what_it_sets_over_the_defaults():
     class Conf:
         class solving:  # noqa: N801
-            source_selection = SourceSelectionConfig(mode="shadow_only", min_snr=12.0, grid=(2, 2))
+            source_selection = SourceSelectionConfig(mode="shadowed", min_snr=12.0, grid=(2, 2))
 
     settings = resolve_settings(Conf, None)
-    assert settings.mode == "shadow_only"
+    assert settings.mode == "shadowed"
     assert settings.params.min_snr == 12.0
     assert settings.params.grid == (2, 2)
     assert settings.params.n_target == SelectionParams().n_target
@@ -59,10 +59,10 @@ def test_a_mode_that_does_not_exist_is_refused():
         SourceSelectionSettings(mode="partial")  # type: ignore[arg-type]
 
 
-def test_shadow_only_darkens_the_band_and_leaves_the_rest(shadowed):
+def test_shadowed_darkens_the_band_and_leaves_the_rest(shadowed):
     frame, _ = _frame()
     frame = frame.astype(np.uint16)
-    stage = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="shadow_only"))
+    stage = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="shadowed"))
 
     assert stage.selection is None and stage.failed is None
     assert stage.data.dtype == np.uint16
@@ -75,7 +75,7 @@ def test_every_phase_looks_for_the_shadow_the_sky_phases_included(shadowed):
     """The `sky` position puts the mirror's edge at the frame's edge: a partial shadow, in the sky ROI too."""
     frame, _ = _frame()
     for phase in ("sky", "spec", "full"):
-        stage = prepare(frame, fits.Header(), phase, SourceSelectionSettings(mode="shadow_only"))
+        stage = prepare(frame, fits.Header(), phase, SourceSelectionSettings(mode="shadowed"))
         assert stage.shadow is not None and stage.shadow.present, phase
 
 
@@ -86,24 +86,24 @@ def test_a_frame_with_no_shadow_is_not_darkened(monkeypatch):
         selection_stage, "detect_mirror_shadow", lambda data, **kw: ShadowModel(present=False, image_shape=(NY, NX))
     )
     frame, _ = _frame()
-    stage = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="shadow_only"))
+    stage = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="shadowed"))
     np.testing.assert_array_equal(stage.data, frame)
 
 
 def test_full_selects_on_the_undarkened_frame(shadowed):
     frame, _ = _frame()
-    stage = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="full"))
+    stage = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="selective"))
 
     assert stage.selection is not None
     np.testing.assert_array_equal(stage.data, frame)  # the image fallback is the frame as it came
     assert stage.selection.shadow_present
-    assert stage.record()["mode"] == "full"
+    assert stage.record()["mode"] == "selective"
     assert stage.record()["counts"]["kept"] == len(stage.selection.xylist())
 
 
 def test_too_few_sources_fails_the_frame(shadowed):
     frame, _ = _frame(planted=False, n_clean=3)
-    stage = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="full"))
+    stage = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="selective"))
     assert stage.failed in ("too_few_sources", "no_sources")
 
 
@@ -140,7 +140,7 @@ def test_hot_pixels_are_filled_before_anything_else(noshadow):
     frame, _ = _frame()
     frame = frame.copy()
     frame[100, 200] = 60000.0
-    settings = SourceSelectionSettings(mode="shadow_only", hot_pixels=_hot_pixels(frame.shape, [(200, 100)]))
+    settings = SourceSelectionSettings(mode="shadowed", hot_pixels=_hot_pixels(frame.shape, [(200, 100)]))
     stage = prepare(frame, fits.Header(), "spec", settings)
 
     assert stage.hot_pixels_filled == 1
@@ -153,14 +153,14 @@ def test_a_crop_is_filled_by_the_maps_full_frame_pixels(noshadow):
     frame = frame.copy()
     crop = frame[50:300, 100:400]  # its top-left is (100, 50) in the full frame
     full_shape = frame.shape
-    settings = SourceSelectionSettings(mode="shadow_only", hot_pixels=_hot_pixels(full_shape, [(250, 200), (10, 10)]))
+    settings = SourceSelectionSettings(mode="shadowed", hot_pixels=_hot_pixels(full_shape, [(250, 200), (10, 10)]))
     stage = prepare(crop, fits.Header(), "spec", settings, origin=(100, 50), frame_shape=full_shape)
     assert stage.hot_pixels_filled == 1  # (250, 200) is in the crop, (10, 10) is not
 
 
 def test_a_map_for_another_frame_size_is_not_applied(noshadow):
     frame, _ = _frame()
-    settings = SourceSelectionSettings(mode="shadow_only", hot_pixels=_hot_pixels((10, 10), [(5, 5)]))
+    settings = SourceSelectionSettings(mode="shadowed", hot_pixels=_hot_pixels((10, 10), [(5, 5)]))
     stage = prepare(frame, fits.Header(), "spec", settings)
     assert stage.hot_pixels_filled == 0
     np.testing.assert_array_equal(stage.data, frame)
@@ -168,7 +168,7 @@ def test_a_map_for_another_frame_size_is_not_applied(noshadow):
 
 def test_no_map_no_filling(noshadow):
     frame, _ = _frame()
-    stage = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="shadow_only"))
+    stage = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="shadowed"))
     assert stage.hot_pixels_filled == 0
     np.testing.assert_array_equal(stage.data, frame)
 
@@ -188,11 +188,11 @@ def test_the_unit_looks_for_its_map_on_the_share_only_when_the_selection_is_on(t
 
     class Conf:
         class solving:  # noqa: N801
-            source_selection = SourceSelectionConfig(mode="shadow_only")
+            source_selection = SourceSelectionConfig(mode="shadowed")
 
     assert len(resolve_settings(Conf, None).hot_pixels) == 1
 
-    Conf.solving.source_selection = SourceSelectionConfig(mode="off")
+    Conf.solving.source_selection = SourceSelectionConfig(mode="original")
     assert resolve_settings(Conf, None).hot_pixels is None
 
 

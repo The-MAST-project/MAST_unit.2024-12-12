@@ -1,5 +1,5 @@
 {
-  "mode": "off",
+  "mode": "original",
   "nsigma": 2.0,
   "npixels": 5,
   "box_size": 50,
