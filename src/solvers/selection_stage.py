@@ -13,10 +13,16 @@ Modes (`solving.source_selection.mode`, MAST_common `SourceSelectionConfig`)
                  frame (it needs the shadow's dimming to reject stars inside it), and that list is
                  solved as an xylist. The image solve remains the fallback.
 
-The shadow is looked for on every frame but the sky phase's, where the mirror is retracted. It is
-looked for in the frame itself, so a mirror-out `spec` frame is found to have none; the mirror state
-need not be told (the design's Stage 3 asks for it from the stage position -- this is the
-image-based reading, adequate until then).
+The shadow is looked for on every frame, whatever its phase. It is a band whose place depends on where
+the stage puts the mirror: centred when the mirror is in, and with its edge at a vertical edge of the frame
+at the `sky` position (a partial band; the production sky ROI, x ~3550 to 6550, overlaps it). It is looked
+for in the frame itself, so a frame that has none is found to have none; the mirror state need not be told
+(the design's Stage 3 asks for it from the stage position -- this is the image-based reading).
+
+Before anything else the camera's hot pixels, if a map of them is known, are filled with the median of their
+neighbours (`imaging/hot_pixels.py`; the map is `<this unit's folder on the share>/Calibration/hot_pixels.json`):
+a hot pixel inside a star's window pulls its centroid. The solved image of `shadow_only`, and the fallback
+image of `full`, are the filled ones; `off` is not touched.
 
 Where the frame is cropped (the ROI) the selection runs on the cropped array, with the crop's own
 centre as the optical centre -- the unit does not yet hold a calibrated optical centre or low-coma
@@ -25,13 +31,14 @@ radius, so the design's geometric defaults apply.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from typing import Any, Literal
 
 import numpy as np
 from astropy.io import fits
 
 from common.mast_logging import get_logger
+from imaging.hot_pixels import HotPixels, calibration_path
 from imaging.mirror_shadow import ShadowModel, darken_shadow, detect_mirror_shadow
 
 from .source_selection import FIT_ORDER, Selection, SelectionParams, select_sources
@@ -57,6 +64,8 @@ class SourceSelectionSettings:
     #: require a trough lower than both shoulders. Off: a partial shadow at the frame's edge has no far
     #: shoulder, and would fail it.
     shadow_require_two_sided: bool = False
+    #: the camera's hot pixels, filled before the frame is searched (None: none are known, nothing is filled)
+    hot_pixels: HotPixels | None = None
 
     def __post_init__(self):
         if self.mode not in MODES:
@@ -79,7 +88,28 @@ def resolve_settings(unit_conf: Any, override: SourceSelectionSettings | None) -
     if override is not None:
         return override
     cfg = getattr(getattr(unit_conf, "solving", None), "source_selection", None)
-    return SourceSelectionSettings.from_config(cfg) if cfg is not None else SourceSelectionSettings()
+    if cfg is None:
+        return SourceSelectionSettings()
+    settings = SourceSelectionSettings.from_config(cfg)
+    if settings.mode == "off":
+        return settings
+    return replace(settings, hot_pixels=load_machine_hot_pixels())
+
+
+def load_machine_hot_pixels() -> HotPixels | None:
+    """This unit's hot pixel map, from its own folder on the share; None if there is none or it cannot be read.
+
+    A missing map is the normal state of a camera nobody has built one for, and a map that cannot be read must
+    not stop a solve: either way the frame is simply not filled.
+    """
+    try:
+        from common.filer import Filer  # noqa: PLC0415 -- only a MAST machine has a share
+
+        path = calibration_path(Filer().shared.root)
+        return HotPixels.load(path) if path.exists() else None
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"hot pixel map not loaded: {e!r}")
+        return None
 
 
 @dataclass
@@ -91,6 +121,8 @@ class StageResult:
     selection: Selection | None = None
     #: "xylist", "image" or "fallback" (the xylist solve failed, the image was solved)
     solved_from: str = "image"
+    #: how many of the camera's hot pixels fell in this frame and were filled
+    hot_pixels_filled: int = 0
 
     @property
     def failed(self) -> str | None:
@@ -105,6 +137,7 @@ class StageResult:
             "mode": self.settings.mode,
             "shadow_present": bool(self.shadow.present) if self.shadow is not None else False,
             "solved_from": self.solved_from,
+            "hot_pixels_filled": self.hot_pixels_filled,
         }
         if self.selection is not None:
             out.update(
@@ -125,18 +158,48 @@ def _as_dtype(image: np.ndarray, dtype: np.dtype) -> np.ndarray:
     return image.astype(dtype)
 
 
-def prepare(data: np.ndarray, header: Any, phase: str, settings: SourceSelectionSettings) -> StageResult:
-    """Run the stage on the (cropped, unbinned) frame. `settings.mode` must not be ``off``."""
+def _fill_hot_pixels(
+    data: np.ndarray, settings: SourceSelectionSettings, origin: tuple[int, int], frame_shape: tuple[int, int] | None
+) -> tuple[np.ndarray, int]:
+    """`data` with the camera's hot pixels filled, and how many fell inside it; unchanged if no map fits."""
+    hp = settings.hot_pixels
+    if hp is None or len(hp) == 0:
+        return data, 0
+    shape = frame_shape if frame_shape is not None else (int(data.shape[0]) + origin[1], int(data.shape[1]) + origin[0])
+    if not hp.matches(shape):
+        logger.warning(f"hot pixel map is for {hp.image_shape}, this frame is {shape}: not applied")
+        return data, 0
+    ny, nx = data.shape
+    inside = (hp.x >= origin[0]) & (hp.x < origin[0] + nx) & (hp.y >= origin[1]) & (hp.y < origin[1] + ny)
+    return hp.fill(data, origin), int(inside.sum())
+
+
+def prepare(
+    data: np.ndarray,
+    header: Any,
+    phase: str,
+    settings: SourceSelectionSettings,
+    origin: tuple[int, int] = (0, 0),
+    frame_shape: tuple[int, int] | None = None,
+) -> StageResult:
+    """Run the stage on the (cropped, unbinned) frame. `settings.mode` must not be ``off``.
+
+    `origin` is the crop's top-left pixel (x, y) in the full frame and `frame_shape` the full frame's (ny, nx):
+    the hot pixel map is in full-frame pixels.
+    """
     assert settings.mode != "off", "prepare() is not called when the selection is off"
     result = StageResult(settings=settings, data=data)
+    data, result.hot_pixels_filled = _fill_hot_pixels(data, settings, origin, frame_shape)
+    result.data = data
+    if result.hot_pixels_filled:
+        logger.info(f"source selection: {result.hot_pixels_filled} hot pixels filled")
 
-    if phase != "sky":  # the mirror is retracted for sky frames: there is no shadow to look for
-        result.shadow = detect_mirror_shadow(
-            data,
-            max_center_offset=settings.shadow_max_center_offset,
-            require_two_sided=settings.shadow_require_two_sided,
-        )
-        logger.info(f"source selection: shadow present={result.shadow.present}")
+    result.shadow = detect_mirror_shadow(
+        data,
+        max_center_offset=settings.shadow_max_center_offset,
+        require_two_sided=settings.shadow_require_two_sided,
+    )
+    logger.info(f"source selection: shadow present={result.shadow.present}")
     shadow_present = result.shadow is not None and result.shadow.present
 
     if settings.mode == "shadow_only":
