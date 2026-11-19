@@ -320,7 +320,14 @@ class MastrometryDotNet(SolverInterface):
             selection_settings = resolve_settings(unit_conf, source_selection)
             stage: StageResult | None = None
             if selection_settings.mode != "off":
-                stage = prepare(data, header, phase, selection_settings)
+                stage = prepare(
+                    data,
+                    header,
+                    phase,
+                    selection_settings,
+                    origin=(imager_roi.x, imager_roi.y) if imager_roi is not None else (0, 0),
+                    frame_shape=(height, width),
+                )
                 if (why := stage.failed) is not None:
                     logger.error(f"{function_name()}: source selection: {why}, the frame is not solved")
                     failure = SolvingResult(succeeded=False, errors=[f"source selection: {why}"])

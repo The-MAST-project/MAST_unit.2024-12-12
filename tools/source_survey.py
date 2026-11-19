@@ -32,6 +32,8 @@ Usage:
                              both in the crop and in the full frame
     --no-shadow              the fold mirror is out: do not look for a shadow
     --param NAME=VALUE       override a SelectionParams field (repeatable), e.g. --param min_sep_fwhm=1.5
+    --hot-pixels FILE|UNIT   fill this camera's hot pixels before searching: a hot_pixels.json, or a unit whose
+                             Calibration folder on the share holds one (tools/build_hot_pixels.py builds it)
     --stretch zscale|asinh   the picture's display scale: zscale (as ds9's scale zscale, reduced by block
                              maximum so that faint stars survive; default) or the star map's asinh
     --shadow-two-sided       require the shadow to be a trough lower than both its shoulders (a partial
@@ -84,6 +86,7 @@ _SRC = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+from imaging.hot_pixels import HotPixels, calibration_path  # noqa: E402
 from imaging.mirror_shadow import ShadowModel, detect_mirror_shadow  # noqa: E402
 from solvers.pixel_grid import roi_center_to_crpix  # noqa: E402
 from solvers.source_selection import (  # noqa: E402
@@ -467,6 +470,16 @@ def survey_frame(
     the selection, and the sweep rows."""
     full = np.asarray(fits.getdata(path))
     header = fits.getheader(path)
+    hot = args.hot_pixels_map
+    hot_filled = 0
+    if hot is not None:
+        if hot.matches(full.shape):
+            full, hot_filled = hot.fill(full), len(hot)
+        else:
+            print(
+                f"{path.name}: hot pixel map is for {hot.image_shape}, the frame is {full.shape}: not applied",
+                file=sys.stderr,
+            )
     full_shape = full.shape
     roi = tuple(args.roi) if args.roi else None
     x0, y0 = (roi[0], roi[1]) if roi else (0, 0)
@@ -572,6 +585,7 @@ def survey_frame(
         "repeat_runs": len(runs),
         "repeat_identical": identical,
         **({"fibre_x": args.fibre_pixel[0], "fibre_y": args.fibre_pixel[1]} if args.fibre_pixel is not None else {}),
+        **({"hot_pixels_filled": hot_filled} if args.hot_pixels_map is not None else {}),
     }
     if solve is not None:
         row.update(
@@ -644,6 +658,7 @@ def _solve_via_solver(
             xylist_origin=args.xylist_origin,
             shadow_max_center_offset=args.shadow_max_center_offset or None,
             shadow_require_two_sided=args.shadow_two_sided,
+            hot_pixels=args.hot_pixels_map,
         )
         outcome = SolveOutcome(status="ok")
         outcome.solved_from = "image"
@@ -762,6 +777,21 @@ def resolve_fibre(args: argparse.Namespace) -> tuple[int, int] | None:
     return int(rois[key].fiber_x), int(rois[key].fiber_y)  # type: ignore[union-attr]
 
 
+def resolve_hot_pixels(value: str | None) -> HotPixels | None:
+    """The hot pixel map named by `--hot-pixels`: a `.json` file, or a unit whose `Calibration` folder on the share
+    holds `hot_pixels.json` (the share is this machine's `Filer().share_root`)."""
+    if not value:
+        return None
+    if value.lower().endswith(".json") or "/" in value or "\\" in value:
+        return HotPixels.load(Path(value))
+    from common.filer import Filer  # noqa: PLC0415 -- this machine's view of the share
+
+    root = Filer().share_root
+    if root is None:
+        raise ValueError("no share root on this machine: give --hot-pixels a .json file")
+    return HotPixels.load(calibration_path(Path(root.root) / value))
+
+
 def parse_param_overrides(items: list[str] | None) -> dict[str, object]:
     """`--param name=value` overrides of `SelectionParams`, each value read as the field's own type."""
     valid = {f.name: f for f in dataclasses.fields(SelectionParams)}
@@ -787,8 +817,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("paths", nargs="+", type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--roi", nargs=4, type=int, metavar=("X", "Y", "W", "H"))
+    parser.set_defaults(hot_pixels_map=None)  # set by main() from --hot-pixels
     parser.set_defaults(fibre_pixel=None)  # set by main() from --fibre / --fibre-xy
     parser.add_argument("--no-shadow", action="store_true")
+    parser.add_argument(
+        "--hot-pixels",
+        metavar="FILE|UNIT",
+        help="fill this camera's hot pixels before searching: a hot_pixels.json file, or a unit whose "
+        "Calibration folder on the share holds one (see tools/build_hot_pixels.py)",
+    )
     parser.add_argument(
         "--fibre",
         metavar="UNIT[:FCU]",
@@ -884,6 +921,13 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    try:
+        args.hot_pixels_map = resolve_hot_pixels(args.hot_pixels)
+    except (ValueError, OSError, ImportError) as e:
+        print(f"--hot-pixels: {e}", file=sys.stderr)
+        return 2
+    if args.hot_pixels_map is not None:
+        print(f"hot pixels: {len(args.hot_pixels_map)} will be filled (map for {args.hot_pixels_map.image_shape})")
     try:
         args.fibre_pixel = resolve_fibre(args)
     except (ValueError, OSError, ImportError) as e:
