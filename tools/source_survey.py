@@ -526,7 +526,7 @@ def survey_frame(
     via: dict[str, SolveOutcome] = {}
     if args.via_solver:
         via = _solve_via_solver(path, args, params, out_dir)
-        solve = via.get("full")  # the picture's second set of ticks: what the xylist solve used
+        solve = via.get("selective")  # the picture's second set of ticks: what the xylist solve used
     elif args.solve:
         solve = _solve(selection, data.shape, path.stem, args, out_dir, (x0, y0))
 
@@ -633,7 +633,8 @@ _SOLVER = None  # one MastrometryDotNet for the run: it checks the RAM disk and 
 def _solve_via_solver(
     path: Path, args: argparse.Namespace, params: SelectionParams, out_dir: Path
 ) -> dict[str, SolveOutcome]:
-    """Solve the frame with the unit's own `MastrometryDotNet`, once per mode in `--solver-modes`.
+    """Solve the frame with the unit's own `MastrometryDotNet`, once per mastrometry stage in `--solver-modes`
+    (original, shadowed, selective).
 
     The frame is only read; each mode's artifacts (result text, solved FITS, correspondences, xylist,
     WCS, star map) are put in `<out>/<hash of the frame name>-<mode>/`, never beside the frame and never on the share.
@@ -882,8 +883,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--solver-modes",
         type=lambda s: s.split(","),
-        default=["off", "shadow_only", "full"],
-        help="with --via-solver: the source-selection modes to solve each frame in (default: off,shadow_only,full)",
+        default=["original", "shadowed", "selective"],
+        help="with --via-solver: the mastrometry stages to solve each frame in (default: original,shadowed,selective)",
     )
     parser.add_argument("--index-dir")
     parser.add_argument("--solve-field")
