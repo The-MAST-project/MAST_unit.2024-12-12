@@ -181,8 +181,12 @@ def prepare(
     settings: SourceSelectionSettings,
     origin: tuple[int, int] = (0, 0),
     frame_shape: tuple[int, int] | None = None,
+    shadow: ShadowModel | None = None,
 ) -> StageResult:
     """Run the stage on the (cropped, unbinned) frame. `settings.mode` must not be ``original``.
+
+    `shadow`, if given, is the shadow model for this (cropped) frame, found earlier -- the acquisition's cached
+    one -- and is used instead of detecting again.
 
     `origin` is the crop's top-left pixel (x, y) in the full frame and `frame_shape` the full frame's (ny, nx):
     the hot pixel map is in full-frame pixels.
@@ -194,12 +198,16 @@ def prepare(
     if result.hot_pixels_filled:
         logger.info(f"source selection: {result.hot_pixels_filled} hot pixels filled")
 
-    result.shadow = detect_mirror_shadow(
-        data,
-        max_center_offset=settings.shadow_max_center_offset,
-        require_two_sided=settings.shadow_require_two_sided,
-    )
-    logger.info(f"source selection: shadow present={result.shadow.present}")
+    if shadow is not None:
+        result.shadow = shadow
+        logger.info(f"source selection: shadow present={shadow.present} (cached)")
+    else:
+        result.shadow = detect_mirror_shadow(
+            data,
+            max_center_offset=settings.shadow_max_center_offset,
+            require_two_sided=settings.shadow_require_two_sided,
+        )
+        logger.info(f"source selection: shadow present={result.shadow.present}")
     shadow_present = result.shadow is not None and result.shadow.present
 
     if settings.mode == "shadowed":

@@ -1,5 +1,6 @@
 import datetime
 import os
+import time
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
@@ -10,6 +11,7 @@ from common.interfaces.solving import SolverId
 from common.mast_logging import get_logger
 from common.models.latest import LatestAcquisition
 from common.paths import PathMaker
+from imaging.mirror_shadow import ShadowModel, StagedShadow, detect_mirror_shadow
 from plotting import plot_acquisition_corrections, plot_phase_corrections
 
 if TYPE_CHECKING:
@@ -101,6 +103,49 @@ class Acquisition:
         self.failure: str | None = None
         #: Set by `Acquirer.start`: what `FullUnitStatus.latest.acquisition` reports for this run.
         self.latest: LatestAcquisition | None = None
+        #: The fold-mirror shadow, detected on a full frame and kept with the phase and the stage position it
+        #: was found at (`shadow_for`). None until then. Detection takes seconds on a full frame, and the band
+        #: only moves when the stage does.
+        self.shadow: StagedShadow | None = None
+
+    def shadow_for(self, image_path: str, phase: str | None = None) -> ShadowModel | None:
+        """The shadow model of the full frame `image_path`: the cached one while the phase and the stage are
+        where it was detected, else a new detection, which replaces it.
+
+        None when detection itself fails; nothing is cached then, so the next frame tries again. A model with
+        `present` False (no band found) is cached like any other: it is a result. The shadow is looked for in
+        every phase, none being assumed from the stage position or the phase name.
+        """
+        stage = getattr(self.unit, "stage", None)
+        position = getattr(stage, "position", None) if stage is not None else None
+        stage_conf = getattr(stage, "conf", None) if stage is not None else None
+        close_enough = getattr(stage_conf, "close_enough", 0) if stage_conf is not None else 0
+
+        cached = self.shadow
+        if cached is not None and cached.matches(position, close_enough, phase):
+            return cached.model
+        if cached is not None:
+            logger.info(
+                f"the shadow was detected in phase {cached.phase} at stage position {cached.stage_position}; "
+                f"now {phase} at {position}: detecting again"
+            )
+        started = time.monotonic()
+        try:
+            model = detect_mirror_shadow(image_path)
+        except Exception as e:  # noqa: BLE001 -- a shadow we cannot find must not cost the solve
+            logger.warning(f"shadow detection failed on '{image_path}' ({e!r}); the solver will detect it itself")
+            return None
+        seconds = time.monotonic() - started
+        self.shadow = StagedShadow(
+            model=model,
+            stage_position=position,
+            image_path=str(image_path),
+            detected_at=datetime.datetime.now(datetime.UTC).isoformat(),
+            seconds=seconds,
+            phase=phase,
+        )
+        logger.info(f"shadow detected in {seconds:.1f} s ({phase}, stage position {position}): present={model.present}")
+        return model
 
     def save_corrections(self, phase: str):
         if phase in self.corrections:
