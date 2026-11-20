@@ -125,3 +125,71 @@ def test_a_shadow_is_found_wherever_it_is_and_whatever_its_size(centre, umbra_ha
         got = _found_columns(found)
         iou = len(truth & got) / max(len(truth | got), 1)
         assert iou > 0.6, f"mask covers the wrong columns (IoU {iou:.2f}): centre {centre}, flipped {flipped}"
+
+
+def _leaning_band(lean_deg: float, depth: float = 0.55, umbra: float = 620.0, penumbra: float = 990.0) -> np.ndarray:
+    """A wide, flat-bottomed band (linear ramps between the umbra and penumbra edges) that leans `lean_deg` from
+    vertical, on a sky that is 6% brighter at the top than at the bottom, as a real frame's is."""
+    rng = np.random.default_rng(5)
+    yy, xx = np.mgrid[0:NY, 0:NX].astype(float)
+    across = np.abs((xx - NX / 2) - np.tan(np.deg2rad(lean_deg)) * (yy - NY / 2))
+    dip = depth * np.clip((penumbra - across) / (penumbra - umbra), 0.0, 1.0)
+    gradient = 1.0 + 0.06 * (1.0 - yy / NY)
+    return 2000.0 * gradient * (1.0 - dip) * (1.0 + rng.normal(0.0, 0.01, (NY, NX)))
+
+
+@pytest.mark.parametrize("lean", [0.0, 1.5, -3.0])
+def test_the_tilt_of_a_wide_band_is_its_lean_not_the_angle_of_the_deepest_dip(lean):
+    """On a real centred shadow 2600 px wide the dip was as deep at 9 degrees off vertical as at the 1 where the band
+    leans (the angles tied within 1%), so the band was drawn 9 degrees tilted and the darkened frame still showed
+    the old umbra and penumbra along one side. The tilt is now measured from how the band's profile moves down the
+    frame."""
+    found = detect_mirror_shadow(_leaning_band(lean))
+    assert found.present
+    measured = float(np.rad2deg(np.arctan(np.cos(found.angle) / np.sin(found.angle))))  # lean, + = right going down
+    assert measured == pytest.approx(lean, abs=1.0)
+    assert abs(found.offset) < 150
+
+
+def test_the_old_sweep_alone_got_the_lean_of_a_wide_band_wrong_but_the_refinement_is_optional():
+    frame = _leaning_band(1.5)
+    sweep = detect_mirror_shadow(frame, refine_tilt=False)
+    refined = detect_mirror_shadow(frame)
+    lean = lambda m: float(np.rad2deg(np.arctan(np.cos(m.angle) / np.sin(m.angle))))  # noqa: E731
+    assert abs(lean(refined) - 1.5) <= abs(lean(sweep) - 1.5)
+
+
+def test_a_band_cut_by_the_frames_edge_is_open_on_that_side():
+    """A shadow whose far side is outside the frame: the darkened band must run to the edge, and its umbra is not
+    the visible run mirrored about a centre that is on the frame's edge (the umbra came out narrower than the part of
+    it that is in the frame, and the right margin was drawn as penumbra)."""
+    x = _x() + NX / 2
+    ramp = np.clip((x - 2300.0) / 1200.0, 0.0, 1.0)  # a 1200 px penumbra, then the umbra to the frame's edge
+    found = detect_mirror_shadow(_frame(2000.0 * (1.0 - 0.6 * ramp)))
+    assert found.present and found.truncated
+    umbra, penumbra = found.masks()
+    assert umbra[:, -1].all()  # the edge column is umbra, not penumbra
+    assert not penumbra[:, -1].any()
+    # the umbra's open side is the right: pixels from the centre, + is right
+    left, right = found._across_frame(found.umbra_s)
+    assert np.isinf(right) and left == pytest.approx(2900.0 - NX / 2, abs=150)  # the 50% point of the ramp
+    left_p, right_p = found._across_frame(found.penumbra_s)
+    assert np.isinf(right_p) and left_p == pytest.approx(2300.0 - NX / 2 + 120, abs=200)  # the 10% point
+    assert "right edge" in found.describe() and "cut by the frame" in found.describe()
+
+
+def test_a_band_inside_the_frame_is_not_truncated_and_its_bands_are_asymmetric_only_as_measured():
+    found = detect_mirror_shadow(_frame(_centred_bowl(0.25, 900.0)))
+    assert found.present and not found.truncated
+    left, right = found._across_frame(found.penumbra_s)
+    assert np.isfinite(left) and np.isfinite(right) and left < 0 < right
+    assert found.describe().startswith("umbra")
+
+
+def test_cropping_moves_the_bounds_with_the_band():
+    x = _x() + NX / 2
+    found = detect_mirror_shadow(_frame(2000.0 * (1.0 - 0.6 * np.clip((x - 2300.0) / 1200.0, 0.0, 1.0))))
+    crop = found.cropped(1000, 0, 3000, NY)
+    assert crop.truncated
+    # the same pixels are umbra in the crop as in the frame it was cut from
+    np.testing.assert_array_equal(crop.masks()[0], found.masks()[0][:, 1000:4000])

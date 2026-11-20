@@ -55,9 +55,8 @@ def _panel(image: np.ndarray, shadow: ShadowModel | None, max_width: int) -> np.
         xs = (np.arange(rgb.shape[1]) * factor + (factor - 1) / 2.0)[None, :]
         ys = (np.arange(rgb.shape[0]) * factor + (factor - 1) / 2.0)[:, None]
         s = -(xs - (nx - 1) / 2.0) * np.sin(shadow.angle) + (ys - (ny - 1) / 2.0) * np.cos(shadow.angle)
-        d = np.abs(s - shadow.offset)
-        umbra = d <= shadow.umbra_half_width
-        tint(rgb, (d <= shadow.penumbra_half_width) & ~umbra, PENUMBRA_TINT, 0.30)
+        umbra, penumbra = shadow.bands(s)
+        tint(rgb, penumbra, PENUMBRA_TINT, 0.30)
         tint(rgb, umbra, UMBRA_TINT, 0.40)
     return rgb
 
@@ -67,9 +66,8 @@ def caption_lines(shadow: ShadowModel | None, title: str, seconds: float | None 
         found = "no shadow found"
     else:
         found = (
-            f"tilt {shadow.tilt_deg:.1f} deg   centre {shadow.offset:+.0f} px from the frame centre   "
-            f"umbra +-{shadow.umbra_half_width:.0f} px   penumbra +-{shadow.penumbra_half_width:.0f} px   "
-            f"depth {shadow.depth:.2f}   prominence {shadow.prominence:.1f}"
+            f"tilt {shadow.tilt_deg:.1f} deg   depth {shadow.depth:.2f}   prominence {shadow.prominence:.1f}   "
+            + shadow.describe()
         )
     return [title, found, "umbra purple, penumbra blue" + (f"   detection {seconds:.1f} s" if seconds is not None else "")]
 
