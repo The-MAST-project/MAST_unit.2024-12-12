@@ -125,6 +125,9 @@ class SolveSettings:
 class SolveOutcome:
     status: str  # "ok", "skipped: ...", "failed: ..."
     seconds: float = 0.0
+    #: the steps of a solver solve and what each cost (`hot_pixels`, `shadow`, `darken`, `select`, `solve_field`);
+    #: `seconds` is the whole, so what they leave is reading, cropping, binning and reading back
+    timings: dict[str, float] = field(default_factory=dict)
     command: str = ""
     log_path: Path | None = None
     #: used stars, in the array's pixels (0-based)
