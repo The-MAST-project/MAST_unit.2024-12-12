@@ -298,9 +298,8 @@ def draw_overlay(
         xs = (np.arange(rgb.shape[1]) * factor + (factor - 1) / 2.0)[None, :]
         ys = (np.arange(rgb.shape[0]) * factor + (factor - 1) / 2.0)[:, None]
         s = -(xs - (nx - 1) / 2.0) * np.sin(shadow.angle) + (ys - (ny - 1) / 2.0) * np.cos(shadow.angle)
-        d = np.abs(s - shadow.offset)
-        umbra = d <= shadow.umbra_half_width
-        tint(rgb, (d <= shadow.penumbra_half_width) & ~umbra, PENUMBRA_TINT, 0.30)
+        umbra, penumbra = shadow.bands(s)
+        tint(rgb, penumbra, PENUMBRA_TINT, 0.30)
         tint(rgb, umbra, UMBRA_TINT, 0.40)
 
     canvas = Image.new("RGB", (rgb.shape[1], rgb.shape[0] + CAPTION_HEIGHT), (0, 0, 0))
@@ -512,8 +511,7 @@ def survey_frame(
 
     counts = selection.counts()
     shadow_text = (
-        f"shadow: depth {shadow.depth:.2f}, umbra +-{shadow.umbra_half_width:.0f} px, "
-        f"penumbra +-{shadow.penumbra_half_width:.0f} px"
+        f"shadow: depth {shadow.depth:.2f}, {shadow.describe()}"
         if shadow is not None and shadow.present
         else ("shadow: none found" if shadow is not None else "shadow: not looked for (mirror out)")
     )
@@ -556,6 +554,7 @@ def survey_frame(
         "shadow_offset_px": _round(shadow.offset, 1) if shadow is not None and shadow.present else "",
         "shadow_umbra_half_px": _round(shadow.umbra_half_width, 1) if shadow is not None and shadow.present else "",
         "shadow_penumbra_half_px": _round(shadow.penumbra_half_width, 1) if shadow is not None and shadow.present else "",
+        "shadow_truncated": bool(shadow is not None and shadow.present and shadow.truncated),
         "seeing_fwhm_px": _round(selection.fwhm_seeing_px, 2),
         "noise": _round(selection.noise_px, 2),
         **counts,

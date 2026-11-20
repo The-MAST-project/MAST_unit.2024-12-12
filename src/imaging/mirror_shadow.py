@@ -64,6 +64,14 @@ class ShadowModel:
     #: each side of it), as a fraction of that shoulder. A band has sky on both sides, so this is about
     #: its depth; a roll-off toward one edge has a plateau on one side only, so this is ~0.
     two_sided_depth: float = 0.0
+    #: Where the umbra and the penumbra begin and end, as ``(lo, hi)`` in the perpendicular coordinate ``s``, read off
+    #: the measured cross-section (the 50% and 10% levels of the peak depth). A side that runs to the end of the
+    #: frame is open: ``-inf`` / ``+inf``, because the band goes on past what the camera sees. ``None``: not measured
+    #: (a model built by hand), and then ``offset`` +- the half-widths are the bands, as before.
+    #: ``umbra_half_width`` and ``penumbra_half_width`` stay the half of the *visible* run's length; for a band cut
+    #: by the frame's edge they are not the band's widths and ``offset`` is not its centre. Use these two.
+    umbra_s: tuple[float, float] | None = None
+    penumbra_s: tuple[float, float] | None = None
 
     # perpendicular cross-section kept for plotting / inspection (not persisted)
     s: np.ndarray | None = field(default=None, repr=False)  # perpendicular coordinate (pix)
@@ -81,6 +89,62 @@ class ShadowModel:
         s = -(xx - cx) * np.sin(self.angle) + (yy - cy) * np.cos(self.angle)
         return s
 
+    def _across_frame(self, bounds):
+        """A band's ``(lo, hi)`` in ``s`` as ``(left, right)``: pixels from the frame centre along its middle row,
+        positive to the right, an open side +-inf. (``s`` grows to the left on the usual positive angle.)"""
+        sin_a = float(np.sin(self.angle))
+        if abs(sin_a) < 1e-6:
+            return (-np.inf, np.inf)
+        edges = [-b / sin_a for b in bounds]
+        return (min(edges), max(edges))
+
+    def describe(self) -> str:
+        """The shadow in words, with positions as pixels from the frame's centre along its middle row (+ is right);
+        a side the frame cuts off is said to run to the edge."""
+        if not self.present:
+            return "no shadow found"
+
+        def at(x: float, edge: str) -> str:
+            return edge if not np.isfinite(x) else f"{x:+.0f}"
+
+        parts = []
+        for name, bounds in (("umbra", self.umbra_s), ("penumbra", self.penumbra_s)):
+            if bounds is None:
+                continue
+            left, right = self._across_frame(bounds)
+            parts.append(f"{name} {at(left, 'left edge')} to {at(right, 'right edge')}")
+        if not parts:
+            return (
+                f"centre {self.offset:+.0f}  umbra +-{self.umbra_half_width:.0f}  penumbra +-{self.penumbra_half_width:.0f}"
+            )
+        cut = "  (cut by the frame: its far side is outside it)" if self.truncated else ""
+        return "  ".join(parts) + " px from the frame centre, + right" + cut
+
+    @property
+    def truncated(self) -> bool:
+        """True when the band is cut by the frame's edge: its far side is outside what the camera sees."""
+        return any(
+            bounds is not None and not (np.isfinite(bounds[0]) and np.isfinite(bounds[1]))
+            for bounds in (self.penumbra_s, self.umbra_s)
+        )
+
+    def bands(self, s):
+        """``(umbra, penumbra)`` boolean arrays for the perpendicular coordinates ``s`` (an array of any shape).
+
+        Penumbra excludes the umbra (the two are disjoint). Both are empty when the shadow is absent.
+        """
+        s = np.asarray(s, dtype=float)
+        if not self.present:
+            empty = np.zeros(s.shape, dtype=bool)
+            return empty, empty.copy()
+        if self.umbra_s is not None and self.penumbra_s is not None:
+            umbra = (s >= self.umbra_s[0]) & (s <= self.umbra_s[1])
+            penumbra = (s >= self.penumbra_s[0]) & (s <= self.penumbra_s[1]) & ~umbra
+            return umbra, penumbra
+        d = np.abs(s - self.offset)
+        umbra = d <= self.umbra_half_width
+        return umbra, (d <= self.penumbra_half_width) & ~umbra
+
     def masks(self):
         """Return ``(umbra_mask, penumbra_mask)`` boolean arrays for the band.
 
@@ -88,14 +152,7 @@ class ShadowModel:
         convention in ``find_vertical_obstruction``.  Both are empty when the
         shadow is absent.
         """
-        ny, nx = self.image_shape
-        if not self.present:
-            empty = np.zeros((ny, nx), dtype=bool)
-            return empty, empty.copy()
-        d = np.abs(self._grids() - self.offset)
-        umbra = d <= self.umbra_half_width
-        penumbra = (d <= self.penumbra_half_width) & ~umbra
-        return umbra, penumbra
+        return self.bands(self._grids())
 
     def mask(self, include_penumbra=True):
         """Union boolean mask of band pixels (umbra, and penumbra by default)."""
@@ -123,6 +180,8 @@ class ShadowModel:
             offset=self.offset - delta,
             umbra_half_width=self.umbra_half_width,
             penumbra_half_width=self.penumbra_half_width,
+            umbra_s=None if self.umbra_s is None else (self.umbra_s[0] - delta, self.umbra_s[1] - delta),
+            penumbra_s=None if self.penumbra_s is None else (self.penumbra_s[0] - delta, self.penumbra_s[1] - delta),
             depth=self.depth,
             prominence=self.prominence,
             baseline=self.baseline,
@@ -139,6 +198,9 @@ class ShadowModel:
             "offset_px": round(float(self.offset), 2),
             "umbra_half_width_px": round(float(self.umbra_half_width), 1),
             "penumbra_half_width_px": round(float(self.penumbra_half_width), 1),
+            "truncated": bool(self.truncated),
+            "umbra_s_px": _bounds_json(self.umbra_s),
+            "penumbra_s_px": _bounds_json(self.penumbra_s),
             "depth": round(float(self.depth), 4),
             "prominence": round(float(self.prominence), 2),
         }
@@ -213,6 +275,7 @@ def detect_mirror_shadow(
     sky_headroom=0.05,  # fraction above the local sky a pixel may be and still count
     max_center_offset=None,  # if given: only a band whose centre is within this many pixels of the frame centre
     require_two_sided=False,  # a trough with a higher shoulder on one side only is not a band
+    refine_tilt=True,  # after the sweep, measure the tilt from how the band's profile moves down the frame
 ) -> ShadowModel:
     """Detect a folding-mirror shadow band, or report its absence.
 
@@ -291,6 +354,14 @@ def detect_mirror_shadow(
     if best is None:
         return ShadowModel(present=False, image_shape=(ny, nx))
 
+    if refine_tilt:
+        refined = _refine_angle(sup, ds, near_vertical_deg)
+        if refined is not None:
+            s_r, prof_r, counts_r = _project(xcd, ycd, w, refined, bin_px)
+            res = _band_dip(s_r, prof_r, counts_r, continuum_frac, edge_bins, max_center_offset, penumbra_frac)
+            if res is not None and res["depth"] >= _REFINED_MIN_DEPTH_FRACTION * best["depth"]:
+                best = {**res, "angle": refined}
+
     # 3) Cross-section at the best angle: umbra/penumbra runs on the dip profile
     #    (frac, baseline 0); centerline = midpoint of the penumbra-to-penumbra run.
     frac, s_c, peak_i = best["frac"], best["s"], best["peak_i"]
@@ -302,6 +373,10 @@ def detect_mirror_shadow(
     umbra_half = 0.5 * (u_hi - u_lo) * bin_px
     penumbra_half = 0.5 * (p_hi - p_lo) * bin_px
     score = float(best["score"])
+    bin_width = float(s_c[1] - s_c[0]) if len(s_c) > 1 else bin_px
+    vi_lo, vi_hi = int(best["v_lo"]), int(best["v_hi"])
+    umbra_s = _run_s_bounds(s_c, u_lo, u_hi, vi_lo, vi_hi, bin_width)
+    penumbra_s = _run_s_bounds(s_c, p_lo, p_hi, vi_lo, vi_hi, bin_width)
 
     pf, v_lo, v_hi = best["pf"], best["v_lo"], best["v_hi"]
     trough = int(p_lo + np.argmin(pf[p_lo : p_hi + 1]))
@@ -318,6 +393,8 @@ def detect_mirror_shadow(
         offset=offset,
         umbra_half_width=float(umbra_half),
         penumbra_half_width=float(penumbra_half),
+        umbra_s=umbra_s,
+        penumbra_s=penumbra_s,
         depth=depth,
         prominence=score,
         baseline=0.0,
@@ -494,6 +571,78 @@ def _band_dip(s_centers, profile, counts, cont_frac, edge_bins, max_center_offse
     }
 
 
+#: How many horizontal strips the frame is cut into to follow the band down it, and what the correlation
+#: may not reach past (the frame's outermost columns are vignetted by more than a shadow is deep).
+_TILT_STRIPS = 7
+_TILT_MARGIN_PX = 150
+#: The fit's standard error on dx/dy, above which the tilt is not used (0.01 is about 0.6 degree).
+_TILT_MAX_SLOPE_ERROR = 0.01
+#: The refined angle's dip must be at least this fraction of the sweep's deepest, or the sweep's angle stays. Not
+#: close to 1: the sweep's dip is deepest at an angle that is too tilted (the sky's gradient adds to it), so the true
+#: angle's is a little shallower -- 0.88 of it on a real frame.
+_REFINED_MIN_DEPTH_FRACTION = 0.75
+
+
+def _refine_angle(sup: np.ndarray, ds: int, near_vertical_deg: float) -> float | None:
+    """The band's tilt measured from how its cross-section moves down the frame, in the detector's convention
+    (radians, near +-90 degrees), or ``None`` when that cannot be measured well.
+
+    The sweep picks the angle at which the dip is deepest, and for a wide, flat-bottomed band that is hardly
+    a function of the angle: on a centred shadow 2600 px wide the dip was 0.539 deep at 1 degree off vertical
+    and 0.555 at 9, within the 1% by which the angles tie, so the sweep chose 9 degrees where the band leans 1
+    (the darkened frame then showed the old umbra and penumbra along one side). The *position* of the band
+    is far better determined than its depth, so this cuts the star-suppressed frame into horizontal strips,
+    takes each strip's column profile (a median down the strip), finds by correlation how far that profile
+    sits from the middle strip's, and fits a line to those shifts: its slope is dx/dy, the band's lean.
+
+    `ds` is the decimation of `sup`. Used only when the fit is good (a small standard error on the slope) and the
+    lean is within ``near_vertical_deg``; the caller keeps the sweep's angle otherwise.
+    """
+    ny, nx = sup.shape
+    strips = _TILT_STRIPS
+    height = ny // strips
+    if height < 4 or nx < 64:
+        return None
+    margin = max(1, int(_TILT_MARGIN_PX / ds))  # in decimated pixels
+    lo, hi = margin, nx - margin
+    # the furthest apart two strips' profiles can be: a lean of `near_vertical_deg` over the distance between the ends
+    reach = int(np.tan(np.deg2rad(near_vertical_deg)) * height * (strips - 1) / 2.0) + 4
+    profiles = [ndi.uniform_filter1d(np.median(sup[k * height : (k + 1) * height], axis=0), 9) for k in range(strips)]
+    centres = np.array([k * height + height / 2.0 for k in range(strips)])
+    mid = strips // 2
+    reference = profiles[mid]
+    shifts = []
+    for k in range(strips):
+        scores = []
+        for lag in range(-reach, reach + 1):
+            a, b = max(lo, lo - lag), min(hi, hi - lag)
+            if b - a < 16:
+                scores.append(-np.inf)
+                continue
+            r = reference[a:b] - reference[a:b].mean()
+            g = profiles[k][a + lag : b + lag] - profiles[k][a + lag : b + lag].mean()
+            scores.append(float(np.dot(r, g) / np.sqrt(np.dot(r, r) * np.dot(g, g) + 1e-30)))
+        scores_a = np.asarray(scores)
+        i = int(np.argmax(scores_a))
+        sub = 0.0
+        if 0 < i < len(scores_a) - 1 and np.isfinite(scores_a[i - 1]) and np.isfinite(scores_a[i + 1]):
+            den = scores_a[i - 1] - 2.0 * scores_a[i] + scores_a[i + 1]
+            if den < 0:
+                sub = 0.5 * (scores_a[i - 1] - scores_a[i + 1]) / den
+        shifts.append(i - reach + sub)
+    dy = centres - centres[mid]
+    slope, intercept = np.polyfit(dy, shifts, 1)
+    rms = float(np.sqrt(np.mean((np.asarray(shifts) - (slope * dy + intercept)) ** 2)))
+    slope_error = rms / (np.sqrt(strips) * float(np.std(dy)))
+    if not np.isfinite(slope) or slope_error > _TILT_MAX_SLOPE_ERROR:
+        return None
+    lean = float(np.rad2deg(np.arctan(slope)))
+    if abs(lean) > near_vertical_deg:
+        return None
+    theta = float(np.arctan2(1.0, slope))  # the band-normal angle, in (0, pi)
+    return theta if theta <= np.pi / 2.0 else theta - np.pi
+
+
 #: Angles whose dip is within this fraction of the deepest one are ties, and the one nearest vertical wins.
 _ANGLE_TIE_FRACTION = 0.99
 
@@ -577,6 +726,24 @@ def _fit_illumination(img, order=2, n_iter=3, sigma=3.0, subsample=4, exclude_ma
     # Guard against a poly dipping to <= 0 somewhere; deficit divides by this.
     floor = np.nanmedian(img) * 1e-3
     return np.maximum(illum, floor if floor > 0 else 1.0)
+
+
+#: A run that comes within this many bins of the end of the valid profile has not ended: the band goes on past the frame.
+_OPEN_END_BINS = 1
+
+
+def _run_s_bounds(s_centres, lo, hi, valid_lo, valid_hi, bin_width):
+    """The run of bins ``lo..hi`` as ``(s_lo, s_hi)``, a side that reaches the end of the valid profile left open."""
+    s_lo = -np.inf if lo <= valid_lo + _OPEN_END_BINS else float(s_centres[lo] - bin_width / 2.0)
+    s_hi = np.inf if hi >= valid_hi - _OPEN_END_BINS else float(s_centres[hi] + bin_width / 2.0)
+    return (s_lo, s_hi)
+
+
+def _bounds_json(bounds):
+    """``(lo, hi)`` as a JSON-ready list: an open side is None."""
+    if bounds is None:
+        return None
+    return [round(float(b), 1) if np.isfinite(b) else None for b in bounds]
 
 
 def _run_bounds(profile, peak_i, level):
