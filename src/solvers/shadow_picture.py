@@ -19,7 +19,7 @@ UMBRA_TINT = (204, 121, 167)  # reddish purple
 PENUMBRA_TINT = (0, 114, 178)  # blue
 CAPTION_HEIGHT = 74
 #: width of a panel when two are shown side by side
-PAIR_PANEL_WIDTH = 1200
+PAIR_PANEL_WIDTH = 800
 
 
 def tint(rgb: np.ndarray, mask: np.ndarray, color: tuple[int, int, int], alpha: float) -> None:
@@ -79,15 +79,20 @@ def write_shadow_picture(
     caption: list[str],
     darkened: np.ndarray | None = None,
 ) -> None:
-    """`image` with `shadow`'s band tinted, as a JPEG at `path`. With `darkened`, that frame is shown beside it
-    (untinted: the band should have gone)."""
+    """`image` with `shadow`'s band tinted, as a JPEG at `path`. With `darkened` the picture has three panels on one
+    line: the frame as it came, the same with the detected band tinted, and the darkened frame (untinted: the band
+    should have gone)."""
     if darkened is None:
         rgb = _panel(image, shadow, MAX_DISPLAY_WIDTH)
     else:
-        before = _panel(image, shadow, PAIR_PANEL_WIDTH)
-        after = _panel(darkened, None, PAIR_PANEL_WIDTH)
-        rows = min(before.shape[0], after.shape[0])
-        rgb = np.concatenate([before[:rows], np.full((rows, 8, 3), 255, np.uint8), after[:rows]], axis=1)
+        panels = [
+            _panel(image, None, PAIR_PANEL_WIDTH),
+            _panel(image, shadow, PAIR_PANEL_WIDTH),
+            _panel(darkened, None, PAIR_PANEL_WIDTH),
+        ]
+        rows = min(panel.shape[0] for panel in panels)
+        gap = np.full((rows, 8, 3), 255, np.uint8)
+        rgb = np.concatenate([panels[0][:rows], gap, panels[1][:rows], gap, panels[2][:rows]], axis=1)
     canvas = Image.new("RGB", (rgb.shape[1], rgb.shape[0] + CAPTION_HEIGHT), (0, 0, 0))
     canvas.paste(Image.fromarray(rgb), (0, CAPTION_HEIGHT))
     draw = ImageDraw.Draw(canvas)
