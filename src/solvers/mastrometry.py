@@ -142,6 +142,9 @@ class MastrometryDotNet(SolverInterface):
         """
 
         self.unit: Unit | None = unit
+        #: what the last solve's steps cost, seconds: the stage's (`hot_pixels`, `shadow`, `darken` or `select`) and
+        #: `solve_field` (every attempt). The caller adds up the rest: it times the call as a whole.
+        self.timings: dict[str, float] = {}
 
         if full_frame_input_image_path is None:  # noqa: SIM102
             if settings is not None:
@@ -181,6 +184,7 @@ class MastrometryDotNet(SolverInterface):
                 source_selection,
                 fibre_xy,
                 shadow,
+                artifacts_dir,
             )
         finally:
             # The solved frame (it carries the WCS -- MAST_unit#27) and the solver's own
@@ -223,6 +227,7 @@ class MastrometryDotNet(SolverInterface):
         source_selection: SourceSelectionSettings | None = None,
         fibre_xy: tuple[int, int] | None = None,
         shadow: ShadowModel | None = None,
+        artifacts_dir: Path | None = None,
     ) -> SolvingResult | None:
         unit = self.unit
 
@@ -346,6 +351,9 @@ class MastrometryDotNet(SolverInterface):
                     failure = SolvingResult(succeeded=False, errors=[f"source selection: {why}"])
                     failure.selection = stage.record()
                     return failure
+                self.timings.update(stage.timings)
+                if artifacts_dir is not None:
+                    self._write_shadow_picture(artifacts_dir, new_fits_path.stem, data, stage)
                 data = stage.data  # darkened, for shadowed; the input otherwise
 
             # Downsample by factor downsample_factor (binning)
@@ -514,6 +522,7 @@ class MastrometryDotNet(SolverInterface):
                     command, capture_output=True, shell=True, env=env, check=False
                 )  # returncode is inspected below
                 elapsed = time.monotonic() - start
+                self.timings["solve_field"] = self.timings.get("solve_field", 0.0) + elapsed
                 stdout_lines = completed_process.stdout.decode().strip().splitlines()
                 stderr_lines = completed_process.stderr.decode().strip().splitlines()
                 if kind == "xylist":
@@ -633,6 +642,25 @@ class MastrometryDotNet(SolverInterface):
             # logger.exception attaches the traceback itself; naming the exception here too
             # would only duplicate it.
             logger.exception(f"{function_name()}: {getattr(target, '__name__', target)} failed")
+
+    @staticmethod
+    def _write_shadow_picture(folder: Path, stem: str, before, stage: StageResult) -> None:
+        """`<stem>-shadow.jpg` in `folder`: the shadow the stage detected, and for `shadowed` the frame darkened.
+        A picture must never cost the solve, so any failure is only logged."""
+        try:
+            from .shadow_picture import caption_lines, write_shadow_picture  # noqa: PLC0415
+
+            folder.mkdir(parents=True, exist_ok=True)
+            title = f"{stem}   stage {stage.settings.mode}   shadow detected"
+            write_shadow_picture(
+                before,
+                stage.shadow,
+                folder / f"{stem}-shadow.jpg",
+                caption_lines(stage.shadow, title, stage.timings.get("shadow")),
+                darkened=stage.data if stage.settings.mode == "shadowed" and stage.shadow is not None else None,
+            )
+        except Exception:
+            logger.exception(f"{function_name()}: could not make the shadow picture of '{stem}'")
 
     def _star_map_files(self, tmp_dir: Path, solved_fits: Path, frame: Path) -> list[Path]:
         """The annotated JPEG and the per-star JSON of this solve, written in the scratch folder.

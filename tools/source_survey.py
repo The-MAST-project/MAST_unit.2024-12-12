@@ -20,7 +20,8 @@ and, for the whole run:
 - `consistency.csv`     with --same-field: per star of the first frame, in how many frames it was
                         detected, kept and rejected
 
-It never writes beside the frames. It does not solve unless asked to (--solve); it never touches a unit or a mount.
+It writes beside the frames only with --beside-frames (see there). It does not solve unless asked to (--solve); it never
+touches a unit or a mount.
 
 Usage:
     python tools/source_survey.py PATH [PATH ...] --out DIR [options]
@@ -89,6 +90,7 @@ if str(_SRC) not in sys.path:
 from imaging.hot_pixels import HotPixels, calibration_path  # noqa: E402
 from imaging.mirror_shadow import ShadowModel, detect_mirror_shadow  # noqa: E402
 from solvers.pixel_grid import roi_center_to_crpix  # noqa: E402
+from solvers.shadow_picture import tint, zscale_display  # noqa: E402
 from solvers.source_selection import (  # noqa: E402
     KEPT,
     REJECT_REASONS,
@@ -97,7 +99,7 @@ from solvers.source_selection import (  # noqa: E402
     SelectionParams,
     select_sources,
 )
-from solvers.star_map import MAX_DISPLAY_WIDTH, font, stretch  # noqa: E402
+from solvers.star_map import font, stretch  # noqa: E402
 from solvers.survey_solve import (  # noqa: E402
     DEFAULT_PIXEL_SCALE_ARCSEC,
     SolveOutcome,
@@ -125,6 +127,8 @@ REASON_CODES = {
     "bad_centroid": "BC",
 }
 SKIPPED_NAMES = (",solver=", "downsampled_")
+#: the steps of a solver solve that are timed (`MastrometryDotNet.timings`); `<stage>_t_other` is the rest
+TIMED_STEPS = ("hot_pixels", "shadow", "darken", "select", "solve_field")
 
 
 # ----- frames ----------------------------------------------------------------------------------
@@ -272,30 +276,6 @@ def consistency(selections: list[Selection], radius: float) -> list[dict]:
 # ----- the picture -----------------------------------------------------------------------------
 
 
-def _tint(rgb: np.ndarray, mask: np.ndarray, color: tuple[int, int, int], alpha: float) -> None:
-    rgb[mask] = ((1 - alpha) * rgb[mask] + alpha * np.array(color)).astype(np.uint8)
-
-
-def zscale_display(image: np.ndarray) -> tuple[np.ndarray, int]:
-    """An 8-bit linear display of `image` between its zscale limits (as ds9's scale zscale), at most
-    MAX_DISPLAY_WIDTH wide, reduced by block *maximum*.
-
-    Two things hid the faint stars of the old picture: the asinh stretch is anchored on the sky and
-    saturates a few sigma above it, and the block *mean* divides a point source's peak by the block's
-    area (25 at the usual factor of 5). The zscale range (from a subsample, as ds9 samples) shows the
-    faint stars, and the block maximum keeps them -- and, as in ds9, the hot pixels.
-    """
-    from astropy.visualization import ZScaleInterval  # noqa: PLC0415
-
-    height, width = image.shape
-    factor = max(1, -(-width // MAX_DISPLAY_WIDTH))
-    h, w = height // factor * factor, width // factor * factor
-    z1, z2 = ZScaleInterval().get_limits(image[::4, ::4])
-    small = image[:h, :w].astype(np.float32).reshape(h // factor, factor, w // factor, factor).max(axis=(1, 3))
-    scaled = np.clip((small - z1) / max(float(z2 - z1), 1e-6), 0.0, 1.0)
-    return (scaled * 255).astype(np.uint8), factor
-
-
 def draw_overlay(
     image: np.ndarray,
     selection: Selection,
@@ -320,8 +300,8 @@ def draw_overlay(
         s = -(xs - (nx - 1) / 2.0) * np.sin(shadow.angle) + (ys - (ny - 1) / 2.0) * np.cos(shadow.angle)
         d = np.abs(s - shadow.offset)
         umbra = d <= shadow.umbra_half_width
-        _tint(rgb, (d <= shadow.penumbra_half_width) & ~umbra, PENUMBRA_TINT, 0.30)
-        _tint(rgb, umbra, UMBRA_TINT, 0.40)
+        tint(rgb, (d <= shadow.penumbra_half_width) & ~umbra, PENUMBRA_TINT, 0.30)
+        tint(rgb, umbra, UMBRA_TINT, 0.40)
 
     canvas = Image.new("RGB", (rgb.shape[1], rgb.shape[0] + CAPTION_HEIGHT), (0, 0, 0))
     canvas.paste(Image.fromarray(rgb), (0, CAPTION_HEIGHT))
@@ -564,6 +544,8 @@ def survey_frame(
         display=args.stretch,
     )
     write_sources(selection, (x0, y0), out_dir / f"{stem}-sources.csv", solve)
+    if args.beside_frames:
+        place_beside_frame(path, out_dir, args.solver_modes if args.via_solver else [], out_dir / f"{stem}-survey.jpg")
 
     row = {
         "frame": path.name,
@@ -610,6 +592,8 @@ def survey_frame(
                 f"{mode}_status": outcome.status,
                 f"{mode}_solved_from": outcome.solved_from,
                 f"{mode}_seconds": _round(outcome.seconds, 2),
+                **{f"{mode}_t_{step}": _round(outcome.timings.get(step, 0.0), 2) for step in TIMED_STEPS},
+                f"{mode}_t_other": _round(outcome.seconds - sum(outcome.timings.get(step, 0.0) for step in TIMED_STEPS), 2),
                 f"{mode}_used": outcome.used,
                 f"{mode}_crval_ra_deg": "" if outcome.crval is None else _round(outcome.crval[0], 7),
                 f"{mode}_crval_dec_deg": "" if outcome.crval is None else _round(outcome.crval[1], 7),
@@ -628,6 +612,46 @@ def survey_frame(
 
 
 _SOLVER = None  # one MastrometryDotNet for the run: it checks the RAM disk and the indexes once
+
+
+#: the small artifacts of a stage's solve that go beside the frame: the star map, its data, the result text, the shadow
+#: picture. Not the solved FITS (as large as the frame), the xylist, WCS or correspondences: those stay in --out.
+BESIDE_FRAME_SUFFIXES = ("-stars.jpg", "-stars.json", "-result.txt", "-shadow.jpg")
+
+
+def frame_folder_tag(path: Path) -> str:
+    """The short name a frame's per-stage folders in --out carry."""
+    return hashlib.sha1(path.name.encode()).hexdigest()[:8]
+
+
+def place_beside_frame(path: Path, out_dir: Path, modes: list[str], survey_jpg: Path) -> list[Path]:
+    """Copy a frame's pictures to the frame's own folder (on the share), and return what was placed.
+
+    The survey's picture goes as it is (`<stem>-survey.jpg`). A stage's artifacts carry the stage in their name,
+    `<stem>,solver=mastrometry.net,stage=<stage>-stars.jpg`, so the three stages do not overwrite one another, nor the
+    production solver's `<stem>,solver=mastrometry.net...` files already there. All contain `,solver=` or `-survey`,
+    so a survey of the folder does not take them for frames. A copy that fails is reported and does not stop the run.
+    """
+    import re  # noqa: PLC0415
+    import shutil  # noqa: PLC0415
+
+    placed: list[Path] = []
+    jobs: list[tuple[Path, str]] = [(survey_jpg, survey_jpg.name)]
+    tag = frame_folder_tag(path)
+    for mode in modes:
+        for source in sorted((out_dir / f"{tag}-{mode}").glob("*")):
+            if source.name.endswith(BESIDE_FRAME_SUFFIXES):
+                jobs.append(
+                    (source, re.sub(r"(,solver=[^,]*?)(-(?:stars|result|shadow)\.)", rf"\1,stage={mode}\2", source.name))
+                )
+    for source, name in jobs:
+        try:
+            if source.exists():
+                shutil.copyfile(source, path.parent / name)
+                placed.append(path.parent / name)
+        except OSError as e:
+            print(f"could not place {name} beside {path.name}: {e}", file=sys.stderr)
+    return placed
 
 
 def _solve_via_solver(
@@ -649,7 +673,7 @@ def _solve_via_solver(
         _SOLVER = MastrometryDotNet()
     # A short folder name: the solver's artifacts are named after the (long) frame, and Windows without
     # long paths refuses a destination past 260 characters. `<hash of the frame name>-<mode>`.
-    tag = hashlib.sha1(path.name.encode()).hexdigest()[:8]
+    tag = frame_folder_tag(path)
     outcomes: dict[str, SolveOutcome] = {}
     for mode in args.solver_modes:
         folder = out_dir / f"{tag}-{mode}"
@@ -677,6 +701,7 @@ def _solve_via_solver(
             outcome.status = f"failed: {e!r}"
             result = None
         outcome.seconds = time.monotonic() - start
+        outcome.timings = dict(getattr(_SOLVER, "timings", {}))
         if result is not None:
             if result.selection:
                 outcome.solved_from = result.selection.get("solved_from", "image")
@@ -896,6 +921,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--radius", type=float, default=2.0)
     parser.add_argument("--cpulimit", type=int, default=60)
     parser.add_argument("--no-rejected", action="store_true")
+    parser.add_argument(
+        "--beside-frames",
+        action="store_true",
+        help="also copy each frame's pictures (the survey picture, and per stage the star map, its data, the result "
+        "text and the shadow picture) to the frame's own folder, named `...,solver=mastrometry.net,stage=<stage>-...`. "
+        "This writes on the share, where the frames are; the big files stay in --out",
+    )
     parser.add_argument("--show-faint", action="store_true")
     return parser
 
@@ -914,7 +946,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     out_dir: Path = args.out
     for frame in frames:
-        if out_dir.resolve() == frame.resolve().parent:
+        if not args.beside_frames and out_dir.resolve() == frame.resolve().parent:
             print(
                 f"--out must not be the folder of a frame ({frame.parent}): the survey writes nothing beside the frames",
                 file=sys.stderr,

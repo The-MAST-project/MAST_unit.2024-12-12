@@ -218,3 +218,31 @@ def test_param_overrides_are_read_as_the_fields_own_types():
     assert got == {"min_sep_fwhm": 1.5, "n_target": 40, "blend_ignores_hot": False, "grid": (5, 4), "full_scale": None}
     with pytest.raises(ValueError):
         parse_param_overrides(["no_such_field=1"])
+
+
+def test_pictures_are_placed_beside_the_frame_with_the_stage_in_their_name(tmp_path):
+    from source_survey import frame_folder_tag, place_beside_frame
+
+    frame_dir, out = tmp_path / "share", tmp_path / "out"
+    frame_dir.mkdir()
+    frame = frame_dir / "seq=0002,seconds=5.0.fits"
+    tag = frame_folder_tag(frame)
+    survey = out / "seq=0002,seconds=5.0-survey.jpg"
+    survey.parent.mkdir()
+    survey.write_bytes(b"s")
+    for mode in ("original", "selective"):
+        folder = out / f"{tag}-{mode}"
+        folder.mkdir()
+        stem = "seq=0002,seconds=5.0,solver=mastrometry.net"
+        for suffix in ("-stars.jpg", "-stars.json", "-result.txt", ".fits", ".corr"):
+            (folder / f"{stem}{suffix}").write_bytes(b"x")
+    (out / f"{tag}-selective" / "seq=0002,seconds=5.0,solver=mastrometry.net-shadow.jpg").write_bytes(b"x")
+
+    placed = place_beside_frame(frame, out, ["original", "selective"], survey)
+
+    names = sorted(p.name for p in placed)
+    assert "seq=0002,seconds=5.0-survey.jpg" in names
+    assert "seq=0002,seconds=5.0,solver=mastrometry.net,stage=original-stars.jpg" in names
+    assert "seq=0002,seconds=5.0,solver=mastrometry.net,stage=selective-shadow.jpg" in names
+    assert not any(n.endswith((".fits", ".corr")) for n in names)  # the big and the intermediate files stay in --out
+    assert all((frame_dir / n).exists() for n in names) and len(names) == len(set(names))

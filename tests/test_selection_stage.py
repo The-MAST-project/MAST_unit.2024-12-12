@@ -212,3 +212,15 @@ def test_a_missing_or_unreadable_map_is_no_map(tmp_path, monkeypatch):
     path.parent.mkdir(parents=True)
     path.write_text("not json", encoding="utf-8")
     assert selection_stage.load_machine_hot_pixels() is None  # there, unreadable
+
+
+def test_each_step_is_timed(shadowed):
+    frame, _ = _frame()
+    shadowed_stage = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="shadowed"))
+    assert set(shadowed_stage.timings) == {"hot_pixels", "shadow", "darken"}
+    selective = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="selective"))
+    assert set(selective.timings) == {"hot_pixels", "shadow", "select"}
+    assert all(v >= 0 for v in selective.timings.values())
+    assert set(selective.record()["timings_s"]) == set(selective.timings)
+    cached = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="selective"), shadow=_shadow())
+    assert cached.timings["shadow"] == 0.0  # the acquisition's cached model: no detection

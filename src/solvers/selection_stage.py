@@ -31,6 +31,7 @@ radius, so the design's geometric defaults apply.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field, fields, replace
 from typing import Any, Literal
 
@@ -123,6 +124,9 @@ class StageResult:
     solved_from: str = "image"
     #: how many of the camera's hot pixels fell in this frame and were filled
     hot_pixels_filled: int = 0
+    #: what each step cost, in seconds: `hot_pixels`, `shadow` (0.0 when the acquisition's cached model was used),
+    #: `darken` (shadowed) or `select` (selective)
+    timings: dict[str, float] = field(default_factory=dict)
 
     @property
     def failed(self) -> str | None:
@@ -138,6 +142,7 @@ class StageResult:
             "shadow_present": bool(self.shadow.present) if self.shadow is not None else False,
             "solved_from": self.solved_from,
             "hot_pixels_filled": self.hot_pixels_filled,
+            "timings_s": {k: round(v, 3) for k, v in self.timings.items()},
         }
         if self.selection is not None:
             out.update(
@@ -193,11 +198,14 @@ def prepare(
     """
     assert settings.mode != "original", "prepare() is not called for the original stage"
     result = StageResult(settings=settings, data=data)
+    started = time.monotonic()
     data, result.hot_pixels_filled = _fill_hot_pixels(data, settings, origin, frame_shape)
+    result.timings["hot_pixels"] = time.monotonic() - started
     result.data = data
     if result.hot_pixels_filled:
         logger.info(f"source selection: {result.hot_pixels_filled} hot pixels filled")
 
+    started = time.monotonic()
     if shadow is not None:
         result.shadow = shadow
         logger.info(f"source selection: shadow present={shadow.present} (cached)")
@@ -208,14 +216,18 @@ def prepare(
             require_two_sided=settings.shadow_require_two_sided,
         )
         logger.info(f"source selection: shadow present={result.shadow.present}")
+    result.timings["shadow"] = 0.0 if shadow is not None else time.monotonic() - started
     shadow_present = result.shadow is not None and result.shadow.present
 
     if settings.mode == "shadowed":
+        started = time.monotonic()
         if shadow_present:
             result.data = _as_dtype(darken_shadow(data, result.shadow, include_penumbra=True), data.dtype)  # type: ignore[arg-type]
             logger.info("source selection: shadow band darkened (umbra and penumbra)")
+        result.timings["darken"] = time.monotonic() - started
         return result
 
+    started = time.monotonic()
     result.selection = select_sources(
         data,
         shadow=result.shadow if shadow_present else None,
@@ -223,6 +235,7 @@ def prepare(
         exclusion_half_width=settings.exclusion_half_width,
         header=header,
     )
+    result.timings["select"] = time.monotonic() - started
     result.solved_from = "xylist"
     logger.info(f"source selection: {result.selection.counts()}, status={result.selection.status}")
     return result
