@@ -102,6 +102,47 @@ class ShadowModel:
         umbra, penumbra = self.masks()
         return (umbra | penumbra) if include_penumbra else umbra
 
+    def cropped(self, x0: int, y0: int, width: int, height: int) -> ShadowModel:
+        """This model, found on the full frame, re-expressed for the crop at (x0, y0), width x height.
+
+        The perpendicular coordinate is measured from the image centre, so cropping moves its
+        origin: ``s`` and the centreline's ``offset`` shift by the same amount, and the band is
+        otherwise unchanged. A band that misses the crop stays ``present``: the crop is still in
+        the frame where it was found, and the deficit read off ``profile`` is then ~0 there.
+        """
+        if not self.present:
+            return ShadowModel(present=False, image_shape=(height, width))
+        full_ny, full_nx = self.image_shape
+        delta = -(x0 + (width - 1) / 2.0 - (full_nx - 1) / 2.0) * np.sin(self.angle) + (
+            y0 + (height - 1) / 2.0 - (full_ny - 1) / 2.0
+        ) * np.cos(self.angle)
+        return ShadowModel(
+            present=True,
+            image_shape=(height, width),
+            angle=self.angle,
+            offset=self.offset - delta,
+            umbra_half_width=self.umbra_half_width,
+            penumbra_half_width=self.penumbra_half_width,
+            depth=self.depth,
+            prominence=self.prominence,
+            baseline=self.baseline,
+            s=None if self.s is None else self.s - delta,
+            profile=self.profile,
+        )
+
+    def summary(self) -> dict:
+        """The figures worth recording with a solve, JSON-ready (no arrays)."""
+        return {
+            "present": bool(self.present),
+            "image_shape": [int(v) for v in self.image_shape],
+            "tilt_deg": round(self.tilt_deg, 3),
+            "offset_px": round(float(self.offset), 2),
+            "umbra_half_width_px": round(float(self.umbra_half_width), 1),
+            "penumbra_half_width_px": round(float(self.penumbra_half_width), 1),
+            "depth": round(float(self.depth), 4),
+            "prominence": round(float(self.prominence), 2),
+        }
+
     def centerline_endpoints(self):
         """Endpoints of the long centerline clipped to the image box, or None."""
         if not self.present:
@@ -112,6 +153,45 @@ class ShadowModel:
         d = np.array([np.cos(self.angle), np.sin(self.angle)])  # along the band
         c = np.array([cx, cy]) + self.offset * nrm  # a point on the centerline
         return _clip_line_to_box(c, d, nx, ny)
+
+
+@dataclass
+class StagedShadow:
+    """A shadow model together with the stage position it was detected at.
+
+    Detection costs seconds on a full frame, and the band only moves when the stage does, so an
+    acquisition keeps one of these (``Acquisition.shadow``) and reuses the model while the stage
+    stays within ``close_enough`` of ``stage_position``. ``stage_position`` is None when the stage
+    could not say where it was; such a model is reused only while it still cannot.
+    """
+
+    model: ShadowModel
+    stage_position: int | None
+    image_path: str  # the frame it was detected on
+    detected_at: str  # ISO UTC
+    seconds: float  # what the detection cost
+    #: the solving phase it was found in. The shadow is looked for in every phase and is not assumed from
+    #: the stage position (the band's place differs between `sky` and `spec`), so a model is reused only in
+    #: the phase it was found in.
+    phase: str | None = None
+
+    def matches(self, stage_position: int | None, close_enough: int, phase: str | None = None) -> bool:
+        """Whether this model still describes the band for a stage at ``stage_position``, in ``phase``."""
+        if phase != self.phase:
+            return False
+        if self.stage_position is None or stage_position is None:
+            return self.stage_position is None and stage_position is None
+        return abs(int(stage_position) - int(self.stage_position)) <= int(close_enough)
+
+    def summary(self) -> dict:
+        return {
+            **self.model.summary(),
+            "stage_position": self.stage_position,
+            "phase": self.phase,
+            "detected_on": self.image_path,
+            "detected_at": self.detected_at,
+            "detection_seconds": round(self.seconds, 2),
+        }
 
 
 def detect_mirror_shadow(

@@ -20,6 +20,7 @@ from common.models.statuses import ImagerRoi
 from common.rois import SkyRoi
 from common.utils import Coord, boxed_log, function_name
 from imagers import ImagerSettings
+from imaging.mirror_shadow import ShadowModel
 from phd2.limit_frame import derived_guiding_roi
 
 from .astrometry_dot_net import generate_random_string, parse_solver_output, win_to_cygwin
@@ -53,6 +54,8 @@ def downsampled_frame_path(scratch: Path, input_image_path: str) -> Path:
 
 
 class MastrometryDotNet(SolverInterface):
+    #: `Solver.solve` hands a backend that says so the acquisition's cached shadow model (`solve(shadow=)`).
+    selects_sources = True
     """
     A PlateSolverInterface implementation that uses the astrometry.net solver
      (same as AstrometryDotNetSolver) but handles image downsampling and cropping
@@ -105,6 +108,7 @@ class MastrometryDotNet(SolverInterface):
         source_selection: SourceSelectionSettings | None = None,
         artifacts_dir: Path | None = None,
         fibre_xy: tuple[int, int] | None = None,
+        shadow: ShadowModel | None = None,
     ) -> SolvingResult | None:
         """
         MAST specific astrometry.net solver implementation.
@@ -131,6 +135,10 @@ class MastrometryDotNet(SolverInterface):
         `guiding.rois[...]` holds it. For a frame solved whole (no ROI) it becomes CRPIX, so the solved RA/Dec is
         the sky at the fibre -- as it is in production, where the guiding ROI is centred on the fibre. Without it,
         a whole frame is solved with CRPIX at its centre.
+
+        `shadow` (the unit passes it; the survey does not): the shadow model of the *full* frame, as the acquisition
+        cached it. It is cropped to the ROI and used by the stage instead of a new detection, which is skipped
+        for the `original` stage. If it is not for a frame of this size it is ignored and the stage detects.
         """
 
         self.unit: Unit | None = unit
@@ -172,6 +180,7 @@ class MastrometryDotNet(SolverInterface):
                 target,
                 source_selection,
                 fibre_xy,
+                shadow,
             )
         finally:
             # The solved frame (it carries the WCS -- MAST_unit#27) and the solver's own
@@ -213,6 +222,7 @@ class MastrometryDotNet(SolverInterface):
         target: Coord | None,
         source_selection: SourceSelectionSettings | None = None,
         fibre_xy: tuple[int, int] | None = None,
+        shadow: ShadowModel | None = None,
     ) -> SolvingResult | None:
         unit = self.unit
 
@@ -297,6 +307,8 @@ class MastrometryDotNet(SolverInterface):
                 # division ((center - start) // factor) silently biased it by ~0.4". Returns floats;
                 # solve-field accepts fractional CRPIX, so do NOT round.
                 data = data[imager_roi.y : imager_roi.y + imager_roi.height, imager_roi.x : imager_roi.x + imager_roi.width]
+                if shadow is not None and tuple(shadow.image_shape) == (height, width):
+                    shadow = shadow.cropped(imager_roi.x, imager_roi.y, imager_roi.width, imager_roi.height)
                 refpix = (
                     roi_center_to_crpix(imager_roi._center.x, imager_roi.x, downsample_factor),
                     roi_center_to_crpix(imager_roi._center.y, imager_roi.y, downsample_factor),
@@ -327,6 +339,7 @@ class MastrometryDotNet(SolverInterface):
                     selection_settings,
                     origin=(imager_roi.x, imager_roi.y) if imager_roi is not None else (0, 0),
                     frame_shape=(height, width),
+                    shadow=shadow if shadow is not None and tuple(shadow.image_shape) == tuple(data.shape) else None,
                 )
                 if (why := stage.failed) is not None:
                     logger.error(f"{function_name()}: source selection: {why}, the frame is not solved")
