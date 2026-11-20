@@ -1,9 +1,9 @@
 # Mastrometry stages: plate solving that knows about the fold-mirror shadow
 
-*Status, 2026-11-19: working and measured on real frames, **not merged, not pushed, off by default**. MAST_unit branch
-`solver-source-selection` (on top of PR #409), MAST_common branch `solving-source-selection-config`. Every number
-below comes from real MAST frames (mast01 traverse, 10 s, full frame, plus the other units where stated). What we have
-not done yet, and what the numbers cannot tell us, is in [section 8](#8-what-we-do-not-know-yet).*
+*Status, 2026-11-20: working and measured on 37 real frames from two units (mast01 and mast02), **pushed, not merged,
+off by default**. MAST_unit branch `solver-source-selection` (on top of PR #409), MAST_common branch
+`solving-source-selection-config`. Every number below comes from real MAST frames, full frame, solved on mast08. What we
+have not done yet, and what the numbers cannot tell us, is in [section 8](#8-what-we-do-not-know-yet).*
 
 ## 1. Summary
 
@@ -16,17 +16,23 @@ in front of astrometry.net and made them switchable, as three **stages**:
 | **shadowed** | the same frame, with the fold mirror's shadow detected and its band darkened |
 | **selective** | a list of about 40 chosen stars, outside the shadow and away from trouble, solved as an xylist |
 
-On six real frames (three with the mirror in, three at the `sky` position), measured as the median distance of the
-matched stars from their catalogue positions, after the solve:
+On 37 real frames (mast01: 6; mast02: 31, from production acquisitions and a mirror-map sweep), measured as the median
+distance of the matched stars from their catalogue positions, after the solve (the median over frames of each frame's
+median):
 
 | | original | shadowed | selective |
 |---|---|---|---|
-| stars used by the fit | 199 to 214 | 115 to 168 | 27 to 51 |
-| median residual | 0.49 to 0.93″ | 0.39 to 0.82″ | **0.21 to 0.37″** |
+| frames solved | 36 of 37 | 36 of 37 | 36 of 37 |
+| stars used by the fit (median) | 208 to 274 | 154 to 207 | 22 to 30 |
+| median residual, mast01 (6 frames) | 0.63″ | 0.50″ | **0.25″** |
+| median residual, mast02 (31 frames) | 0.48 to 0.52″ | 0.38 to 0.41″ | **0.11 to 0.17″** |
+| time per frame, whole frame (median) | 5.7 s | 32.7 s | 28.3 s |
 
-The shadowed stage is better than the original on every frame (by 11 to 21%), and the selective stage is two to three
-times better. **That is the agreement of a solution with its own stars, not its accuracy**: we have no ground truth yet
-(see [section 8](#8-what-we-do-not-know-yet)). The next stage is an on-sky test with a Gaia star on the fibre.
+The one frame not solved is the same in all three stages (a 2 s exposure). The shadowed stage is better than the
+original on every set (by 20 to 21%), and the selective stage is 2.5 to 4.7 times better. **That is the agreement of a
+solution with its own stars, not its accuracy**: we have no ground truth yet (see [section 8](#8-what-we-do-not-know-yet)).
+The next stage is an on-sky test with a Gaia star on the fibre. The time is spent in Python (shadow detection, then
+darkening or star selection), not in astrometry.net; it is broken down in [section 7.3](#73-where-the-time-goes).
 
 ## 2. Motivation
 
@@ -149,14 +155,15 @@ the results below.
 
 The selective stage chooses the stars ([section 5](#5-the-star-selection-in-detail)), writes them as an xylist (a FITS
 table of X, Y and FLUX, brightest first, on the binned grid) and runs `solve-field` on that instead of on the image.
-Here is the same frame solved by the original stage and by the selective stage, as the unit's own star map:
+Here is the same frame solved by the original stage and by the selective stage, as the unit's own star map (the shadowed
+stage, and a frame with a centred shadow, are in [section 7](#7-results)):
 
-![Star map, original stage](mastrometry_stages/starmap_original.jpg)
+![Star map, original stage](mastrometry_stages/margin_original_stars.jpg)
 
 *Original stage: astrometry.net extracted 410 sources (orange +) and used 207 (blue circles). Many are in the shadow
 on the right. The residual RMS is 1.57″.*
 
-![Star map, selective stage](mastrometry_stages/starmap_selective.jpg)
+![Star map, selective stage](mastrometry_stages/margin_selective_stars.jpg)
 
 *Selective stage, same frame (mast01 `sky` frame, 10 s): 42 chosen stars (orange +), 27 matched and used (blue
 circles). All are outside the shadow and near the fibre (the white +). The residual RMS is 0.28″.*
@@ -252,8 +259,14 @@ It looks for one broad band, near vertical, whose position and size it does not 
    narrower than that. The dip is `(sky − profile) / sky`, and its prominence is its depth over the profile's
    *point-to-point* noise.
 4. **Pick the tilt:** the deepest dip; among angles within 1% of the deepest, the one nearest vertical.
-5. **Report** the umbra (50% of the depth) and penumbra (10%) half-widths, the centre, the tilt and the depth. A shadow is
-   present if the depth is at least 0.04, the prominence at least 6 and the penumbra half-width at least 60 px.
+5. **Refine the tilt.** Cross-correlate the band's profile in 7 horizontal strips and fit the band's shift against
+   height; the slope is the tilt. It is accepted only if its standard error is small, the lean is within
+   `near_vertical_deg` and its depth is at least 0.75 of the sweep's, and otherwise the sweep's tilt stands. The profile
+   is then re-projected at the refined tilt.
+6. **Report** the umbra (50% of the depth) and penumbra (10%) half-widths, the centre, the tilt and the depth, and the
+   umbra and penumbra *bounds* as measured along the band's normal. Where the run of the profile reaches the frame's end,
+   that bound is open (the shadow is cut by the frame). A shadow is present if the depth is at least 0.04, the
+   prominence at least 6 and the penumbra half-width at least 60 px.
 
 ![The dip, the umbra and the penumbra on a real frame](mastrometry_stages/fig_profile.png)
 
@@ -317,6 +330,13 @@ objected, but it is a step.
 9. **A faint shadow can be left alone.** On 17 one-second frames the detector sees the shadow's width but at depth
    0.024 to 0.028, under its 0.04 gate, and reports none. A shadow that shallow is under the selection's own tolerance
    (deficit 0.05), so it rejects no star and needs no darkening. The gate stays.
+10. **A tilt picked from a sweep is only as good as its step.** On a wide, near-vertical band a 2° step with a
+    profile peak that is flat across several angles can be 8 to 12° off, and the darkener then paints the wrong band and
+    leaves the old edges showing. Measure the tilt from the band itself (the shift between strips) and keep the sweep
+    only as the starting point and the fallback.
+11. **Do not assume a cut band is symmetric.** A band whose far side is outside the frame has a measured edge on one
+    side only. Modelling it with symmetric half-widths made the umbra too narrow and drew the far part of the umbra as
+    penumbra. The model now keeps the measured bounds, open at the frame's edge.
 
 And two lessons from the work around it: **report the median, not the RMS** (one star at 13″ made a solve that was the
 same at the median read 1.58″ instead of 1.10″; every stage has a few 3 to 13″ stars, and nothing in the solve rejects
@@ -325,38 +345,184 @@ faint stars, and we called a field "sparse" that was not).
 
 ## 7. Results
 
-Six frames of one field of mast01 (10 s, 8288 × 5644): `spec` (mirror in, shadow centred, depth 0.49 to 0.56) and `sky`
-(shadow at the edge, depth 0.62 to 0.68). Solved on mast08 with CRPIX at the fibre pixel (4401, 2407), in each stage.
+### 7.1 What was run
 
-Each cell is original / shadowed / selective.
+The survey tool ran the real solver, in each stage, on 37 full frames, on mast08, with CRPIX at the unit's fibre pixel
+and the unit's hot pixel map, and the loosened selection parameters of section 5:
+
+| set | unit | frames | what they are |
+|---|---|---|---|
+| traverse | mast01 | 6 | one field, 10 s, 2026-10-25: three `spec` frames (mirror in, shadow centred) and three `sky` frames (shadow at the edge); fibre pixel (4401, 2407) |
+| acquisitions | mast02 | 25 | the first `spec` frame of each production acquisition of 2026-11-17 and 11-18, 5 s (one of 2 s), about ten different fields; fibre pixel (4050, 2439) |
+| mirror-map | mast02 | 6 | six fields of a stage sweep, 2026-11-16, 5 s, sensor at 5 to 7 °C, all at stage position 100000 |
+
+### 7.2 Residuals, by set
+
+Each cell is original / shadowed / selective. Median over the frames of the set, with the range in brackets.
+
+| set | stars used | median residual (″) | clipped RMS (″) |
+|---|---|---|---|
+| traverse (6) | 208 / 159 / 27 | 0.63 / 0.53 / 0.24  (0.49 to 0.93 / 0.40 to 0.71 / 0.21 to 0.34) | 0.91 / 0.77 / 0.32 |
+| acquisitions (24 solved of 25) | 260 / 200 / 24 | 0.48 / 0.40 / 0.17  (0.41 to 0.63 / 0.29 to 0.51 / 0.08 to 0.37) | 0.75 / 0.60 / 0.22 |
+| mirror-map (6) | 274 / 210 / 23 | 0.52 / 0.41 / 0.11  (0.42 to 0.58 / 0.35 to 0.45 / 0.08 to 0.16) | 0.78 / 0.60 / 0.13 |
+
+The median residual is the median distance of the matched stars from their catalogue position through the solved WCS.
+The clipped RMS is the RMS after a 3σ clip about the median. No selective solve fell back to the image solve.
+
+The six mast01 frames one by one (the `original` columns reproduce the first run of 2026-11-19 to the last digit; the
+`shadowed` and `selective` ones changed when the shadow detector's tilt and truncated-band fixes of section 6 went in,
+mostly on the three `spec` frames, whose shadow is centred):
 
 | frame | stars used | median residual (″) | clipped RMS (″) |
 |---|---|---|---|
-| **spec 1** | 210 / 168 / 33 | 0.79 / 0.62 / 0.37 | 1.22 / 1.07 / 0.45 |
-| **spec 2** | 206 / 116 / 44 | 0.93 / 0.82 / 0.36 | 1.23 / 1.10 / 0.50 |
-| **spec 3** | 199 / 115 / 51 | 0.74 / 0.59 / 0.25 | 1.10 / 0.93 / 0.36 |
+| **spec 1** | 210 / 176 / 23 | 0.79 / 0.65 / 0.23 | 1.22 / 1.10 / 0.38 |
+| **spec 2** | 206 / 171 / 50 | 0.93 / 0.71 / 0.34 | 1.23 / 1.09 / 0.45 |
+| **spec 3** | 199 / 163 / 55 | 0.74 / 0.66 / 0.26 | 1.10 / 0.94 / 0.35 |
 | **sky 1** | 212 / 155 / 27 | 0.50 / 0.40 / 0.22 | 0.71 / 0.56 / 0.24 |
-| **sky 2** | 214 / 154 / 27 | 0.49 / 0.39 / 0.21 | 0.66 / 0.59 / 0.23 |
-| **sky 3** | 207 / 156 / 27 | 0.51 / 0.42 / 0.25 | 0.71 / 0.60 / 0.28 |
+| **sky 2** | 214 / 155 / 27 | 0.49 / 0.40 / 0.21 | 0.66 / 0.59 / 0.23 |
+| **sky 3** | 207 / 154 / 27 | 0.51 / 0.40 / 0.25 | 0.71 / 0.59 / 0.28 |
 
-The median residual is the median distance of the matched stars from their catalogue position through the solved WCS.
-The clipped RMS is the RMS after a 3σ clip about the median. The worst single star is 3.8 to 12.5″ in the original and
-shadowed stages and 0.5 to 6.5″ in the selective one.
+**Position at the fibre, selective minus original** (arcsec, RA·cos Dec and Dec), mast01: spec (−0.51, −0.09),
+(−0.44, +0.11), (−0.33, −0.03); sky (−0.25, −0.31), (−0.23, −0.24), (−0.41, −0.03). **Shadowed minus original** ranges
+from −0.42 to +0.06″ in RA, with no consistent direction.
 
-**Time**, wall time of the solve call on mast08 for a whole frame: original about 7 s, shadowed 26 to 35 s, selective 17 to
-27 s. The extra time is Python-side detection and selection (the shadow detector alone is about 5 s per full frame).
-Production solves cropped ROIs, so it will be less; we did not time the stages separately.
-
-**Position at the fibre, selective minus original** (arcsec, RA·cos Dec and Dec): spec (−0.48, −0.11), (−0.37, +0.06),
-(−0.31, −0.04); sky (−0.25, −0.31), (−0.23, −0.24), (−0.41, −0.03). **Shadowed minus original** ranges from −0.45 to
-+0.06″ in RA, with no consistent direction.
+**The shadowed stage on the centred frames.** With the detector's tilt fixed, more stars survive the darkening on the
+three `spec` frames (163 to 176 used, against 115 to 168 before), and the plain RMS of that stage there is *worse* than
+the original's (1.57, 1.85, 1.81″ against 1.48, 1.35, 1.10″) while its median and clipped RMS are still better. We
+have not traced which stars carry the excess; the star map shows used stars close to the darkened band's edges on both
+sides, where the darkening leaves a gradient. The selective stage does not meet this, because it never uses a star near
+the band.
 
 **Where the 0.2 to 0.5″ west offset of the selective stage comes from.** It is the fit order, not our selection or
 the xylist route. On the same 342 `image2xy` stars through our route, order 2 reproduces the original solve to 0.00″
 and order 1 moves it 0.54″ west. With our own selected stars at order 2, a third of the offset goes (0.13″ on `spec`),
 because 27 to 50 stars do not constrain an order-2 fit as 200 do.
 
-**Fallbacks:** none in the final runs.
+### 7.3 Where the time goes
+
+The survey times each step of a solve. Median seconds per frame over the 36 frames that solved (full frame, on mast08):
+
+| step | original | shadowed | selective |
+|---|---|---|---|
+| fill hot pixels (131 to 137 of them) | | 0.0 | 0.0 |
+| detect the shadow | | 7.3 (6.6 to 8.5) | 7.3 (6.7 to 8.5) |
+| darken the band | | **19.7** | |
+| select the stars | | | **18.9** |
+| solve-field | 4.2 | 4.4 | 1.3 |
+| everything else (read, bin, read back) | 1.4 | 0.9 | 0.9 |
+| **whole call** | **5.7** | **32.5** | **28.6** |
+
+- The extra time is all Python. In the selective stage astrometry.net is *faster* than in the original (1.3 s against
+  4.2 s), because it is given 20 to 50 stars rather than finding 300 to 500 itself.
+- **Darkening is the slowest single step, and only the shadowed stage pays it.** The selective stage never darkens: its
+  stars go to astrometry.net as a list, and nothing downstream reads the pixels.
+- **The shadow detection need only be paid once per acquisition.** The acquisition can keep the detected shadow and
+  reuse it while the phase and the stage position are the same (`Acquisition.shadow_for`). That is implemented and
+  unit-tested, but the survey solves single frames, so no run here has exercised it.
+- The slowest solves in the set (206 s, 121 s) are the frame that did not solve: astrometry.net runs to its CPU limit.
+- Production solves a cropped ROI, not a full frame, so the detection and the selection will cost less; this was not
+  timed.
+
+### 7.4 The shadow data
+
+What the detector reported, over the frames of each set (distances in pixels of the full-resolution frame, the centre
+measured from the frame's centre across the band, + to the right). Where the band is cut by the frame ("cut"), the
+far side is outside the frame: the detector then reports the bounds it measured (open at the frame's edge) as well as
+the model's nominal half-widths. The half-width columns below are those nominal figures, so for a cut band they are not
+what is in the frame; the bounds are (see the pictures in 7.6).
+
+| set | shadow found | depth | centre across the band | umbra half-width | penumbra half-width |
+|---|---|---|---|---|---|
+| mast01 traverse, `spec` (3) | 3 of 3 | 0.48 to 0.54 | −114 to −44 (**centred**, not cut) | 1168 to 1192 | 1952 to 1960 |
+| mast01 traverse, `sky` (3) | 3 of 3 | 0.62 to 0.68 | −2558 to −2550 (**at the margin**, cut) | 832 to 880 | 1608 to 1616 |
+| mast02 acquisitions (24 solved) | 24 of 24 | 0.12 to 0.29 | ±3067 to ±3238 (**at the margin**, cut) | 504 to 600 | 904 to 1072 |
+| mast02 mirror-map (6) | 6 of 6 | 0.12 to 0.14 | ±3094 to ±3216 (**at the margin**, cut) | 504 to 576 | 920 to 1056 |
+
+- **The tilt is now measured, not picked from a sweep.** On `spec` 3 the band leans 1.2° from vertical; the first
+  detector, which took the tilt from a 2° sweep, drew it at about 9°, which the pictures made plain (section 6).
+- **mast01 and mast02 differ.** On mast01 the mirror-in shadow is centred, half the light deep, and wide; at `sky` it is
+  a margin shadow, deeper still. On mast02 *every* frame has a narrower, much shallower shadow at the frame's margin
+  (left or right, in the sign of the centre), including the acquisition frames that are `spec` frames. We have not
+  analysed why (the mirror's position, its calibration, or the camera's mounting could each do it); the detector found it
+  in every frame and the pictures show a real band.
+- **No assumptions were needed.** The detector looked for the shadow with no hint of where it would be, and found a
+  centred shadow, an edge shadow on either side, and shadows from 12% to 68% deep.
+- The one frame without a shadow is the 2 s frame that did not solve.
+
+### 7.5 Case A: a centred shadow (mast01, `spec` 3, 10 s)
+
+The frame as it came (left), the shadow the detector found (middle), and the frame after darkening (right):
+
+![The centred frame as it came, the shadow detected, and the frame darkened](mastrometry_stages/centred_shadow_detected.jpg)
+
+*Middle: umbra (purple, −1309 to +1092 px from the frame's centre) and penumbra (blue, −1917 to +2004 px), 0.54 deep; the
+band's centre is 44 px left of the frame's centre and it leans 1.2° from vertical (the detector reports the angle of its
+normal: 88.8°). Right: the band replaced by a smooth estimate of the dim sky that should be there, without the stars in
+it, with no trace of the old edges. It is not made as bright as the sky outside: the shadow is physically 54% deep, and
+we replace it with a shadowed sky, not with a lit one.*
+
+The three solves, as the unit's star maps (orange + is a source handed to the solver; blue circle a star the
+solution used; the white + is the fibre pixel; the display is anchored on the sky, so the shadow shows black):
+
+![Original stage](mastrometry_stages/centred_original_stars.jpg)
+
+*Original: astrometry.net extracted 316 sources and used 199. Many of them are in the black band in the middle, where the
+stars are dimmed. Residual RMS 1.10″; median 0.74″.*
+
+![Shadowed stage](mastrometry_stages/centred_shadowed_stars.jpg)
+
+*Shadowed: with the band darkened astrometry.net extracted 185 sources, none in the band, and used 163. The stars are on
+both sides. Residual RMS 1.81″; median 0.66″; clipped RMS 0.94″. The RMS is worse than the original's here, with the
+median still better: see the note after the §7.2 table.*
+
+![Selective stage](mastrometry_stages/centred_selective_stars.jpg)
+
+*Selective: 58 stars chosen, 55 used, on both sides of the band and away from it. None is near the fibre (the white +),
+which is in the middle of the umbra: the fit interpolates across the shadow to it. Residual RMS 0.35″; median 0.26″.*
+
+| | original | shadowed | selective |
+|---|---|---|---|
+| sources handed over / stars used | 316 / 199 | 185 / 163 | 58 / 55 |
+| median residual / RMS | 0.74″ / 1.10″ | 0.66″ / 1.81″ (clipped 0.94″) | 0.26″ / 0.35″ |
+| solved from | the image | the image | the xylist |
+| time: whole call (shadow, darken or select, solve-field) | 6.9 s (5.5) | 35.2 s (8.2, 19.9, 6.0) | 26.2 s (8.3, 15.7, 1.3) |
+
+### 7.6 Case B: a shadow at the margin (mast01, `sky` 3, 10 s)
+
+![The margin frame as it came, the shadow detected, and the frame darkened](mastrometry_stages/margin_shadow_detected.jpg)
+
+*Middle: the penumbra (blue) starts 942 px right of the frame's centre and the umbra (purple) 2399 px right of it; both run
+to the frame's right edge, so the band is cut by the frame and its far side is outside it (the detector reports these
+bounds as open at the edge, not a symmetric band). 0.68 deep; the band leans 1.8° from vertical (normal 88.2°). Right:
+the band filled with the dim sky.*
+
+![Original stage](mastrometry_stages/margin_original_stars.jpg)
+
+*Original: 410 sources extracted, 207 used, many of them in the shadow (the black strip on the right). Residual RMS
+1.57″, of which most is a few stars; the median is 0.51″.*
+
+![Shadowed stage](mastrometry_stages/margin_shadowed_stars.jpg)
+
+*Shadowed: 282 sources, none in the band, 154 used. RMS 0.91″; median 0.40″.*
+
+![Selective stage](mastrometry_stages/margin_selective_stars.jpg)
+
+*Selective: 42 chosen, 27 used, all well outside the shadow and in a group around the fibre (the white +, just left of
+the penumbra). RMS 0.28″; median 0.25″.*
+
+| | original | shadowed | selective |
+|---|---|---|---|
+| sources handed over / stars used | 410 / 207 | 282 / 154 | 42 / 27 |
+| median residual / RMS | 0.51″ / 1.57″ (clipped 0.71″) | 0.40″ / 0.91″ (clipped 0.59″) | 0.25″ / 0.28″ |
+| solved from | the image | the image | the xylist |
+| time: whole call (shadow, darken or select, solve-field) | 6.9 s (5.4) | 34.7 s (8.5, 19.9, 5.3) | 26.1 s (8.5, 15.9, 0.8) |
+
+**What the two cases show.** In the centred case the fibre is inside the umbra, so no stage has a star near it, and the
+selective solution is an interpolation across the shadow from stars 1700 to 2500 px away on either side. In the margin case the
+fibre is next to the penumbra and the selective stage has stars all round it. The on-sky test has to be done on both,
+because they are different situations for the fit.
+
+**Fallbacks:** none in any of the final runs.
 
 ## 8. What we do not know yet
 
@@ -364,14 +530,19 @@ because 27 to 50 stars do not constrain an order-2 fit as 200 do.
   have no ground truth. The next stage is an on-sky test: put a Gaia star on the fibre, solve, and compare the
   solution with the star's Gaia position. That settles the order-1 decision and the 0.5″ question, and it is the real
   test of all three stages.
-- **Few frames.** Three frames per case, one field, one camera. This shows the pipeline works and the stages differ; it
-  does not make one a proven improvement.
+- **How representative the frames are.** 37 frames (36 solved), two cameras. mast01 is one field, three frames per case; mast02 is
+  about ten fields, but only `spec` frames (all with a margin shadow) and at most one frame per acquisition. This
+  shows the pipeline works and the stages differ; it does not make one a proven improvement.
+- **mast02's margin shadow.** It is found reliably, but we do not know why a `spec` frame there has a shallow shadow at
+  the margin and not a centred one; that is for whoever knows the mirror's calibration.
 - **Whole frames, not production crops.** The survey solves full frames with CRPIX at the fibre. Production solves the
   sky and guiding ROIs. The ROI path (the crop, and the hot pixel map by full-frame pixels) is implemented and tested on
   synthetic data, but the numbers here are not from it.
 - **The selective stage on comatic fields** needs the loosened parameters in section 5, which are not yet defaults.
 - **A hot pixel map goes stale.** It records its build date and the frames' exposure and temperature, but the solver
   does not yet check its age. mast04's needs a rebuild at its operating temperature.
+- **The darkener's 20 s.** Only the shadowed stage pays it; if that stage is to run for real, the darkener needs
+  profiling.
 - **Open:** the detection threshold (2σ over 5 pixels) lets through mostly noise (about 1450 detections per frame, of
   which about 50 are chosen); `solvers/tests` still has to be run by hand on a unit with the indexes.
 
@@ -408,6 +579,11 @@ stars, the index file and the `selection` record.
 python tools/source_survey.py FRAME.fits --out DIR --via-solver --fibre mast01 \
     --param centroid_tolerance=0.002 --param centroid_max_iterations=32 \
     --param min_sep_fwhm=1.5 --param max_fwhm_ratio=2.5
+
+# the same, also copying each frame's pictures (survey picture; per stage the star map, its data, the result text and the
+# shadow picture) to the frame's own folder, named ...,solver=mastrometry.net,stage=<stage>-stars.jpg and so on.
+# The survey.csv has each stage's time per step (<stage>_t_shadow, _t_darken, _t_select, _t_solve_field, _t_other).
+python tools/source_survey.py FRAME.fits ... --out DIR --via-solver --beside-frames --fibre mast02 --hot-pixels mast02
 
 # a unit's hot pixel map (writes MAST/<unit>/Calibration/hot_pixels.json on the share)
 python tools/build_hot_pixels.py FRAME_FOLDER --unit mast01 --last-nights 3

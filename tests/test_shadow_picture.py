@@ -20,13 +20,13 @@ def test_a_picture_of_the_shadow(tmp_path):
         assert picture.format == "JPEG" and picture.height > frame.shape[0] // 8
 
 
-def test_a_shadowed_picture_shows_before_and_after(tmp_path):
+def test_a_shadowed_picture_has_the_original_the_detected_and_the_darkened_frames(tmp_path):
     frame, _ = _frame()
     single, pair = tmp_path / "a.jpg", tmp_path / "b.jpg"
     write_shadow_picture(frame, _shadow(), single, ["x"])
     write_shadow_picture(frame, _shadow(), pair, ["x"], darkened=frame)
     with Image.open(single) as one, Image.open(pair) as two:
-        assert two.width > one.width * 0.9  # two panels, each at most half the single width or fixed width
+        assert two.width > one.width * 0.9  # three panels on one line
 
 
 def test_no_shadow_is_said(tmp_path):
