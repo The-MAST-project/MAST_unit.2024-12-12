@@ -279,6 +279,9 @@ lower than the weighted, sense‑resolving spin‑1 $R_1=0.95$).
 
 ## 6. Status & limitations
 
+- **Survey against the DB (2026-11).** See `optical_center_survey.md`: on 267 real
+  frames the finder disagrees with the DB fibre centres by hundreds of pixels, and
+  is biased by defocus. No ground truth yet.
 - **Coverage.** Exercised on a limited set of real frames; **not yet run across
   our full range of images.** Thresholds (`min_radiality`, `min_sources`,
   `min_field_radius`) are set conservatively and are **not yet calibrated from a
