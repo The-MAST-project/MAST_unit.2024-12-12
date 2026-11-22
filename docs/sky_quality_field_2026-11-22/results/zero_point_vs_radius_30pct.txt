@@ -1,0 +1,89 @@
+11-15/0002: 9 stars, median zp 27.55
+   r=     7 px  G=13.61  zp-med=+0.43  peak/flux=0.0056
+   r=    38 px  G=15.81  zp-med=-0.33  peak/flux=0.0090
+   r=   101 px  G=15.80  zp-med=-0.08  peak/flux=0.0073
+   r=   400 px  G=13.76  zp-med=+0.02  peak/flux=0.0095
+   r=   680 px  G=14.81  zp-med=-0.01  peak/flux=0.0044
+   r=   787 px  G=16.11  zp-med=+0.00  peak/flux=0.0140
+   r=   905 px  G=14.13  zp-med=+0.22  peak/flux=0.0028
+   r=  1127 px  G=15.51  zp-med=-0.32  peak/flux=0.0153
+   r=  1227 px  G=16.66  zp-med=+0.47  peak/flux=0.0126
+11-15/0004: 15 stars, median zp 27.46
+   r=   174 px  G=16.01  zp-med=-0.54  peak/flux=0.0076
+   r=   210 px  G=14.08  zp-med=+0.11  peak/flux=0.0062
+   r=   382 px  G=15.38  zp-med=-0.13  peak/flux=0.0049
+   r=   406 px  G=15.77  zp-med=-0.08  peak/flux=0.0051
+   r=   479 px  G=15.55  zp-med=+0.24  peak/flux=0.0063
+   r=   507 px  G=13.68  zp-med=+0.09  peak/flux=0.0073
+   r=   566 px  G=13.42  zp-med=+0.13  peak/flux=0.0067
+   r=   623 px  G=15.97  zp-med=-0.17  peak/flux=0.0084
+   r=   675 px  G=14.31  zp-med=-0.26  peak/flux=0.0052
+   r=   692 px  G=14.70  zp-med=+0.03  peak/flux=0.0073
+   r=   926 px  G=15.16  zp-med=+0.14  peak/flux=0.0087
+   r=   995 px  G=13.16  zp-med=+0.00  peak/flux=0.0065
+   r=  1084 px  G=12.13  zp-med=-0.21  peak/flux=0.0022
+   r=  1285 px  G=16.41  zp-med=+0.00  peak/flux=0.0080
+   r=  1354 px  G=15.88  zp-med=-0.89  peak/flux=0.0119
+11-15/0005: 17 stars, median zp 27.50
+   r=     6 px  G=12.05  zp-med=-0.10  peak/flux=0.0043
+   r=   483 px  G=14.65  zp-med=+0.00  peak/flux=0.0068
+   r=   619 px  G=14.85  zp-med=+0.64  peak/flux=0.0039
+   r=   699 px  G=12.58  zp-med=-0.10  peak/flux=0.0036
+   r=   735 px  G=15.99  zp-med=+0.00  peak/flux=0.0071
+   r=   818 px  G=13.78  zp-med=+0.03  peak/flux=0.0079
+   r=   854 px  G=14.88  zp-med=-0.03  peak/flux=0.0032
+   r=   938 px  G=14.82  zp-med=+0.02  peak/flux=0.0098
+   r=   951 px  G=14.58  zp-med=-0.11  peak/flux=0.0030
+   r=   982 px  G=14.25  zp-med=+0.00  peak/flux=0.0108
+   r=  1033 px  G=15.79  zp-med=+0.06  peak/flux=0.0094
+   r=  1060 px  G=13.65  zp-med=+0.01  peak/flux=0.0129
+   r=  1097 px  G=15.64  zp-med=-0.12  peak/flux=0.0134
+   r=  1161 px  G=14.30  zp-med=-0.01  peak/flux=0.0091
+   r=  1179 px  G=16.37  zp-med=-0.17  peak/flux=0.0099
+   r=  1237 px  G=16.41  zp-med=-0.34  peak/flux=0.0123
+   r=  1237 px  G=12.86  zp-med=+0.09  peak/flux=0.0020
+11-15/0008: 12 stars, median zp 27.36
+   r=     6 px  G=11.01  zp-med=-0.14  peak/flux=0.0050
+   r=   561 px  G=14.78  zp-med=-0.50  peak/flux=0.0116
+   r=   637 px  G=14.12  zp-med=+0.07  peak/flux=0.0048
+   r=   745 px  G=13.46  zp-med=+0.03  peak/flux=0.0029
+   r=   990 px  G=15.58  zp-med=-0.06  peak/flux=0.0150
+   r=  1090 px  G=12.41  zp-med=+0.06  peak/flux=0.0096
+   r=  1098 px  G=15.91  zp-med=+0.00  peak/flux=0.0168
+   r=  1121 px  G=16.19  zp-med=-0.11  peak/flux=0.0169
+   r=  1231 px  G=16.76  zp-med=-0.12  peak/flux=0.0141
+   r=  1307 px  G=15.92  zp-med=+0.04  peak/flux=0.0089
+   r=  1315 px  G=13.69  zp-med=+0.02  peak/flux=0.0136
+   r=  1347 px  G=14.07  zp-med=-0.00  peak/flux=0.0109
+11-18/0001: 7 stars, median zp 27.25
+   r=     4 px  G=11.14  zp-med=+0.26  peak/flux=0.0046
+   r=   475 px  G=15.37  zp-med=-0.19  peak/flux=0.0067
+   r=   574 px  G=16.25  zp-med=+0.24  peak/flux=0.0073
+   r=   723 px  G=15.69  zp-med=+0.11  peak/flux=0.0075
+   r=   808 px  G=15.43  zp-med=+0.00  peak/flux=0.0091
+   r=   987 px  G=15.40  zp-med=-0.05  peak/flux=0.0061
+   r=  1342 px  G=16.41  zp-med=-0.09  peak/flux=0.0100
+11-18/0002: 16 stars, median zp 27.44
+   r=     9 px  G=12.69  zp-med=-0.11  peak/flux=0.0055
+   r=    78 px  G=15.00  zp-med=+0.05  peak/flux=0.0056
+   r=   435 px  G=12.90  zp-med=-0.05  peak/flux=0.0040
+   r=   436 px  G=15.84  zp-med=-0.10  peak/flux=0.0074
+   r=   557 px  G=16.00  zp-med=-0.22  peak/flux=0.0096
+   r=   825 px  G=13.92  zp-med=+0.04  peak/flux=0.0047
+   r=   839 px  G=13.95  zp-med=+0.14  peak/flux=0.0032
+   r=   843 px  G=13.21  zp-med=+0.18  peak/flux=0.0065
+   r=   875 px  G=15.08  zp-med=-0.02  peak/flux=0.0054
+   r=   967 px  G=16.64  zp-med=+0.02  peak/flux=0.0194
+   r=   970 px  G=16.26  zp-med=+0.11  peak/flux=0.0119
+   r=   982 px  G=16.53  zp-med=+0.18  peak/flux=0.0139
+   r=  1110 px  G=16.09  zp-med=-0.11  peak/flux=0.0186
+   r=  1199 px  G=12.34  zp-med=-0.02  peak/flux=0.0158
+   r=  1209 px  G=16.79  zp-med=-0.11  peak/flux=0.0201
+   r=  1223 px  G=15.97  zp-med=+0.09  peak/flux=0.0136
+
+pooled 76 stars
+  r    0- 800 px: n=34  zp-med mean -0.020 (median -0.005, sd 0.227)  peak/flux median 0.0065
+  r  800-1300 px: n=37  zp-med mean -0.001 (median +0.000, sd 0.146)  peak/flux median 0.0098
+  r 1300-1800 px: n= 5  zp-med mean -0.183 (median -0.001, sd 0.358)  peak/flux median 0.0109
+  zp slope -0.031 mag per 1000 px
+  peak/flux slope +0.0055 per 1000 px (mean 0.0087)

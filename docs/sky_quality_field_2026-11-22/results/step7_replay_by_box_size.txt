@@ -1,0 +1,30 @@
+2026-11-15/0002  frame 8288x5644  star G=13.61  recorded: det=4 cat=5 match=4
+   10%  box 829x564  catalog   5  detected   4  matched   4  zp stars   4  zp 27.56+-0.29
+   15%  box 1243x847  catalog   6  detected   4  matched   4  zp stars   4  zp 27.56+-0.28
+   20%  box 1658x1129  catalog  20  detected   7  matched   5  zp stars   5  zp 27.57+-0.03
+   30%  box 2486x1693  catalog  42  detected  20  matched  10  zp stars   9  zp 27.55+-0.33
+2026-11-15/0004  frame 8288x5644  star G=11.18  recorded: det=5 cat=7 match=5
+   10%  box 829x564  catalog   7  detected   5  matched   5  zp stars   4  zp 27.36+-0.18
+   15%  box 1243x847  catalog  15  detected   8  matched   8  zp stars   7  zp 27.55+-0.21
+   20%  box 1658x1129  catalog  20  detected   9  matched   9  zp stars   8  zp 27.52+-0.15
+   30%  box 2486x1693  catalog  56  detected  23  matched  17  zp stars  15  zp 27.46+-0.20
+2026-11-15/0005  frame 8288x5644  star G=12.05  recorded: det=1 cat=3 match=0
+   10%  box 829x564  catalog   3  detected   1  matched   0  zp stars   0  zp none
+   15%  box 1243x847  catalog   7  detected   2  matched   0  zp stars   0  zp none
+   20%  box 1658x1129  catalog  17  detected   9  matched   6  zp stars   5  zp 27.50+-0.02
+   30%  box 2486x1693  catalog  63  detected  27  matched  18  zp stars  17  zp 27.50+-0.09
+2026-11-15/0008  frame 8288x5644  star G=11.01  recorded: det=2 cat=2 match=0
+   10%  box 829x564  catalog   2  detected   2  matched   0  zp stars   0  zp none
+   15%  box 1243x847  catalog   8  detected   4  matched   0  zp stars   0  zp none
+   20%  box 1658x1129  catalog  13  detected   7  matched   5  zp stars   4  zp 27.31+-0.15
+   30%  box 2486x1693  catalog  46  detected  23  matched  14  zp stars  12  zp 27.36+-0.09
+2026-11-18/0001  frame 8288x5644  star G=11.14  recorded: det=1 cat=6 match=0
+   10%  box 829x564  catalog   6  detected   1  matched   0  zp stars   0  zp none
+   15%  box 1243x847  catalog  11  detected   5  matched   0  zp stars   0  zp none
+   20%  box 1658x1129  catalog  18  detected   8  matched   5  zp stars   5  zp 27.41+-0.15
+   30%  box 2486x1693  catalog  35  detected  13  matched   7  zp stars   7  zp 27.25+-0.16
+2026-11-18/0002  frame 8288x5644  star G=12.69  recorded: det=5 cat=11 match=4
+   10%  box 829x564  catalog  11  detected   5  matched   4  zp stars   4  zp 27.44+-0.13
+   15%  box 1243x847  catalog  17  detected   8  matched   5  zp stars   5  zp 27.39+-0.09
+   20%  box 1658x1129  catalog  27  detected   9  matched   6  zp stars   6  zp 27.38+-0.12
+   30%  box 2486x1693  catalog  62  detected  32  matched  16  zp stars  16  zp 27.44+-0.15
