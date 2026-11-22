@@ -21,6 +21,7 @@ from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import StageStatus
 from common.utils import RepeatTimer, Timeout, boxed_log, function_name, time_stamp
+from stage_port import release_xilab
 
 if TYPE_CHECKING:
     from unit import Unit
@@ -225,6 +226,9 @@ class Stage(Component, SwitchedOutlet):
         # This is device search and enumeration with probing. It gives more information about devices.
         probe_flags = EnumerateFlags.ENUMERATE_PROBE
         ports = self.find_ximc_ports()
+        # XILab holds the port while it is connected, and the scan below then finds nothing and
+        # is never repeated.  End it first; if the scan still finds nothing the device is gone.
+        release_xilab(ports)
         hint = f"addr={ports[0]}" if ports else "addr="
         logger.info(f"{op}: using {hint=} as enumeration hint")
         enum_hints = c_char_p(hint.encode())  # type: ignore
