@@ -129,9 +129,6 @@ class Stage(Component, SwitchedOutlet):
     _instance = None
     _initialized = False
 
-    #: The controller's model, from the configuration (set in `__init__`); None until then.
-    stage_model: str | None = None
-
     # Keyed by the controller's flag *values*: `StateFlags` is a plain class of int constants, not an enum.
     state_flags_dict: ClassVar[dict[int, str]] = {
         StateFlags.STATE_ERRC: "STATE_ERRC",
@@ -168,6 +165,11 @@ class Stage(Component, SwitchedOutlet):
         """
         assert self.unit is not None and self.unit.unit_conf is not None
         return self.unit.unit_conf.stage
+
+    @property
+    def stage_model(self) -> str | None:
+        """The controller's model, read live from the configuration (never snapshotted)."""
+        return self.conf.model
 
     @property
     def presets(self) -> dict[StagePresetPosition, int]:
@@ -290,7 +292,6 @@ class Stage(Component, SwitchedOutlet):
             case _:
                 logger.warning(f"{op}: unsupported stage model in config: '{self.conf.model}'")
                 raise Exception(f"{op}: unsupported stage model '{self.conf.model}'")
-        self.stage_model = self.conf.model
 
         serial_number = serial_number_t()
         result = ximclib.get_serial_number(self.device, byref(serial_number))
