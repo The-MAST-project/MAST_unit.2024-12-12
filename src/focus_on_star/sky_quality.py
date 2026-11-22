@@ -151,8 +151,13 @@ def measure(
     *,
     scale_arcsec: float,
     exposure_seconds: float,
+    zero_point_max_mag: float | None = None,
 ) -> Measurement:
-    """Image quality from ``star``; the zero point from ``stars`` matched to the catalog."""
+    """Image quality from ``star``; the zero point from ``stars`` matched to the catalog.
+
+    ``zero_point_max_mag``: catalog stars fainter than this still count in the match, but not
+    in the zero point -- they are noisy.
+    """
     out = Measurement(
         fwhm_px=star.fwhm if np.isfinite(star.fwhm) else None,
         hfd_px=star.hfd if np.isfinite(star.hfd) else None,
@@ -169,7 +174,11 @@ def measure(
         return out
     out.rotation_degs, out.mirrored, out.matched_stars = match.rotation_degs, match.mirrored, len(match.pairs)
     mags = np.asarray(cat_mag, dtype=float)
-    usable = [(stars[d].flux, mags[c]) for c, d in match.pairs if not stars[d].saturated]
+    usable = [
+        (stars[d].flux, mags[c])
+        for c, d in match.pairs
+        if not stars[d].saturated and (zero_point_max_mag is None or mags[c] <= zero_point_max_mag)
+    ]
     if usable:
         fluxes, ms = zip(*usable, strict=True)
         out.zero_point_mag, out.zero_point_spread_mag, out.zero_point_stars = zero_point(fluxes, ms, exposure_seconds)

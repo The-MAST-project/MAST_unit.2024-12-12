@@ -114,6 +114,31 @@ def test_measure_leaves_saturated_stars_out_of_the_zero_point():
     assert (found.fwhm_px, found.hfd_px) == (7.6, 8.6)
 
 
+def test_measure_keeps_faint_stars_out_of_the_zero_point_but_in_the_match():
+    xi, eta = _field(n=8)
+    mags = np.array([11.2, 12.0, 13.0, 14.0, 16.0, 16.3, 16.6, 16.9, 17.0])
+    dx, dy = _rotate(xi, eta, 45.0, True)
+    star = StarMeasure(x=500.0, y=400.0, hfd=8.6, fwhm=7.6, peak=30000, flux=1e6, saturated=False)
+    # Zero point 24, but the faint stars (G > 15.5) are 0.5 mag off: only a cut keeps it clean.
+    stars = [
+        FieldStar(
+            x=500 + x, y=400 + y, flux=5.0 * 10 ** ((24.0 - m - (0.5 if m > 15.5 else 0.0)) / 2.5), peak=1.0, saturated=False
+        )
+        for x, y, m in zip(dx, dy, mags, strict=True)
+    ]
+    ra = 100.0 + xi / 3600 / np.cos(np.radians(30.0))
+    dec = 30.0 + eta / 3600
+    kw = {"scale_arcsec": SCALE, "exposure_seconds": 5.0}
+
+    cut = sky_quality.measure(star, 100.0, 30.0, stars, ra, dec, mags, zero_point_max_mag=15.5, **kw)
+    uncut = sky_quality.measure(star, 100.0, 30.0, stars, ra, dec, mags, **kw)
+
+    assert cut.matched_stars == uncut.matched_stars == 9  # the faint stars still match
+    assert cut.zero_point_stars == sum(m <= 15.5 for m in mags) < uncut.zero_point_stars == 9
+    assert cut.zero_point_mag == pytest.approx(24.0, abs=0.01)
+    assert uncut.zero_point_mag != pytest.approx(24.0, abs=0.01)
+
+
 # ------------------------------------------------------------------ the run's step 7
 
 

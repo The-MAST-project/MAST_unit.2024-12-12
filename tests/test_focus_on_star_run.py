@@ -401,9 +401,11 @@ def test_the_acquisition_uses_its_own_try_limit_not_the_units(monkeypatch):
 
 def test_a_solved_run_takes_the_sky_quality_frame_and_the_session_keeps_it(scripted, monkeypatch):
     calls = []
+    boxes = []
 
     def sky(self, st, star, near_xy, box, ls, folder):
         calls.append(near_xy)
+        boxes.append(box)
         self.sky_quality = session_mod.LatestMeasuredSkyQuality(fwhm_arcsec=2.0)
 
     monkeypatch.setattr(FocusOnStarRun, "_sky_quality", sky)
@@ -415,6 +417,9 @@ def test_a_solved_run_takes_the_sky_quality_frame_and_the_session_keeps_it(scrip
     assert session.state.outcome == "solved"
     assert calls == [(4100.0, 2750.0)]
     assert session.sky_quality.fwhm_arcsec == 2.0
+    # The frame is measured over the wider sky-quality field, not the sweep's box.
+    (x0, x1, y0, y1), (sx0, sx1, sy0, sy1) = session.state.box, boxes[0]
+    assert (sx1 - sx0, sy1 - sy0) == pytest.approx(((x1 - x0) * 3, (y1 - y0) * 3), abs=2)
 
 
 def test_an_unsolved_run_takes_no_sky_quality_frame(scripted, monkeypatch):
