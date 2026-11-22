@@ -102,3 +102,21 @@ def test_the_v_curve_on_one_star_ignores_the_others():
     assert result.best_focus_position == pytest.approx(0, abs=40)
     assert all(s.num_stars == 1 for s in result.focus_samples)
     assert all(s.fwhm_pixels is not None for s in result.focus_samples)
+
+
+def test_a_saturated_sweep_frame_is_left_out_of_the_fit_and_says_why():
+    """The frame nearest focus peaks highest: past the cutoff it has no HFD, and the sample says why."""
+    sigmas = [7.0, 5.0, 3.0, 5.0, 7.0]
+    peaks = [20000, 30000, 64000, 30000, 20000]  # the centre one is over the 63000 cutoff, unclipped
+    samples = [
+        (float(p), _frame([(400, 300, sg, pk)], seed=i))
+        for i, (p, sg, pk) in enumerate(zip(range(100, 600, 100), sigmas, peaks, strict=True))
+    ]
+    status = analyze_focus_samples(samples, star_xy=(400, 300), min_edge_rise=None, min_fit_r2=None)
+    by_position = {s.focus_position: s for s in status.analysis_result.focus_samples}
+    centre = by_position[300.0]
+    assert centre.saturated and not centre.is_valid
+    assert centre.peak_adu is not None and centre.peak_adu >= 63000
+    others = [s for pos, s in by_position.items() if pos != 300.0]
+    assert not any(s.saturated for s in others)
+    assert all(s.peak_adu is not None and s.peak_adu < 63000 for s in others)

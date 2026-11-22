@@ -9,15 +9,17 @@ activity flag, and that the config DB is never written.
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 import focus_on_star.session as session_mod
-from calibration.analysis.models import HFDAutofocusResult, HFDAutofocusStatus
+from calibration.analysis.models import HFDAutofocusResult, HFDAutofocusStatus, HFDFocusSample
 from common.activities import UnitActivities
 from common.config.calibration import CalibrationConfig, FocuserCalibration
 from common.config.rois import FcuVersion
 from focus_on_star.session import FocusOnStarParams, FocusOnStarRun, FocusOnStarSession, focus_reference
 from focus_on_star.star_selection import FocusStar
+from imaging.hfd import StarMeasure
 
 START = 20000
 
@@ -171,6 +173,88 @@ def test_a_replacement_that_saturates_too_fails_the_run(scripted):
     assert script["picked_at"] == [11.0, 12.6]
     assert any("saturated too" in e for e in state.errors)
     assert moves == []  # no sweep, so the focuser never moved
+
+
+def _too_bright(x=4100.0, y=2750.0, limit=11.6, peak=50000.0):
+    return session_mod._Probe(star_xy=(x, y), fainter_limit=limit, peak_adu=peak)
+
+
+def test_a_star_too_bright_for_the_sweep_is_replaced_once_by_a_fainter_one(scripted):
+    """Unsaturated on the probe is not enough: the sweep's brightest frame peaks 1.15-1.34 x higher."""
+    _, script, _ = scripted
+    script["probes"] = [_too_bright(), session_mod._Probe(star_xy=(4101.0, 2749.0), peak_adu=24000.0)]
+    state = _run(FakeUnit())
+    assert state.outcome == "solved"
+    assert script["picked_at"] == [11.0, 11.6]
+    assert script["analysis_kw"]["star_xy"] == (4101.0, 2749.0)
+
+
+def test_a_replacement_that_is_still_too_bright_is_used_not_refused(scripted, monkeypatch):
+    """It is not saturated, so the run can go on; refusing would turn a possible dropped frame into a failure."""
+    _, script, _ = scripted
+    warnings: list[str] = []
+    monkeypatch.setattr(session_mod.logger, "warning", lambda msg, *a, **k: warnings.append(msg))
+    script["probes"] = [_too_bright(), _too_bright(x=4101.0, y=2749.0, limit=12.0, peak=46000.0)]
+    state = _run(FakeUnit())
+    assert state.outcome == "solved"
+    assert script["picked_at"] == [11.0, 11.6]  # no third pick
+    assert script["analysis_kw"]["star_xy"] == (4101.0, 2749.0)
+    assert any("may saturate" in w for w in warnings)
+
+
+def _probe_with(monkeypatch, peak, flux=2.0e6, mag=10.1):
+    """`_probe` on a frame whose one star measures as given (the imager and the measurement are replaced)."""
+    star = SimpleNamespace(mag=mag)
+    measured = StarMeasure(x=4100.0, y=2750.0, hfd=15.0, fwhm=10.0, peak=peak, flux=flux, saturated=False)
+    monkeypatch.setattr(session_mod, "measure_star", lambda *a, **k: measured)
+    me = SimpleNamespace(_still_calibrating=lambda: True, _expose=lambda st, folder, tag: np.zeros((8, 8)))
+    ls = SimpleNamespace(binning=1, star_search_px=30)
+    st = SimpleNamespace(exposure=3.0)
+    return FocusOnStarRun._probe(me, st, 22450, (4100, 2750), None, star, ls, None, 1)
+
+
+def test_a_probe_peak_over_the_margin_asks_for_a_fainter_star(monkeypatch):
+    probe = _probe_with(monkeypatch, peak=48800.0)  # 48.8k -> 25.2k is 0.72 mag
+    assert probe.star_xy == (4100.0, 2750.0)
+    assert probe.peak_adu == 48800.0
+    assert probe.fainter_limit == pytest.approx(10.1 + 0.7)
+
+
+def test_a_probe_peak_within_the_margin_keeps_the_star(monkeypatch):
+    probe = _probe_with(monkeypatch, peak=session_mod.PROBE_MAX_PEAK_ADU - 1)
+    assert probe.fainter_limit is None and probe.star_xy == (4100.0, 2750.0)
+
+
+def test_the_margin_leaves_room_for_the_sweeps_observed_rise():
+    """mast03 2026-11-15/18: the highest sweep peak was up to 1.34 x the probe's."""
+    assert session_mod.PROBE_MAX_PEAK_ADU * 1.34 < session_mod.SATURATION_ADU
+
+
+def test_saturated_sweep_frames_are_reported(monkeypatch):
+    warnings: list[str] = []
+    monkeypatch.setattr(session_mod.logger, "warning", lambda msg, *a, **k: warnings.append(msg))
+
+    def sample(pos, hfd, peak, saturated=False):
+        return HFDFocusSample(
+            is_valid=hfd is not None, focus_position=pos, hfd_pixels=hfd, peak_adu=peak, saturated=saturated
+        )
+
+    samples = [sample(22360, None, 65520.0, True), sample(22410, 17.0, 60000.0), sample(22460, None, 63984.0, True)]
+    status = HFDAutofocusStatus(
+        message="t", analysis_result=HFDAutofocusResult(has_solution=True, best_focus_position=22440, focus_samples=samples)
+    )
+    FocusOnStarRun._log_saturated_frames(SimpleNamespace(), status)
+    assert len(warnings) == 1
+    assert "2 of 3" in warnings[0] and "22360" in warnings[0] and "22460" in warnings[0] and "1 used" in warnings[0]
+
+
+def test_no_report_when_nothing_saturated(monkeypatch):
+    warnings: list[str] = []
+    monkeypatch.setattr(session_mod.logger, "warning", lambda msg, *a, **k: warnings.append(msg))
+    samples = [HFDFocusSample(is_valid=True, focus_position=1.0, hfd_pixels=9.0)]
+    status = HFDAutofocusStatus(message="t", analysis_result=HFDAutofocusResult(has_solution=False, focus_samples=samples))
+    FocusOnStarRun._log_saturated_frames(SimpleNamespace(), status)
+    assert warnings == []
 
 
 @pytest.mark.parametrize(
