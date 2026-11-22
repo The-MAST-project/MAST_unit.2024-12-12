@@ -789,28 +789,38 @@ from pyximc import *
                         + "ended with MVCMD_ERROR"
                     )
                     with self.stage_lock:
-                        for i in range(3):
-                            logger.error(f"attempt #{i} (of 3): attempting to clear MVCMD_ERROR by calling command_stop()")
-                            ximclib.command_stop(self.device)
-                            time.sleep(0.2)
-                            result = ximclib.get_status(self.device, byref(hw_status))
-                            if result != Result.Ok:
-                                logger.error(
-                                    f"{op}: attempt #{i} (of 3): could not get_status(), {result=} ({RESULT_MAP[result]})"
-                                )
-                                break
-                            logger.error(
-                                f"{op}: attempt #{i} (of 3): status after command_stop(): {hw_status.MvCmdSts=:08X}"
-                            )
-                            if (hw_status.MvCmdSts & MvcmdStatus.MVCMD_ERROR) != 0:
-                                logger.error(f"{op}: attempt #{i} (of 3): successfully cleared MVCMD_ERROR")
-                                break
+                        self._clear_mvcmd_error(hw_status)
 
             if self.is_active(StageActivities.StartingUp) and self.close_enough(self.presets[STARTUP_PRESET]):
                 self.end_activity(StageActivities.StartingUp)
 
             if self.is_active(StageActivities.Homing):
                 self.end_activity(StageActivities.Homing)
+
+    def _clear_mvcmd_error(self, hw_status: status_t, attempts: int = 3) -> bool:
+        """Clear a move command's MVCMD_ERROR with `command_stop()`; True once it is clear.
+
+        The caller holds ``stage_lock``.  A stop leaves the command bits at MVCMD_STOP with the
+        error bit clear (``MvCmdSts == 0x05`` on mast02 and mast03), so the error is cleared
+        when the bit is *no longer* set.  This used to test the opposite, and so never saw the
+        success: it ran every attempt, and logged none as cleared.
+        """
+        op = function_name()
+        assert ximclib
+        for i in range(attempts):
+            logger.error(f"{op}: attempt #{i} (of {attempts}): attempting to clear MVCMD_ERROR by calling command_stop()")
+            ximclib.command_stop(self.device)
+            time.sleep(0.2)
+            result = ximclib.get_status(self.device, byref(hw_status))
+            if result != Result.Ok:
+                logger.error(f"{op}: attempt #{i} (of {attempts}): could not get_status(), {result=} ({RESULT_MAP[result]})")
+                return False
+            logger.error(f"{op}: attempt #{i} (of {attempts}): status after command_stop(): {hw_status.MvCmdSts=:08X}")
+            if (hw_status.MvCmdSts & MvcmdStatus.MVCMD_ERROR) == 0:
+                logger.info(f"{op}: attempt #{i} (of {attempts}): successfully cleared MVCMD_ERROR")
+                return True
+        logger.error(f"{op}: MVCMD_ERROR still set after {attempts} attempts")
+        return False
 
     @endpoint(tier=Tier.OPERATION, completion=StageActivities.Moving)
     def move_to_preset(self, preset: StagePresetPosition) -> CanonicalResponse:
