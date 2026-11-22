@@ -41,7 +41,7 @@ for path in [
 # The DLL search path is a Windows concern; the import below is not. Splitting them is what
 # lets this module be imported where pyximc resolves but Windows does not -- previously the
 # names came in only inside the platform test, while the module body used them unconditionally.
-if platform.system() == "Windows":
+if sys.platform == "win32":  # not platform.system(): only this narrows for type checkers (add_dll_directory)
     # Determining the directory with dependencies for windows depending on the bit depth.
     arch_dir = "win64" if "64" in platform.architecture()[0] else "win32"
     lib_dir = ximc_top_dir / arch_dir  # lib directory for ximc library
@@ -129,7 +129,8 @@ class Stage(Component, SwitchedOutlet):
     _instance = None
     _initialized = False
 
-    state_flags_dict: ClassVar[dict[StateFlags, str]] = {
+    # Keyed by the controller's flag *values*: `StateFlags` is a plain class of int constants, not an enum.
+    state_flags_dict: ClassVar[dict[int, str]] = {
         StateFlags.STATE_ERRC: "STATE_ERRC",
         StateFlags.STATE_ERRV: "STATE_ERRV",
         StateFlags.STATE_ERRD: "STATE_ERRD",
@@ -164,6 +165,11 @@ class Stage(Component, SwitchedOutlet):
         """
         assert self.unit is not None and self.unit.unit_conf is not None
         return self.unit.unit_conf.stage
+
+    @property
+    def stage_model(self) -> str | None:
+        """The controller's model, read live from the configuration (never snapshotted)."""
+        return self.conf.model
 
     @property
     def presets(self) -> dict[StagePresetPosition, int]:
