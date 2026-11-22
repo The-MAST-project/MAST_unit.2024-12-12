@@ -461,24 +461,26 @@ normal: 88.8°). Right: the band replaced by a smooth estimate of the dim sky th
 it, with no trace of the old edges. It is not made as bright as the sky outside: the shadow is physically 54% deep, and
 we replace it with a shadowed sky, not with a lit one.*
 
-The three solves, as the unit's star maps (orange + is a source handed to the solver; blue circle a star the
+The three solves, left to right, as the unit's star maps (orange + is a source handed to the solver; blue circle a star the
 solution used; the white + is the fibre pixel; the display is anchored on the sky, so the shadow shows black):
 
-![Original stage](mastrometry_stages/centred_original_stars.jpg)
-
-*Original: astrometry.net extracted 316 sources and used 199. Many of them are in the black band in the middle, where the
-stars are dimmed. Residual RMS 1.10″; median 0.74″.*
-
-![Shadowed stage](mastrometry_stages/centred_shadowed_stars.jpg)
-
-*Shadowed: with the band darkened astrometry.net extracted 185 sources, none in the band, and used 163. The stars are on
-both sides. Residual RMS 1.81″; median 0.66″; clipped RMS 0.94″. The RMS is worse than the original's here, with the
-median still better: see the note after the §7.2 table.*
-
-![Selective stage](mastrometry_stages/centred_selective_stars.jpg)
-
-*Selective: 58 stars chosen, 55 used, on both sides of the band and away from it. None is near the fibre (the white +),
-which is in the middle of the umbra: the fit interpolates across the shadow to it. Residual RMS 0.35″; median 0.26″.*
+<table>
+<tr>
+<td width="33%"><img src="mastrometry_stages/centred_original_stars.jpg" alt="Original stage"></td>
+<td width="33%"><img src="mastrometry_stages/centred_shadowed_stars.jpg" alt="Shadowed stage"></td>
+<td width="33%"><img src="mastrometry_stages/centred_selective_stars.jpg" alt="Selective stage"></td>
+</tr>
+<tr>
+<td valign="top"><em>Original: astrometry.net extracted 316 sources and used 199. Many of them are in the black band in the
+middle, where the stars are dimmed. Residual RMS 1.10″; median 0.74″.</em></td>
+<td valign="top"><em>Shadowed: with the band darkened astrometry.net extracted 185 sources, none in the band, and used 163. The
+stars are on both sides. Residual RMS 1.81″; median 0.66″; clipped RMS 0.94″. The RMS is worse than the original's
+here, with the median still better: see the note after the §7.2 table.</em></td>
+<td valign="top"><em>Selective: 58 stars chosen, 55 used, on both sides of the band and away from it. None is near the fibre
+(the white +), which is in the middle of the umbra: the fit interpolates across the shadow to it. Residual RMS 0.35″;
+median 0.26″.</em></td>
+</tr>
+</table>
 
 | | original | shadowed | selective |
 |---|---|---|---|
