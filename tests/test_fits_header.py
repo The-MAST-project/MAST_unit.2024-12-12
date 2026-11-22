@@ -83,3 +83,10 @@ def test_nothing_to_stamp_is_not_an_error(frame, path, before, after):
 def test_unwritable_file_does_not_raise(tmp_path):
     """The frame is already safely on disk -- losing the stamp must not lose it."""
     stamp_cooling(str(tmp_path / "does-not-exist.fits"), status(23.9), status(24.0))
+
+
+def test_the_stamp_is_backend_neutral_and_phd2_still_imports_it():
+    """It moved to `imagers.cooling_stamp` so any imager can use it; `phd2.fits_header` re-exports the same function."""
+    from imagers import cooling_stamp
+
+    assert stamp_cooling is cooling_stamp.stamp_cooling

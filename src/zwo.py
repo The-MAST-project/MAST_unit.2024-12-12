@@ -160,7 +160,8 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         return True
 
     def capture(self):
-        # Implement capture logic for ZWO
+        """Not part of `ImagerInterface` and called by nothing: an exposure is `start_exposure` + the readout in
+        `ontimer`. Left as it was; it is a candidate for deletion, not for an implementation."""
         pass
 
     @property
@@ -256,6 +257,8 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         return self.is_active(ImagerActivities.ShuttingDown)
 
     def powerdown(self):
+        """Nothing to do here: `Imager.do_powerdown` shuts this backend down and then switches the camera's outlet off
+        itself, and never calls this."""
         pass
 
     @property
@@ -550,10 +553,12 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         self._image_array = value
 
     def start_exposure_series(self, series: ImagerExposureSeries):
-        pass
+        """A series needs no preparation on this backend. PHD2's has to stop and later resume guiding; the camera
+        here is its own, so nothing is guiding it. The `Imager` wrapper keeps the series record."""
 
     def end_exposure_series(self, series: ImagerExposureSeries):
-        pass
+        """Nothing to undo, as in `start_exposure_series`. The frame stays in `image_array` for the caller, who may
+        read it after the series ended."""
 
 
 if __name__ == "__main__":
