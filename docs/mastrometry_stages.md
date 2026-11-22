@@ -203,7 +203,7 @@ under the first test it fails; a source can fail several):
 | small or sharp ("hot pixel") | 622 | `HP` | Mostly noise peaks (see below); a hot pixel is not a star. |
 | blended | 20 | `BL` | A neighbour pulls the centroid. |
 | at the frame's edge | 1 | `TR` | The window is truncated. |
-| bad centroid | 11 | `BC` | The windowed centroid did not converge, or disagrees with the first moment. |
+| bad centroid | 11 | `BC` | The windowed centroid did not converge, or it moved too far (`max_centroid_shift_fwhm` seeing widths) from where detection put the star. |
 
 (spec frame 3 of the traverse, with the loosened parameters below; 1351 = 54 + 47 + 410 + 176 + 10 + 622 + 20 + 1 + 11)
 
@@ -217,7 +217,7 @@ The stages, in order, and why each is there (`solvers/source_selection.py`):
 2. **Measure the seeing** from the unsaturated sources with SNR of at least 30, preferring those inside the low-coma
    radius (0.25 × the shorter side, 1411 px, by default; 7.6 px if there are too few).
 3. **A fixed-window centroid** (a Gaussian of σ = FWHM/2.355, iterated to 2e-4 px or 16 passes). *Motivation:* a window that
-   does not grow with the star measures a bright, comatic star the same way as a faint one; a first moment does not.
+   does not grow with the star measures a bright, comatic star the same way as a faint one, so a star's position does not depend on its brightness.
    The signal-to-noise is the window's mass over the local noise.
 4. **Reject**, by the table above. The thresholds: shadow deficit above 0.05; peak above 0.8 of the saturation level
    (`SATURATE` in the header); FWHM under half the seeing or area under 5 px; a neighbour closer than 3 × seeing, of at
