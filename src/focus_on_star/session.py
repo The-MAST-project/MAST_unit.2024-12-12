@@ -436,7 +436,8 @@ class FocusOnStarRun(FocuserCalibrator):
                 logger.info(f"{op}: best focus {best} (start {start_position}, HFD {result.best_focus_star_diameter:.2f}px)")
                 self._move_focuser(best, st)
                 state.best_position = best
-                self._sky_quality(st, star, star_xy, box, ls, folder)
+                sky_box = fov_box(shape, center, ls.sky_quality_fov_percent, ls.binning)
+                self._sky_quality(st, star, star_xy, sky_box, ls, folder)
                 return True
             self._log_error(f"{op}: no focus solution after {self.tries_used} sweep(s); returning to {start_position}")
             self._move_focuser(start_position, st)
@@ -603,7 +604,9 @@ class FocusOnStarRun(FocuserCalibrator):
         """Step 7: one frame at best focus, into `self.sky_quality`. Never raises.
 
         The star is looked for over three times the sweep's search radius: it has drifted
-        through the sweep, and nothing brighter lies within the isolation radius.
+        through the sweep, and nothing brighter lies within the isolation radius.  ``box`` is the
+        sky-quality field (``sky_quality_fov_percent``), wider than the sweep's: an isolated star
+        has few neighbours in the sweep's box, too few to match the catalog.
         """
         op = "focus_on_star: sky quality"
         unit = self.unit
@@ -670,6 +673,7 @@ class FocusOnStarRun(FocuserCalibrator):
                 cat_mag,
                 scale_arcsec=scale,
                 exposure_seconds=st.exposure,
+                zero_point_max_mag=ls.zero_point_max_mag,
             )
             for name, value in vars(found).items():
                 setattr(record, name, value)
