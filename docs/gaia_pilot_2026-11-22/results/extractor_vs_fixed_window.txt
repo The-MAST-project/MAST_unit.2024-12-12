@@ -1,0 +1,8 @@
+3599 stars used by astrometry.net's own fit, paired to a clean star of ours within 4 px, in 24 frames
+image2xy minus fixed-window: median dx, dy (full-frame px) and (east, north) arcsec, with the star-to-star spread (1.48 MAD)
+  all             n= 3599  dx +0.04 dy +0.05 px = (+0.00 E, -0.01 N) arcsec  [spread 0.24, 0.21]
+  within 600 px   n=  142  dx -0.12 dy +0.44 px = (+0.02 E, -0.13 N) arcsec  [spread 0.08, 0.07]
+  within 1000 px  n=  303  dx -0.07 dy +0.38 px = (+0.02 E, -0.10 N) arcsec  [spread 0.10, 0.07]
+  1000-2000 px    n= 1081  dx -0.05 dy +0.17 px = (-0.00 E, -0.05 N) arcsec  [spread 0.22, 0.14]
+  beyond 2000 px  n= 2215  dx +0.15 dy -0.23 px = (-0.00 E, +0.06 N) arcsec  [spread 0.27, 0.23]
+per frame, stars within 1000 px: median over 24 frames (+0.02 E, -0.11 N) arcsec, frame-to-frame spread (0.05, 0.04)
