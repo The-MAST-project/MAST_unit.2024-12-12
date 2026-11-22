@@ -498,19 +498,22 @@ to the frame's right edge, so the band is cut by the frame and its far side is o
 bounds as open at the edge, not a symmetric band). 0.68 deep; the band leans 1.8° from vertical (normal 88.2°). Right:
 the band filled with the dim sky.*
 
-![Original stage](mastrometry_stages/margin_original_stars.jpg)
+The three solves, left to right, as the unit's star maps (same legend as in §7.5):
 
-*Original: 410 sources extracted, 207 used, many of them in the shadow (the black strip on the right). Residual RMS
-1.57″, of which most is a few stars; the median is 0.51″.*
-
-![Shadowed stage](mastrometry_stages/margin_shadowed_stars.jpg)
-
-*Shadowed: 282 sources, none in the band, 154 used. RMS 0.91″; median 0.40″.*
-
-![Selective stage](mastrometry_stages/margin_selective_stars.jpg)
-
-*Selective: 42 chosen, 27 used, all well outside the shadow and in a group around the fibre (the white +, just left of
-the penumbra). RMS 0.28″; median 0.25″.*
+<table>
+<tr>
+<td width="33%"><img src="mastrometry_stages/margin_original_stars.jpg" alt="Original stage"></td>
+<td width="33%"><img src="mastrometry_stages/margin_shadowed_stars.jpg" alt="Shadowed stage"></td>
+<td width="33%"><img src="mastrometry_stages/margin_selective_stars.jpg" alt="Selective stage"></td>
+</tr>
+<tr>
+<td valign="top"><em>Original: 410 sources extracted, 207 used, many of them in the shadow (the black strip on the right).
+Residual RMS 1.57″, of which most is a few stars; the median is 0.51″.</em></td>
+<td valign="top"><em>Shadowed: 282 sources, none in the band, 154 used. RMS 0.91″; median 0.40″.</em></td>
+<td valign="top"><em>Selective: 42 chosen, 27 used, all well outside the shadow and in a group around the fibre (the white +,
+just left of the penumbra). RMS 0.28″; median 0.25″.</em></td>
+</tr>
+</table>
 
 | | original | shadowed | selective |
 |---|---|---|---|
