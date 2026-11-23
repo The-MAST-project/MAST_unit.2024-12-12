@@ -185,6 +185,8 @@ def analyze_focus_samples(
     images = [im for _, im in samples]
     errors: list[str] = []
     fwhms: list[float] = [float("nan")] * len(images)
+    peaks: list[float] = [float("nan")] * len(images)
+    saturated: list[bool] = [False] * len(images)
     if star_xy is not None:
         try:
             measures = measure_sweep_star(images, star_xy, **hfd_kw)
@@ -193,6 +195,8 @@ def analyze_focus_samples(
             measures = [None] * len(images)
         per_frame = [(m.hfd, 1) if m is not None and np.isfinite(m.hfd) else (float("nan"), 0) for m in measures]
         fwhms = [m.fwhm if m is not None else float("nan") for m in measures]
+        peaks = [m.peak if m is not None else float("nan") for m in measures]
+        saturated = [bool(m.saturated) if m is not None else False for m in measures]
         n_consistent = int(any(n for _, n in per_frame))
     else:
         try:
@@ -202,7 +206,7 @@ def analyze_focus_samples(
             per_frame, n_consistent = [(float("nan"), 0)] * len(images), 0
 
     hfd_samples: list[HFDFocusSample] = []
-    for pos, (hfd, n), fwhm in zip(positions, per_frame, fwhms, strict=True):
+    for pos, (hfd, n), fwhm, peak, sat in zip(positions, per_frame, fwhms, peaks, saturated, strict=True):
         valid = pos is not None and n > 0 and np.isfinite(hfd)
         hfd_samples.append(
             HFDFocusSample(
@@ -211,6 +215,8 @@ def analyze_focus_samples(
                 num_stars=int(n),
                 hfd_pixels=(float(hfd) if np.isfinite(hfd) else None),
                 fwhm_pixels=(float(fwhm) if np.isfinite(fwhm) else None),
+                peak_adu=(float(peak) if np.isfinite(peak) else None),
+                saturated=sat,
             )
         )
 

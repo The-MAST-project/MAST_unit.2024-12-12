@@ -37,6 +37,11 @@ class HFDFocusSample(ExtendedBaseModel):
     #: focus_on_star's one star only: its FWHM, a diagnostic logged beside the HFD. Not
     #: used by the fit -- out of focus a star is a ring, and its FWHM measures the ring.
     fwhm_pixels: float | None = None
+    #: focus_on_star's one star only: the star's raw peak in this frame, and whether it reached
+    #: the saturation cutoff.  A saturated frame has no HFD (``is_valid`` False) and so is
+    #: missing from the fit -- these say that is why, and not that the star was lost.
+    peak_adu: float | None = None
+    saturated: bool = False
 
     @property
     def star_diameter_pixels(self) -> float | None:

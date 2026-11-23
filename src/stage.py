@@ -21,6 +21,7 @@ from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import StageStatus
 from common.utils import RepeatTimer, Timeout, boxed_log, function_name, time_stamp
+from stage_port import release_xilab
 
 if TYPE_CHECKING:
     from unit import Unit
@@ -40,7 +41,7 @@ for path in [
 # The DLL search path is a Windows concern; the import below is not. Splitting them is what
 # lets this module be imported where pyximc resolves but Windows does not -- previously the
 # names came in only inside the platform test, while the module body used them unconditionally.
-if platform.system() == "Windows":
+if sys.platform == "win32":  # not platform.system(): only this narrows for type checkers (add_dll_directory)
     # Determining the directory with dependencies for windows depending on the bit depth.
     arch_dir = "win64" if "64" in platform.architecture()[0] else "win32"
     lib_dir = ximc_top_dir / arch_dir  # lib directory for ximc library
@@ -128,7 +129,8 @@ class Stage(Component, SwitchedOutlet):
     _instance = None
     _initialized = False
 
-    state_flags_dict: ClassVar[dict[StateFlags, str]] = {
+    # Keyed by the controller's flag *values*: `StateFlags` is a plain class of int constants, not an enum.
+    state_flags_dict: ClassVar[dict[int, str]] = {
         StateFlags.STATE_ERRC: "STATE_ERRC",
         StateFlags.STATE_ERRV: "STATE_ERRV",
         StateFlags.STATE_ERRD: "STATE_ERRD",
@@ -163,6 +165,11 @@ class Stage(Component, SwitchedOutlet):
         """
         assert self.unit is not None and self.unit.unit_conf is not None
         return self.unit.unit_conf.stage
+
+    @property
+    def stage_model(self) -> str | None:
+        """The controller's model, read live from the configuration (never snapshotted)."""
+        return self.conf.model
 
     @property
     def presets(self) -> dict[StagePresetPosition, int]:
@@ -225,6 +232,9 @@ class Stage(Component, SwitchedOutlet):
         # This is device search and enumeration with probing. It gives more information about devices.
         probe_flags = EnumerateFlags.ENUMERATE_PROBE
         ports = self.find_ximc_ports()
+        # XILab holds the port while it is connected, and the scan below then finds nothing and
+        # is never repeated.  End it first; if the scan still finds nothing the device is gone.
+        release_xilab(ports)
         hint = f"addr={ports[0]}" if ports else "addr="
         logger.info(f"{op}: using {hint=} as enumeration hint")
         enum_hints = c_char_p(hint.encode())  # type: ignore
@@ -789,28 +799,38 @@ from pyximc import *
                         + "ended with MVCMD_ERROR"
                     )
                     with self.stage_lock:
-                        for i in range(3):
-                            logger.error(f"attempt #{i} (of 3): attempting to clear MVCMD_ERROR by calling command_stop()")
-                            ximclib.command_stop(self.device)
-                            time.sleep(0.2)
-                            result = ximclib.get_status(self.device, byref(hw_status))
-                            if result != Result.Ok:
-                                logger.error(
-                                    f"{op}: attempt #{i} (of 3): could not get_status(), {result=} ({RESULT_MAP[result]})"
-                                )
-                                break
-                            logger.error(
-                                f"{op}: attempt #{i} (of 3): status after command_stop(): {hw_status.MvCmdSts=:08X}"
-                            )
-                            if (hw_status.MvCmdSts & MvcmdStatus.MVCMD_ERROR) != 0:
-                                logger.error(f"{op}: attempt #{i} (of 3): successfully cleared MVCMD_ERROR")
-                                break
+                        self._clear_mvcmd_error(hw_status)
 
             if self.is_active(StageActivities.StartingUp) and self.close_enough(self.presets[STARTUP_PRESET]):
                 self.end_activity(StageActivities.StartingUp)
 
             if self.is_active(StageActivities.Homing):
                 self.end_activity(StageActivities.Homing)
+
+    def _clear_mvcmd_error(self, hw_status: status_t, attempts: int = 3) -> bool:
+        """Clear a move command's MVCMD_ERROR with `command_stop()`; True once it is clear.
+
+        The caller holds ``stage_lock``.  A stop leaves the command bits at MVCMD_STOP with the
+        error bit clear (``MvCmdSts == 0x05`` on mast02 and mast03), so the error is cleared
+        when the bit is *no longer* set.  This used to test the opposite, and so never saw the
+        success: it ran every attempt, and logged none as cleared.
+        """
+        op = function_name()
+        assert ximclib
+        for i in range(attempts):
+            logger.error(f"{op}: attempt #{i} (of {attempts}): attempting to clear MVCMD_ERROR by calling command_stop()")
+            ximclib.command_stop(self.device)
+            time.sleep(0.2)
+            result = ximclib.get_status(self.device, byref(hw_status))
+            if result != Result.Ok:
+                logger.error(f"{op}: attempt #{i} (of {attempts}): could not get_status(), {result=} ({RESULT_MAP[result]})")
+                return False
+            logger.error(f"{op}: attempt #{i} (of {attempts}): status after command_stop(): {hw_status.MvCmdSts=:08X}")
+            if (hw_status.MvCmdSts & MvcmdStatus.MVCMD_ERROR) == 0:
+                logger.info(f"{op}: attempt #{i} (of {attempts}): successfully cleared MVCMD_ERROR")
+                return True
+        logger.error(f"{op}: MVCMD_ERROR still set after {attempts} attempts")
+        return False
 
     @endpoint(tier=Tier.OPERATION, completion=StageActivities.Moving)
     def move_to_preset(self, preset: StagePresetPosition) -> CanonicalResponse:

@@ -81,6 +81,13 @@ SATURATION_ADU = 63000.0
 #: The probe peak a replacement star is chosen for: 40% of saturation, because the star
 #: peaks higher at best focus than on the probe, and higher still on a good night.
 TARGET_PEAK_ADU = 0.4 * SATURATION_ADU
+#: The highest probe peak a star is kept at.  An unsaturated probe is not enough: the star's
+#: peak moves by tens of percent between frames (seeing, sub-pixel position) and is higher
+#: nearer best focus, and a frame whose raw peak reaches ``SATURATION_ADU`` has no HFD and is
+#: dropped from the fit -- the frames nearest the vertex, the ones that pin it.  On mast03,
+#: 2026-11-15/18, the highest sweep peak was 1.15-1.34 times the probe's, and four frames in
+#: two runs were lost that way, from probes of 48800 and 57120 ADU.  44100 (70%) leaves 1.43x.
+PROBE_MAX_PEAK_ADU = 0.7 * SATURATION_ADU
 #: A replacement is at least this much fainter: the saturated star's flux is clipped, so
 #: the estimate from it understates how much fainter it needs to be.
 MIN_FAINTER_MAG = 1.0
@@ -88,27 +95,35 @@ MIN_FAINTER_MAG = 1.0
 FALLBACK_FAINTER_MAG = 1.5
 
 
-def fainter_limit(mag: float, flux: float, fraction: float | None) -> float:
+def fainter_limit(mag: float, flux: float, fraction: float | None, *, min_fainter: float = MIN_FAINTER_MAG) -> float:
     """The magnitude limit for a star that would peak near ``TARGET_PEAK_ADU``.
 
     A saturated star's true peak is about ``fraction`` (the peak / flux of the frame's
     unsaturated stars, which share its PSF) times its flux; the limit is fainter by the
-    magnitudes that takes down to the target -- at least ``MIN_FAINTER_MAG``. With no
-    ``fraction``, ``FALLBACK_FAINTER_MAG``.
+    magnitudes that takes down to the target -- at least ``min_fainter`` (``MIN_FAINTER_MAG``: a
+    saturated star's flux is clipped, so the estimate understates).  With no ``fraction``,
+    ``FALLBACK_FAINTER_MAG``.  A star that was not saturated has an exact flux and peak, so
+    its caller passes ``min_fainter=0``.
     """
     if fraction is None or flux <= 0:
         dm = FALLBACK_FAINTER_MAG
     else:
-        dm = max(MIN_FAINTER_MAG, 2.5 * float(np.log10(fraction * flux / TARGET_PEAK_ADU)))
+        dm = max(min_fainter, 2.5 * float(np.log10(fraction * flux / TARGET_PEAK_ADU)))
     return round(mag + dm, 1)
 
 
 @dataclass
 class _Probe:
-    """What the probe found: the star's pixel, or -- saturated -- a fainter limit to pick at."""
+    """What the probe found: the star's pixel, or a fainter limit to pick at.
+
+    A fainter limit means the star was saturated, or too bright to leave the sweep room
+    (``PROBE_MAX_PEAK_ADU``).  With both ``star_xy`` and ``fainter_limit`` set, the star is
+    usable but the run would have liked a fainter one: kept when no replacement is left.
+    """
 
     star_xy: tuple[float, float] | None = None
     fainter_limit: float | None = None
+    peak_adu: float | None = None
 
 
 #: Work that holds the mount, the stage, the focuser or the imager -- none of it may
@@ -362,7 +377,12 @@ class FocusOnStarRun(FocuserCalibrator):
                 if probe is None:
                     aborted = not self._still_calibrating()
                     return False
-                if probe.star_xy is not None:
+                if probe.star_xy is not None and (probe.fainter_limit is None or pick == 2):
+                    if probe.fainter_limit is not None:
+                        logger.warning(
+                            f"{op}: the replacement star G={star.mag:.2f} peaks at {probe.peak_adu:.0f} ADU, above "
+                            f"{PROBE_MAX_PEAK_ADU:.0f}: its brightest sweep frames may saturate and be dropped"
+                        )
                     star_xy = probe.star_xy
                     break
                 if pick == 2:
@@ -393,6 +413,7 @@ class FocusOnStarRun(FocuserCalibrator):
                 result = status.analysis_result
                 logger.info(f"{op}: sweep {self.tries_used}/{ls.max_tries}: {status.message}")
                 self._log_sweep_frames(status)
+                self._log_saturated_frames(status)
                 if result is not None and result.has_solution:
                     dmin = result.best_focus_star_diameter
                     if dmin is not None and dmin > ls.max_best_hfd_px:
@@ -415,7 +436,8 @@ class FocusOnStarRun(FocuserCalibrator):
                 logger.info(f"{op}: best focus {best} (start {start_position}, HFD {result.best_focus_star_diameter:.2f}px)")
                 self._move_focuser(best, st)
                 state.best_position = best
-                self._sky_quality(st, star, star_xy, box, ls, folder)
+                sky_box = fov_box(shape, center, ls.sky_quality_fov_percent, ls.binning)
+                self._sky_quality(st, star, star_xy, sky_box, ls, folder)
                 return True
             self._log_error(f"{op}: no focus solution after {self.tries_used} sweep(s); returning to {start_position}")
             self._move_focuser(start_position, st)
@@ -567,13 +589,24 @@ class FocusOnStarRun(FocuserCalibrator):
             f"focus_on_star: probe at {position}: star at ({m.x:.1f}, {m.y:.1f}), HFD {m.hfd:.2f}px, "
             f"FWHM {m.fwhm:.2f}px, peak {m.peak:.0f} ADU"
         )
-        return _Probe(star_xy=(m.x, m.y))
+        if m.peak > PROBE_MAX_PEAK_ADU and m.flux > 0:
+            # Unsaturated, so flux and peak are exact: no clipped-flux allowance is needed.
+            limit = fainter_limit(star.mag, m.flux, m.peak / m.flux, min_fainter=0.0)
+            if limit > star.mag:
+                logger.info(
+                    f"focus_on_star: the star G={star.mag:.2f} peaks at {m.peak:.0f} ADU, above {PROBE_MAX_PEAK_ADU:.0f}: "
+                    f"the sweep's brightest frames would saturate; picking again at G >= {limit}"
+                )
+                return _Probe(star_xy=(m.x, m.y), fainter_limit=limit, peak_adu=m.peak)
+        return _Probe(star_xy=(m.x, m.y), peak_adu=m.peak)
 
     def _sky_quality(self, st, star: FocusStar, near_xy, box, ls: FocusOnStarSettings, folder) -> None:
         """Step 7: one frame at best focus, into `self.sky_quality`. Never raises.
 
         The star is looked for over three times the sweep's search radius: it has drifted
-        through the sweep, and nothing brighter lies within the isolation radius.
+        through the sweep, and nothing brighter lies within the isolation radius.  ``box`` is the
+        sky-quality field (``sky_quality_fov_percent``), wider than the sweep's: an isolated star
+        has few neighbours in the sweep's box, too few to match the catalog.
         """
         op = "focus_on_star: sky quality"
         unit = self.unit
@@ -640,6 +673,7 @@ class FocusOnStarRun(FocuserCalibrator):
                 cat_mag,
                 scale_arcsec=scale,
                 exposure_seconds=st.exposure,
+                zero_point_max_mag=ls.zero_point_max_mag,
             )
             for name, value in vars(found).items():
                 setattr(record, name, value)
@@ -667,6 +701,26 @@ class FocusOnStarRun(FocuserCalibrator):
             for e in record.errors:
                 logger.warning(e)
             record.write("sky_quality.json")
+
+    def _log_saturated_frames(self, status: HFDAutofocusStatus) -> None:
+        """Say so when sweep frames were left out of the fit because the star saturated in them.
+
+        Such a frame has no HFD, and the fit goes on without it -- but it is the brightest, so
+        nearest best focus, and it leaves the vertex resting on the flanks.  The run is not
+        failed (the fit's own gates decide that); the log and the saved analysis say what
+        was missing.
+        """
+        result = status.analysis_result
+        samples = (result.focus_samples if result is not None else None) or []
+        lost = [s for s in samples if s.saturated]
+        if not lost:
+            return
+        used = sum(1 for s in samples if s.is_valid)
+        where = ", ".join(f"{s.focus_position:.0f} ({s.peak_adu:.0f} ADU)" for s in lost if s.peak_adu is not None)
+        logger.warning(
+            f"focus_on_star: {len(lost)} of {len(samples)} sweep frames saturated and are not in the fit "
+            f"({used} used): {where or 'peaks unknown'}"
+        )
 
     def _log_sweep_frames(self, status: HFDAutofocusStatus) -> None:
         """The star's HFD and FWHM on each sweep frame -- the FWHM is logged only."""
