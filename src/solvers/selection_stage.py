@@ -149,6 +149,7 @@ class StageResult:
                 counts=self.selection.counts(),
                 status=self.selection.status,
                 radius_used_px=self.selection.radius_used_px,
+                search_center_px=[float(v) for v in self.selection.optical_center],
                 fit_order=self.selection.fit_order,
                 fwhm_seeing_px=self.selection.fwhm_seeing_px,
             )
@@ -187,8 +188,13 @@ def prepare(
     origin: tuple[int, int] = (0, 0),
     frame_shape: tuple[int, int] | None = None,
     shadow: ShadowModel | None = None,
+    center: tuple[float, float] | None = None,
 ) -> StageResult:
     """Run the stage on the (cropped, unbinned) frame. `settings.mode` must not be ``original``.
+
+    `center` is the point the search for stars grows out from, in the pixels of `data`: **the fibre pixel**, the point
+    whose position the solve reports (CRPIX). The selection starts at the low-coma radius about it and widens until it
+    has enough stars. None: the frame's centre, as the selection falls back to.
 
     `shadow`, if given, is the shadow model for this (cropped) frame, found earlier -- the acquisition's cached
     one -- and is used instead of detecting again.
@@ -231,6 +237,7 @@ def prepare(
     result.selection = select_sources(
         data,
         shadow=result.shadow if shadow_present else None,
+        optical_center=center,
         params=settings.params,
         exclusion_half_width=settings.exclusion_half_width,
         header=header,

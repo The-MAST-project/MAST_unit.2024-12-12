@@ -42,7 +42,8 @@ Usage:
     --shadow-max-center-offset PX   look for the shadow only this close to the frame centre (default 0:
                              anywhere -- it is centred when the mirror is in, and has its edge at the
                              frame's edge at the sky position)
-    --optical-center X Y     from the unit's calibration (full-frame pixels); default the frame centre
+    --optical-center X Y     the centre of the star search (full-frame pixels); default the fibre pixel when --fibre or
+                             --fibre-xy is given (as the solver searches), else the frame centre
     --low-coma-radius R      likewise, pixels
     --fwhm F                 the seeing in pixels; default measured from the stars
     --full-scale N           the ADC full scale, needed to test saturation on a float frame
@@ -476,6 +477,8 @@ def survey_frame(
     center = None
     if args.optical_center:
         center = (args.optical_center[0] - x0, args.optical_center[1] - y0)
+    elif args.fibre_pixel is not None:
+        center = (args.fibre_pixel[0] - x0, args.fibre_pixel[1] - y0)  # the search grows out from the fibre pixel
 
     runs = [
         select_sources(

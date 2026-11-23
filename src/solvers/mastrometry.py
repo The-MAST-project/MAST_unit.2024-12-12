@@ -27,7 +27,7 @@ from .astrometry_dot_net import generate_random_string, parse_solver_output, win
 from .pixel_grid import roi_center_to_crpix
 from .ram_area import index_dir, missing_indexes, scratch_dir
 from .selection_stage import FIT_ORDER, SourceSelectionSettings, StageResult, prepare, resolve_settings, solved_fits_from_wcs
-from .star_map import write_star_map
+from .star_map import write_selection_area, write_star_map
 from .survey_solve import write_xylist
 
 logger = get_logger(__name__)
@@ -335,6 +335,18 @@ class MastrometryDotNet(SolverInterface):
             # Off by default: with it off nothing between here and the solve changes.
             #
             selection_settings = resolve_settings(unit_conf, source_selection)
+            #
+            # The search for stars grows out from the fibre pixel -- the point CRPIX puts the reported position at --
+            # in the pixels of the cropped frame: the ROI's centre, or the fibre's pixel in a whole frame.
+            #
+            selection_center: tuple[float, float] | None = None
+            if imager_roi is not None and imager_roi._center is not None:
+                selection_center = (
+                    float(imager_roi._center.x - imager_roi.x),
+                    float(imager_roi._center.y - imager_roi.y),
+                )
+            elif fibre_xy is not None:
+                selection_center = (float(fibre_xy[0]), float(fibre_xy[1]))
             stage: StageResult | None = None
             if selection_settings.mode != "original":
                 stage = prepare(
@@ -345,7 +357,17 @@ class MastrometryDotNet(SolverInterface):
                     origin=(imager_roi.x, imager_roi.y) if imager_roi is not None else (0, 0),
                     frame_shape=(height, width),
                     shadow=shadow if shadow is not None and tuple(shadow.image_shape) == tuple(data.shape) else None,
+                    center=selection_center,
                 )
+                if stage.selection is not None and stage.selection.status == "ok":
+                    # The selection's area, for the star map to draw (solvers/star_map.py).
+                    write_selection_area(
+                        win_tmp_dir,
+                        stage.selection.optical_center,
+                        stage.selection.low_coma_radius_px,
+                        stage.selection.radius_used_px,
+                        downsample_factor,
+                    )
                 if (why := stage.failed) is not None:
                     logger.error(f"{function_name()}: source selection: {why}, the frame is not solved")
                     failure = SolvingResult(succeeded=False, errors=[f"source selection: {why}"])
