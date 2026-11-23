@@ -31,6 +31,22 @@ G 18 within ``--isolation-arcsec``**, and lies nearest the cell's centre. Positi
 applied to ``--when``. It writes ``targets.csv`` into OUT (in azimuth order, one sweep) and prints it. The site is the
 ``--lat``/``--lon`` given, else this machine's configured site. It reads the same catalog share as ``analyse``.
 
+``acquire`` (on the control machine or any host that can reach the unit) runs one mastrometry acquisition per target:
+
+    python tools/gaia_accuracy_survey.py acquire TARGETS_CSV --unit mast02 --mode selective --out OUT
+        [--seconds 5] [--timeout 900] [--only T03,T04] [--redo]
+
+For each row of ``targets.csv`` it calls the unit's ``start_acquisition_and_guiding`` (target = the Gaia position,
+``handover_automatically_to_guider`` off, so the unit is left unguided), waits for the unit's
+``latest.acquisition`` to end, and writes ``OUT/<name>-<mode>/acquire.json``: the target row, the unit and mode, the
+request, how the acquisition ended (state, errors, each phase's last offset against tolerance), where its products are
+on the share, and the mount's own RA/Dec afterwards. A target that already has its ``acquire.json`` is skipped
+(``--redo`` runs it again), so an interrupted night resumes. A target that fails is recorded and the run goes on.
+
+``--mode`` is a **label**, written into the sidecar: the unit solves in whatever ``solving.source_selection.mode`` its
+configuration says (there is no per-call override), so set the mode in the configuration database first, and run the
+same ``targets.csv`` once per mode. The unit must be started up and not busy. This step does not compare anything.
+
 Layout ``analyse`` reads: a folder per frame (a single-frame survey run), holding ``*sources.csv`` and, for each mode, a
 folder
 ``<tag>-<mode>/`` with the solved FITS ``*,solver=*.fits`` and its ``.corr`` beside it. ``DIR`` is a frame folder, or a
@@ -52,10 +68,13 @@ import argparse
 import csv
 import dataclasses
 import datetime
+import json
 import sys
+import time
 import warnings
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Protocol
 
 import numpy as np
 from astropy.io import fits
@@ -571,6 +590,172 @@ def plan(out: Path, cone: Cone, lat_deg: float, lon_deg: float, when: datetime.d
     return format_targets(targets, empty, when)
 
 
+# ------------------------------------------------------------------------------------------------ acquire: running them
+
+POLL_SECONDS = 2.0
+
+
+class UnitClient(Protocol):
+    """What ``acquire`` needs of a unit: its status (as a dict) and one acquisition request."""
+
+    def status(self) -> dict: ...
+
+    def start_acquisition(self, params: dict) -> tuple[bool, list[str]]:
+        """``(accepted, errors)``."""
+        ...
+
+
+class HttpUnit:
+    """A unit over its HTTP API (``common.api.UnitApi``)."""
+
+    def __init__(self, hostname: str):
+        from common.api import UnitApi  # noqa: PLC0415
+
+        self._api = UnitApi(hostname=hostname)
+
+    def status(self) -> dict:
+        import asyncio  # noqa: PLC0415
+
+        response = asyncio.run(self._api.get(method="status"))
+        if response.failed or not isinstance(response.value, dict):
+            raise RuntimeError(f"no status from the unit: {response.errors}")
+        return response.value
+
+    def start_acquisition(self, params: dict) -> tuple[bool, list[str]]:
+        import asyncio  # noqa: PLC0415
+
+        response = asyncio.run(self._api.put(method="start_acquisition_and_guiding", params=params))
+        return (not response.failed, list(response.errors or []))
+
+
+def _latest_acquisition(status: dict) -> dict | None:
+    return ((status.get("latest") or {}).get("acquisition")) or None
+
+
+def acquisition_request(target: dict, seconds: float) -> dict:
+    """The ``start_acquisition_and_guiding`` parameters for one target row: Gaia's position, unguided afterwards."""
+    return {
+        "seconds": seconds,
+        "ra_j2000_hours": float(target["ra_deg"]) / 15.0,
+        "dec_j2000_degs": float(target["dec_deg"]),
+        "handover_automatically_to_guider": False,
+    }
+
+
+def read_targets(path: Path, only: Sequence[str] = ()) -> list[dict]:
+    with open(path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    if only:
+        wanted = set(only)
+        rows = [r for r in rows if r["name"] in wanted]
+        missing = wanted - {r["name"] for r in rows}
+        if missing:
+            raise SystemExit(f"not in {path}: {', '.join(sorted(missing))}")
+    return rows
+
+
+def acquire_target(
+    unit: UnitClient,
+    target: dict,
+    out: Path,
+    *,
+    unit_name: str,
+    mode: str,
+    seconds: float,
+    timeout: float,
+    poll: float = POLL_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict:
+    """Run one acquisition and write its sidecar. Returns the sidecar."""
+    request = acquisition_request(target, seconds)
+    before = _latest_acquisition(unit.status())
+    before_started = before.get("started") if before else None
+    sidecar: dict = {
+        "target": target,
+        "unit": unit_name,
+        "mode": mode,
+        "request": request,
+        "requested_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+    }
+    accepted, errors = unit.start_acquisition(request)
+    if not accepted:
+        sidecar.update(outcome="refused", errors=errors)
+    else:
+        deadline = clock() + timeout
+        latest = None
+        while clock() < deadline:
+            latest = _latest_acquisition(unit.status())
+            # a record of a run that started after our request: the first status read after the PUT is already ours
+            if latest and latest.get("started") != before_started and latest.get("ended"):
+                break
+            latest = None
+            sleep(poll)
+        if latest is None:
+            sidecar.update(outcome="timeout", errors=[f"no end of the acquisition within {timeout:g} s"])
+        else:
+            status = unit.status()
+            mount = status.get("mount") or {}
+            sidecar.update(
+                outcome="succeeded" if latest.get("succeeded") else "failed",
+                errors=list(latest.get("errors") or []),
+                started=latest.get("started"),
+                ended=latest.get("ended"),
+                state=latest.get("state"),
+                phases=latest.get("phases") or {},
+                shared_products_path=latest.get("shared_products_path"),
+                local_products_path=latest.get("local_products_path"),
+                solver=latest.get("solver"),
+                mount_ra_j2000_hours=mount.get("ra_j2000_hours"),
+                mount_dec_j2000_degs=mount.get("dec_j2000_degs"),
+            )
+    folder = out / f"{target['name']}-{mode}"
+    folder.mkdir(parents=True, exist_ok=True)
+    with open(folder / "acquire.json", "w", encoding="utf-8") as f:
+        json.dump(sidecar, f, indent=2)
+    return sidecar
+
+
+def acquire(
+    unit: UnitClient,
+    targets: Sequence[dict],
+    out: Path,
+    *,
+    unit_name: str,
+    mode: str,
+    seconds: float = 5.0,
+    timeout: float = 900.0,
+    redo: bool = False,
+    poll: float = POLL_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    log: Callable[[str], None] = print,
+) -> list[dict]:
+    """Every target in turn. A target that has its ``acquire.json`` is skipped unless ``redo``."""
+    done: list[dict] = []
+    for target in targets:
+        sidecar_path = out / f"{target['name']}-{mode}" / "acquire.json"
+        if sidecar_path.exists() and not redo:
+            log(f"{target['name']}: already acquired in {mode}, skipped")
+            continue
+        log(f"{target['name']}: acquiring RA {float(target['ra_deg']):.5f} Dec {float(target['dec_deg']):.4f} ({mode})")
+        sidecar = acquire_target(
+            unit,
+            target,
+            out,
+            unit_name=unit_name,
+            mode=mode,
+            seconds=seconds,
+            timeout=timeout,
+            poll=poll,
+            clock=clock,
+            sleep=sleep,
+        )
+        log(f"{target['name']}: {sidecar['outcome']}" + (f" -- {'; '.join(sidecar['errors'])}" if sidecar["errors"] else ""))
+        done.append(sidecar)
+    return done
+
+
 # ------------------------------------------------------------------------------------------------ reference, output, CLI
 
 
@@ -680,6 +865,15 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     p.add_argument("--search-deg", type=float, default=PlanParams.search_deg)
     p.add_argument("--catalog-root")
     p.add_argument("--catalog-name")
+    q = sub.add_parser("acquire", help="run one mastrometry acquisition per target on a unit")
+    q.add_argument("targets", type=Path, help="the targets.csv that `plan` wrote")
+    q.add_argument("--unit", required=True, help="the unit's host name, e.g. mast02")
+    q.add_argument("--mode", required=True, help="a label for the sidecar: the source-selection mode the unit is set to")
+    q.add_argument("--out", type=Path, required=True)
+    q.add_argument("--seconds", type=float, default=5.0, help="exposure per acquisition frame")
+    q.add_argument("--timeout", type=float, default=900.0, help="seconds to wait for one acquisition to end")
+    q.add_argument("--only", default="", help="comma-separated target names")
+    q.add_argument("--redo", action="store_true", help="run targets that already have an acquire.json again")
     a = sub.add_parser("analyse", help="score the solved WCS of each mode against Gaia near the fibre")
     a.add_argument("dirs", nargs="+", type=Path, help="a frame folder, or a folder of them")
     a.add_argument("--out", type=Path, required=True)
@@ -729,10 +923,36 @@ def _plan_main(args: argparse.Namespace, cone: Cone | None) -> int:
     return 0
 
 
-def main(argv: Sequence[str] | None = None, reference: Reference | None = None, cone: Cone | None = None) -> int:
+def _acquire_main(args: argparse.Namespace, unit: UnitClient | None) -> int:
+    only = [n.strip() for n in args.only.split(",") if n.strip()]
+    done = acquire(
+        unit or HttpUnit(args.unit),
+        read_targets(args.targets, only),
+        args.out,
+        unit_name=args.unit,
+        mode=args.mode,
+        seconds=args.seconds,
+        timeout=args.timeout,
+        redo=args.redo,
+    )
+    failed = [d["target"]["name"] for d in done if d["outcome"] != "succeeded"]
+    print(
+        f"{len(done)} run, {len(done) - len(failed)} succeeded" + (f"; not succeeded: {', '.join(failed)}" if failed else "")
+    )
+    return 1 if failed else 0
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    reference: Reference | None = None,
+    cone: Cone | None = None,
+    unit: UnitClient | None = None,
+) -> int:
     args = _parse(argv)
     if args.command == "plan":
         return _plan_main(args, cone)
+    if args.command == "acquire":
+        return _acquire_main(args, unit)
     modes = tuple(m.strip() for m in args.modes.split(",") if m.strip())
     if len(modes) < 2:
         print("--modes needs at least two modes", file=sys.stderr)
