@@ -660,9 +660,9 @@ any, and the selection); the offsets are of the solved position at the fibre pix
 
 - **The grid selection is 3.4 times faster and the region 8.6 times**, on the machine the units run on. All 24 solves succeeded.
 - **The solutions agree to about 0.1".** The fits use as many stars with the same residual. There is a small, consistent
-  offset to the south (0.08" whole frame, 0.11" cropped), which is the size of the estimator difference between astrometry.net's
-  extractor and our centroid (section 8 of the survey plan) and a third of the gap between `original` and `selective`. Its
-  cause is not traced: block-averaging the stars before centroiding is the first suspect. It is a fraction of a pixel (0.16
+  offset to the south (0.08" whole frame, 0.11" cropped). That is about the 0.1" by which astrometry.net's own extractor differs
+  from our fixed-window centroid near the fibre (`mastrometry_gaia_accuracy_survey.md`), and about a quarter of the 0.35" gap
+  between `original` and `selective` there. Its cause is not traced: block-averaging the stars before centroiding is the first suspect. It is a fraction of a pixel (0.16
   full-resolution pixels) and the same sign in every frame, so it is a bias, not scatter.
 - **The same stars, mostly.** On two frames the grid selection finds 88% and 90% of the stars the full-resolution one chooses
   (the rest are other stars of similar rank), and 80 to 90% of what it chooses is in the full-resolution set. Which of several
