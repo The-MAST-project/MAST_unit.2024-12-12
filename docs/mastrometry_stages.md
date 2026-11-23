@@ -30,8 +30,9 @@ median):
 
 The one frame not solved is the same in all three stages (a 2 s exposure). The shadowed stage is better than the
 original on every set (by 20 to 21%), and the selective stage is 2.5 to 4.7 times better. **That is the agreement of a
-solution with its own stars, not its accuracy**: we have no ground truth yet (see [section 8](#8-what-we-do-not-know-yet)).
-The next stage is an on-sky test with a Gaia star on the fibre. The time is spent in Python (shadow detection, then
+solution with its own stars, not its accuracy.** A first independent check, against Gaia on stars neither fit used
+([section 7.7](#77-an-independent-check-against-gaia)), puts the selective stage 0.17″ from Gaia near the fibre on mast02 and the original
+0.52″. The real test, a Gaia star on the fibre, is still to come ([section 8](#8-what-we-do-not-know-yet)). The time is spent in Python (shadow detection, then
 darkening or star selection), not in astrometry.net; it is broken down in [section 7.3](#73-where-the-time-goes).
 
 ## 2. Motivation
@@ -542,12 +543,62 @@ because they are different situations for the fit.
 
 **Fallbacks:** none in any of the final runs.
 
+### 7.7 An independent check against Gaia
+
+*Offline, on 24 mast02 acquisition frames (the mirror out of the frame, 2026-11-17 and 11-18, 5 s, fibre pixel (4050, 2439);
+the one 2 s frame did not solve). Original and selective only. The scripts, the frame lists and the results are in
+`docs/gaia_pilot_2026-11-22/`; the tool is `tools/gaia_accuracy_survey.py analyse`; the plan is
+`mastrometry_gaia_accuracy_survey.md` in mast-claude-config.*
+
+The residuals of 7.2 are measured on the stars each solution was fitted to. This check scores stars **neither fit used**
+against **Gaia DR3**, which neither solution has seen.
+
+**Method, per frame**
+1. Solve the frame in the original and in the selective stage (section 7.1); each leaves a WCS and the list of stars its fit used.
+2. Take the clean stars of the selection pass (`kept` or `spare`) at their fixed-window centroid, and drop every one within
+   1.5 binned pixels of a star either fit used: the **held-out stars**, 300 to 800 a frame.
+3. Put each on the sky through each stage's WCS, and match it to a Gaia DR3 star (catsHTM on the share, proper motion
+   applied to the frame's epoch): exactly one Gaia star within 4″, the nearest within 2.5″, G of 16.5 or brighter. The match is
+   made on the mean of the two stages' positions, so neither is favoured.
+4. The error of a stage is its sky position minus Gaia's, east and north. The metric is the **median error vector** of the held-out
+   stars within a distance of the fibre pixel: a systematic offset, not a scatter.
+
+**Results.** Offset in arcseconds (the length of the median vector), stars pooled over 19 to 20 frames; the standard error is
+about 0.03″ over frames.
+
+| distance from the fibre | stars | original | selective |
+|---|---|---|---|
+| 0 to 300 px | 126 | **0.52** (0.00 E, +0.52 N) | **0.17** (-0.11, +0.13) |
+| 300 to 500 px | 232 | 0.49 | 0.18 |
+| 500 to 800 px | 369 | 0.46 | 0.16 |
+| 800 to 1200 px | 811 | 0.35 | 0.01 |
+| 1200 to 1800 px | 2,163 | 0.10 | 0.09 |
+
+- **Near the fibre the selective stage is closer to Gaia**: in 18 of the 19 frames with stars within 600 px (the tie is one frame), and
+  by a median 0.19″ against 0.50″ per frame. The median error of a single star within 300 px is 0.22″ against 0.55″.
+- **The gap is the fits, mostly.** About 0.1″ of the original's 0.52″ is that astrometry.net's own extractor puts stars 0.10″
+  south of our fixed-window centroid near the fibre (3,599 stars compared); the remaining 0.25″ is the fits (order 2 on about 260 stars
+  against order 1 on about 24, section 7.2). Beyond 1200 px the two agree.
+- **Both stages are north of Gaia** (almost no east-west offset). Whole-frame accuracy is not a goal; for the record the median
+  per-star error ties (0.45″ against 0.46″) and the selective stage's 90th percentile is twice as bad (1.47″ against 0.74″), as
+  a first-order fit would give.
+
+**What it does not show**
+- It is the position of **stars near the fibre pixel, not where the fibre points**: only the on-sky test measures that.
+- The selective fit and the scoring use the same centroid (fixed window); for the original the mismatch is the 0.1″ above.
+- Mirror out only. With the mirror in, the shadow is over the fibre, no clean star lies within about 2,000 px of it on mast01, and
+  the fit interpolates across the band: untested.
+- The 24 frames come from about 10 fields on one unit, so the standard errors over stars are optimistic. The search for stars was
+  from the frame's centre, as in the rest of this document, not the fibre pixel (section 5, step 6); the check has not been repeated.
+
 ## 8. What we do not know yet
 
-- **Accuracy.** Everything above is the agreement of a solution with its own stars, plus differences between stages. We
-  have no ground truth. The next stage is an on-sky test: put a Gaia star on the fibre, solve, and compare the
-  solution with the star's Gaia position. That settles the order-1 decision and the 0.5″ question, and it is the real
-  test of all three stages.
+- **Accuracy.** Sections 7.1 to 7.6 are the agreement of a solution with its own stars, plus differences between stages. The
+  first independent check is 7.7: stars neither fit used, scored against Gaia. It shows the selective stage closer to Gaia
+  than the original near the fibre, but it measures star positions and not the fibre, on one unit, with the mirror out of the
+  frame, and the selective fit and the scoring use the same centroid. The on-sky test remains the real one: put a Gaia
+  star on the fibre, solve, and compare the solution with the star's Gaia position. That settles the order-1 decision and the
+  0.5″ question, and it is the real test of all three stages.
 - **How representative the frames are.** 37 frames (36 solved), two cameras. mast01 is one field, three frames per case; mast02 is
   about ten fields, but only `spec` frames (all with a margin shadow) and at most one frame per acquisition. This
   shows the pipeline works and the stages differ; it does not make one a proven improvement.
