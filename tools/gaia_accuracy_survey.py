@@ -19,7 +19,20 @@ What it does, per frame, offline, from what ``tools/source_survey.py --via-solve
 The metric is the median error VECTOR of the held-out stars within a distance of the fibre pixel (a systematic offset),
 not a scatter.
 
-Layout it reads: a folder per frame (a single-frame survey run), holding ``*sources.csv`` and, for each mode, a folder
+``plan`` (the survey's first step, before any telescope time) chooses the targets for a night from the Gaia catalog:
+
+    python tools/gaia_accuracy_survey.py plan --out OUT [--n 20] [--when 2026-11-24T20:00:00Z] [--lat D --lon D]
+        [--min-g 8 --max-g 11] [--max-pm 10] [--isolation-arcsec 30] [--min-alt 35 --max-alt 80] [--search-deg 4]
+
+It spreads the targets over altitude and azimuth at ``--when`` (farthest-point sampling of the sky cells, so the
+first targets are the most different), and in each cell takes the Gaia DR3 star that is G within ``--min-g`` to
+``--max-g``, has a measured proper motion no larger than ``--max-pm``, has **no catalog star of any brightness down to
+G 18 within ``--isolation-arcsec``**, and lies nearest the cell's centre. Positions are Gaia's with proper motion
+applied to ``--when``. It writes ``targets.csv`` into OUT (in azimuth order, one sweep) and prints it. The site is the
+``--lat``/``--lon`` given, else this machine's configured site. It reads the same catalog share as ``analyse``.
+
+Layout ``analyse`` reads: a folder per frame (a single-frame survey run), holding ``*sources.csv`` and, for each mode, a
+folder
 ``<tag>-<mode>/`` with the solved FITS ``*,solver=*.fits`` and its ``.corr`` beside it. ``DIR`` is a frame folder, or a
 folder of them.
 
@@ -38,6 +51,7 @@ from __future__ import annotations
 import argparse
 import csv
 import dataclasses
+import datetime
 import sys
 import warnings
 from collections.abc import Callable, Sequence
@@ -344,6 +358,219 @@ def wins(rows: Sequence[dict], modes: Sequence[str]) -> tuple[int, int, dict[str
     )
 
 
+# ------------------------------------------------------------------------------------------------ plan: choosing targets
+
+#: ``cone(ra_deg, dec_deg, radius_deg)`` -> ``(ra_deg, dec_deg, G, pmra_mas_yr, pmdec_mas_yr)`` arrays, catalog epoch.
+Cone = Callable[[float, float, float], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
+
+_MAS_PER_DEG = 3.6e6
+_J2000_JD = 2451545.0
+
+
+@dataclasses.dataclass
+class PlanParams:
+    n: int = 20
+    min_g: float = 8.0  # brightest: below the saturation margin
+    max_g: float = 11.0
+    max_pm: float = 10.0  # mas/yr, total; a measured proper motion is required
+    isolation_arcsec: float = 30.0  # no catalog star of any brightness (to faintest_g) this close
+    faintest_g: float = 18.0
+    min_alt: float = 35.0
+    max_alt: float = 80.0
+    n_alt: int = 4  # sky cells: altitude bands x azimuth sectors
+    n_az: int = 8
+    search_deg: float = 4.0  # a cell's star is looked for within this of its centre
+    catalog_epoch: float = 2016.0
+
+
+@dataclasses.dataclass
+class Target:
+    name: str
+    ra_deg: float  # Gaia position, proper motion applied to ``when``
+    dec_deg: float
+    g: float
+    pm_mas_yr: float
+    alt_deg: float
+    az_deg: float
+    cell: str
+    density_per_deg2: float  # catalog stars to faintest_g around the cell centre: a crowding measure
+
+
+def _gmst_deg(when: datetime.datetime) -> float:
+    """Greenwich mean sidereal time, degrees: precise enough to place a sky cell (about 0.1 arcmin), no IERS needed."""
+    jd = 2440587.5 + when.timestamp() / 86400.0
+    return (280.46061837 + 360.98564736629 * (jd - _J2000_JD)) % 360.0
+
+
+def radec_to_altaz(ra_deg, dec_deg, lat_deg: float, lon_deg: float, when: datetime.datetime):
+    """Altitude and azimuth (east of north), degrees, of (ra, dec) for a site at ``when``."""
+    ha = np.radians(_gmst_deg(when) + lon_deg - np.asarray(ra_deg, float))
+    dec = np.radians(np.asarray(dec_deg, float))
+    lat = np.radians(lat_deg)
+    sin_alt = np.sin(dec) * np.sin(lat) + np.cos(dec) * np.cos(lat) * np.cos(ha)
+    alt = np.arcsin(np.clip(sin_alt, -1.0, 1.0))
+    az = np.arctan2(-np.sin(ha) * np.cos(dec), np.sin(dec) * np.cos(lat) - np.cos(dec) * np.sin(lat) * np.cos(ha))
+    return np.degrees(alt), np.degrees(az) % 360.0
+
+
+def altaz_to_radec(alt_deg: float, az_deg: float, lat_deg: float, lon_deg: float, when: datetime.datetime):
+    """The inverse of :func:`radec_to_altaz`: (ra, dec) in degrees."""
+    alt, az, lat = np.radians(alt_deg), np.radians(az_deg), np.radians(lat_deg)
+    sin_dec = np.sin(alt) * np.sin(lat) + np.cos(alt) * np.cos(lat) * np.cos(az)
+    dec = np.arcsin(np.clip(sin_dec, -1.0, 1.0))
+    ha = np.arctan2(-np.sin(az) * np.cos(alt), np.sin(alt) * np.cos(lat) - np.cos(alt) * np.sin(lat) * np.cos(az))
+    return float((_gmst_deg(when) + lon_deg - np.degrees(ha)) % 360.0), float(np.degrees(dec))
+
+
+def sky_cells(params: PlanParams) -> list[tuple[str, float, float]]:
+    """``(label, alt, az)`` of every cell's centre, ordered so each is as far as possible from those before it.
+
+    Farthest-point sampling on the sphere: the first ``n`` cells are the best spread over the observable sky that
+    ``n_alt`` x ``n_az`` cells allow, and the rest are the fallbacks when a cell has no suitable star.
+    """
+    alts = [params.min_alt + (i + 0.5) * (params.max_alt - params.min_alt) / params.n_alt for i in range(params.n_alt)]
+    azs = [(j + 0.5) * 360.0 / params.n_az for j in range(params.n_az)]
+    cells = [(f"alt{a:.0f}-az{z:.0f}", a, z) for a in alts for z in azs]
+    vec = np.array([_alt_az_vector(a, z) for _, a, z in cells])
+    order = [int(np.argmax(vec[:, 2]))]  # start at the highest
+    best = vec @ vec[order[0]]  # cosine to the nearest chosen cell
+    while len(order) < len(cells):
+        order.append(int(np.argmin(np.where(np.isin(range(len(cells)), order), np.inf, best))))
+        best = np.maximum(best, vec @ vec[order[-1]])
+    return [cells[i] for i in order]
+
+
+def _alt_az_vector(alt: float, az: float) -> np.ndarray:
+    a, z = np.radians(alt), np.radians(az)
+    return np.array([np.cos(a) * np.sin(z), np.cos(a) * np.cos(z), np.sin(a)])
+
+
+def _years_since(epoch_jyear: float, when: datetime.datetime) -> float:
+    return (
+        2000.0
+        + (when - datetime.datetime(2000, 1, 1, 12, tzinfo=datetime.UTC)).total_seconds() / (86400.0 * 365.25)
+        - epoch_jyear
+    )
+
+
+def pick_in_cell(
+    cone: Cone,
+    centre: tuple[float, float],
+    params: PlanParams,
+    years: float,
+    lat_deg: float,
+    lon_deg: float,
+    when: datetime.datetime,
+) -> tuple[Target | None, float]:
+    """The suitable star nearest the cell's centre (and the catalog density there), or None. ``Target.cell`` is
+    left for the caller."""
+    ra0, dec0 = centre
+    ra, dec, g, pmra, pmdec = (
+        np.asarray(a, float) for a in cone(ra0, dec0, params.search_deg + params.isolation_arcsec / 3600.0)
+    )
+    ok = np.isfinite(ra) & np.isfinite(dec) & np.isfinite(g) & (g <= params.faintest_g)
+    ra, dec, g, pmra, pmdec = ra[ok], dec[ok], g[ok], pmra[ok], pmdec[ok]
+    density = len(ra) / (np.pi * params.search_deg**2)
+    cosd = np.maximum(np.cos(np.radians(dec)), 1e-9)
+    # Positions at ``when``. A star with no proper motion keeps its catalog position but cannot be a target.
+    ra_now = (ra + np.nan_to_num(pmra) * years / _MAS_PER_DEG / cosd) % 360.0
+    dec_now = dec + np.nan_to_num(pmdec) * years / _MAS_PER_DEG
+    pm = np.hypot(pmra, pmdec)
+    east, north = offsets_arcsec(ra_now, dec_now, ra0, dec0)
+    sep_deg = np.hypot(east, north) / 3600.0
+    alt, az = radec_to_altaz(ra_now, dec_now, lat_deg, lon_deg, when)
+    candidate = np.flatnonzero(
+        (g >= params.min_g)
+        & (g <= params.max_g)
+        & np.isfinite(pm)
+        & (pm <= params.max_pm)
+        & (sep_deg <= params.search_deg)
+        & (alt >= params.min_alt)
+        & (alt <= params.max_alt)
+    )
+    if not len(candidate):
+        return None, density
+    tree = cKDTree(_unit_vectors(ra_now, dec_now))
+    for i in candidate[np.argsort(sep_deg[candidate])]:
+        # itself plus anything else inside the isolation radius, whatever its brightness
+        if len(tree.query_ball_point(tree.data[i], _chord(params.isolation_arcsec))) == 1:
+            return Target(
+                "", float(ra_now[i]), float(dec_now[i]), float(g[i]), float(pm[i]), float(alt[i]), float(az[i]), "", density
+            ), density
+    return None, density
+
+
+def plan_targets(
+    cone: Cone, lat_deg: float, lon_deg: float, when: datetime.datetime, params: PlanParams
+) -> tuple[list[Target], list[str]]:
+    """Up to ``params.n`` targets spread over the sky at ``when``, in azimuth order, and the cells that gave none."""
+    years = _years_since(params.catalog_epoch, when)
+    chosen: list[Target] = []
+    empty: list[str] = []
+    for label, alt, az in sky_cells(params):
+        if len(chosen) >= params.n:
+            break
+        target, density = pick_in_cell(
+            cone, altaz_to_radec(alt, az, lat_deg, lon_deg, when), params, years, lat_deg, lon_deg, when
+        )
+        if target is None:
+            empty.append(label)
+            continue
+        chosen.append(dataclasses.replace(target, cell=label, density_per_deg2=density))
+    chosen.sort(key=lambda t: t.az_deg)  # one sweep round the sky
+    for k, t in enumerate(chosen, 1):
+        t.name = f"T{k:02d}"
+    return chosen, empty
+
+
+def catalog_cone(catalog_root: str | None, catalog_name: str | None) -> Cone:
+    """Gaia DR3 from the catsHTM files, as ``(ra, dec, G, pmra, pmdec)`` in degrees, mag and mas/yr."""
+    from catalogs.catshtm import CatsHtm  # noqa: PLC0415 -- needs h5py and the catalog share
+    from common.config.calibration import FocusOnStarSettings  # noqa: PLC0415
+    from focus_on_star.star_selection import DEC, PMDEC, PMRA, RA  # noqa: PLC0415
+
+    defaults = FocusOnStarSettings()
+    catalog = CatsHtm(catalog_root or defaults.catalog_root, catalog_name or defaults.catalog_name)
+
+    def cone(ra: float, dec: float, radius: float):
+        data = catalog.cone_search(ra, dec, radius, [RA, DEC, defaults.mag_column, PMRA, PMDEC])
+        return np.degrees(data[RA]), np.degrees(data[DEC]), data[defaults.mag_column], data[PMRA], data[PMDEC]
+
+    return cone
+
+
+def site_location() -> tuple[float, float]:
+    """This machine's configured site: ``(latitude, longitude)``, degrees."""
+    from common.config import Config  # noqa: PLC0415
+
+    site = Config().local_site
+    loc = site.location if site else None
+    if loc is None or loc.latitude is None or loc.longitude is None:
+        raise SystemExit("no configured site location: give --lat and --lon")
+    return float(loc.latitude), float(loc.longitude)
+
+
+def format_targets(targets: Sequence[Target], empty: Sequence[str], when: datetime.datetime) -> str:
+    lines = [f"{len(targets)} targets for {when:%Y-%m-%d %H:%M} UTC (Gaia DR3, proper motion applied to then)"]
+    lines.append(f"  {'name':<5}{'RA':>10}{'Dec':>9}{'G':>6}{'PM':>6}{'alt':>6}{'az':>6}  {'stars/deg2':>10}  cell")
+    for t in targets:
+        lines.append(
+            f"  {t.name:<5}{t.ra_deg:>10.5f}{t.dec_deg:>9.4f}{t.g:>6.2f}{t.pm_mas_yr:>6.1f}{t.alt_deg:>6.1f}{t.az_deg:>6.1f}"
+            f"  {t.density_per_deg2:>10.0f}  {t.cell}"
+        )
+    if empty:
+        lines.append(f"  cells with no suitable star: {', '.join(empty)}")
+    return "\n".join(lines)
+
+
+def plan(out: Path, cone: Cone, lat_deg: float, lon_deg: float, when: datetime.datetime, params: PlanParams) -> str:
+    """Choose the targets, write ``targets.csv`` into ``out`` and return the report."""
+    targets, empty = plan_targets(cone, lat_deg, lon_deg, when, params)
+    out.mkdir(parents=True, exist_ok=True)
+    _write_csv(out / "targets.csv", [dataclasses.asdict(t) for t in targets])
+    return format_targets(targets, empty, when)
+
+
 # ------------------------------------------------------------------------------------------------ reference, output, CLI
 
 
@@ -435,6 +662,24 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
         description=(__doc__ or "").split("\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter
     )
     sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("plan", help="choose the survey's Gaia targets for a night")
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--n", type=int, default=PlanParams.n)
+    p.add_argument("--when", help="UTC, ISO 8601 (default: now): the time the sky is laid out for")
+    p.add_argument("--lat", type=float, help="site latitude, degrees (default: the configured site)")
+    p.add_argument("--lon", type=float, help="site longitude, degrees east (default: the configured site)")
+    p.add_argument("--min-g", type=float, default=PlanParams.min_g)
+    p.add_argument("--max-g", type=float, default=PlanParams.max_g)
+    p.add_argument("--max-pm", type=float, default=PlanParams.max_pm, help="mas/yr")
+    p.add_argument("--isolation-arcsec", type=float, default=PlanParams.isolation_arcsec)
+    p.add_argument("--faintest-g", type=float, default=PlanParams.faintest_g)
+    p.add_argument("--min-alt", type=float, default=PlanParams.min_alt)
+    p.add_argument("--max-alt", type=float, default=PlanParams.max_alt)
+    p.add_argument("--n-alt", type=int, default=PlanParams.n_alt)
+    p.add_argument("--n-az", type=int, default=PlanParams.n_az)
+    p.add_argument("--search-deg", type=float, default=PlanParams.search_deg)
+    p.add_argument("--catalog-root")
+    p.add_argument("--catalog-name")
     a = sub.add_parser("analyse", help="score the solved WCS of each mode against Gaia near the fibre")
     a.add_argument("dirs", nargs="+", type=Path, help="a frame folder, or a folder of them")
     a.add_argument("--out", type=Path, required=True)
@@ -458,8 +703,36 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: Sequence[str] | None = None, reference: Reference | None = None) -> int:
+def _plan_main(args: argparse.Namespace, cone: Cone | None) -> int:
+    when = (
+        datetime.datetime.fromisoformat(args.when.replace("Z", "+00:00"))
+        if args.when
+        else datetime.datetime.now(datetime.UTC)
+    )
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.UTC)
+    lat, lon = (args.lat, args.lon) if args.lat is not None and args.lon is not None else site_location()
+    params = PlanParams(
+        n=args.n,
+        min_g=args.min_g,
+        max_g=args.max_g,
+        max_pm=args.max_pm,
+        isolation_arcsec=args.isolation_arcsec,
+        faintest_g=args.faintest_g,
+        min_alt=args.min_alt,
+        max_alt=args.max_alt,
+        n_alt=args.n_alt,
+        n_az=args.n_az,
+        search_deg=args.search_deg,
+    )
+    print(plan(args.out, cone or catalog_cone(args.catalog_root, args.catalog_name), lat, lon, when, params))
+    return 0
+
+
+def main(argv: Sequence[str] | None = None, reference: Reference | None = None, cone: Cone | None = None) -> int:
     args = _parse(argv)
+    if args.command == "plan":
+        return _plan_main(args, cone)
     modes = tuple(m.strip() for m in args.modes.split(",") if m.strip())
     if len(modes) < 2:
         print("--modes needs at least two modes", file=sys.stderr)
