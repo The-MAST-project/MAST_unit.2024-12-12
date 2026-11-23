@@ -641,7 +641,7 @@ not be opened, so that is second-hand); ZWO's SDK is reported to behave inconsis
 | 0 | **Describe the input**: the array, its binning (1 or 2), its origin in unbinned full-frame pixels, the full frame's size, the fibre pixel, the saturation level | each solve | - |
 | 1 | **Bring it to the 2x2 solve grid** (table above) | each solve | about 0.5 s of numpy for a full frame at binning 1 |
 | 2 | **Crop to the region about the fibre pixel** (the fibre pixel from the configuration database), in solve-grid pixels | each solve | free |
-| 3 | **The shadow model**: detected once from the reference frame and reused while the fold-mirror stage has not moved; scaled to the solve grid | once per reference | 7 to 8 s full resolution, not paid again |
+| 3 | **The shadow model**: detected once from the reference frame and **kept on the share** (`Calibration/shadow_models.json`, beside the hot pixel map, keyed by the stage position through `Stage.close_enough` and the frame's shape; section 9.6), so an acquisition after a restart, or the guider started on its own, reads it instead of detecting; scaled to the solve grid | once per stage position | 7 to 8 s full resolution, then a file read |
 | 4 | **Detect** (the background estimated once), **measure** (fixed-window centroids), **reject**, **select**: start at the low-coma radius about the fibre pixel and widen by 25% to 30 stars, with the grid quota | each solve | about 1 s on a binned region |
 | 5 | **Write the xylist** in solve-grid pixels, with CRPIX at the fibre pixel (`pixel_grid`) | each solve | - |
 | 6 | **`solve-field`** on the xylist (order 1), read back, and gate: matched stars, residual, scale and rotation against what is expected | each solve | 1.4 s |
@@ -674,6 +674,25 @@ the guiding plan compares `original` with `selective` only.
 4. **Selecting on the binned grid at all.** Every threshold of `SelectionParams` is in unbinned pixels; the prototype scales the
    ones in pixels (the background mesh, the default seeing, the area thresholds, the edge margin, the coma scale) by a first
    guess. Whether the same stars are found, and the solutions agree, is what 9.5 measures.
+
+### 9.6 The shadow model on the share (2026-11-23)
+
+Until now the model was cached in memory on the `Acquisition` (`shadow_for`), keyed by phase and stage position, and lost with the
+process. `imaging/shadow_store.py` keeps it beside `hot_pixels.json`: `<unit folder on the share>/Calibration/shadow_models.json`,
+one entry per stage position, each with the whole model (the geometry, the open or closed bounds and the measured
+cross-section the selection reads its deficits from), when and on which frame it was detected, and the phase.
+
+- **Lookup order** in `Acquisition.shadow_for`: the acquisition's memory (phase and stage), then the store, then a detection, which is
+  kept. A guiding session with no acquisition calls `get_shadow(frame, stage.position, stage.close_enough, store=...)`.
+- **The stage decides whether a stored position is its own**: the store takes `Stage.close_enough` (the stage's current position
+  against a target, within its configured tolerance) and compares nothing itself. A stage without that method falls back to
+  `conf.close_enough`.
+- **The phase is recorded, not matched**: the band is where the stage put the mirror. The in-memory cache still keys on the phase,
+  so a second phase at the same stage position is a store hit, not a detection.
+- **Only a band that was found is kept.** "No band" stays in memory; one frame through cloud must not stand for a position.
+- **It can go stale**, and nothing checks it against the sky yet: callers may refuse an old entry (`max_age_days`), `refresh=True`
+  detects again, `remove` drops one. A cheap check of a stored model against the current frame's profile is a follow-up.
+- **Nothing raises**: a damaged or unwritable store is an empty one, and the shadow is detected.
 
 ### 9.5 The prototype
 

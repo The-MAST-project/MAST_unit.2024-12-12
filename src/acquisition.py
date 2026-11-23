@@ -12,6 +12,7 @@ from common.mast_logging import get_logger
 from common.models.latest import LatestAcquisition
 from common.paths import PathMaker
 from imaging.mirror_shadow import ShadowModel, StagedShadow, detect_mirror_shadow
+from imaging.shadow_store import ShadowStore, StoredShadow, frame_shape, within
 from plotting import plot_acquisition_corrections, plot_phase_corrections
 
 if TYPE_CHECKING:
@@ -107,6 +108,9 @@ class Acquisition:
         #: was found at (`shadow_for`). None until then. Detection takes seconds on a full frame, and the band
         #: only moves when the stage does.
         self.shadow: StagedShadow | None = None
+        #: The machine's shadow models on the share (`imaging/shadow_store.py`), under the one in `shadow`: a model detected
+        #: by an earlier acquisition, another process or the guider is found there. None: there is no such folder.
+        self.shadow_store: ShadowStore | None = ShadowStore.for_machine()
 
     def shadow_for(self, image_path: str, phase: str | None = None) -> ShadowModel | None:
         """The shadow model of the full frame `image_path`: the cached one while the phase and the stage are
@@ -129,6 +133,26 @@ class Acquisition:
                 f"the shadow was detected in phase {cached.phase} at stage position {cached.stage_position}; "
                 f"now {phase} at {position}: detecting again"
             )
+        store = getattr(self, "shadow_store", None)
+        # whether a stored position is the stage's: the stage's own `close_enough`
+        is_close = getattr(stage, "close_enough", None)
+        if not callable(is_close):
+            is_close = within(position, close_enough)
+        if store is not None and position is not None:
+            stored = store.find(position, is_close, frame_shape(image_path))
+            if stored is not None:
+                logger.info(
+                    f"shadow model from the store ({phase}, stage position {position}, detected {stored.detected_at})"
+                )
+                self.shadow = StagedShadow(
+                    model=stored.model,
+                    stage_position=position,
+                    image_path=stored.image_path,
+                    detected_at=stored.detected_at,
+                    seconds=0.0,
+                    phase=phase,
+                )
+                return stored.model
         started = time.monotonic()
         try:
             model = detect_mirror_shadow(image_path)
@@ -145,6 +169,19 @@ class Acquisition:
             phase=phase,
         )
         logger.info(f"shadow detected in {seconds:.1f} s ({phase}, stage position {position}): present={model.present}")
+        shape = frame_shape(image_path)
+        if store is not None and position is not None and model.present and shape is not None:
+            store.save(
+                StoredShadow(
+                    model=model,
+                    stage_position=int(position),
+                    detected_at=self.shadow.detected_at,
+                    seconds=seconds,
+                    image_path=str(image_path),
+                    phase=phase,
+                ),
+                is_close,
+            )
         return model
 
     def save_corrections(self, phase: str):
