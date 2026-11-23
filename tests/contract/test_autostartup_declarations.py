@@ -28,6 +28,7 @@ EXPECTED = {
         "endpoint_spiral_previous_step",
         "endpoint_acquire_and_find_max_flux",
         "endpoint_focus_on_star",
+        "endpoint_start_dancing",
     },
     "acquirer.py": {"endpoint_start_acquisition_and_guiding"},
     "guiding.py": {"endpoint_start_guiding"},
