@@ -599,14 +599,35 @@ RMS, each twice); computing it once would save several seconds at any resolution
 ### 9.2 Two imagers, one grid
 
 The same code will solve frames from two imagers, and the guider's validation (in-house guiding, `plans/inhouse_guiding_design.md`
-3.3) will call it:
+3.3) will call it.
+
+**What the camera does natively.** The ASI294MM Pro's sensor is the Sony IMX294, a Type 4/3 back-illuminated CMOS with a Quad
+Bayer structure: four 2.315 um photosites form one 4.63 um cell (the camera is monochrome, so for us they are four neighbouring
+photosites). In its normal mode the sensor outputs the data **binned 2x2 on the chip**. The sensor is supplied with that binning
+fixed and a camera may lock or unlock it (QHY's FAQ describes both):
+
+| mode | frame | pixel | ADC | in the ZWO camera |
+|---|---|---|---|---|
+| locked: on-chip 2x2 | 4144 x 2822 (11.7 MP) | 4.63 um | **14-bit**, a larger full well | "bin 2", the camera's native, default mode |
+| unlocked: every photosite | 8288 x 5644 (46.8 MP) | 2.315 um | **12-bit** | "bin 1"; what PHD2 gives us today |
+
+Our bin 1 frames are the unlocked mode: their saturation level of 65520 is 4095 x 16, a 12-bit ADC scaled to 16 bits. So when
+the in-house guider asks the ZWO imager for bin 2 it uses the mode the chip was designed for, and **a bin 2 frame is not the
+bin 1 frame averaged in software**: the four photosites are combined before the conversion, so the read noise is probably paid
+once and not four times, and the ADC, the gain and the hot pixels are those of another readout mode. *Evidence:* ZWO says CMOS
+hardware bin "is more like pixel skip" and that software binning adds (RAW8) or averages (RAW16); the IMX294's on-chip 2x2, the
+14-bit and 12-bit modes and the lock come from Sony's catalogue as quoted by trade press, a datasheet copy and QHY's FAQ; none of
+this was read in Sony's or ZWO's own documentation, so it needs the measurement of 9.4. **Not found anywhere: whether the
+on-chip combination sums or averages.** One AAVSO contributor reports measuring an average for this camera (the comment could
+not be opened, so that is second-hand); ZWO's SDK is reported to behave inconsistently between formats on another camera.
 
 | | PHD2 (today) | ZWO (in-house guiding, later) |
 |---|---|---|
-| what arrives | a full frame at binning 1 | the camera's own 2x2 binned ROIs, or frames |
-| to reach the 2x2 solve grid | fill hot pixels at full resolution, then block-mean 2x2 in software | nothing: it is already binned |
-| hot pixels | filled before the binning | cannot be filled before it: the map is projected to the binned grid and a binned pixel that holds one is filled from its binned neighbours |
-| saturation | a block holding a saturated pixel is set to the saturation level (a mean would hide it) | the level of the delivered array, which depends on whether the camera's binning sums or averages: not yet known |
+| what arrives | a full frame at binning 1 (the unlocked, 12-bit mode) | the camera's native bin 2 (the locked, 14-bit mode): ROIs or frames |
+| to reach the 2x2 solve grid | fill hot pixels at full resolution, then block-mean 2x2 in software | nothing: it is already on the grid |
+| hot pixels | filled before the binning, from the bin 1 map | the bin 1 map **does not apply**: another readout mode has other hot pixels. A map of its own is built from bin 2 frames at the operating temperature, and a binned pixel that holds one is filled from its binned neighbours |
+| saturation | a block holding a saturated pixel is set to the saturation level (a mean would hide it) | the clip level of the delivered array, to be measured (a 14-bit ADC scaled to 16 bits as the 12-bit one is would clip at 65532). If the combination averages, a star's peak understates its saturation |
+| noise | a software mean: the four read noises add | on-chip: expected better; measured in 9.4 |
 
 ### 9.3 The stages
 
@@ -632,8 +653,19 @@ the guiding plan compares `original` with `selective` only.
    refuses an odd origin on an already binned array.
 2. **The ROI's origin in `ZWOImager.set_format`.** It divides the ROI's width and height by the binning but passes `x` and `y` to
    `setStartPos` unchanged. Which units the SDK expects there is not known, and it matters for any binned ROI with a nonzero origin.
-3. **A hardware-binned frame against a software-binned one**: the same stars, the same centroids? Noise, ADU scale and hot pixels
-   differ.
+3. **A hardware-binned frame against a software-binned one**, and whether the on-chip binning sums or averages. One
+   measurement on a unit answers both: two frames of one star field at the same exposure and gain, one at bin 1 (the unlocked
+   mode) and one at bin 2 (the native mode), then
+   - the **background-subtracted flux of the same stars** (a sum over each star): a bin 2 to bin 1 ratio near 1/4 means the
+     on-chip combination averages, near 1 that it sums (the two modes' ADC scalings, x16 and x4 if they follow the usual
+     16-bit scaling, show up as a further factor: that is part of what is measured, not assumed);
+   - the **clip level of a saturated star** in each mode (65520 at bin 1; whatever bin 2 gives), which is the saturation level the
+     solver is told;
+   - the **noise** of the sky, and of the same frame block-averaged from bin 1, to see how much better the native mode is;
+   - the **stars and centroids** found in each, by `select_on_grid`, to see that the same stars are chosen and the positions agree.
+   Until then the prototype's saturation test uses the level it is given and says nothing about sum or average.
+   Hot pixels: a bin 2 map has to be built (`tools/build_hot_pixels.py` on bin 2 frames at the operating temperature) before bin 2
+   frames are filled.
 4. **Selecting on the binned grid at all.** Every threshold of `SelectionParams` is in unbinned pixels; the prototype scales the
    ones in pixels (the background mesh, the default seeing, the area thresholds, the edge margin, the coma scale) by a first
    guess. Whether the same stars are found, and the solutions agree, is what 9.5 measures.
