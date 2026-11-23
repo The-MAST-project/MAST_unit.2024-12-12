@@ -2,6 +2,132 @@
 
 ---
 
+## [2026-11-19] Hot pixel masks: one per camera, in the unit's folder on the share
+
+**Why:** the `hot_pixel` reject of the source selection turned out to be a size/sharpness test that mostly
+catches noise peaks (0.0-0.3% of the sources it flags recur at the same sensor pixel in another frame). Real hot
+pixels exist, are fixed on the sensor, and never form the 5 connected pixels detection needs, but one inside a
+star's centroid window drags the centroid (>0.5 px in a synthetic test).
+
+**What:** `imaging/hot_pixels.py` finds them by persistence -- a pixel far above the *local sky*, whose brightest
+neighbour is not, in >= 80% of many frames of one camera -- and fills each with the median of its non-hot
+neighbours. The map is `MAST/<unit>/Calibration/hot_pixels.json` on the share, built by
+`tools/build_hot_pixels.py` (it keeps an earlier map beside the new one). The *shadowed* and *selective* stages fill
+before anything else; *original* is untouched; a map for another frame size is not applied, and a crop is filled
+by the map's full-frame pixels. The survey takes `--hot-pixels FILE|UNIT`.
+
+- **The reference for "isolated" is the sky, not the 3x3 median:** a compact star's 3x3 median is its own flux, and
+  a bright star at the same pixel in every frame looked like a hot pixel.
+- **A map belongs to its period.** On mast02 the 24 frames of September, October (uncooled, 28-30 C) and November
+  (5 C) held three populations whose hot pixels do not overlap at all; no pixel was persistent in the mixture and the
+  first map came out empty. The build uses frames at the set temperature (`--temp-tolerance`) and the most recent
+  nights (`--last-nights`), and warns when many pixels persist in half the frames but none in 80%. mast01's map has
+  held for weeks and temperatures (the six pixels found by hand in 10 s, 33 C October frames are in the map built
+  from 2-5 s, 5 C frames; 46 of 47 found independently in 17 one-second frames are in it).
+- **Built 2026-11-19:** mast00 45, mast01 131, mast02 137, mast03 101, mastw 24 pixels, and **mast04 12 from frames at
+  32-48 C** (the camera uncooled): rebuild it from frames at its operating temperature.
+- **Effect:** small. 131 pixels in 46.8 million touch about 0.2% of the sources (1 of 700-1900 detections), and the
+  centroids moved <= 0.05 px. The mask guards the rare star; it does not change the survey's results.
+
+---
+
+## [2026-11-18] Source selection in the solver (original | shadowed | selective); the fit order stays 1
+
+**Why:** Stage 2 of the source-filtering plan, run on real frames (mast01 traverse, 10 s, full frame, three
+`spec` and three `sky` frames, plus the detector on 255 frames of three units).
+
+**What:** `MastrometryDotNet` takes `solving.source_selection.mode` (MAST_common `SourceSelectionConfig`;
+default `original`): `shadowed` darkens the fold-mirror shadow's band and solves the image; `selective` solves the
+selected sources as an xylist and falls back to the image solve. `tools/source_survey.py --via-solver` drives
+the real solver in each mode.
+
+- **The shadow is not at a fixed place.** Centred when the mirror is in (~4000 px wide, depth ~0.5), and with
+  its edge at a vertical edge of the frame at the `sky` position (partial, depth ~0.65; even only a penumbra).
+  Nothing about its position or size is assumed; checked on 18 real frames and their mirror images.
+- **Detector faults found on real frames:** a saturated star lifted a profile bin's *mean* and the continuum, so
+  flat sky read as a 20% dip (fixed by clipping to 5% above the local sky); the whole-profile MAD as noise made
+  wide bands score ~3; the tilt picked by score or by arbitrary depth ties gave a mask 730 px too wide.
+- **Selection:** detection and SNR use the *local* background RMS. One global threshold was 1.7 sigma in the
+  bright flanks and 2.7 in the dark centre; 3073 detections fell to 1455. The `hot_pixel` reject is a
+  size/sharpness test and mostly catches noise peaks (0.0-0.3% recur at the same sensor position); real hot
+  pixels exist (55 at 10 sigma in three frames) but never form the 5 connected pixels detection needs.
+- **The xylist route is exact.** astrometry.net's own `image2xy` agrees with `to_solve_grid(origin=1)` to
+  (-0.02, -0.03) binned px, and solving its 342 sources through the `selective` route at order 2 reproduces the
+  image solve to 0.004". Origin, binning conversion and flags are verified.
+- **Results (median residual):** `shadowed` is 11-20% below `original` on all six frames, `selective` 2-3 times below.
+  Plain RMS is dominated by single bad stars (3-13" in every mode), so the survey now reports the median.
+
+**The shadow's depth gate stays at 0.04.** Seventeen mast01 `direct-c5-full` frames (1 s, bright, 2026-11-16) show,
+by eye in ds9, a very faint shadow (near mid-frame or a bit right of centre); the detector finds the same width
+(penumbra ~2100 px, umbra ~1330 px) but at depth 0.024-0.028, so it reports them absent. Left so: a shadow that
+shallow is below the selection's own tolerance (`max_shadow_deficit` 0.05), so it rejects no star and needs no
+darkening. The detector's centre for them is 250-450 px left of where the eye puts it; not investigated.
+
+**The fit order stays 1.** On the same stars, order 1 puts CRVAL 0.54" west of order 2 at CRPIX = frame centre,
+which is the whole offset between `selective` and `original`. We are interested in accuracy at the *fibre position*, so
+order 1 fits better; the distortion elsewhere does not matter. This is not measured against a truth yet: the
+further stage is an on-sky test with a Gaia star at the fibre, comparing the solution with its Gaia position.
+Until then the survey's `--crpix-center` (not the fibre pixel) is the caveat on every number here.
+
+**Open:** the 2-sigma / 5-pixel detection threshold; `selective` on frames with strong coma outside the shadow
+needs the loosened centroid and blend parameters (they are parameters, not yet defaults); `solvers/tests` by
+hand on a unit with the indexes. (The `hot_pixel` reject keeps its name: it is a size/sharpness test, and the
+real hot pixels are handled by the mask, see the 2026-11-19 entry.)
+
+**Names.** The three stages of `MastrometryDotNet` are called *original* (the image as it always was), *shadowed*
+(the shadow's band darkened, then the image) and *selective* (the selected sources, as an xylist). The config values
+of `solving.source_selection.mode` are these names; the setting itself is still called `mode`.
+
+---
+
+## [2026-11-18] Source selection: four fixes from the review of the Stage 0 code
+
+**Why:** a review of `select_sources` (`mast-claude-config`, `plans/mastrometry_source_selection_design.md`,
+"Known issues in the Stage 0 code") found four faults that would have shaped what the first real-frame
+survey shows. MAST has no field corrector, so coma is at full strength and the first fault mattered.
+
+**What:** (1) the centroid-shift test (`bad_centroid`) applies inside the low-coma radius only: off axis
+coma makes that shift, and the coma term of the ranking handles it; a centroid that did not converge is
+bad anywhere. (2) The saturation level comes from the FITS header when `--full-scale` is not given:
+`SATURATE`, `MAXADU`, `DATAMAX`, else what `BITPIX`/`BSCALE`/`BZERO` allow (BITPIX 16 with BZERO 32768 is
+65535), else the dtype. A float frame stored as floats with none of those is still not tested;
+`Selection.full_scale_source` says where the level came from. (3) The half-maximum FWHM counts the
+source's own segment only (`extract_sources` now also returns `segment_map` and `labels`). (4)
+`n_target` is counted after the grid quota, so crowded stars do not stop the radius from widening.
+
+**Implications:** the unit does not write a saturation keyword today, so a header-derived level is the
+integer range, not the sensor's. A faint star whose half maximum is below the detection threshold now
+has its width undercounted; it is below the SNR cuts that use the width anyway. Not changed: order 2
+from central stars still extrapolates to the corners (acceptable while only the fibre matters), and
+`faint` stays the first reported reason.
+
+**Update, same day:** the fit order is always 1 (`FIT_ORDER`); `order_one_below` is gone. This was
+issue 5 of the review (order 2 fitted from central stars extrapolates to the corners). Decided because
+only the position accuracy at CRPIX matters here -- production gives astrometry.net the fibre pixel as
+CRPIX -- not the distortion elsewhere in the frame. Note: the survey's `--solve` still passes
+`--crpix-center`, which is the fibre pixel only when the ROI is centred on it.
+
+---
+
+## [2026-11-16] The source selection exists as a pure function and a survey; it is not in the solve
+
+**Why:** the plan for filtering the sources MASTrometry hands to astrometry.net
+(`mast-claude-config`, `plans/mastrometry_source_selection_design.md`) rests on simulation. Stage 0
+is to see what the selection does on real frames before anything is wired into a solve.
+
+**What:** `solvers/source_selection.py` (`select_sources`) and `tools/source_survey.py`, which runs it
+on saved FITS frames and writes a picture, CSVs, an exclusion-width sweep and a cross-frame
+consistency table under `--out` only. `MastrometryDotNet` is untouched.
+
+**Implications:** the parameters are the design's starting values, to be tuned from the survey. With
+`--solve` the survey also hands the kept list to `solve-field` (`solvers/survey_solve.py`) and marks
+the stars the solver used; that was written without a `solve-field` at hand and is checked only
+against a stub, so its xylist assumptions (1-based positions, a `.xyls` input) are to be confirmed
+on a unit from the `-solve.txt` it keeps. `faint` is the first reason
+reported for a source that fails several tests, which differs from the order the design lists them
+in; all failed tests are recorded.
+
+---
 ## [2026-11-16] Each kept solve leaves a star map: the stars it extracted and the stars it used
 
 **Why:** the unit kept only the solved FITS, so nothing showed which stars astrometry.net found or

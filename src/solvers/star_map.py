@@ -48,6 +48,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 from common.mast_logging import get_logger
 
+from .pixel_grid import orig_to_grid_fits
+
 logger = get_logger(__name__)
 
 #: astrometry.net's default tweak order; mastrometry.py passes no --tweak-order.
@@ -58,6 +60,12 @@ TWEAK_ORDER = 2
 EXTRACTED_COLOR = (230, 159, 0)
 USED_COLOR = (86, 180, 233)
 REPORTED_COLOR = (255, 255, 255)
+#: The star selection's area: the low-coma radius it starts from (yellow) and the radius it had to grow to (bluish green).
+LOW_COMA_COLOR = (240, 228, 66)
+AREA_COLOR = (0, 158, 115)
+#: Written into a solve's scratch folder by the solver, read back here to draw the area: the selection's geometry, in the
+#: pixels of the (cropped, unbinned) frame it ran on.
+SELECTION_AREA_FILE = "selection-area.json"
 
 MAX_DISPLAY_WIDTH = 2000
 #: The stretch's white point, in noise sigmas above the sky: faint stars show, bright ones saturate.
@@ -105,6 +113,35 @@ def read_extracted(scratch: Path) -> np.ndarray | None:
             if table is not None:
                 return np.column_stack([table["x"], table["y"]])
     return None
+
+
+def write_selection_area(
+    scratch: Path, center: tuple[float, float], low_coma_radius: float, radius_used: float, factor: int
+) -> None:
+    """Leave the selection's geometry beside the solve's other scratch files, for `write_star_map` to draw.
+
+    ``center`` is the selection's centre (0-based) and the radii are in the pixels of the cropped, unbinned frame the
+    selection ran on; ``factor`` is the binning of the solve grid the star map is drawn on.
+    """
+    record = {
+        "center": [float(center[0]), float(center[1])],
+        "low_coma_radius_px": float(low_coma_radius),
+        "radius_used_px": float(radius_used),
+        "factor": int(factor),
+    }
+    (scratch / SELECTION_AREA_FILE).write_text(json.dumps(record), encoding="utf-8")
+
+
+def read_selection_area(scratch: Path) -> dict | None:
+    """The selection's geometry, or None: the stage did not select (`original`, `shadowed`), or it was not kept."""
+    path = scratch / SELECTION_AREA_FILE
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+        float(record["center"][0]), float(record["center"][1])
+        float(record["low_coma_radius_px"]), float(record["radius_used_px"]), int(record["factor"])
+        return record
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        return None
 
 
 def read_matched(corr_path: Path) -> Matched | None:
@@ -184,7 +221,7 @@ def influence(
     return {"leverage": leverage, "cooks_distance": cooks, "fibre_shift_arcsec": shift_px * pixel_scale_arcsec}
 
 
-def _stretch(image: np.ndarray) -> tuple[np.ndarray, int]:
+def stretch(image: np.ndarray) -> tuple[np.ndarray, int]:
     """An 8-bit asinh stretch of `image`, block-averaged down to at most MAX_DISPLAY_WIDTH wide.
 
     Returns the stretched array and the integer factor it was reduced by.
@@ -203,7 +240,7 @@ def _stretch(image: np.ndarray) -> tuple[np.ndarray, int]:
     return (np.clip(stretched, 0.0, 1.0) * 255).astype(np.uint8), factor
 
 
-def _font(size: int):
+def font(size: int):
     try:
         return ImageFont.load_default(size=size)
     except TypeError:  # Pillow without a sized default font
@@ -218,20 +255,39 @@ def render(
     crpix: tuple[float, float] | None,
     caption: list[str],
     out_path: Path,
+    selection_area: dict | None = None,
 ) -> None:
     """Draw the frame, the extracted stars (orange ticks) and the used ones (blue circles).
 
-    A used star's circle grows with its fibre shift, so the stars the solution leaned on stand out.
+    A used star's circle grows with its fibre shift, so the stars the solution leaned on stand out. With
+    ``selection_area`` (`read_selection_area`) the contour of the star selection's area is drawn too: a yellow circle at
+    the low-coma radius it starts from and a bluish-green one at the radius it grew to (one, when they are the same).
     """
-    gray, factor = _stretch(image)
+    gray, factor = stretch(image)
     picture = Image.fromarray(gray, mode="L").convert("RGB")
-    canvas = Image.new("RGB", (picture.width, picture.height + CAPTION_HEIGHT), (0, 0, 0))
-    canvas.paste(picture, (0, CAPTION_HEIGHT))
+    head = max(CAPTION_HEIGHT, 10 + 17 * len(caption))
+    canvas = Image.new("RGB", (picture.width, picture.height + head), (0, 0, 0))
+    canvas.paste(picture, (0, head))
     draw = ImageDraw.Draw(canvas)
 
     def to_display(px: float, py: float) -> tuple[float, float]:
         # FITS 1-based pixel centres sit at (p - 0.5) in continuous coordinates.
-        return (px - 0.5) / factor, (py - 0.5) / factor + CAPTION_HEIGHT
+        return (px - 0.5) / factor, (py - 0.5) / factor + head
+
+    if selection_area is not None:
+        binning = int(selection_area["factor"])
+        cx, cy = to_display(
+            orig_to_grid_fits(selection_area["center"][0] + 1.0, binning),
+            orig_to_grid_fits(selection_area["center"][1] + 1.0, binning),
+        )
+        start, grown = selection_area["low_coma_radius_px"], selection_area["radius_used_px"]
+        circles = [(start, LOW_COMA_COLOR, "low-coma radius")] if abs(grown - start) > 0.005 * start else []
+        circles.append((grown, AREA_COLOR, "selection radius" if circles else "selection radius (low-coma)"))
+        label_font = font(14)
+        for radius_px, color, label in circles:
+            r = radius_px / binning / factor  # unbinned pixels, to the solve grid, to the display
+            draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=color, width=3)
+            draw.text((cx + 6, cy - r + 4), f"{label} {radius_px:.0f} px", fill=color, font=label_font)
 
     if extracted is not None:
         for ex, ey in extracted:
@@ -249,7 +305,7 @@ def render(
         draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius], outline=USED_COLOR, width=2)
 
     if fibre_shift_arcsec is not None:
-        label_font = _font(14)
+        label_font = font(14)
         for k in np.argsort(fibre_shift_arcsec)[::-1][:LABELLED_STARS]:
             cx, cy = to_display(matched.x[k], matched.y[k])
             draw.text((cx + radii[k] + 3, cy - 8), f'{fibre_shift_arcsec[k]:.3f}"', fill=USED_COLOR, font=label_font)
@@ -259,7 +315,7 @@ def render(
         draw.line([(cx - 14, cy), (cx + 14, cy)], fill=REPORTED_COLOR, width=1)
         draw.line([(cx, cy - 14), (cx, cy + 14)], fill=REPORTED_COLOR, width=1)
 
-    caption_font = _font(15)
+    caption_font = font(15)
     for row, line in enumerate(caption):
         draw.text((8, 4 + row * 17), line, fill=(235, 235, 235), font=caption_font)
     canvas.save(out_path, "JPEG", quality=85)
@@ -291,6 +347,7 @@ def write_star_map(
     if matched is None or len(matched.x) == 0:
         return None
     extracted = read_extracted(scratch)
+    area = read_selection_area(scratch)
 
     with fits.open(image_path) as hdul:
         image = np.asarray(hdul[0].data, dtype=float)  # type: ignore[union-attr]
@@ -323,7 +380,15 @@ def write_star_map(
             else "influence not computed: too few used stars or no usable WCS"
         ),
     ]
-    render(image, extracted, matched, shifts, crpix, caption, jpeg_path)
+    if area is not None:
+        start, grown = area["low_coma_radius_px"], area["radius_used_px"]
+        if abs(grown - start) <= 0.005 * start:
+            caption.append(
+                f"selection area: the low-coma radius, {start:.0f} px about the selection's centre (green), not widened"
+            )
+        else:
+            caption.append(f"selection area: from the low-coma radius {start:.0f} px (yellow) to {grown:.0f} px (green)")
+    render(image, extracted, matched, shifts, crpix, caption, jpeg_path, area)
 
     record = {
         "frame": image_path.name,
@@ -332,6 +397,7 @@ def write_star_map(
         "extracted": n_extracted,
         "used": len(matched.x),
         "residual_rms_arcsec": rms_arcsec,
+        "selection_area": area,
         "influence_model": (
             f"least-squares polynomial of order {TWEAK_ORDER} about the reported pixel; a proxy, "
             "not astrometry.net's own fit (see solvers/star_map.py)"

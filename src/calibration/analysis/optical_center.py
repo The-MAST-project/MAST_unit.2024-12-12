@@ -59,7 +59,7 @@ class OpticalCenterResult:
         return (self.center_x, self.center_y)
 
 
-def extract_sources(image, nsigma=2.0, npixels=5, box_size=50, exclude_mask=None) -> dict | None:
+def extract_sources(image, nsigma=2.0, npixels=5, box_size=50, exclude_mask=None, local_noise=False) -> dict | None:
     """Detect and measure every source in one frame -- with NO filtering applied.
 
     Split out of :func:`find_optical_center` so two consumers can share exactly
@@ -74,8 +74,14 @@ def extract_sources(image, nsigma=2.0, npixels=5, box_size=50, exclude_mask=None
     re-extracts with its own (looser) cuts rather than reusing the centre fit's
     sample.
 
-    Returns raw per-source arrays plus the background-subtracted image, or
-    ``None`` when nothing was detected.
+    ``local_noise`` thresholds at ``nsigma`` times the *local* background RMS instead of ``nsigma`` times
+    one figure for the whole frame. The sky is not uniform (a shadow, vignetting) and photon noise goes
+    with it, so one global threshold is 1.7 sigma in the bright parts of a frame and 2.7 in the dark
+    ones: on a traverse frame 1500 of 3073 detections lay in the first 2000 columns, and 27 between
+    columns 3000 and 5000. Off by default, so the optical-centre calibration is unchanged.
+
+    Returns raw per-source arrays plus the background-subtracted image (and ``background_rms``, the
+    mesh's noise map), or ``None`` when nothing was detected.
     """
     raw = image if isinstance(image, np.ndarray) else fits.getdata(image)
     data = np.asarray(raw, dtype=float)
@@ -90,7 +96,7 @@ def extract_sources(image, nsigma=2.0, npixels=5, box_size=50, exclude_mask=None
     )
     data_sub = data - bkg.background
 
-    threshold = detect_threshold(data_sub, n_sigma=nsigma, mask=exclude_mask)
+    threshold = nsigma * bkg.background_rms if local_noise else detect_threshold(data_sub, n_sigma=nsigma, mask=exclude_mask)
     segm = detect_sources(data_sub, threshold, n_pixels=npixels, mask=exclude_mask)
     if segm is None:
         logger.warning("no sources detected; consider lowering nsigma or npixels")
@@ -100,6 +106,7 @@ def extract_sources(image, nsigma=2.0, npixels=5, box_size=50, exclude_mask=None
     x = np.asarray(cat.x_centroid, dtype=float)
     return {
         "data_sub": data_sub,
+        "background_rms": np.asarray(bkg.background_rms, dtype=float),
         "shape": (ny, nx_img),
         "x": x,
         "y": np.asarray(cat.y_centroid, dtype=float),
@@ -111,6 +118,9 @@ def extract_sources(image, nsigma=2.0, npixels=5, box_size=50, exclude_mask=None
         "peak_x": np.asarray(cat.max_value_xindex, dtype=float),
         "peak_y": np.asarray(cat.max_value_yindex, dtype=float),
         "n_detected": len(x),
+        # the segmentation: `segment_map[y, x] == labels[i]` marks source i's own pixels
+        "segment_map": np.asarray(segm.data),
+        "labels": np.asarray(cat.labels),
     }
 
 

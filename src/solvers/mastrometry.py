@@ -20,12 +20,15 @@ from common.models.statuses import ImagerRoi
 from common.rois import SkyRoi
 from common.utils import Coord, boxed_log, function_name
 from imagers import ImagerSettings
+from imaging.mirror_shadow import ShadowModel
 from phd2.limit_frame import derived_guiding_roi
 
 from .astrometry_dot_net import generate_random_string, parse_solver_output, win_to_cygwin
 from .pixel_grid import roi_center_to_crpix
 from .ram_area import index_dir, missing_indexes, scratch_dir
-from .star_map import write_star_map
+from .selection_stage import FIT_ORDER, SourceSelectionSettings, StageResult, prepare, resolve_settings, solved_fits_from_wcs
+from .star_map import write_selection_area, write_star_map
+from .survey_solve import write_xylist
 
 logger = get_logger(__name__)
 if TYPE_CHECKING:
@@ -51,6 +54,8 @@ def downsampled_frame_path(scratch: Path, input_image_path: str) -> Path:
 
 
 class MastrometryDotNet(SolverInterface):
+    #: `Solver.solve` hands a backend that says so the acquisition's cached shadow model (`solve(shadow=)`).
+    selects_sources = True
     """
     A PlateSolverInterface implementation that uses the astrometry.net solver
      (same as AstrometryDotNetSolver) but handles image downsampling and cropping
@@ -100,6 +105,10 @@ class MastrometryDotNet(SolverInterface):
         index_file: str | None = None,
         target: Coord | None = None,
         keep_artifacts: bool = True,
+        source_selection: SourceSelectionSettings | None = None,
+        artifacts_dir: Path | None = None,
+        fibre_xy: tuple[int, int] | None = None,
+        shadow: ShadowModel | None = None,
     ) -> SolvingResult | None:
         """
         MAST specific astrometry.net solver implementation.
@@ -113,9 +122,29 @@ class MastrometryDotNet(SolverInterface):
         the input and follow it to the shared area; without it they are discarded with the
         scratch folder, for callers that solve every few minutes and record the result
         themselves.
+
+        `source_selection` overrides the unit's `solving.source_selection` configuration (the survey
+        passes it; the unit leaves it out). Off, the solve is what it always was.
+
+        `artifacts_dir` (the survey passes it): the solver's artifacts -- the result text, the solved
+        FITS, the correspondences, the xylist and WCS of an xylist solve, the star map -- are put
+        there, synchronously, and are not handed to the mover or put beside the input frame, which
+        is only read. Without it, the artifacts follow the frame to the shared area as always.
+
+        `fibre_xy` (the survey passes it): the fibre's pixel, 0-based, in the full unbinned frame, as the unit's
+        `guiding.rois[...]` holds it. For a frame solved whole (no ROI) it becomes CRPIX, so the solved RA/Dec is
+        the sky at the fibre -- as it is in production, where the guiding ROI is centred on the fibre. Without it,
+        a whole frame is solved with CRPIX at its centre.
+
+        `shadow` (the unit passes it; the survey does not): the shadow model of the *full* frame, as the acquisition
+        cached it. It is cropped to the ROI and used by the stage instead of a new detection, which is skipped
+        for the `original` stage. If it is not for a frame of this size it is ignored and the stage detects.
         """
 
         self.unit: Unit | None = unit
+        #: what the last solve's steps cost, seconds: the stage's (`hot_pixels`, `shadow`, `darken` or `select`) and
+        #: `solve_field` (every attempt). The caller adds up the rest: it times the call as a whole.
+        self.timings: dict[str, float] = {}
 
         if full_frame_input_image_path is None:  # noqa: SIM102
             if settings is not None:
@@ -145,23 +174,47 @@ class MastrometryDotNet(SolverInterface):
         result_file = win_tmp_dir / f"{artifact_stem}-result.txt"
 
         try:
-            return self._solve_in(win_tmp_dir, new_fits_path, result_file, phase, full_frame_input_image_path, target)
+            return self._solve_in(
+                win_tmp_dir,
+                new_fits_path,
+                result_file,
+                phase,
+                full_frame_input_image_path,
+                target,
+                source_selection,
+                fibre_xy,
+                shadow,
+                artifacts_dir,
+            )
         finally:
             # The solved frame (it carries the WCS -- MAST_unit#27) and the solver's own
             # output are saved beside the frame they came from, then follow it to the shared
             # area. In `finally`, so a solve or read-back that raises still removes the scratch.
-            Thread(
-                target=self._run_logged,
-                name="mastrometry-cleanup",
-                args=(
+            downsampled = downsampled_frame_path(win_tmp_dir, full_frame_input_image_path)
+            if artifacts_dir is not None:
+                stem = new_fits_path.stem
+                self._run_logged(
                     self.cleanup,
-                    [result_file, new_fits_path] if keep_artifacts else [],
-                    Path(full_frame_input_image_path).parent,
+                    [result_file, new_fits_path, *(win_tmp_dir / f"{stem}{ext}" for ext in (".corr", ".xyls", ".wcs"))],
+                    artifacts_dir,
                     win_tmp_dir,
-                    new_fits_path if keep_artifacts else None,
-                    downsampled_frame_path(win_tmp_dir, full_frame_input_image_path),
-                ),
-            ).start()
+                    new_fits_path,
+                    downsampled,
+                    False,
+                )
+            else:
+                Thread(
+                    target=self._run_logged,
+                    name="mastrometry-cleanup",
+                    args=(
+                        self.cleanup,
+                        [result_file, new_fits_path] if keep_artifacts else [],
+                        Path(full_frame_input_image_path).parent,
+                        win_tmp_dir,
+                        new_fits_path if keep_artifacts else None,
+                        downsampled,
+                    ),
+                ).start()
 
     def _solve_in(  # noqa: C901
         self,
@@ -171,6 +224,10 @@ class MastrometryDotNet(SolverInterface):
         phase: Const.SolvingPhase,
         full_frame_input_image_path: str,
         target: Coord | None,
+        source_selection: SourceSelectionSettings | None = None,
+        fibre_xy: tuple[int, int] | None = None,
+        shadow: ShadowModel | None = None,
+        artifacts_dir: Path | None = None,
     ) -> SolvingResult | None:
         unit = self.unit
 
@@ -255,14 +312,73 @@ class MastrometryDotNet(SolverInterface):
                 # division ((center - start) // factor) silently biased it by ~0.4". Returns floats;
                 # solve-field accepts fractional CRPIX, so do NOT round.
                 data = data[imager_roi.y : imager_roi.y + imager_roi.height, imager_roi.x : imager_roi.x + imager_roi.width]
+                if shadow is not None and tuple(shadow.image_shape) == (height, width):
+                    shadow = shadow.cropped(imager_roi.x, imager_roi.y, imager_roi.width, imager_roi.height)
                 refpix = (
                     roi_center_to_crpix(imager_roi._center.x, imager_roi.x, downsample_factor),
                     roi_center_to_crpix(imager_roi._center.y, imager_roi.y, downsample_factor),
                 )
 
                 logger.info(f"{function_name()}: Cropped to {imager_roi=}, {refpix=}")
+            elif fibre_xy is not None:
+                # The whole frame, with CRPIX at the fibre: the crop starts at 0, so the same conversion as an ROI's.
+                refpix = (
+                    roi_center_to_crpix(fibre_xy[0], 0, downsample_factor),
+                    roi_center_to_crpix(fibre_xy[1], 0, downsample_factor),
+                )
+                logger.info(f"{function_name()}: No ROI, using full frame, refpix at the fibre {fibre_xy} -> {refpix}")
             else:
                 logger.info(f"{function_name()}: No ROI, using full frame, refpix=center")
+
+            #
+            # The source selection (solvers/selection_stage.py), on the cropped, unbinned frame.
+            # Off by default: with it off nothing between here and the solve changes.
+            #
+            selection_settings = resolve_settings(unit_conf, source_selection)
+            #
+            # The search for stars grows out from the fibre pixel -- the point CRPIX puts the reported position at --
+            # in the pixels of the cropped frame: the ROI's centre, or the fibre's pixel in a whole frame.
+            #
+            selection_center: tuple[float, float] | None = None
+            if selection_settings.search_from == "frame":
+                pass  # the frame's middle, as before 2026-11-23: the selection's own default
+            elif imager_roi is not None and imager_roi._center is not None:
+                selection_center = (
+                    float(imager_roi._center.x - imager_roi.x),
+                    float(imager_roi._center.y - imager_roi.y),
+                )
+            elif fibre_xy is not None:
+                selection_center = (float(fibre_xy[0]), float(fibre_xy[1]))
+            stage: StageResult | None = None
+            if selection_settings.mode != "original":
+                stage = prepare(
+                    data,
+                    header,
+                    phase,
+                    selection_settings,
+                    origin=(imager_roi.x, imager_roi.y) if imager_roi is not None else (0, 0),
+                    frame_shape=(height, width),
+                    shadow=shadow if shadow is not None and tuple(shadow.image_shape) == tuple(data.shape) else None,
+                    center=selection_center,
+                )
+                if stage.selection is not None and stage.selection.status == "ok":
+                    # The selection's area, for the star map to draw (solvers/star_map.py).
+                    write_selection_area(
+                        win_tmp_dir,
+                        stage.selection.optical_center,
+                        stage.selection.low_coma_radius_px,
+                        stage.selection.radius_used_px,
+                        downsample_factor,
+                    )
+                if (why := stage.failed) is not None:
+                    logger.error(f"{function_name()}: source selection: {why}, the frame is not solved")
+                    failure = SolvingResult(succeeded=False, errors=[f"source selection: {why}"])
+                    failure.selection = stage.record()
+                    return failure
+                self.timings.update(stage.timings)
+                if artifacts_dir is not None:
+                    self._write_shadow_picture(artifacts_dir, new_fits_path.stem, data, stage)
+                data = stage.data  # darkened, for shadowed; the input otherwise
 
             # Downsample by factor downsample_factor (binning)
             downsampled_height = data.shape[0] // downsample_factor
@@ -372,15 +488,49 @@ class MastrometryDotNet(SolverInterface):
                     str(refpix[1]),
                 ]
 
-            args += [
+            image_args = [
+                *args,
                 "--new-fits",
                 win_to_cygwin(str(new_fits_path)),
                 win_to_cygwin(str(downsampled_image_path)),
             ]
 
-        command = " ".join([r"C:/cygwin64/usr/local/astrometry/bin/solve-field"] + args)
-        logger.info(f"{function_name()}: Running astrometry.net with '{command}'")
-        start = time.monotonic()
+            # The selected sources as an xylist, in the binned, cropped grid the image solve uses
+            # (FRAGILE COORDINATE SURFACE: write_xylist converts through pixel_grid). There is no
+            # image for --new-fits to annotate, so solve-field writes the WCS and the solved FITS
+            # is made from it afterwards. The image solve above stays as the fallback.
+            xylist_args: list[str] | None = None
+            wcs_path = new_fits_path.parent / f"{new_fits_path.stem}.wcs"
+            if stage is not None and stage.selection is not None:
+                xylist_path = new_fits_path.parent / f"{new_fits_path.stem}.xyls"
+                write_xylist(xylist_path, stage.selection.xylist(), downsample_factor, selection_settings.xylist_origin)
+                xylist_args = [
+                    *args,
+                    "--wcs",
+                    win_to_cygwin(str(wcs_path)),
+                    "--new-fits",
+                    "none",
+                    "--width",
+                    str(downsampled_width),
+                    "--height",
+                    str(downsampled_height),
+                    "--x-column",
+                    "X",
+                    "--y-column",
+                    "Y",
+                    "--sort-column",
+                    "FLUX",
+                    "--uniformize",
+                    "0",  # the selection has already spread the stars
+                    "--tweak-order",
+                    str(FIT_ORDER),  # tweak stays ON; only the position at CRPIX matters
+                    win_to_cygwin(str(xylist_path)),
+                ]
+
+        attempts: list[tuple[str, list[str]]] = [("image", image_args)]
+        if xylist_args is not None:
+            attempts.insert(0, ("xylist", xylist_args))
+        earlier: list[str] = []  # what failed attempts said, for the result file
 
         # solve-field writes new_fits_path (the solved frame, carrying the WCS). Protect it
         # for the duration: it keeps the mover off a half-written file, and -- since
@@ -388,20 +538,48 @@ class MastrometryDotNet(SolverInterface):
         # MoveGuardian.release_folder from discarding it as scratch. Every other writer in
         # the fleet does this; this solver was the one that did not.
         with MoveGuardian().protect(str(new_fits_path)):
-            completed_process = subprocess.run(
-                command, capture_output=True, shell=True, env=env, check=False
-            )  # returncode is inspected below
-        stdout_lines = completed_process.stdout.decode().strip().splitlines()
-        stderr_lines = completed_process.stderr.decode().strip().splitlines()
-        elapsed = time.monotonic() - start
-        logger.info(
-            f"{function_name()}: {'succeeded' if completed_process.returncode == 0 else 'failed'}"
-            + f" in {elapsed:.2f} seconds"
-        )
+            for kind, attempt_args in attempts:
+                command = " ".join([r"C:/cygwin64/usr/local/astrometry/bin/solve-field"] + attempt_args)
+                logger.info(f"{function_name()}: Running astrometry.net ({kind}) with '{command}'")
+                start = time.monotonic()
+                completed_process = subprocess.run(
+                    command, capture_output=True, shell=True, env=env, check=False
+                )  # returncode is inspected below
+                elapsed = time.monotonic() - start
+                self.timings["solve_field"] = self.timings.get("solve_field", 0.0) + elapsed
+                stdout_lines = completed_process.stdout.decode().strip().splitlines()
+                stderr_lines = completed_process.stderr.decode().strip().splitlines()
+                if kind == "xylist":
+                    solved = completed_process.returncode == 0 and wcs_path.exists()
+                    if solved:
+                        try:
+                            solved_fits_from_wcs(downsampled_image_path, wcs_path, new_fits_path)
+                        except Exception as e:  # noqa: BLE001 -- any failure here sends us to the image solve
+                            logger.error(f"{function_name()}: could not make the solved FITS from the WCS: {e}")
+                            solved = False
+                    if not solved:
+                        logger.warning(f"{function_name()}: the xylist solve failed, solving the image instead")
+                        earlier.append(
+                            f"--- attempt: xylist (failed) ---\n{command}\nreturncode: {completed_process.returncode}\n"
+                            + "\n".join([*stdout_lines, *stderr_lines])
+                            + f"\nelapsed: {elapsed:.2f} seconds\n\n"
+                        )
+                        continue
+                    if stage is not None:
+                        stage.solved_from = "xylist"
+                else:
+                    if stage is not None and stage.selection is not None:
+                        stage.solved_from = "fallback"
+                logger.info(
+                    f"{function_name()}: {'succeeded' if completed_process.returncode == 0 else 'failed'}"
+                    + f" in {elapsed:.2f} seconds"
+                )
+                break
 
         # Protected for the same two reasons as new_fits_path above: no half-written file
         # for the mover, and it counts as a product rather than as scratch.
         with MoveGuardian().protect(str(result_file)), open(result_file, "w") as file:
+            file.writelines(earlier)
             file.write("--- command ---\n")
             file.write(f"{command}\n")
 
@@ -428,6 +606,7 @@ class MastrometryDotNet(SolverInterface):
                         "FUTURE: image quality check",
                         f"#sources {ret.solution.sources}",
                         f"#matched {ret.solution.matched_stars}",
+                        *([f"selection {stage.record()}"] if stage is not None else []),
                     ],
                     center=True,
                 )
@@ -469,6 +648,8 @@ class MastrometryDotNet(SolverInterface):
                 ],
             )
 
+        if ret is not None and stage is not None:
+            ret.selection = stage.record()
         return ret
 
     @staticmethod
@@ -485,6 +666,25 @@ class MastrometryDotNet(SolverInterface):
             # logger.exception attaches the traceback itself; naming the exception here too
             # would only duplicate it.
             logger.exception(f"{function_name()}: {getattr(target, '__name__', target)} failed")
+
+    @staticmethod
+    def _write_shadow_picture(folder: Path, stem: str, before, stage: StageResult) -> None:
+        """`<stem>-shadow.jpg` in `folder`: the shadow the stage detected, and for `shadowed` the frame darkened.
+        A picture must never cost the solve, so any failure is only logged."""
+        try:
+            from .shadow_picture import caption_lines, write_shadow_picture  # noqa: PLC0415
+
+            folder.mkdir(parents=True, exist_ok=True)
+            title = f"{stem}   stage {stage.settings.mode}   shadow detected"
+            write_shadow_picture(
+                before,
+                stage.shadow,
+                folder / f"{stem}-shadow.jpg",
+                caption_lines(stage.shadow, title, stage.timings.get("shadow")),
+                darkened=stage.data if stage.settings.mode == "shadowed" and stage.shadow is not None else None,
+            )
+        except Exception:
+            logger.exception(f"{function_name()}: could not make the shadow picture of '{stem}'")
 
     def _star_map_files(self, tmp_dir: Path, solved_fits: Path, frame: Path) -> list[Path]:
         """The annotated JPEG and the per-star JSON of this solve, written in the scratch folder.
@@ -524,6 +724,7 @@ class MastrometryDotNet(SolverInterface):
         tmp_dir: Path,
         solved_fits: Path | None = None,
         solved_frame: Path | None = None,
+        to_share: bool = True,
     ):
         """Keep the solver's own artifacts, discard its scratch.
 
@@ -545,7 +746,8 @@ class MastrometryDotNet(SolverInterface):
                 logger.info(f"{function_name()}: saved '{destination.as_posix()}'")
                 # Via the mover rather than a bare copy, so a dead share defers instead of
                 # losing the file, exactly as for every other artifact.
-                filer.move_ram_to_shared(str(destination))
+                if to_share:
+                    filer.move_ram_to_shared(str(destination))
 
         # Only now: the artifacts worth keeping are out, the rest is astrometry.net
         # intermediates (.axy/.xyls/.wcs and the downsampled frame). Discarded, not just

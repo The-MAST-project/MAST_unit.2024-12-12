@@ -33,6 +33,9 @@ extend-exclude = [
     # Simulator for the retired PlaneWave SHM solving path. Nothing imports it; kept
     # for reference rather than deleted.
     "src/PlateSolveSimulator/PSSImulator.py",
+    # Scratch scripts kept beside the study that used them (docs/<study>/scripts), with that machine's paths in
+    # them: a record of how a number was made, not code the unit runs.
+    "docs/*/scripts",
 ]
 
 # MAST_common is no longer checked out inside this repo (it was the src/common

@@ -1,7 +1,7 @@
 import datetime
 import json
 import os.path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import astropy.units as u
 from astropy.coordinates import Angle
@@ -150,7 +150,28 @@ class Solver(SolverInterface):
                 logger.warning(f"{op}: {why}, not solving: '{imager_settings.image_path}' does not exist")
                 return SolvingResult(succeeded=False, errors=[why])
 
+            if getattr(self._backend, "selects_sources", False):
+                shadow = self._shadow_for(imager_settings.image_path, phase)
+                selecting: Any = self._backend  # MastrometryDotNet: SolverInterface.solve has no `shadow` keyword
+                return selecting.solve(unit=self.unit, settings=imager_settings, target=target, phase=phase, shadow=shadow)
             return self._backend.solve(unit=self.unit, settings=imager_settings, target=target, phase=phase)
+
+    def _shadow_for(self, image_path: str | None, phase: str):
+        """The current acquisition's cached shadow model of this full frame, or None -- no acquisition, the
+        source selection is `original` (which needs no shadow), or detection failed. Never raises."""
+        try:
+            unit_conf = self.unit.unit_conf if self.unit.unit_conf else Config().get_unit()
+            selection = getattr(getattr(unit_conf, "solving", None), "source_selection", None)
+            if selection is None or selection.mode == "original":
+                return None
+            acquirer = getattr(self.unit, "acquirer", None)
+            acquisition = getattr(acquirer, "latest_acquisition", None) if acquirer is not None else None
+            if acquisition is None or image_path is None:
+                return None
+            return acquisition.shadow_for(image_path, phase)
+        except Exception as e:  # noqa: BLE001 -- the solver detects it itself
+            logger.warning(f"no cached shadow ({e!r})")
+            return None
 
     def solve_and_correct(  # noqa: C901
         self,
