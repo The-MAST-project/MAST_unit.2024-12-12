@@ -285,3 +285,80 @@ def test_without_a_kept_extraction_list_the_used_stars_are_still_drawn(tmp_path)
     summary = star_map.write_star_map(**scene)
 
     assert summary["extracted"] is None and scene["jpeg_path"].exists()
+
+
+# ----- the star selection's area ---------------------------------------------------------------
+
+#: the selection ran on a 200 x 160 frame (this picture is its 2x2 binning), about its centre (99.5, 79.5), which is
+#: pixel (50.5, 40.5) of the picture in FITS terms and (50, 40) on the screen
+AREA = {"center": [99.5, 79.5], "low_coma_radius_px": 40.0, "radius_used_px": 60.0, "factor": 2}
+CENTRE_X, CENTRE_Y = 50, 40
+
+
+def _area_picture(tmp_path: Path, area: dict | None) -> Image.Image:
+    matched = Matched(x=np.array([5.5]), y=np.array([5.5]), ra=np.zeros(1), dec=np.zeros(1), weight=None)
+    out = tmp_path / "map.jpg"
+    star_map.render(np.zeros((HEIGHT, WIDTH)), None, matched, None, None, ["a caption"], out, area)
+    return Image.open(out).convert("RGB")
+
+
+def test_the_selection_area_is_two_circles_the_low_coma_radius_and_the_radius_it_grew_to(tmp_path):
+    picture = _area_picture(tmp_path, AREA)
+    top = star_map.CAPTION_HEIGHT
+
+    # 40 unbinned pixels are 20 on the solve grid, 60 are 30: the circles' right-hand extremes
+    assert _is_close(picture.getpixel((CENTRE_X + 20 - 1, CENTRE_Y + top)), star_map.LOW_COMA_COLOR, 90)
+    assert _is_close(picture.getpixel((CENTRE_X + 30 - 1, CENTRE_Y + top)), star_map.AREA_COLOR, 90)
+    assert max(picture.getpixel((CENTRE_X, CENTRE_Y + top))) < 60  # the middle is the frame, untouched: dark grey
+
+
+def test_an_area_that_did_not_grow_is_one_circle(tmp_path):
+    picture = _area_picture(tmp_path, {**AREA, "radius_used_px": 40.0})
+    top = star_map.CAPTION_HEIGHT
+
+    assert _is_close(picture.getpixel((CENTRE_X + 20 - 1, CENTRE_Y + top)), star_map.AREA_COLOR, 90)
+    assert not _is_close(picture.getpixel((CENTRE_X + 20 - 1, CENTRE_Y + top)), star_map.LOW_COMA_COLOR, 40)
+
+
+def test_without_an_area_there_is_no_contour(tmp_path):
+    picture = _area_picture(tmp_path, None)
+    top = star_map.CAPTION_HEIGHT
+
+    for r in (20, 30):
+        assert max(picture.getpixel((CENTRE_X + r - 1, CENTRE_Y + top))) < 60  # the frame's dark grey, no circle
+
+
+def test_the_area_is_left_in_the_scratch_folder_and_read_back(tmp_path):
+    star_map.write_selection_area(tmp_path, (99.5, 79.5), 40.0, 60.0, 2)
+
+    assert star_map.read_selection_area(tmp_path) == AREA
+
+
+def test_a_missing_or_damaged_area_is_none(tmp_path):
+    assert star_map.read_selection_area(tmp_path) is None
+    (tmp_path / star_map.SELECTION_AREA_FILE).write_text("{not json")
+    assert star_map.read_selection_area(tmp_path) is None
+    (tmp_path / star_map.SELECTION_AREA_FILE).write_text(json.dumps({"center": [1.0]}))
+    assert star_map.read_selection_area(tmp_path) is None
+
+
+def test_a_solve_draws_the_area_it_finds_and_records_it(tmp_path):
+    scene = _scene(tmp_path)
+    star_map.write_selection_area(tmp_path, (99.5, 79.5), 40.0, 60.0, 2)
+
+    star_map.write_star_map(**scene)
+
+    picture = Image.open(scene["jpeg_path"]).convert("RGB")
+    head = max(star_map.CAPTION_HEIGHT, 10 + 17 * 4)  # the caption has a fourth line about the area
+    assert picture.size == (WIDTH, HEIGHT + head)
+    assert _is_close(picture.getpixel((CENTRE_X + 30 - 1, CENTRE_Y + head)), star_map.AREA_COLOR, 90)
+    assert json.loads(scene["json_path"].read_text())["selection_area"] == AREA
+
+
+def test_a_solve_with_no_selection_has_no_area(tmp_path):
+    scene = _scene(tmp_path)
+
+    star_map.write_star_map(**scene)
+
+    assert json.loads(scene["json_path"].read_text())["selection_area"] is None
+    assert Image.open(scene["jpeg_path"]).size == (WIDTH, HEIGHT + star_map.CAPTION_HEIGHT)
