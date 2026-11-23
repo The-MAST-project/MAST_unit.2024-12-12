@@ -48,6 +48,7 @@ logger = get_logger(__name__)
 
 Mode = Literal["original", "shadowed", "selective"]
 MODES = ("original", "shadowed", "selective")
+SEARCH_FROM = ("fibre", "frame")
 
 
 @dataclass(frozen=True)
@@ -67,10 +68,16 @@ class SourceSelectionSettings:
     shadow_require_two_sided: bool = False
     #: the camera's hot pixels, filled before the frame is searched (None: none are known, nothing is filled)
     hot_pixels: HotPixels | None = None
+    #: where the search for stars grows out from: ``"fibre"``, the fibre pixel (the point the solve reports), or ``"frame"``,
+    #: the middle of the frame it is given, which is what the selection did until 2026-11-23 and what reproduces the numbers
+    #: in `docs/mastrometry_stages.md`.
+    search_from: Literal["fibre", "frame"] = "fibre"
 
     def __post_init__(self):
         if self.mode not in MODES:
             raise ValueError(f"source selection mode '{self.mode}' is not one of {MODES}")
+        if self.search_from not in SEARCH_FROM:
+            raise ValueError(f"source selection search_from '{self.search_from}' is not one of {SEARCH_FROM}")
 
     @classmethod
     def from_config(cls, cfg: Any) -> SourceSelectionSettings:

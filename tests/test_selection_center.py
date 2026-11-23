@@ -55,3 +55,10 @@ def test_from_the_frames_middle_the_same_frame_has_to_reach_further():
 
     assert sel is not None and sel.optical_center == ((NX - 1) / 2.0, (NY - 1) / 2.0)
     assert sel.radius_used_px > 225.0  # nothing lies within 225 px of the middle: the radius grew to reach the columns
+
+
+def test_the_settings_say_where_the_search_grows_from():
+    assert SourceSelectionSettings(mode="selective").search_from == "fibre"
+    assert SourceSelectionSettings(mode="selective", search_from="frame").search_from == "frame"
+    with pytest.raises(ValueError, match="search_from"):
+        SourceSelectionSettings(mode="selective", search_from="optical-centre")  # type: ignore[arg-type]

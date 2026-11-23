@@ -340,7 +340,9 @@ class MastrometryDotNet(SolverInterface):
             # in the pixels of the cropped frame: the ROI's centre, or the fibre's pixel in a whole frame.
             #
             selection_center: tuple[float, float] | None = None
-            if imager_roi is not None and imager_roi._center is not None:
+            if selection_settings.search_from == "frame":
+                pass  # the frame's middle, as before 2026-11-23: the selection's own default
+            elif imager_roi is not None and imager_roi._center is not None:
                 selection_center = (
                     float(imager_roi._center.x - imager_roi.x),
                     float(imager_roi._center.y - imager_roi.y),

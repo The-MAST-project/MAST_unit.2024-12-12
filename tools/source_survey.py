@@ -42,6 +42,8 @@ Usage:
     --shadow-max-center-offset PX   look for the shadow only this close to the frame centre (default 0:
                              anywhere -- it is centred when the mirror is in, and has its edge at the
                              frame's edge at the sky position)
+    --search-from fibre|frame  with --via-solver: where the star search grows out from: the fibre pixel (default) or the
+                             middle of the frame (as the selection did before 2026-11-23)
     --optical-center X Y     the centre of the star search (full-frame pixels); default the fibre pixel when --fibre or
                              --fibre-xy is given (as the solver searches), else the frame centre
     --low-coma-radius R      likewise, pixels
@@ -686,6 +688,7 @@ def _solve_via_solver(
             shadow_max_center_offset=args.shadow_max_center_offset or None,
             shadow_require_two_sided=args.shadow_two_sided,
             hot_pixels=args.hot_pixels_map,
+            search_from=args.search_from,
         )
         outcome = SolveOutcome(status="ok")
         outcome.solved_from = "image"
@@ -892,6 +895,7 @@ def build_parser() -> argparse.ArgumentParser:
         "when the mirror is in, and has its edge at the frame's edge at the sky position)",
     )
     parser.add_argument("--optical-center", nargs=2, type=float, metavar=("X", "Y"))
+    parser.add_argument("--search-from", choices=("fibre", "frame"), default="fibre")
     parser.add_argument("--low-coma-radius", type=float)
     parser.add_argument("--fwhm", type=float)
     parser.add_argument("--full-scale", type=float)
