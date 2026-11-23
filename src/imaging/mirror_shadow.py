@@ -73,7 +73,8 @@ class ShadowModel:
     umbra_s: tuple[float, float] | None = None
     penumbra_s: tuple[float, float] | None = None
 
-    # perpendicular cross-section kept for plotting / inspection (not persisted)
+    # perpendicular cross-section, for plotting and inspection -- and for the source selection, which reads each source's
+    # deficit off it. `summary()` leaves it out; `to_dict()` (the shadow store) keeps it.
     s: np.ndarray | None = field(default=None, repr=False)  # perpendicular coordinate (pix)
     profile: np.ndarray | None = field(default=None, repr=False)  # mean deficit vs s
 
@@ -187,6 +188,63 @@ class ShadowModel:
             baseline=self.baseline,
             s=None if self.s is None else self.s - delta,
             profile=self.profile,
+        )
+
+    def to_dict(self) -> dict:
+        """Everything the model is, JSON-ready, so that `from_dict` gives back one that behaves the same: the band's
+        geometry, the bounds (an open side is ``"-inf"`` / ``"inf"``) and the measured cross-section."""
+
+        def bound(v: float):
+            return "inf" if v == np.inf else "-inf" if v == -np.inf else float(v)
+
+        def bounds(b):
+            return None if b is None else [bound(b[0]), bound(b[1])]
+
+        return {
+            "present": bool(self.present),
+            "image_shape": [int(v) for v in self.image_shape],
+            "angle": float(self.angle),
+            "offset": float(self.offset),
+            "umbra_half_width": float(self.umbra_half_width),
+            "penumbra_half_width": float(self.penumbra_half_width),
+            "depth": float(self.depth),
+            "prominence": float(self.prominence),
+            "baseline": float(self.baseline),
+            "two_sided_depth": float(self.two_sided_depth),
+            "umbra_s": bounds(self.umbra_s),
+            "penumbra_s": bounds(self.penumbra_s),
+            "s": None if self.s is None else [float(v) for v in self.s],
+            "profile": None if self.profile is None else [float(v) for v in self.profile],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> ShadowModel:
+        """The inverse of `to_dict`."""
+
+        def bound(v):
+            return np.inf if v == "inf" else -np.inf if v == "-inf" else float(v)
+
+        def bounds(b):
+            return None if b is None else (bound(b[0]), bound(b[1]))
+
+        def array(a):
+            return None if a is None else np.asarray(a, dtype=float)
+
+        return cls(
+            present=bool(d["present"]),
+            image_shape=(int(d["image_shape"][0]), int(d["image_shape"][1])),
+            angle=float(d["angle"]),
+            offset=float(d["offset"]),
+            umbra_half_width=float(d["umbra_half_width"]),
+            penumbra_half_width=float(d["penumbra_half_width"]),
+            depth=float(d["depth"]),
+            prominence=float(d["prominence"]),
+            baseline=float(d["baseline"]),
+            two_sided_depth=float(d["two_sided_depth"]),
+            umbra_s=bounds(d.get("umbra_s")),
+            penumbra_s=bounds(d.get("penumbra_s")),
+            s=array(d.get("s")),
+            profile=array(d.get("profile")),
         )
 
     def summary(self) -> dict:
