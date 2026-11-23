@@ -111,6 +111,9 @@ def extract_sources(image, nsigma=2.0, npixels=5, box_size=50, exclude_mask=None
         "peak_x": np.asarray(cat.max_value_xindex, dtype=float),
         "peak_y": np.asarray(cat.max_value_yindex, dtype=float),
         "n_detected": len(x),
+        # the segmentation: `segment_map[y, x] == labels[i]` marks source i's own pixels
+        "segment_map": np.asarray(segm.data),
+        "labels": np.asarray(cat.labels),
     }
 
 
