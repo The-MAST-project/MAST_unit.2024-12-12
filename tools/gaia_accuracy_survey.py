@@ -33,8 +33,8 @@ applied to ``--when``. It writes ``targets.csv`` into OUT (in azimuth order, one
 
 ``acquire`` (on the control machine or any host that can reach the unit) runs one mastrometry acquisition per target:
 
-    python tools/gaia_accuracy_survey.py acquire TARGETS_CSV --unit mast02 --mode selective --out OUT
-        [--seconds 5] [--timeout 900] [--only T03,T04] [--redo]
+    python tools/gaia_accuracy_survey.py acquire TARGETS_CSV --unit mast02 --out OUT
+        [--seconds 5] [--timeout 900] [--only T03,T04] [--redo] [--mode LABEL]
 
 For each row of ``targets.csv`` it calls the unit's ``start_acquisition_and_guiding`` (target = the Gaia position,
 ``handover_automatically_to_guider`` off, so the unit is left unguided), waits for the unit's
@@ -43,9 +43,30 @@ request, how the acquisition ended (state, errors, each phase's last offset agai
 on the share, and the mount's own RA/Dec afterwards. A target that already has its ``acquire.json`` is skipped
 (``--redo`` runs it again), so an interrupted night resumes. A target that fails is recorded and the run goes on.
 
-``--mode`` is a **label**, written into the sidecar: the unit solves in whatever ``solving.source_selection.mode`` its
-configuration says (there is no per-call override), so set the mode in the configuration database first, and run the
-same ``targets.csv`` once per mode. The unit must be started up and not busy. This step does not compare anything.
+There is **one acquisition per target**, in whatever mode the unit is configured for (``--mode`` is only a label for
+the sidecar). Both modes are scored afterwards, offline, on that acquisition's last frame -- ``solve`` then ``pointing``
+below -- so only the solver differs between them.
+
+``solve`` runs ``tools/source_survey.py --via-solver`` on each acquired target's last mirror-out frame, in both modes:
+
+    python tools/gaia_accuracy_survey.py solve OUT --unit mast02 --fibre-xy X Y [--modes original,selective]
+        [--share-root /Storage/mast-share] [--source-survey PATH] [--redo]
+
+It leaves ``OUT/<name>/solve/`` in the layout ``analyse`` reads. It needs ``source_survey.py`` (MAST_unit branch
+``solver-source-selection``), the astrometry.net indexes and the solver of the machine it runs on: a unit, or the
+machine the pilot used (mast08). ``--share-root`` maps the sidecar's ``//<controller>/mast-share`` to where the share is
+mounted on this machine.
+
+``pointing`` scores the target stars:
+
+    python tools/gaia_accuracy_survey.py pointing OUT --fibre-xy X Y [--modes original,selective] [--search-px 25]
+
+For each target it finds the target star in the frame (the brightest source within ``--search-px`` full-frame pixels of
+the fibre pixel, at its fixed-window centroid), puts it on the sky through each mode's solved WCS, and compares that
+with the star's Gaia position from ``targets.csv``: the error of the pointing, east and north in arcsec. It writes
+``pointing.csv`` (per target and mode) and prints the median vector per mode, the paired difference between the last
+mode and the first (over targets, with its standard error) and the decision criterion of the plan. A mode whose fit
+used the target star itself is flagged: its error is then not independent.
 
 Layout ``analyse`` reads: a folder per frame (a single-frame survey run), holding ``*sources.csv`` and, for each mode, a
 folder
@@ -69,6 +90,7 @@ import csv
 import dataclasses
 import datetime
 import json
+import subprocess
 import sys
 import time
 import warnings
@@ -159,16 +181,11 @@ def _mid_exposure_jyear(header: fits.Header) -> float:
     return float((start + TimeDelta(seconds / 2.0, format="sec")).jyear)
 
 
-def load_frame(folder: Path, modes: Sequence[str], params: Params) -> Frame | None:
-    """One frame's data, or None (with the reason on stderr) when a mode is missing or the frame has no clean stars."""
-    sources = next(iter(sorted(folder.glob("*sources.csv"))), None)
-    if sources is None:
-        return None
-    with open(sources, newline="", encoding="utf-8") as f:
-        rows = [r for r in csv.DictReader(f) if r["fate"] in CLEAN_FATES]
-    if not rows:
-        print(f"{folder.name}: no clean stars", file=sys.stderr)
-        return None
+def load_modes(
+    folder: Path, modes: Sequence[str], params: Params
+) -> tuple[dict[str, WCS], dict[str, np.ndarray], float] | None:
+    """Each mode's solved WCS and the stars its fit used (``.corr``, FITS 1-based), and the frame's mid-exposure epoch.
+    None (with the reason on stderr) when a mode is missing."""
     wcs: dict[str, WCS] = {}
     used: dict[str, np.ndarray] = {}
     jyear = float("nan")
@@ -195,6 +212,23 @@ def load_frame(folder: Path, modes: Sequence[str], params: Params) -> Frame | No
         used[mode] = np.column_stack([np.asarray(table["field_x"], float), np.asarray(table["field_y"], float)]) + shift
         if np.isnan(jyear):
             jyear = _mid_exposure_jyear(header)
+    return wcs, used, jyear
+
+
+def load_frame(folder: Path, modes: Sequence[str], params: Params) -> Frame | None:
+    """One frame's data, or None (with the reason on stderr) when a mode is missing or the frame has no clean stars."""
+    sources = next(iter(sorted(folder.glob("*sources.csv"))), None)
+    if sources is None:
+        return None
+    with open(sources, newline="", encoding="utf-8") as f:
+        rows = [r for r in csv.DictReader(f) if r["fate"] in CLEAN_FATES]
+    if not rows:
+        print(f"{folder.name}: no clean stars", file=sys.stderr)
+        return None
+    loaded = load_modes(folder, modes, params)
+    if loaded is None:
+        return None
+    wcs, used, jyear = loaded
     xs = np.array([float(r[X_COLUMN]) for r in rows])
     ys = np.array([float(r[Y_COLUMN]) for r in rows])
     return Frame(folder.name, jyear, xs, ys, wcs, used)
@@ -642,6 +676,10 @@ def acquisition_request(target: dict, seconds: float) -> dict:
     }
 
 
+def sidecar_folder(out: Path, target: dict) -> Path:
+    return out / target["name"]
+
+
 def read_targets(path: Path, only: Sequence[str] = ()) -> list[dict]:
     with open(path, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
@@ -709,7 +747,7 @@ def acquire_target(
                 mount_ra_j2000_hours=mount.get("ra_j2000_hours"),
                 mount_dec_j2000_degs=mount.get("dec_j2000_degs"),
             )
-    folder = out / f"{target['name']}-{mode}"
+    folder = sidecar_folder(out, target)
     folder.mkdir(parents=True, exist_ok=True)
     with open(folder / "acquire.json", "w", encoding="utf-8") as f:
         json.dump(sidecar, f, indent=2)
@@ -734,9 +772,9 @@ def acquire(
     """Every target in turn. A target that has its ``acquire.json`` is skipped unless ``redo``."""
     done: list[dict] = []
     for target in targets:
-        sidecar_path = out / f"{target['name']}-{mode}" / "acquire.json"
+        sidecar_path = sidecar_folder(out, target) / "acquire.json"
         if sidecar_path.exists() and not redo:
-            log(f"{target['name']}: already acquired in {mode}, skipped")
+            log(f"{target['name']}: already acquired, skipped")
             continue
         log(f"{target['name']}: acquiring RA {float(target['ra_deg']):.5f} Dec {float(target['dec_deg']):.4f} ({mode})")
         sidecar = acquire_target(
@@ -754,6 +792,239 @@ def acquire(
         log(f"{target['name']}: {sidecar['outcome']}" + (f" -- {'; '.join(sidecar['errors'])}" if sidecar["errors"] else ""))
         done.append(sidecar)
     return done
+
+
+# ------------------------------------------------------------------------------------------------ solve: both modes, offline
+
+#: The selection parameters the pilot's frames were surveyed with (tighter centroids, a stricter neighbour rule).
+SURVEY_PARAMS = (
+    "centroid_tolerance=0.002",
+    "centroid_max_iterations=32",
+    "min_sep_fwhm=1.5",
+    "max_fwhm_ratio=2.5",
+)
+#: The folders of an acquisition that hold the frames taken with the fold mirror out, in order of preference.
+MIRROR_OUT_PHASES = ("spec-mirror-out", "spec")
+DEFAULT_SOURCE_SURVEY = Path(__file__).resolve().parent / "source_survey.py"
+
+
+def map_share(path: str, share_root: Path | None) -> Path:
+    """``//<controller>/mast-share/MAST/...`` (as the unit reports it) as a path on this machine: under ``share_root``
+    when one is given, else unchanged."""
+    text = path.replace("\\", "/")
+    if share_root is not None and text.startswith("//"):
+        parts = text[2:].split("/", 2)  # host, share, the rest
+        if len(parts) == 3:
+            return share_root / parts[2]
+    return Path(path)
+
+
+def final_frame(products: Path) -> Path | None:
+    """The last raw frame of the acquisition's mirror-out phase: the one taken at the pointing it ended with."""
+    for phase in MIRROR_OUT_PHASES:
+        folder = products / phase
+        if folder.is_dir():
+            frames = sorted(f for f in folder.glob("*.fits") if ",solver=" not in f.name and "downsampled" not in f.name)
+            if frames:
+                return frames[-1]
+    return None
+
+
+def solve_command(
+    frame: Path, dest: Path, *, unit: str, fibre_xy: tuple[float, float], modes: Sequence[str], source_survey: Path
+) -> list[str]:
+    return [
+        sys.executable,
+        str(source_survey),
+        str(frame),
+        "--out",
+        str(dest),
+        "--via-solver",
+        "--solver-modes",
+        ",".join(modes),
+        "--fibre-xy",
+        f"{fibre_xy[0]:g}",
+        f"{fibre_xy[1]:g}",
+        "--hot-pixels",
+        unit,
+        *[a for p in SURVEY_PARAMS for a in ("--param", p)],
+    ]
+
+
+def solve(
+    out: Path,
+    *,
+    unit: str,
+    fibre_xy: tuple[float, float],
+    modes: Sequence[str],
+    share_root: Path | None = None,
+    source_survey: Path = DEFAULT_SOURCE_SURVEY,
+    redo: bool = False,
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    log: Callable[[str], None] = print,
+) -> dict[str, str]:
+    """Solve each acquired target's last mirror-out frame in every mode. Returns ``{target: outcome}``."""
+    if not source_survey.exists():
+        raise SystemExit(f"{source_survey} not found: source_survey.py is on MAST_unit's solver-source-selection branch")
+    outcomes: dict[str, str] = {}
+    for sidecar_path in sorted(out.glob("*/acquire.json")):
+        sidecar = json.loads(sidecar_path.read_text())
+        name = sidecar["target"]["name"]
+        dest = sidecar_path.parent / "solve"
+        if sidecar.get("outcome") != "succeeded":
+            outcomes[name] = f"skipped: acquisition {sidecar.get('outcome')}"
+        elif (dest / "survey.csv").exists() and not redo:
+            outcomes[name] = "already solved"
+        else:
+            products = map_share(sidecar.get("shared_products_path") or "", share_root)
+            frame = final_frame(products)
+            if frame is None:
+                outcomes[name] = f"skipped: no mirror-out frame under {products}"
+            else:
+                result = run(
+                    solve_command(frame, dest, unit=unit, fibre_xy=fibre_xy, modes=modes, source_survey=source_survey),
+                    capture_output=True,
+                    text=True,
+                )
+                (sidecar_path.parent / "solve.log").write_text(
+                    (result.stdout or "") + (result.stderr or ""), encoding="utf-8"
+                )
+                outcomes[name] = "solved" if result.returncode == 0 else f"failed (exit {result.returncode}), see solve.log"
+        log(f"{name}: {outcomes[name]}")
+    return outcomes
+
+
+# ------------------------------------------------------------------------------------------------ pointing: the target stars
+
+
+@dataclasses.dataclass
+class PointingError:
+    target: str
+    mode: str
+    x: float  # the target star's fixed-window centroid, full frame, 0-based
+    y: float
+    offset_px: float  # from the fibre pixel
+    err_e: float  # arcsec, WCS sky position of the star minus its Gaia position
+    err_n: float
+    fitted: bool  # the mode's own fit used this star, so its error is not independent
+    n_in_window: int  # sources found inside the search window: more than one is an ambiguous identification
+    g: float
+
+    @property
+    def err(self) -> float:
+        return float(np.hypot(self.err_e, self.err_n))
+
+
+def find_target_star(sources_csv: Path, fibre_xy: tuple[float, float], search_px: float) -> tuple[float, float, int] | None:
+    """``(x, y, n)``: the brightest source of any fate within ``search_px`` of the fibre pixel, and how many there were."""
+    best: tuple[float, float, float] | None = None
+    n = 0
+    with open(sources_csv, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            try:
+                x, y, flux = float(row[X_COLUMN]), float(row[Y_COLUMN]), float(row["flux"])
+            except (KeyError, ValueError):
+                continue
+            if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(flux)):
+                continue
+            if np.hypot(x - fibre_xy[0], y - fibre_xy[1]) <= search_px:
+                n += 1
+                if best is None or flux > best[2]:
+                    best = (x, y, flux)
+    return None if best is None else (best[0], best[1], n)
+
+
+def score_target(
+    folder: Path, target: dict, modes: Sequence[str], params: Params, search_px: float
+) -> list[PointingError] | str:
+    """The target star's error in each mode, or the reason it cannot be scored."""
+    sources = next(iter(sorted(folder.glob("*sources.csv"))), None)
+    if sources is None:
+        return "no sources.csv (not solved?)"
+    star = find_target_star(sources, params.fibre_xy, search_px)
+    if star is None:
+        return f"no source within {search_px:g} px of the fibre pixel"
+    loaded = load_modes(folder, modes, params)
+    if loaded is None:
+        return "a mode is missing its solved FITS"
+    wcs, used, _ = loaded
+    x, y, n = star
+    gx, gy = to_grid([x], [y], params.factor)
+    out: list[PointingError] = []
+    for mode in modes:
+        ra, dec = wcs[mode].all_pix2world(gx, gy, 1)
+        e, nn = offsets_arcsec(ra[0], dec[0], float(target["ra_deg"]), float(target["dec_deg"]))
+        fitted = not bool(held_out(gx, gy, [used[mode]], params.exclude_px)[0])
+        out.append(
+            PointingError(
+                target["name"],
+                mode,
+                x,
+                y,
+                float(np.hypot(x - params.fibre_xy[0], y - params.fibre_xy[1])),
+                float(e),
+                float(nn),
+                fitted,
+                n,
+                float(target["g"]),
+            )
+        )
+    return out
+
+
+def _mean_se(values: Sequence[float]) -> tuple[float, float]:
+    v = np.asarray(values, float)
+    return float(v.mean()), float(v.std(ddof=1) / np.sqrt(len(v))) if len(v) > 1 else float("nan")
+
+
+def pointing_report(rows: Sequence[PointingError], modes: Sequence[str], skipped: dict[str, str]) -> str:
+    base, test = modes[0], modes[-1]
+    lines = [f"pointing: {len({r.target for r in rows})} targets scored, error = WCS position of the target star minus Gaia"]
+    for m in modes:
+        sel = [r for r in rows if r.mode == m]
+        if not sel:
+            continue
+        e, n = (float(np.median([r.err_e for r in sel])), float(np.median([r.err_n for r in sel])))
+        mean, se = _mean_se([r.err for r in sel])
+        fitted = sum(r.fitted for r in sel)
+        lines.append(
+            f'  {m:<10} median vector {e:+.2f} E {n:+.2f} N ({np.hypot(e, n):.2f}"), '
+            f'mean |error| {mean:.2f} +- {se:.2f}" over {len(sel)} targets, {fitted} fitted its star'
+        )
+    paired = {}
+    for r in rows:
+        paired.setdefault(r.target, {})[r.mode] = r
+    both = [d for d in paired.values() if base in d and test in d]
+    if base != test and len(both) > 1:
+        diff = [d[test].err - d[base].err for d in both]
+        mean, se = _mean_se(diff)
+        better = sum(x < 0 for x in diff)
+        verdict = "meets" if np.isfinite(se) and mean <= -2.0 * se else "does not meet"
+        lines.append(
+            f'  {test} minus {base}, per target: {mean:+.2f} +- {se:.2f}" ({better} of {len(both)} targets closer to Gaia); '
+            f"{verdict} the plan's criterion (smaller by at least two standard errors)"
+        )
+    for name, why in sorted(skipped.items()):
+        lines.append(f"  not scored: {name}: {why}")
+    return "\n".join(lines)
+
+
+def pointing(out: Path, params: Params, modes: Sequence[str], search_px: float, targets_csv: Path | None = None) -> str:
+    """Score every target that has a solved frame, write ``pointing.csv`` into ``out``, return the report."""
+    targets = {t["name"]: t for t in read_targets(targets_csv or out / "targets.csv")}
+    rows: list[PointingError] = []
+    skipped: dict[str, str] = {}
+    for sidecar_path in sorted(out.glob("*/acquire.json")):
+        name = sidecar_path.parent.name
+        if name not in targets:
+            continue
+        result = score_target(sidecar_path.parent / "solve", targets[name], modes, params, search_px)
+        if isinstance(result, str):
+            skipped[name] = result
+        else:
+            rows.extend(result)
+    _write_csv(out / "pointing.csv", [dict(dataclasses.asdict(r), err=r.err) for r in rows])
+    return pointing_report(rows, modes, skipped)
 
 
 # ------------------------------------------------------------------------------------------------ reference, output, CLI
@@ -868,12 +1139,29 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     q = sub.add_parser("acquire", help="run one mastrometry acquisition per target on a unit")
     q.add_argument("targets", type=Path, help="the targets.csv that `plan` wrote")
     q.add_argument("--unit", required=True, help="the unit's host name, e.g. mast02")
-    q.add_argument("--mode", required=True, help="a label for the sidecar: the source-selection mode the unit is set to")
+    q.add_argument("--mode", default="as-configured", help="a label for the sidecar: the mode the unit is set to")
     q.add_argument("--out", type=Path, required=True)
     q.add_argument("--seconds", type=float, default=5.0, help="exposure per acquisition frame")
     q.add_argument("--timeout", type=float, default=900.0, help="seconds to wait for one acquisition to end")
     q.add_argument("--only", default="", help="comma-separated target names")
     q.add_argument("--redo", action="store_true", help="run targets that already have an acquire.json again")
+    v = sub.add_parser("solve", help="solve each acquired target's last frame in both modes (offline)")
+    v.add_argument("out", type=Path, help="the folder `acquire` wrote into")
+    v.add_argument("--unit", required=True, help="the unit the frames came from (its hot-pixel map is used)")
+    v.add_argument("--fibre-xy", type=float, nargs=2, required=True, metavar=("X", "Y"))
+    v.add_argument("--modes", default=",".join(DEFAULT_MODES))
+    v.add_argument("--share-root", type=Path, help="where the share is mounted on this machine")
+    v.add_argument("--source-survey", type=Path, default=DEFAULT_SOURCE_SURVEY)
+    v.add_argument("--redo", action="store_true")
+    w = sub.add_parser("pointing", help="score each target star's WCS position against its Gaia position")
+    w.add_argument("out", type=Path, help="the folder `acquire` and `solve` wrote into (and `plan`'s targets.csv)")
+    w.add_argument("--targets", type=Path, help="default: OUT/targets.csv")
+    w.add_argument("--fibre-xy", type=float, nargs=2, required=True, metavar=("X", "Y"))
+    w.add_argument("--modes", default=",".join(DEFAULT_MODES), help="the last is compared with the first")
+    w.add_argument("--search-px", type=float, default=25.0, help="full-frame pixels around the fibre pixel")
+    w.add_argument("--exclude-px", type=float, default=1.5, help="binned pixels: a star this close to one the fit used")
+    w.add_argument("--bin", type=int, default=2)
+    w.add_argument("--xylist-origin", type=int, choices=(0, 1), default=1)
     a = sub.add_parser("analyse", help="score the solved WCS of each mode against Gaia near the fibre")
     a.add_argument("dirs", nargs="+", type=Path, help="a frame folder, or a folder of them")
     a.add_argument("--out", type=Path, required=True)
@@ -953,6 +1241,28 @@ def main(
         return _plan_main(args, cone)
     if args.command == "acquire":
         return _acquire_main(args, unit)
+    if args.command == "solve":
+        modes = tuple(m.strip() for m in args.modes.split(",") if m.strip())
+        outcomes = solve(
+            args.out,
+            unit=args.unit,
+            fibre_xy=(args.fibre_xy[0], args.fibre_xy[1]),
+            modes=modes,
+            share_root=args.share_root,
+            source_survey=args.source_survey,
+            redo=args.redo,
+        )
+        return 1 if any(o.startswith("failed") for o in outcomes.values()) else 0
+    if args.command == "pointing":
+        modes = tuple(m.strip() for m in args.modes.split(",") if m.strip())
+        params = Params(
+            fibre_xy=(args.fibre_xy[0], args.fibre_xy[1]),
+            exclude_px=args.exclude_px,
+            factor=args.bin,
+            xylist_origin=args.xylist_origin,
+        )
+        print(pointing(args.out, params, modes, args.search_px, args.targets))
+        return 0
     modes = tuple(m.strip() for m in args.modes.split(",") if m.strip())
     if len(modes) < 2:
         print("--modes needs at least two modes", file=sys.stderr)

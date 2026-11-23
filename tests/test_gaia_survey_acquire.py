@@ -78,8 +78,8 @@ def _run(unit, out, targets=TARGETS, **kw):
     return survey.acquire(unit, targets, out, sleep=lambda s: None, log=lambda m: None, **kw)
 
 
-def _sidecar(out, name, mode="selective"):
-    return json.loads((out / f"{name}-{mode}" / "acquire.json").read_text())
+def _sidecar(out, name):
+    return json.loads((out / name / "acquire.json").read_text())
 
 
 def test_the_request_is_the_gaia_position_and_leaves_the_unit_unguided():
@@ -143,14 +143,6 @@ def test_a_target_already_acquired_is_skipped_until_redo(tmp_path):
     assert _run(again, tmp_path) == []
     assert again.requests == []
     assert len(_run(again, tmp_path, redo=True)) == 3
-
-
-def test_the_other_mode_has_its_own_folder(tmp_path):
-    _run(FakeUnit(), tmp_path, mode="original")
-    unit = FakeUnit()
-    assert len(_run(unit, tmp_path, mode="selective")) == 3
-    assert (tmp_path / "T01-original" / "acquire.json").exists()
-    assert (tmp_path / "T01-selective" / "acquire.json").exists()
 
 
 def test_the_previous_runs_record_is_not_mistaken_for_ours(tmp_path):
