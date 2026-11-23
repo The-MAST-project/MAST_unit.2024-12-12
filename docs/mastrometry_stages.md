@@ -175,6 +175,11 @@ matched to a catalogue star. An orange + without a circle was handed over and no
 pixel would move if that star were left out (the labelled values, in arcseconds). That shift is a least-squares proxy
 (order 2) and not astrometry.net's own fit, so it is indicative.
 
+**The selection's area.** A selective star map also draws the contour of the area the star selection searched (since
+2026-11-23; the pictures in this document were made before and do not have it): a **yellow circle at the low-coma radius**
+the search starts from and a **bluish-green circle at the radius it grew to**, one circle (green) when it did not have to
+widen. The caption gives both radii. The circle is about the selection's centre, the fibre pixel.
+
 The xylist route is exact. The pixel convention was checked against astrometry.net's own `image2xy`: our positions
 agree to (−0.02, −0.03) binned pixels, and solving `image2xy`'s own 342 sources through our route at order 2
 reproduces the original solve to **0.004″**.
@@ -227,8 +232,11 @@ The stages, in order, and why each is there (`solvers/source_selection.py`):
 5. **Rank the survivors by expected position error**: the noise term (1.1 σ_PSF / SNR) and, beyond the low-coma radius,
    a coma term that grows as the square of the distance.
 6. **Choose with a grid quota**: 4 × 3 cells, at most `n_max` (150) in all and per-cell shares, lowest error first,
-   starting inside the low-coma radius and widening it by 25% until 30 stars are chosen. *Motivation:* an even spread
-   over the field keeps the fit from depending on one corner.
+   starting inside the low-coma radius and widening it by 25% until 30 stars are chosen. **The search is centred on
+   the fibre pixel** (the point CRPIX makes the solve report; decided 2026-11-23): in the unit's solver the centre is
+   the sky or guiding ROI's centre, or the fibre's pixel in a whole frame; without either it falls back to the frame's
+   centre, which is what every number in this document used. *Motivation:* an even spread over the field keeps the
+   fit from depending on one corner.
 7. **Fail honestly**: fewer than 8 chosen stars fails the frame (`too_few_sources`) rather than solving from a handful.
 8. **Write the xylist** through `pixel_grid` (the single place that converts between the full-frame and binned grids,
    in the pixel-centre convention), and solve it with order 1. If that fails, solve the image instead.
@@ -548,8 +556,125 @@ because they are different situations for the fit.
   does not yet check its age. mast04's needs a rebuild at its operating temperature.
 - **The darkener's 20 s.** Only the shadowed stage pays it; if that stage is to run for real, the darkener needs
   profiling.
+- **The centre of the search.** It is the fibre pixel from 2026-11-23. The numbers in this document, and the Gaia pilot,
+  searched from the frame's centre (a few hundred pixels away on mast01 and mast02), so which stars were chosen differs a
+  little; the pilot has not been repeated.
 - **Open:** the detection threshold (2σ over 5 pixels) lets through mostly noise (about 1450 detections per frame, of
   which about 50 are chosen); `solvers/tests` still has to be run by hand on a unit with the indexes.
+
+## 9. The solve as a pipeline: where this is going (proposal, 2026-11-23)
+
+*A proposal and a prototype, not what the unit runs. The sections above describe the stages as they are built; this one
+describes how the `selective` solve should be organised for two imagers, and what a first prototype of its front end shows.*
+
+### 9.1 Why
+
+The selective stage spends 19 to 22 s selecting stars on mast08 (section 7.3), on the full-resolution frame, which is four times
+the pixels astrometry.net itself looks at: the original path bins the frame 2x2 in numpy first. Profiling `select_sources` on
+one mast02 frame (on control, a faster machine than mast08; full resolution, 14.3 s):
+
+| step | seconds | |
+|---|---|---|
+| `extract_sources` (detection) | 11.6 | 81% |
+| of which the background estimate: `Background2D` interpolating its 50 px mesh back to the frame (`scipy.ndimage.zoom`, four calls) | 6.3 | |
+| of which segmentation (`detect_sources`) | 2.5 | |
+| everything else: the seeing, the per-star centroids, the rejects, the choice | 2.7 | 19% |
+
+So the cost is the detection over the whole frame, not the centroiding, and it scales with the pixels. Timing the same
+selection on binned and cropped arrays (best of two runs on control; the shadow was not passed):
+
+| variant | pixels | time | kept |
+|---|---|---|---|
+| full resolution, whole frame | 46.8 M | 13.0 s | 55 |
+| 2x2 binned, whole frame | 11.7 M | **3.3 s** | 55 |
+| full resolution, +-3300 x +-1250 px about the fibre | 16.5 M | 4.5 s | 32 |
+| 2x2 binned, the same region | 4.1 M | **1.1 s** | 32 |
+| full resolution, +-1750 px square about the fibre | 12.2 M | 3.3 s | 40 |
+| 2x2 binned, the same region | 3.1 M | 0.8 s | 38 |
+
+The crops keep fewer stars because the starting radius is a fraction of the shorter side of the array it is given (625 px for
+a 2,500 px crop, not 1,411); a crop needs the radius stated. The background estimate is also computed twice (background and
+RMS, each twice); computing it once would save several seconds at any resolution.
+
+### 9.2 Two imagers, one grid
+
+The same code will solve frames from two imagers, and the guider's validation (in-house guiding, `plans/inhouse_guiding_design.md`
+3.3) will call it:
+
+| | PHD2 (today) | ZWO (in-house guiding, later) |
+|---|---|---|
+| what arrives | a full frame at binning 1 | the camera's own 2x2 binned ROIs, or frames |
+| to reach the 2x2 solve grid | fill hot pixels at full resolution, then block-mean 2x2 in software | nothing: it is already binned |
+| hot pixels | filled before the binning | cannot be filled before it: the map is projected to the binned grid and a binned pixel that holds one is filled from its binned neighbours |
+| saturation | a block holding a saturated pixel is set to the saturation level (a mean would hide it) | the level of the delivered array, which depends on whether the camera's binning sums or averages: not yet known |
+
+### 9.3 The stages
+
+| # | stage | when | cost |
+|---|---|---|---|
+| 0 | **Describe the input**: the array, its binning (1 or 2), its origin in unbinned full-frame pixels, the full frame's size, the fibre pixel, the saturation level | each solve | - |
+| 1 | **Bring it to the 2x2 solve grid** (table above) | each solve | about 0.5 s of numpy for a full frame at binning 1 |
+| 2 | **Crop to the region about the fibre pixel** (the fibre pixel from the configuration database), in solve-grid pixels | each solve | free |
+| 3 | **The shadow model**: detected once from the reference frame and reused while the fold-mirror stage has not moved; scaled to the solve grid | once per reference | 7 to 8 s full resolution, not paid again |
+| 4 | **Detect** (the background estimated once), **measure** (fixed-window centroids), **reject**, **select**: start at the low-coma radius about the fibre pixel and widen by 25% to 30 stars, with the grid quota | each solve | about 1 s on a binned region |
+| 5 | **Write the xylist** in solve-grid pixels, with CRPIX at the fibre pixel (`pixel_grid`) | each solve | - |
+| 6 | **`solve-field`** on the xylist (order 1), read back, and gate: matched stars, residual, scale and rotation against what is expected | each solve | 1.4 s |
+| 7 | **Fallback**, acquisition only: solve the binned image, as the original stage does. The guider has none: it raises an alert | when 6 fails | 4 to 6 s |
+
+A solve that goes through all of them is then a few seconds, not the 28 to 33 s of section 7.3, and the shadow detection, the
+slow part that remains, is paid once. The darkened-band stage (`shadowed`) is not part of this pipeline; it is the slowest and
+the guiding plan compares `original` with `selective` only.
+
+### 9.4 To verify before it is relied on
+
+1. **Block alignment.** `pixel_grid` assumes 2x2 blocks aligned to the sensor's own pixels. A hardware ROI that starts on an odd
+   unbinned pixel would shift the blocks by half a binned pixel. The prototype drops a first row or column in software and
+   refuses an odd origin on an already binned array.
+2. **The ROI's origin in `ZWOImager.set_format`.** It divides the ROI's width and height by the binning but passes `x` and `y` to
+   `setStartPos` unchanged. Which units the SDK expects there is not known, and it matters for any binned ROI with a nonzero origin.
+3. **A hardware-binned frame against a software-binned one**: the same stars, the same centroids? Noise, ADU scale and hot pixels
+   differ.
+4. **Selecting on the binned grid at all.** Every threshold of `SelectionParams` is in unbinned pixels; the prototype scales the
+   ones in pixels (the background mesh, the default seeing, the area thresholds, the edge margin, the coma scale) by a first
+   guess. Whether the same stars are found, and the solutions agree, is what 9.5 measures.
+
+### 9.5 The prototype
+
+`src/solvers/solve_grid.py` is stages 0 to 2 and the selection run on the grid (`FrameInfo`, `to_solve_grid`, `binned_params`,
+`select_on_grid`), with `tests/test_solve_grid.py`: 19 tests on synthetic frames (the coordinate mapping against `pixel_grid`,
+block alignment, hot pixels filled before the averaging, saturation, the binning-2 input, the region crop, and the selection
+on the grid finding the stars the full-resolution selection finds, to half a sensor pixel, and recovering the planted positions
+to 0.3). Nothing in `MastrometryDotNet` calls it yet.
+
+**On real frames** (eight mast02 acquisition frames, the search centred on the fibre pixel in every variant, each xylist solved
+with `solve-field` and compared with the full-resolution selection's solution at the fibre pixel):
+
+*Run on mast08, 2026-11-23, with `solve-field` as the unit runs it. Selection time is the whole step (hot pixels, binning if
+any, and the selection); the offsets are of the solved position at the fibre pixel from the full-resolution selection's.*
+
+| variant | selection, median (range) | stars used by the fit, median | residual RMS, median | solved position at the fibre pixel vs the full-resolution selection's |
+|---|---|---|---|---|
+| full resolution, whole frame (today) | **19.9 s** (15.4 to 20.2) | 23 | 0.24" | - |
+| 2x2 binned grid, whole frame | **5.8 s** (4.6 to 5.9) | 24 | 0.23" | 0.04" east, 0.08" south; at most 0.16" |
+| 2x2 binned grid, +-3300 x +-1250 px about the fibre | **2.3 s** (2.1 to 2.4) | 23 | 0.23" | 0.02" east, 0.11" south; at most 0.14" |
+
+- **The grid selection is 3.4 times faster and the region 8.6 times**, on the machine the units run on. All 24 solves succeeded.
+- **The solutions agree to about 0.1".** The fits use as many stars with the same residual. There is a small, consistent
+  offset to the south (0.08" whole frame, 0.11" cropped), which is the size of the estimator difference between astrometry.net's
+  extractor and our centroid (section 8 of the survey plan) and a third of the gap between `original` and `selective`. Its
+  cause is not traced: block-averaging the stars before centroiding is the first suspect. It is a fraction of a pixel (0.16
+  full-resolution pixels) and the same sign in every frame, so it is a bias, not scatter.
+- **The same stars, mostly.** On two frames the grid selection finds 88% and 90% of the stars the full-resolution one chooses
+  (the rest are other stars of similar rank), and 80 to 90% of what it chooses is in the full-resolution set. Which of several
+  comparable stars is taken depends on the ranking and the grid quota, so a different set of stars solving to 0.1" is the
+  expected outcome, not a failure.
+- **The scaling of the selection's pixel parameters hardly matters, except one.** Scaling `npixels` (the connected pixels a
+  detection needs) from 5 to 2, as a first guess, let in some 68,000 noise blobs a frame and made the selection three times
+  slower with the same stars found; it is left at 5. The other scalings (the background mesh, the default seeing, the area
+  threshold) changed neither the time nor the stars measurably.
+- **Limits.** Eight mast02 acquisition frames (the mirror out of the frame, about ten fields), one unit, binning 1 input. The
+  hardware-binned input and the guiding use are not tested; the southward offset must be understood before a binned selection is
+  used where 0.1" matters.
 
 ## Appendix A: the astrometry.net call
 

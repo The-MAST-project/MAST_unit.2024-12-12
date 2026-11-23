@@ -1,0 +1,231 @@
+"""The prototype's stages 0 to 2: an array described, brought to the 2x2 solve grid and cropped to the region -- and the
+selection run on that grid finding the stars the full-resolution selection finds. Synthetic frames only."""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+from scipy import ndimage
+from test_source_selection import NOISE, SKY, _star
+
+from imaging.hot_pixels import HotPixels
+from solvers.pixel_grid import orig_to_grid_fits, roi_center_to_crpix
+from solvers.solve_grid import FrameInfo, SolveGrid, binned_params, select_on_grid, to_solve_grid
+from solvers.source_selection import SelectionParams, select_sources
+
+FULL = (400, 600)  # (ny, nx) of the pretend sensor
+SAT = 60000.0
+
+
+def _hot(*xy) -> HotPixels:
+    x, y = np.array([p[0] for p in xy]), np.array([p[1] for p in xy])
+    return HotPixels(x=x, y=y, excess=np.full(len(x), 5000.0), frames=np.full(len(x), 10), image_shape=FULL)
+
+
+def _flat(value=100.0, shape=FULL) -> np.ndarray:
+    return np.full(shape, value)
+
+
+class TestCoordinates:
+    def test_the_two_directions_agree(self):
+        grid = SolveGrid(np.zeros((50, 60)), origin=(40, 20))
+        gx, gy = np.array([0.0, 7.5, 59.0]), np.array([0.0, 3.0, 49.0])
+
+        x, y = grid.to_full(gx, gy)
+        back_x, back_y = grid.to_grid(x, y)
+
+        assert np.allclose(back_x, gx) and np.allclose(back_y, gy)
+        assert x[0] == 40.5 and y[0] == 20.5  # the first block's centre: its two pixels are 40 and 41
+
+    def test_it_is_pixel_grids_mapping(self):
+        grid = SolveGrid(np.zeros((50, 60)), origin=(0, 0))
+        x = np.array([0.0, 11.0, 300.0])
+
+        gx, _ = grid.to_grid(x, x)
+
+        assert np.allclose(gx + 1.0, [orig_to_grid_fits(v + 1.0, 2) for v in x])  # FITS 1-based both ways
+
+    def test_the_fibre_as_crpix_is_what_the_unit_computes_for_an_roi(self):
+        info = FrameInfo(binning=1, full_shape=FULL, origin=(100, 60))
+        grid = to_solve_grid(_flat(shape=(120, 200)), info)
+
+        crpix = grid.fibre_fits((180, 110))
+
+        assert crpix == pytest.approx((roi_center_to_crpix(180, 100, 2), roi_center_to_crpix(110, 60, 2)))
+
+
+class TestBinningOne:
+    def test_blocks_are_averaged(self):
+        frame = np.arange(FULL[0] * FULL[1], dtype=float).reshape(FULL)
+
+        grid = to_solve_grid(frame, FrameInfo(binning=1, full_shape=FULL))
+
+        assert grid.shape == (200, 300)
+        assert grid.data[0, 0] == frame[:2, :2].mean() and grid.data[7, 9] == frame[14:16, 18:20].mean()
+
+    def test_an_odd_origin_drops_the_first_row_and_column_and_keeps_the_sensors_blocks(self):
+        frame = np.arange(7 * 9, dtype=float).reshape(7, 9)
+
+        grid = to_solve_grid(frame, FrameInfo(binning=1, full_shape=FULL, origin=(11, 5)))
+
+        assert grid.origin == (12, 6)  # blocks start on even sensor pixels
+        assert grid.shape == (3, 4)  # 6 rows and 8 columns are left, then halved
+        assert grid.data[0, 0] == frame[1:3, 1:3].mean()
+
+    def test_a_star_keeps_its_position(self):
+        frame = np.full(FULL, SKY)
+        _star(frame, 301.3, 177.6, 3e5)
+
+        grid = to_solve_grid(frame, FrameInfo(binning=1, full_shape=FULL))
+        gy, gx = ndimage.center_of_mass(grid.data - SKY, labels=None)
+        x, y = grid.to_full(gx, gy)
+
+        assert (float(x), float(y)) == pytest.approx((301.3, 177.6), abs=0.1)
+
+    def test_a_hot_pixel_is_filled_before_it_is_averaged_in(self):
+        frame = _flat()
+        frame[41, 80] = 60000.0
+        hot = _hot((80, 41))
+
+        with_map = to_solve_grid(frame, FrameInfo(binning=1, full_shape=FULL), hot)
+        without = to_solve_grid(frame, FrameInfo(binning=1, full_shape=FULL))
+
+        assert with_map.data[20, 40] == pytest.approx(100.0) and with_map.hot_filled == 1
+        assert without.data[20, 40] > 15000  # binned in, it is a quarter of 60000
+
+    def test_a_map_for_another_sensor_is_ignored(self):
+        frame = _flat()
+        frame[41, 80] = 60000.0
+        other = HotPixels(
+            x=np.array([80]), y=np.array([41]), excess=np.array([1.0]), frames=np.array([1]), image_shape=(10, 10)
+        )
+
+        grid = to_solve_grid(frame, FrameInfo(binning=1, full_shape=FULL), other)
+
+        assert grid.hot_filled == 0 and grid.data[20, 40] > 15000
+
+    def test_a_block_with_a_saturated_pixel_reads_as_saturated(self):
+        frame = _flat()
+        frame[41, 80] = 65535.0
+
+        grid = to_solve_grid(frame, FrameInfo(binning=1, full_shape=FULL, saturation_adu=SAT))
+
+        assert grid.data[20, 40] == SAT and grid.saturated_blocks == 1  # a mean of 16534 would have hidden it
+
+
+class TestBinningTwo:
+    def test_the_array_is_used_as_delivered(self):
+        frame = np.random.default_rng(1).normal(100, 5, (200, 300))
+
+        grid = to_solve_grid(frame, FrameInfo(binning=2, full_shape=FULL))
+
+        assert np.array_equal(grid.data, frame) and grid.origin == (0, 0)
+
+    def test_a_hot_pixel_fills_its_binned_pixel_from_the_binned_neighbours(self):
+        frame = np.full((200, 300), 100.0)
+        frame[20, 40] = 9000.0  # the binned pixel holding the unbinned hot pixel (80, 41)
+
+        grid = to_solve_grid(frame, FrameInfo(binning=2, full_shape=FULL), _hot((80, 41)))
+
+        assert grid.data[20, 40] == pytest.approx(100.0) and grid.hot_filled == 1
+
+    def test_an_origin_off_the_sensors_blocks_is_refused(self):
+        with pytest.raises(ValueError, match="start on a block of the sensor"):
+            to_solve_grid(np.zeros((10, 10)), FrameInfo(binning=2, full_shape=FULL, origin=(3, 4)))
+
+    def test_only_one_or_two(self):
+        with pytest.raises(ValueError, match="binning must be 1 or 2"):
+            to_solve_grid(np.zeros((10, 10)), FrameInfo(binning=3, full_shape=FULL))
+
+
+class TestRegion:
+    def test_the_crop_keeps_the_pixels_where_they_were(self):
+        frame = np.arange(FULL[0] * FULL[1], dtype=float).reshape(FULL)
+        whole = to_solve_grid(frame, FrameInfo(binning=1, full_shape=FULL))
+
+        cropped = to_solve_grid(frame, FrameInfo(binning=1, full_shape=FULL), region=(300, 200, 100, 60))
+
+        # centre (300, 200), half sizes (100, 60): the crop starts at unbinned (200, 140), which is grid pixel (100, 70)
+        assert cropped.shape == (60, 100) and cropped.origin == (200, 140)
+        x_whole, y_whole = whole.to_full(160.0, 80.0)
+        x_crop, y_crop = cropped.to_full(160.0 - 100, 80.0 - 70)  # the same grid pixel, in the crop's array
+        assert (float(x_whole), float(y_whole)) == (float(x_crop), float(y_crop))
+        assert cropped.data[0, 0] == whole.data[70, 100]
+
+    def test_a_region_past_the_frame_is_clipped(self):
+        grid = to_solve_grid(_flat(), FrameInfo(binning=1, full_shape=FULL), region=(590, 390, 200, 200))
+
+        assert grid.origin == (390, 190) and grid.shape == (105, 105)
+
+
+def test_the_pixel_parameters_follow_the_grid():
+    p = binned_params(SelectionParams())
+
+    assert p.box_size == 25 and p.default_fwhm_px == pytest.approx(3.8)
+    assert p.min_area == 2 and p.edge_margin_extra_px == 2.5 and p.coma_px == 1.0
+    assert p.npixels == SelectionParams().npixels == 5  # not scaled: it let in 68,000 noise blobs a frame
+    assert (p.nsigma, p.min_snr) == (2.0, 15.0)  # signal to noise is not in pixels
+
+
+# ------------------------------------------------------------------------------------------------ the selection on the grid
+
+
+def _field(seed=2):
+    """A 1800 x 2400 sensor with 20 planted stars on a grid and a few hot pixels, and where they are."""
+    ny, nx = 1800, 2400
+    rng = np.random.default_rng(seed)
+    frame = SKY + rng.normal(0, NOISE, (ny, nx))
+    planted = []
+    for i, x in enumerate(np.linspace(250, 2150, 5)):
+        for j, y in enumerate(np.linspace(300, 1500, 4)):
+            px, py = x + 0.37 * ((i * 7 + j) % 5), y + 0.29 * ((j * 5 + i) % 4)  # off the pixel grid
+            _star(frame, px, py, 2e5)
+            planted.append((px, py))
+    hx, hy = np.array([500, 1300, 900]), np.array([400, 900, 1400])
+    frame[hy, hx] += 4000.0
+    hot = HotPixels(x=hx, y=hy, excess=np.full(3, 4000.0), frames=np.full(3, 9), image_shape=(ny, nx))
+    return frame, planted, hot
+
+
+def test_the_grid_selection_finds_the_stars_the_full_resolution_one_does():
+    frame, planted, hot = _field()
+    params = SelectionParams(n_target=20, n_max=40, min_snr=25.0, grid=(2, 2))
+    fibre, radius = (1200.0, 900.0), 1500.0
+    full = select_sources(
+        hot.fill(frame), optical_center=fibre, low_coma_radius=radius, params=params
+    )  # the full-resolution frame, as the stage selects today
+    grid = to_solve_grid(frame, FrameInfo(binning=1, full_shape=frame.shape), hot)
+
+    binned = select_on_grid(grid, params, fibre_xy=fibre, low_coma_radius_px=radius)
+
+    assert full.status == binned.status == "ok"
+    full_xy = np.column_stack([full.x[full.kept], full.y[full.kept]])
+    bx, by = grid.to_full(binned.x[binned.kept], binned.y[binned.kept])
+    nearest = np.array([np.min(np.hypot(full_xy[:, 0] - x, full_xy[:, 1] - y)) for x, y in zip(bx, by, strict=True)])
+    assert binned.kept.sum() >= 18 and (nearest < 0.5).mean() >= 0.9  # the same stars, to half a pixel of the sensor
+
+
+def test_the_grid_selection_recovers_the_planted_positions():
+    frame, planted, hot = _field()
+    params = SelectionParams(n_target=20, n_max=40, min_snr=25.0, grid=(2, 2))
+    grid = to_solve_grid(frame, FrameInfo(binning=1, full_shape=frame.shape), hot)
+
+    sel = select_on_grid(grid, params, fibre_xy=(1200.0, 900.0), low_coma_radius_px=1500.0)
+
+    x, y = grid.to_full(sel.x[sel.kept], sel.y[sel.kept])
+    errors = [min(np.hypot(px - a, py - b) for px, py in planted) for a, b in zip(x, y, strict=True)]
+    assert len(errors) >= 18 and max(errors) < 0.3
+
+
+def test_a_cropped_grid_selects_in_the_same_sky():
+    frame, planted, hot = _field()
+    params = SelectionParams(n_target=10, n_max=40, min_snr=25.0, grid=(2, 2))
+    info = FrameInfo(binning=1, full_shape=frame.shape)
+    grid = to_solve_grid(frame, info, hot, region=(1200.0, 900.0, 1000.0, 700.0))
+
+    sel = select_on_grid(grid, params, fibre_xy=(1200.0, 900.0), low_coma_radius_px=900.0)
+
+    x, y = grid.to_full(sel.x[sel.kept], sel.y[sel.kept])
+    assert sel.kept.sum() >= 10
+    assert all(min(np.hypot(px - a, py - b) for px, py in planted) < 0.3 for a, b in zip(x, y, strict=True))
+    assert all(200 <= v <= 2200 for v in x) and all(200 <= v <= 1600 for v in y)  # inside the region
