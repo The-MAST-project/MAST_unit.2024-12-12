@@ -80,7 +80,8 @@ def star_size(extraction: dict | None, raw: np.ndarray) -> tuple[float | None, i
 
     A badly focused frame gives the optical-centre finder a different answer (see the autofocus sweeps), so every
     row carries this number and the analysis can drop the frames that were out of focus. `data_sub` is the
-    background-subtracted frame; the flux of each star is summed in a disc of 0.75 * HFD_APERTURE_PX, less the median of the ring outside it, and
+    background-subtracted frame; the flux of each star is summed in a disc of 0.75 * HFD_APERTURE_PX, less the median of
+    the ring outside it, and
     the diameter that holds half of it is reported, so a frame whose stars outgrow the disc reads as about its size.
     """
     if extraction is None or extraction.get("data_sub") is None:
@@ -299,7 +300,12 @@ def write_picture(path: Path, data: np.ndarray, shadow, row: dict, width: int = 
     top = rgb.shape[0] + 2 * pad + 8
     draw.text((8, 6), f"{row['frame']}", fill=(235, 235, 235), font=big)
     draw.text((8, 30), f"{row['unit']}   shadow: {row['shadow_text']}", fill=(200, 200, 200), font=small)
-    draw.text((8, 52), "umbra purple, penumbra blue; ticks: the coma axes of the stars of each fit", fill=(160, 160, 160), font=small)
+    draw.text(
+        (8, 52),
+        "umbra purple, penumbra blue; ticks: the coma axes of the stars of each fit",
+        fill=(160, 160, 160),
+        font=small,
+    )
     for i, (text, colour) in enumerate(legend_lines(row)):
         draw.text((8, top + i * 24), text, fill=colour, font=big)
     try:
@@ -325,7 +331,9 @@ def read_manifest(path: Path) -> list[dict]:
         ]
 
 
-def resolve_fibres(units: set[str], overrides: dict[str, tuple[float, float]], from_config: bool) -> dict[str, tuple[float, float]]:
+def resolve_fibres(
+    units: set[str], overrides: dict[str, tuple[float, float]], from_config: bool
+) -> dict[str, tuple[float, float]]:
     """The DB fibre centre of each unit (0-based full-frame pixels): `--fibre` overrides, then the configuration."""
     fibres = dict(overrides)
     if from_config:
@@ -367,7 +375,10 @@ def summarise(rows: list[dict], fibres: dict[str, tuple[float, float]], seed: in
                 xs = np.array([r[variant]["x"] for r in ok])
                 ys = np.array([r[variant]["y"] for r in ok])
                 v["frame_median"] = [float(np.median(xs)), float(np.median(ys))]
-                v["frame_mad"] = [float(1.4826 * np.median(abs(xs - np.median(xs)))), float(1.4826 * np.median(abs(ys - np.median(ys))))]
+                v["frame_mad"] = [
+                    float(1.4826 * np.median(abs(xs - np.median(xs)))),
+                    float(1.4826 * np.median(abs(ys - np.median(ys)))),
+                ]
             with contextlib.redirect_stdout(io.StringIO()):  # the finder reports its failures by printing
                 extractions, pooled = _pooled(unit_rows, variant)
             if pooled is not None:
@@ -385,7 +396,10 @@ def summarise(rows: list[dict], fibres: dict[str, tuple[float, float]], seed: in
                         boots.append((b.center_x, b.center_y))
                 if len(boots) > 20:
                     b = np.array(boots)
-                    v["pooled_bootstrap_p16_p84"] = [np.percentile(b, 16, axis=0).tolist(), np.percentile(b, 84, axis=0).tolist()]
+                    v["pooled_bootstrap_p16_p84"] = [
+                        np.percentile(b, 16, axis=0).tolist(),
+                        np.percentile(b, 84, axis=0).tolist(),
+                    ]
                     v["bootstrap_valid"] = len(boots)
                 if fibre:
                     v["pooled_minus_fibre"] = [v["pooled"][0] - fibre[0], v["pooled"][1] - fibre[1]]
@@ -408,10 +422,16 @@ def write_scatter(out: Path, rows: list[dict], fibres: dict, summary: dict) -> l
         fig, ax = plt.subplots(figsize=(8, 7))
         colours = {"production": "#e69f00", "masked": "#009e73"}
         for variant in VARIANTS:
-            pts = [(r[variant]["x"], r[variant]["y"]) for r in rows if r["unit"] == unit and "error" not in r and r[variant]["ok"]]
+            pts = [
+                (r[variant]["x"], r[variant]["y"])
+                for r in rows
+                if r["unit"] == unit and "error" not in r and r[variant]["ok"]
+            ]
             if pts:
                 a = np.array(pts)
-                ax.scatter(a[:, 0], a[:, 1], s=14, color=colours[variant], alpha=0.6, label=f"{variant}: per frame ({len(pts)})")
+                ax.scatter(
+                    a[:, 0], a[:, 1], s=14, color=colours[variant], alpha=0.6, label=f"{variant}: per frame ({len(pts)})"
+                )
             pooled = entry[variant].get("pooled")
             if pooled:
                 ax.scatter(*pooled, marker="*", s=260, color=colours[variant], edgecolor="black", label=f"{variant}: pooled")
@@ -435,11 +455,29 @@ def write_scatter(out: Path, rows: list[dict], fibres: dict, summary: dict) -> l
 
 
 CSV_FIELDS = ["unit", "night", "frame", "shape", "fibre_x", "fibre_y", "shadow_present", "shadow_depth", "shadow_truncated"]
-VARIANT_FIELDS = ["ok", "why", "x", "y", "dx", "dy", "distance", "n_sources", "n_detected", "residual_rms", "radiality", "radiality_spin1", "seconds"]
+VARIANT_FIELDS = [
+    "ok",
+    "why",
+    "x",
+    "y",
+    "dx",
+    "dy",
+    "distance",
+    "n_sources",
+    "n_detected",
+    "residual_rms",
+    "radiality",
+    "radiality_spin1",
+    "seconds",
+]
 
 
 def write_csv(path: Path, rows: list[dict]) -> None:
-    fields = CSV_FIELDS + [f"{v}_{f}" for v in VARIANTS for f in VARIANT_FIELDS] + ["hfd", "hfd_n", "t_shadow", "seconds", "error", "path"]
+    fields = (
+        CSV_FIELDS
+        + [f"{v}_{f}" for v in VARIANTS for f in VARIANT_FIELDS]
+        + ["hfd", "hfd_n", "t_shadow", "seconds", "error", "path"]
+    )
     with path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fields)
         writer.writeheader()
@@ -480,10 +518,18 @@ def format_summary(summary: dict) -> str:
                 lines.append(
                     f"    per frame   median ({v['frame_median'][0]:.0f}, {v['frame_median'][1]:.0f})  spread (MAD) "
                     f"({v['frame_mad'][0]:.0f}, {v['frame_mad'][1]:.0f}) px"
-                    + (f"   minus DB ({v['frame_median_minus_fibre'][0]:+.0f}, {v['frame_median_minus_fibre'][1]:+.0f})" if "frame_median_minus_fibre" in v else "")
+                    + (
+                        f"   minus DB ({v['frame_median_minus_fibre'][0]:+.0f}, {v['frame_median_minus_fibre'][1]:+.0f})"
+                        if "frame_median_minus_fibre" in v
+                        else ""
+                    )
                 )
             if "pooled" in v:
-                text = f"    pooled      ({v['pooled'][0]:.0f}, {v['pooled'][1]:.0f}) from {v['pooled_sources']} sources, radiality {v['pooled_radiality']:.2f}"
+                pooled = v["pooled"]
+                text = (
+                    f"    pooled      ({pooled[0]:.0f}, {pooled[1]:.0f}) from {v['pooled_sources']} sources, "
+                    f"radiality {v['pooled_radiality']:.2f}"
+                )
                 if "pooled_bootstrap_p16_p84" in v:
                     lo, hi = v["pooled_bootstrap_p16_p84"]
                     text += f"   68% over frames x [{lo[0]:.0f}, {hi[0]:.0f}] y [{lo[1]:.0f}, {hi[1]:.0f}]"
@@ -501,14 +547,22 @@ def _init_worker() -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--manifest", type=Path, required=True, help="TSV with the columns unit and path")
-    parser.add_argument("--root", type=Path, required=True, help="what the manifest's paths are relative to (the share's MAST folder)")
+    parser.add_argument(
+        "--root", type=Path, required=True, help="what the manifest's paths are relative to (the share's MAST folder)"
+    )
     parser.add_argument("--out", type=Path, required=True, help="the survey's CSV, summary and scatter pictures")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--limit", type=int, default=None, help="only the first N frames of the manifest")
-    parser.add_argument("--fibre", nargs=3, action="append", metavar=("UNIT", "X", "Y"), default=[], help="the DB fibre pixel of a unit")
-    parser.add_argument("--fibre-from-config", action="store_true", help="read each unit's fibre pixel from the configuration database")
+    parser.add_argument(
+        "--fibre", nargs=3, action="append", metavar=("UNIT", "X", "Y"), default=[], help="the DB fibre pixel of a unit"
+    )
+    parser.add_argument(
+        "--fibre-from-config", action="store_true", help="read each unit's fibre pixel from the configuration database"
+    )
     parser.add_argument("--no-pictures", action="store_true")
-    parser.add_argument("--picture-dir", type=Path, default=None, help="write the pictures here instead of beside each frame")
+    parser.add_argument(
+        "--picture-dir", type=Path, default=None, help="write the pictures here instead of beside each frame"
+    )
     args = parser.parse_args(argv)
 
     jobs = read_manifest(args.manifest)[: args.limit]
@@ -529,7 +583,10 @@ def main(argv: list[str] | None = None) -> int:
         for done, future in enumerate(as_completed(futures), 1):
             row = future.result()
             rows.append(row)
-            print(f"[{done}/{len(jobs)}] {row['unit']} {row['frame'][:60]}  {row['seconds']} s  {row.get('error', '')}", flush=True)
+            print(
+                f"[{done}/{len(jobs)}] {row['unit']} {row['frame'][:60]}  {row['seconds']} s  {row.get('error', '')}",
+                flush=True,
+            )
     rows.sort(key=lambda r: (r["unit"], r["path"]))
 
     summary = summarise(rows, fibres)
