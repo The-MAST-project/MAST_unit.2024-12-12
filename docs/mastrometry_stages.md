@@ -166,7 +166,8 @@ on the right. The residual RMS is 1.57″.*
 ![Star map, selective stage](mastrometry_stages/margin_selective_stars.jpg)
 
 *Selective stage, same frame (mast01 `sky` frame, 10 s): 42 chosen stars (orange +), 27 matched and used (blue
-circles). All are outside the shadow and near the fibre (the white +). The residual RMS is 0.28″.*
+circles). All are outside the shadow and near the fibre (the white +). The residual RMS is 0.28″. The green circle is the
+area the star selection searched, 1411 px (see below).*
 
 **Reading the star map.** Orange + is a source that was **extracted**: the list handed to the solver (our 42 chosen
 stars in the selective stage; astrometry.net's own 410 in the original). A blue circle is a star the solution **used**,
@@ -176,9 +177,11 @@ pixel would move if that star were left out (the labelled values, in arcseconds)
 (order 2) and not astrometry.net's own fit, so it is indicative.
 
 **The selection's area.** A selective star map also draws the contour of the area the star selection searched (since
-2026-11-23; the pictures in this document were made before and do not have it): a **yellow circle at the low-coma radius**
-the search starts from and a **bluish-green circle at the radius it grew to**, one circle (green) when it did not have to
-widen. The caption gives both radii. The circle is about the selection's centre, the fibre pixel.
+2026-11-23): a **yellow circle at the low-coma radius** the search starts from and a **bluish-green circle at the radius it
+grew to**, one circle (green) when it did not have to widen. The caption gives both radii. The two selective maps in this
+document (here and in 7.5 and 7.6) were remade with it; the original and shadowed maps draw none, as they select nothing.
+Those two were made with the search about the **frame's centre**, as the numbers in this document were, so the circles are
+about the middle of the frame and not about the fibre (the white +); from the fibre pixel on, the circle is about the white +.
 
 The xylist route is exact. The pixel convention was checked against astrometry.net's own `image2xy`: our positions
 agree to (−0.02, −0.03) binned pixels, and solving `image2xy`'s own 342 sources through our route at order 2
@@ -486,7 +489,8 @@ stars are on both sides. Residual RMS 1.81″; median 0.66″; clipped RMS 0.94�
 here, with the median still better: see the note after the §7.2 table.</em></td>
 <td valign="top"><em>Selective: 58 stars chosen, 55 used, on both sides of the band and away from it. None is near the fibre
 (the white +), which is in the middle of the umbra: the fit interpolates across the shadow to it. Residual RMS 0.35″;
-median 0.26″.</em></td>
+median 0.26″. The yellow circle is the low-coma radius (1411 px): it holds no star at all, as it lies in the shadow. The
+search widened to the green circle, 3445 px, before it had 30 stars outside the band.</em></td>
 </tr>
 </table>
 
@@ -519,7 +523,8 @@ The three solves, left to right, as the unit's star maps (same legend as in §7.
 Residual RMS 1.57″, of which most is a few stars; the median is 0.51″.</em></td>
 <td valign="top"><em>Shadowed: 282 sources, none in the band, 154 used. RMS 0.91″; median 0.40″.</em></td>
 <td valign="top"><em>Selective: 42 chosen, 27 used, all well outside the shadow and in a group around the fibre (the white +,
-just left of the penumbra). RMS 0.28″; median 0.25″.</em></td>
+just left of the penumbra). RMS 0.28″; median 0.25″. The green circle is the low-coma radius, 1411 px: the search did
+not have to widen.</em></td>
 </tr>
 </table>
 
