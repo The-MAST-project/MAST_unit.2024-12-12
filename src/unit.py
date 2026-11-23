@@ -70,6 +70,7 @@ from common.paths import PathMaker
 from common.rois import UnitRoi
 from common.utils import RepeatTimer, function_name, time_stamp
 from covers import Covers
+from dance import DEFAULT_STYLE, Step, dance_path
 from expose_params import MAX_OFFSET_ARCSEC, MAX_OFFSET_DEGREES, resolve_exposure_roi, resolve_offsets
 from flux_metering import correlate
 from flux_metering.session import FluxMeteringParams, FluxMeteringSession
@@ -981,6 +982,9 @@ class Unit(Component, OpmodeBase):
         # a thread already parked waiting for a readout that is no longer coming.
         if self.is_active(UnitActivities.Exposing):
             self._expose_cancelled.set()
+        # The dance polls its flag, so clearing it stops the dance; and `Aborting` cannot end
+        # while it is raised (it is in `_ABORTABLE_WORK`).
+        self.end_activity(UnitActivities.Dancing)
 
         def attempt(what: str, action):
             try:
@@ -1969,16 +1973,55 @@ class Unit(Component, OpmodeBase):
         logger.info(f"{op}: done.")
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.DEMO, completion=UnitActivities.Dancing)
-    async def endpoint_start_dancing(self, style: str = "foxtrot"):
-        logger.info(f"unit.dance: dancing the {style} ...")
+    @endpoint(tier=Tier.DEMO, completion=UnitActivities.Dancing, autostartup=True)
+    def endpoint_start_dancing(self, style: str = DEFAULT_STYLE):
+        """Start the unit dancing `style` (see `dance.STYLES`) and return at once; `Dancing` clears when it is over.
+
+        Starts the unit up first (the covers open and the mount homes itself). Refused while anything
+        else is at work. `stop_dancing` or `abort` ends it: the dance hears the flag clear within a poll.
+        """
+        op = function_name()
+        try:
+            path = dance_path(style)
+        except ValueError as e:
+            return CanonicalResponse(errors=[f"{op}: {e}"])
+        if self.is_active(UnitActivities.Dancing):
+            return CanonicalResponse(errors=[f"{op}: already dancing"])
+        in_the_way = (*_ABORTABLE_WORK, UnitActivities.Aborting)
+        busy = [flag.name for flag in in_the_way if flag is not UnitActivities.Dancing and self.is_active(flag)]
+        if busy:
+            return CanonicalResponse(errors=[f"{op}: not while the unit is busy: {', '.join(busy)}"])
+        try:
+            mount = self.required_mount
+        except Exception as e:  # noqa: BLE001 -- _required says which component is missing
+            return CanonicalResponse(errors=[f"{op}: {e}"])
+        logger.info(f"{op}: dancing the {style} ({len(path)} steps)")
         self.start_activity(UnitActivities.Dancing, details=[style])
+        Thread(name="dance", target=self.do_dance, args=(mount, path, style)).start()
         return CanonicalResponse_Ok
+
+    def do_dance(self, mount: Mount, path: list[Step], style: str) -> None:
+        """The dance thread: walk `path` while `Dancing` is raised, and always lower it."""
+        op = function_name()
+        try:
+            error = mount.dance_alt_az(path, lambda: self.is_active(UnitActivities.Dancing))
+            if error:
+                logger.error(error)
+                self.errors.append(error)
+        except Exception as e:  # noqa: BLE001 -- a thread: nobody else would see it
+            logger.exception(f"{op}: the {style} failed")
+            self.errors.append(f"{op}: the {style} failed: {e!r}")
+        finally:
+            self.end_activity(UnitActivities.Dancing)
 
     @endpoint(tier=Tier.DEMO, completion=Completion.IMMEDIATE)
     async def endpoint_stop_dancing(self):
+        """Stop dancing: clear `Dancing` (the dance hears it) and stop the mount where it is."""
         logger.info("unit.dance: stopping dancing ...")
+        was_dancing = self.is_active(UnitActivities.Dancing)
         self.end_activity(UnitActivities.Dancing)
+        if was_dancing and self.mount is not None:
+            self.mount.abort()
         return CanonicalResponse_Ok
 
     # async def set_sky_and_spec_pixel_values(self,
@@ -2622,6 +2665,7 @@ class Unit(Component, OpmodeBase):
             base_path + "/start_dancing",
             endpoint=self.endpoint_start_dancing,
             methods=["PUT"],
+            autostarter=self._autostarted,
         )
         add_api_route(
             router,

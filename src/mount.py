@@ -1,6 +1,6 @@
 import datetime
-import math
 import time
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from enum import StrEnum
 from logging import Logger
@@ -28,6 +28,7 @@ from common.parsers import (
     sexagesimal_hours_to_decimal,
 )
 from common.utils import RepeatTimer, caller_name, function_name, time_stamp
+from dance import DEFAULT_STYLE, Step, dance_path
 from PlaneWave import pwi4_client
 
 if TYPE_CHECKING:
@@ -144,6 +145,12 @@ def _gradual_ramp_complete(prog) -> bool:
     A missing field (None) is treated as complete (nothing to wait for).
     """
     return prog is None or abs(prog) >= 1.0
+
+
+#: The dance: how long to rest at each step, how long one slew may take, and how long to wait for a slew to start.
+DANCE_REST_SECONDS = 5.0
+DANCE_SLEW_TIMEOUT_SECONDS = 180.0
+DANCE_SLEW_START_GRACE_SECONDS = 5.0
 
 
 class Mount(Component, SwitchedOutlet, AscomDispatcher):
@@ -1299,25 +1306,59 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         return self._was_shut_down
 
     @endpoint(tier=Tier.DEMO, completion=Completion.BLOCKING)
-    def dance(self):
-        coordinates = cone_coordinates_generator()
-        logger.info("dance: starting to dance")
+    def dance(self, style: str = DEFAULT_STYLE):
+        """Dance `style` (see `dance.STYLES`) and return when done or aborted. Does not home the mount."""
+        try:
+            path = dance_path(style)
+        except ValueError as e:
+            return CanonicalResponse(errors=[str(e)])
         self.start_activity(MountActivities.Dancing)
-        self.find_home()
-        for coord in coordinates:
-            logger.info("dance: dancing to {coord=}")
-            self.goto_ra_dec_j2000(coord[0], coord[1])
-            time.sleep(2)  # let it start moving
-            stat = self.pw.status()
-            while stat.mount.is_slewing:  # type: ignore
-                time.sleep(2)
-                stat = self.pw.status()
-            logger.info(f"dance: resting 10 seconds at {coord=}")
-            time.sleep(10)
-        logger.info("dance: done dancing")
-        self.find_home()
-        self.end_activity(MountActivities.Dancing)
-        return CanonicalResponse_Ok
+        try:
+            error = self.dance_alt_az(path, lambda: self.is_active(MountActivities.Dancing))
+        finally:
+            self.end_activity(MountActivities.Dancing)
+        return CanonicalResponse(errors=[error]) if error else CanonicalResponse_Ok
+
+    def dance_alt_az(
+        self,
+        path: Sequence[Step],
+        keep_going: Callable[[], bool],
+        *,
+        rest_seconds: float = DANCE_REST_SECONDS,
+        slew_timeout_seconds: float = DANCE_SLEW_TIMEOUT_SECONDS,
+        start_grace_seconds: float = DANCE_SLEW_START_GRACE_SECONDS,
+        poll_seconds: float = 1.0,
+    ) -> str | None:
+        """Walk `path`, a slew and a rest per step, for as long as `keep_going()` says so.
+
+        Returns None when the path was danced or `keep_going` ended it, else the reason it
+        stopped: a goto the mount refused, or a slew still running after `slew_timeout_seconds`.
+        Leaves the mount where it stopped, tracking off (an alt/az goto turns it off). Checks
+        `keep_going` between steps, during each slew and during each rest, so a stop is heard
+        within a poll.
+        """
+        op = function_name()
+        for number, (alt, az) in enumerate(path, 1):
+            if not keep_going():
+                return None
+            logger.info(f"{op}: step {number}/{len(path)}: alt={alt:g} az={az:g}")
+            response = self.goto_alt_az(alt, az)
+            if response.failed:
+                return f"{op}: step {number} (alt={alt:g}, az={az:g}) refused: {'; '.join(response.errors or [])}"
+            # The slew has to be seen to start before is_slewing=False means it ended.
+            grace_end = time.monotonic() + start_grace_seconds
+            while not self.is_slewing and time.monotonic() < grace_end and keep_going():
+                time.sleep(min(poll_seconds, 0.5))
+            deadline = time.monotonic() + slew_timeout_seconds
+            while self.is_slewing and keep_going():
+                if time.monotonic() >= deadline:
+                    return f"{op}: step {number} (alt={alt:g}, az={az:g}) still slewing after {slew_timeout_seconds:.0f} s"
+                time.sleep(poll_seconds)
+            rest_end = time.monotonic() + rest_seconds
+            while time.monotonic() < rest_end and keep_going():
+                time.sleep(min(poll_seconds, 0.5))
+        logger.info(f"{op}: done dancing")
+        return None
 
     @property
     def api_router(self) -> APIRouter:
@@ -1362,16 +1403,3 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         add_api_route(router, base_path + "/dance", endpoint=self.dance, methods=["PUT"])
 
         return router
-
-
-# Function to generate cone coordinates
-def cone_coordinates_generator(steps=20, base_radius=30, rotation_axis_ra=0, rotation_axis_dec=60):
-    cone_coordinates = []
-    for i in range(steps):
-        angle = i * 2 * math.pi / steps
-        ra = rotation_axis_ra + base_radius * math.cos(angle)
-        dec = rotation_axis_dec + base_radius * math.sin(angle)
-        cone_coordinates.append((ra, dec))
-
-    # Combine all steps
-    return [(rotation_axis_ra, rotation_axis_dec)] + cone_coordinates
