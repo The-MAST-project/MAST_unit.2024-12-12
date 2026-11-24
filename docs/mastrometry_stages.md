@@ -750,6 +750,37 @@ cross-section the selection reads its deficits from), when and on which frame it
   detects again, `remove` drops one. A cheap check of a stored model against the current frame's profile is a follow-up.
 - **Nothing raises**: a damaged or unwritable store is an empty one, and the shadow is detected.
 
+### 9.7 `sep` is the source detector (2026-11-24)
+
+The selection finds its sources with the `sep` package (SExtractor's core as a C library, `solvers/sep_detect.py`), in place of
+photutils (`extract_sources`). **It is a requirement, and the default** (`SelectionParams.detector = "sep"`): it is also what the
+guider will use. The contract is `extract_sources`'s, so nothing downstream changes. `--param detector=photutils` (in
+`tools/source_survey.py`, or `SelectionParams(detector="photutils")`) still runs the old detector, so the two can be compared.
+
+Measured on mast08 (the 2x2 grid, `sep` 1.4.1, best of two or three runs; the same parameters; the detection filter, deblending
+and cleaning off so that it detects what photutils does):
+
+| frame | step | photutils | sep | stars kept |
+|---|---|---|---|---|
+| mast02 acquisition, no shadow | detection alone | 3.76 s, 3488 sources | 1.98 s, 3479 | |
+| | whole grid | 5.19 s | 3.47 s | 54 / 54 |
+| | windowed | 1.33 s | **0.45 s** | 54 / 54 |
+| mast01 `spec_3`, shadow centred | detection alone | 4.06 s | 0.28 s | |
+| | whole grid | 4.41 s | **0.61 s** | 26 / 26 |
+| | windowed | 4.08 s | **0.56 s** | 25 / 25 |
+
+- **The same stars.** On mast01 the kept sets are identical; on mast02, 51 of photutils' 54 kept stars are also kept by `sep`
+  within half a pixel. 92% of photutils' detections have a `sep` detection within a pixel (median 0.004 to 0.006 px).
+- **Where the time went.** Mostly photutils interpolating its background and noise meshes back to the frame (`scipy.ndimage.zoom`),
+  then the segmentation; `sep` does both in C. With the grid and the window, a selection is 0.45 to 0.6 s on these two frames,
+  against 13 to 21 s on the full-resolution frame.
+- **Not the same, and not yet tuned.** The background estimator is SExtractor's (a clipped mode and a spline), so the local noise, and
+  which faint sources pass the SNR cuts, moves a little. The SNR floors and the four loosened parameters were tuned on photutils.
+  It was made the default after two frames on one machine: the survey and Gaia frames still have to be run with both detectors and
+  the *solutions* compared, not only the kept stars. The optical-centre calibration keeps photutils (`extract_sources` is untouched).
+- **Dependency.** `sep==1.4.1` is in `requirements.txt` and is imported when the selection is: a machine without it fails at
+  import, not partway through a solve. A cp312 Windows wheel exists. Not checked: its licence terms.
+
 ### 9.5 The prototype
 
 `src/solvers/solve_grid.py` is stages 0 to 2 and the selection run on the grid (`FrameInfo`, `to_solve_grid`, `binned_params`,

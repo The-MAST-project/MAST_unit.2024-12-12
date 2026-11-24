@@ -40,6 +40,7 @@ from calibration.analysis.optical_center import extract_sources
 from common.mast_logging import get_logger
 
 from .selection_window import GridMask, Tile, Window, plan_tiles, window_schedule
+from .sep_detect import extract_sources_sep
 
 logger = get_logger(__name__)
 
@@ -113,6 +114,9 @@ class SelectionParams:
     fail_below: int = 8
     #: a fraction of the shorter side, the low-coma radius when none is calibrated
     geometric_low_coma_fraction: float = 0.25
+    #: what finds the sources: ``"sep"`` (`solvers/sep_detect.py`: the package is a requirement, and is what the guider will
+    #: use too), or ``"photutils"`` (`extract_sources`, several times slower, kept to compare the two)
+    detector: str = "sep"
 
 
 @dataclass
@@ -330,6 +334,19 @@ def _resolve_full_scale(params: SelectionParams, header, raw: np.ndarray) -> tup
     return None, None
 
 
+def _extract(data: np.ndarray, params: SelectionParams) -> dict | None:
+    """The detections of ``data``, by the detector ``params`` names."""
+    if params.detector == "sep":
+        return extract_sources_sep(
+            data, nsigma=params.nsigma, npixels=params.npixels, box_size=params.box_size, local_noise=params.local_noise
+        )
+    if params.detector == "photutils":
+        return extract_sources(
+            data, nsigma=params.nsigma, npixels=params.npixels, box_size=params.box_size, local_noise=params.local_noise
+        )
+    raise ValueError(f"detector must be 'sep' or 'photutils', not {params.detector!r}")
+
+
 @dataclass
 class _Detections:
     """One tile's detections, in the tile's own pixels, with the measurements that do not depend on the seeing."""
@@ -351,9 +368,7 @@ class _Detections:
 def _detect_tile(raw_tile: np.ndarray, x0: int, y0: int, params: SelectionParams) -> _Detections | None:
     """Detect in a tile, and take each source's raw peak, its half-maximum FWHM and its SNR (the seeing-free pass)."""
     data = np.asarray(raw_tile, dtype=float)
-    detected = extract_sources(
-        data, nsigma=params.nsigma, npixels=params.npixels, box_size=params.box_size, local_noise=params.local_noise
-    )
+    detected = _extract(data, params)
     if detected is None or detected["n_detected"] == 0:
         return None
     sub = detected["data_sub"]

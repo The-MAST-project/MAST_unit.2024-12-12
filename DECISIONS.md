@@ -2,6 +2,26 @@
 
 ---
 
+## [2026-11-24] `sep` is the source detector, and a requirement
+
+**Why:** on the 2x2 grid most of a selection's time was photutils interpolating its background meshes and segmenting
+(`scipy.ndimage.zoom` was 40-57% of it). `sep` does the same steps in C. The guider will use it too, so it is not an
+optional speed-up.
+
+**What:** `SelectionParams.detector` is `"sep"` by default (`solvers/sep_detect.py`, the contract of `extract_sources`, with
+`sep`'s filter, deblending and cleaning off so it detects what photutils does); `"photutils"` is kept to compare the two.
+`sep==1.4.1` is in `requirements.txt` and imported with the selection: no fallback, a machine without it fails at import.
+On mast08 the grid selection takes 0.45-0.6 s with the window, against 1.3-4 s with photutils, and chooses the same stars on
+two frames.
+
+- **Made the default before the solutions were compared.** The SNR floors and the loosened parameters were tuned on photutils
+  and `sep`'s background estimator is not the same. Run the survey and Gaia frames with both detectors and compare the solved
+  positions; `--param detector=photutils` is the other arm.
+- **The calibration keeps photutils:** `extract_sources` is shared with the optical-centre fit and is unchanged.
+- **Not added to MAST_common's `SourceSelectionConfig`.**
+
+---
+
 ## [2026-11-24] Shadow models: kept in the unit's local filing area, for binnings 1 and 2
 
 **Why:** `imaging/shadow_store.py` (2026-11-23) wrote `<unit folder on the share>/Calibration/shadow_models.json`; on the

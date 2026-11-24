@@ -32,7 +32,8 @@ Usage:
     --roi X Y W H            crop first (the spec / sky ROI); coordinates in the CSVs are reported
                              both in the crop and in the full frame
     --no-shadow              the fold mirror is out: do not look for a shadow
-    --param NAME=VALUE       override a SelectionParams field (repeatable), e.g. --param min_sep_fwhm=1.5
+    --param NAME=VALUE       override a SelectionParams field (repeatable), e.g. --param min_sep_fwhm=1.5,
+                             --param detector=sep (the sep package finds the sources, several times faster)
     --hot-pixels FILE|UNIT   fill this camera's hot pixels before searching: a hot_pixels.json, or a unit whose
                              Calibration folder on the share holds one (tools/build_hot_pixels.py builds it)
     --stretch zscale|asinh   the picture's display scale: zscale (as ds9's scale zscale, reduced by block
@@ -834,6 +835,8 @@ def parse_param_overrides(items: list[str] | None) -> dict[str, object]:
         default = getattr(SelectionParams(), name)
         if isinstance(default, bool):
             out[name] = text.lower() in ("1", "true", "yes", "on")
+        elif isinstance(default, str):
+            out[name] = text
         elif isinstance(default, tuple):
             out[name] = tuple(int(v) for v in text.split(","))
         elif isinstance(default, int):
