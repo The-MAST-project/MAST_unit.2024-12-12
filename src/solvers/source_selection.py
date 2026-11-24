@@ -39,6 +39,8 @@ from scipy.spatial import cKDTree
 from calibration.analysis.optical_center import extract_sources
 from common.mast_logging import get_logger
 
+from .selection_window import GridMask, Tile, Window, plan_tiles, window_schedule
+
 logger = get_logger(__name__)
 
 #: In the order a reason is reported when a source fails more than one test. `faint` is first so that
@@ -134,6 +136,11 @@ class Selection:
     exclusion_half_width_px: float | None = None
     fit_order: int | None = None
     status: str = "ok"  # "ok", "too_few_sources", "no_sources"
+    #: the windowed selection: how many windows it took, the last one's box (x0, y0, x1, y1), and the pixels detected in
+    #: (tiles, padding included, summed over every window run). The whole-frame selection is one window, the frame.
+    windows_used: int = 1
+    window_box: tuple[int, int, int, int] | None = None
+    area_measured_px: float | None = None
     # one entry per detected source, in `extract_sources` order
     x: np.ndarray = field(default_factory=lambda: np.empty(0))
     y: np.ndarray = field(default_factory=lambda: np.empty(0))
@@ -323,6 +330,349 @@ def _resolve_full_scale(params: SelectionParams, header, raw: np.ndarray) -> tup
     return None, None
 
 
+@dataclass
+class _Detections:
+    """One tile's detections, in the tile's own pixels, with the measurements that do not depend on the seeing."""
+
+    x0: int
+    y0: int
+    detected: dict
+    raw_peak: np.ndarray
+    prelim_fwhm: np.ndarray
+    prelim_snr: np.ndarray
+    noise_at: np.ndarray
+    frame_noise: float
+
+    @property
+    def n(self) -> int:
+        return int(self.detected["n_detected"])
+
+
+def _detect_tile(raw_tile: np.ndarray, x0: int, y0: int, params: SelectionParams) -> _Detections | None:
+    """Detect in a tile, and take each source's raw peak, its half-maximum FWHM and its SNR (the seeing-free pass)."""
+    data = np.asarray(raw_tile, dtype=float)
+    detected = extract_sources(
+        data, nsigma=params.nsigma, npixels=params.npixels, box_size=params.box_size, local_noise=params.local_noise
+    )
+    if detected is None or detected["n_detected"] == 0:
+        return None
+    sub = detected["data_sub"]
+    n = detected["n_detected"]
+
+    # the frame's noise figure (reported), and the noise at each source (used): the local background RMS
+    # at its peak, or the frame's figure when not measuring locally
+    noise = max(1.4826 * float(np.median(np.abs(sub - np.median(sub)))), 1e-9)
+    noise_at = _noise_at_sources(detected, params, noise)
+
+    peak_x = np.asarray(detected["peak_x"], dtype=int)
+    peak_y = np.asarray(detected["peak_y"], dtype=int)
+    raw_peak = data[peak_y, peak_x]
+    prelim_fwhm = np.zeros(n)
+    prelim_snr = np.zeros(n)
+    half = PRELIMINARY_HALF_SIZE
+    segment_map, labels = detected["segment_map"], detected["labels"]
+    for i in range(n):
+        rows = slice(max(0, peak_y[i] - half), peak_y[i] + half + 1)
+        columns = slice(max(0, peak_x[i] - half), peak_x[i] + half + 1)
+        peak = float(sub[peak_y[i], peak_x[i]])
+        # only the source's own segment: a neighbour in the stamp must not widen it
+        prelim_fwhm[i] = half_maximum_fwhm(sub[rows, columns], peak, segment_map[rows, columns] == labels[i])
+        prelim_snr[i] = detected["flux"][i] / (noise_at[i] * math.sqrt(max(detected["area"][i], 1.0)))
+    return _Detections(x0, y0, detected, raw_peak, prelim_fwhm, prelim_snr, noise_at, noise)
+
+
+def _seeing(
+    tiles: list[_Detections],
+    centre: tuple[float, float],
+    low_coma_radius: float,
+    full_scale: float | None,
+    params: SelectionParams,
+) -> float:
+    """The seeing FWHM: given, else the median of the unsaturated sources of SNR 30 or more -- those inside the low-coma
+    radius if there are five, else any -- else the default."""
+    if params.seeing_fwhm_px is not None:
+        return float(params.seeing_fwhm_px)
+    if not tiles:
+        return params.default_fwhm_px
+    fwhm = np.concatenate([t.prelim_fwhm for t in tiles])
+    snr = np.concatenate([t.prelim_snr for t in tiles])
+    peak = np.concatenate([t.raw_peak for t in tiles])
+    r_first = np.concatenate(
+        [np.hypot(t.detected["x"] + t.x0 - centre[0], t.detected["y"] + t.y0 - centre[1]) for t in tiles]
+    )
+    unsaturated = np.ones(len(fwhm), bool) if full_scale is None else peak < params.sat_frac * full_scale
+    sample = (snr >= SEEING_SAMPLE_MIN_SNR) & unsaturated & (fwhm > 1.0)
+    inside = sample & (r_first <= low_coma_radius)
+    pool = inside if np.count_nonzero(inside) >= 5 else sample
+    return float(np.median(fwhm[pool])) if np.count_nonzero(pool) >= 5 else params.default_fwhm_px
+
+
+def _window_measure(det: _Detections, sigma_w: float, params: SelectionParams) -> dict[str, np.ndarray]:
+    """The fixed-window measurement of every source of a tile; positions are the tile's own."""
+    n = det.n
+    sub = det.detected["data_sub"]
+    xw = np.full(n, np.nan)
+    yw = np.full(n, np.nan)
+    snr = np.zeros(n)
+    flux_w = np.zeros(n)
+    converged = np.zeros(n, bool)
+    for i in range(n):
+        xc, yc, mass, sum_w2, ok = window_centroid(
+            sub,
+            det.detected["x"][i],
+            det.detected["y"][i],
+            sigma_w,
+            max_iterations=params.centroid_max_iterations,
+            tolerance=params.centroid_tolerance,
+        )
+        xw[i], yw[i], converged[i], flux_w[i] = xc, yc, ok, mass
+        if sum_w2 > 0:
+            snr[i] = mass / (det.noise_at[i] * math.sqrt(sum_w2))
+    return {"xw": xw, "yw": yw, "snr": snr, "flux_w": flux_w, "converged": converged}
+
+
+class _Pool:
+    """The sources measured in one window, in frame pixels. A tile owns the sources inside its core; the others (its
+    padding, seen only for the neighbours it gives) can only make a star a blend, and are not chosen. Two tiles of a window
+    can overlap in their padding, so a source seen by both is kept once, by the first tile whose core holds it."""
+
+    FIELDS = (
+        "x_first",
+        "y_first",
+        "xw",
+        "yw",
+        "snr",
+        "flux_w",
+        "converged",
+        "raw_peak",
+        "prelim_fwhm",
+        "area",
+        "flux",
+        "owned",
+    )
+
+    def __init__(self) -> None:
+        self.cols: dict[str, np.ndarray] = {
+            f: np.empty(0, dtype=bool if f in ("converged", "owned") else float) for f in self.FIELDS
+        }
+        self.cores: list[tuple[int, int, int, int]] = []
+
+    def __len__(self) -> int:
+        return len(self.cols["owned"])
+
+    @staticmethod
+    def _inside(x: np.ndarray, y: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
+        return (x >= box[0]) & (x < box[2]) & (y >= box[1]) & (y < box[3])
+
+    def add(self, det: _Detections, meas: dict[str, np.ndarray], core: tuple[int, int, int, int]) -> None:
+        """Add a tile: its sources inside ``core`` and outside every earlier core are owned, those outside both are padding
+        (kept once), the rest are already here."""
+        x_first = np.asarray(det.detected["x"], dtype=float) + det.x0
+        y_first = np.asarray(det.detected["y"], dtype=float) + det.y0
+        in_core = self._inside(x_first, y_first, core)
+        in_prior = np.zeros(len(x_first), bool)
+        for earlier in self.cores:
+            in_prior |= self._inside(x_first, y_first, earlier)
+        owned = in_core & ~in_prior
+        padding = ~in_core & ~in_prior
+        old = ~self.cols["owned"]
+        if padding.any() and old.any():  # padding seen before, in a neighbouring tile: not again
+            tree = cKDTree(np.column_stack([self.cols["x_first"][old], self.cols["y_first"][old]]))
+            dist, _ = tree.query(np.column_stack([x_first[padding], y_first[padding]]))
+            padding[np.flatnonzero(padding)[dist < 1.0]] = False
+        if old.any():  # padding already here that this core covers is seen again as owned
+            covered = old & self._inside(self.cols["x_first"], self.cols["y_first"], core)
+            for f in self.FIELDS:
+                self.cols[f] = self.cols[f][~covered]
+        keep = owned | padding
+        new = {
+            "x_first": x_first,
+            "y_first": y_first,
+            "xw": meas["xw"] + det.x0,
+            "yw": meas["yw"] + det.y0,
+            "snr": meas["snr"],
+            "flux_w": meas["flux_w"],
+            "converged": meas["converged"],
+            "raw_peak": det.raw_peak,
+            "prelim_fwhm": det.prelim_fwhm,
+            "area": np.asarray(det.detected["area"], dtype=float),
+            "flux": np.asarray(det.detected["flux"], dtype=float),
+            "owned": owned,
+        }
+        for f in self.FIELDS:
+            self.cols[f] = np.concatenate([self.cols[f], new[f][keep]])
+        self.cores.append(core)
+
+
+@dataclass
+class _Finished:
+    """The rejects, the ranking and the choice, over the owned sources of a pool."""
+
+    index: np.ndarray  # rows of the pool that are owned, in order
+    fate: np.ndarray
+    all_reasons: np.ndarray
+    chosen: np.ndarray  # positions in ``index``
+    relaxed: bool
+    reach: float
+    sigma: np.ndarray
+    radius: np.ndarray
+    x: np.ndarray
+    y: np.ndarray
+    deficit: np.ndarray
+    distance: np.ndarray
+
+
+def _finish(
+    pool: _Pool,
+    *,
+    shape: tuple[int, int],
+    centre: tuple[float, float],
+    low_coma_radius: float,
+    fwhm_seeing: float,
+    sigma_w: float,
+    full_scale: float | None,
+    shadow,
+    exclusion_half_width: float | None,
+    params: SelectionParams,
+    allow_relax: bool,
+    max_reach: float | None,
+    result: Selection,
+) -> _Finished:
+    """The hard rejects, the ranking and the choice, over everything in ``pool``; only owned sources can be chosen."""
+    ny, nx = shape
+    c = pool.cols
+    n = len(pool)
+    owned = c["owned"]
+    xw, yw, snr, converged = c["xw"], c["yw"], c["snr"], c["converged"]
+    x_first, y_first = c["x_first"], c["y_first"]
+    x_use = np.where(np.isfinite(xw), xw, x_first)
+    y_use = np.where(np.isfinite(yw), yw, y_first)
+    radius = np.hypot(x_use - centre[0], y_use - centre[1])
+
+    # -- the shadow -------------------------------------------------------------------------------
+    deficit, distance = _shadow_deficit(shadow, x_use, y_use, (ny, nx))
+    if exclusion_half_width is not None and result.shadow_present:
+        shadow_fail = np.abs(distance) <= exclusion_half_width
+    else:
+        shadow_fail = deficit > params.max_shadow_deficit
+
+    # -- the hard rejects ---------------------------------------------------------------------------
+    raw_peak, prelim_fwhm = c["raw_peak"], c["prelim_fwhm"]
+    saturated = raw_peak >= params.sat_frac * full_scale if full_scale is not None else np.zeros(n, dtype=bool)
+    hot = (prelim_fwhm < params.sharp_fwhm_frac * fwhm_seeing) | (c["area"] < params.min_area)
+
+    min_sep = params.min_sep_fwhm * fwhm_seeing
+    # two stars close enough that the detector merged them are one broad source, with no neighbour to find
+    blended = (snr >= SEEING_SAMPLE_MIN_SNR) & (prelim_fwhm > params.max_fwhm_ratio * fwhm_seeing)
+    if n > 1:
+        tree = cKDTree(np.column_stack([x_use, y_use]))
+        flux = c["flux"]
+        # a source counts as a neighbour if it is itself a source: bright enough, and (if asked) no hot pixel
+        neighbour = (snr >= params.neighbour_min_snr) & ~(hot if params.blend_ignores_hot else False)
+        for i, j in sorted(tree.query_pairs(min_sep)):
+            if neighbour[j] and flux[j] > params.blend_flux_ratio * flux[i]:
+                blended[i] = True
+            if neighbour[i] and flux[i] > params.blend_flux_ratio * flux[j]:
+                blended[j] = True
+
+    margin = params.edge_margin_sigmas * sigma_w + params.edge_margin_extra_px
+    truncated = (x_use < margin) | (x_use > nx - 1 - margin) | (y_use < margin) | (y_use > ny - 1 - margin)
+
+    def reasons_with(min_snr: float) -> dict[str, np.ndarray]:
+        shift = np.hypot(x_use - x_first, y_use - y_first)
+        # A shift between the window centroid and the first moment is what coma itself makes off
+        # axis, so it is a fault only inside the low-coma radius. Outside, a star that did not
+        # converge is still bad, and the coma term of `sigma` ranks the rest down.
+        shifted = (shift > params.max_centroid_shift_fwhm * fwhm_seeing) & (radius <= low_coma_radius)
+        bad_centroid = ~converged | ~np.isfinite(xw) | shifted
+        return {
+            "shadow": shadow_fail,
+            "saturated": saturated,
+            "hot_pixel": hot,
+            "blended": blended,
+            "truncated": truncated,
+            "faint": snr < min_snr,
+            "bad_centroid": bad_centroid,
+        }
+
+    failed = reasons_with(params.min_snr)
+    survivors = ~np.any([failed[r] for r in REJECT_REASONS], axis=0)
+    relaxed = False
+    if allow_relax and np.count_nonzero(survivors & owned) < params.n_target:
+        loose = reasons_with(params.relaxed_min_snr)
+        loose_survivors = ~np.any([loose[r] for r in REJECT_REASONS], axis=0)
+        if np.count_nonzero(loose_survivors & owned) > np.count_nonzero(survivors & owned):
+            failed, survivors, relaxed = loose, loose_survivors, True
+
+    fate = np.empty(n, dtype=object)
+    all_reasons = np.empty(n, dtype=object)
+    for i in range(n):
+        names = [r for r in REJECT_REASONS if failed[r][i]]
+        all_reasons[i] = "|".join(names)
+        fate[i] = names[0] if names else SPARE
+
+    # -- rank the survivors by expected positional error, and select ---------------------------------
+    sigma_psf = fwhm_seeing / FWHM_PER_SIGMA
+    sigma_noise = 1.1 * sigma_psf / np.maximum(snr, 1e-9)
+    sigma_coma = np.where(
+        radius <= low_coma_radius, 0.0, (radius - low_coma_radius) ** 2 / low_coma_radius**2 * params.coma_px
+    )
+    sigma = np.hypot(sigma_noise, sigma_coma)
+
+    index = np.flatnonzero(owned)
+    candidates = np.flatnonzero(survivors[index])
+    own_x, own_y, own_radius, own_sigma = x_use[index], y_use[index], radius[index], sigma[index]
+    chosen = _choose(candidates, own_radius, own_sigma, own_x, own_y, (ny, nx), low_coma_radius, params, result, max_reach)
+    own_fate = fate[index]
+    own_fate[chosen] = KEPT
+    return _Finished(
+        index=index,
+        fate=own_fate,
+        all_reasons=all_reasons[index],
+        chosen=chosen,
+        relaxed=relaxed,
+        reach=result.radius_used_px,
+        sigma=own_sigma,
+        radius=own_radius,
+        x=own_x,
+        y=own_y,
+        deficit=deficit[index],
+        distance=distance[index],
+    )
+
+
+#: A window that fell short is followed by the first of the schedule with as much more allowed area as the density of what
+#: it chose says is needed (`JUMP_MARGIN` over the shortfall), and never more than `MAX_JUMP` times as much. The windows are
+#: the schedule's, so a jump skips some and the stars chosen are the same; it only saves running the ones in between.
+JUMP_MARGIN = 1.3
+MAX_JUMP = 4.0
+
+
+def _next_window(windows: list[Window], index: int, chosen: int, n_target: int) -> int:
+    """The next window to run after ``windows[index]`` chose ``chosen`` of the ``n_target`` stars it wants."""
+    area = windows[index].allowed_area
+    need = JUMP_MARGIN * n_target / max(chosen, 1)
+    want = area * min(max(need, 1.0), MAX_JUMP)
+    nxt = index + 1
+    while nxt < len(windows) - 1 and windows[nxt].allowed_area < want:
+        nxt += 1
+    return nxt
+
+
+def shadow_allowed_mask(shadow, shape: tuple[int, int], max_deficit: float, cell: int = 16) -> GridMask:
+    """The cells of the frame where a star's shadow deficit can be at most ``max_deficit``. A cell counts if any of its four
+    corners does, so the mask holds every star the exact test would pass; it is never tighter."""
+    ny, nx = shape
+    if shadow is None or not shadow.present:
+        return GridMask.open(shape, cell)
+    cy, cx = math.ceil(ny / cell), math.ceil(nx / cell)
+    gx, gy = np.meshgrid(np.arange(cx + 1) * float(cell), np.arange(cy + 1) * float(cell))
+    deficit, _ = _shadow_deficit(shadow, gx.ravel(), gy.ravel(), shape)
+    ok = (deficit <= max_deficit).reshape(cy + 1, cx + 1)
+    cells = ok[:-1, :-1] | ok[1:, :-1] | ok[:-1, 1:] | ok[1:, 1:]
+    return GridMask(cells, cell, shape)
+
+
 def select_sources(
     image,
     *,
@@ -332,6 +682,7 @@ def select_sources(
     params: SelectionParams | None = None,
     exclusion_half_width: float | None = None,
     header=None,
+    windowed: bool = False,
 ) -> Selection:
     """Detect, measure, reject and select the sources of `image` (a 2D array or a FITS path).
 
@@ -341,12 +692,18 @@ def select_sources(
     replaces the shadow *deficit* test with a plain rule -- a source within that distance of the
     band's centreline is rejected -- which is how the survey sweeps the width of the exclusion.
 
+    `windowed`: detect only in a window about the centre that starts at the low-coma region and grows (see
+    `solvers/selection_window.py`) until `n_target` stars are chosen, instead of over the whole frame first. Each step is
+    a run of its own over the whole window, and a step that falls short may skip some of the schedule. A shadow displaces
+    the window outward, and nothing is detected in its band. The stars chosen are those the whole-frame selection chooses
+    when the window holds the disc it needs (the seeing is taken from the window's own stars, and the background mesh
+    agrees inside a tile to within its edge). Off, the whole frame is one window and nothing changes.
+
     Deterministic: the same frame and arguments give the same `Selection`.
     """
     params = params or SelectionParams()
     raw = _load(image)
     ny, nx = raw.shape
-    data = np.asarray(raw, dtype=float)
     result = Selection(shape=(ny, nx), params=params, shadow_present=bool(shadow is not None and shadow.present))
     result.exclusion_half_width_px = exclusion_half_width
 
@@ -362,154 +719,89 @@ def select_sources(
     result.full_scale = full_scale
     result.saturation_tested = full_scale is not None
 
-    detected = extract_sources(
-        data, nsigma=params.nsigma, npixels=params.npixels, box_size=params.box_size, local_noise=params.local_noise
-    )
-    if detected is None or detected["n_detected"] == 0:
+    frame_box = (0, 0, nx, ny)
+    if windowed:
+        mask = shadow_allowed_mask(shadow, (ny, nx), params.max_shadow_deficit)
+        windows = window_schedule(mask, center, result.low_coma_radius_px, params.radius_growth)
+        pad = 2 * params.box_size + 64
+    else:
+        mask = None
+        windows = [Window(half_size=float("inf"), box=frame_box, allowed_area=float(nx * ny), exhausted=True)]
+        pad = 0
+
+    noise = float("nan")
+    fwhm_seeing = sigma_w = float("nan")
+    pool = _Pool()
+    finished: _Finished | None = None
+    measured_area = 0.0
+    used = 0
+    index = 0
+    last_window = windows[0]
+    while index < len(windows):
+        window = last_window = windows[index]
+        # every window is a run of its own, over everything in it: what one step measured is not reused by the next
+        used += 1
+        pool = _Pool()
+        tiles = [Tile(core=frame_box, box=frame_box)] if mask is None else plan_tiles(window.box, mask, pad, params.box_size)
+        detections: list[tuple[_Detections, Tile]] = []
+        for tile in tiles:
+            x0, y0, x1, y1 = tile.box
+            det = _detect_tile(raw[y0:y1, x0:x1], x0, y0, params)
+            measured_area += float((x1 - x0) * (y1 - y0))
+            if det is not None:
+                detections.append((det, tile))
+        if detections:
+            noise = float(np.median([d.frame_noise for d, _ in detections]))
+        fwhm_seeing = _seeing([d for d, _ in detections], center, result.low_coma_radius_px, full_scale, params)
+        sigma_w = fwhm_seeing / FWHM_PER_SIGMA
+        for det, tile in detections:
+            pool.add(det, _window_measure(det, sigma_w, params), tile.core)
+        if len(pool) == 0:
+            if window.exhausted:
+                result.status = "no_sources"
+                return result
+            index = _next_window(windows, index, 0, params.n_target)
+            continue
+        finished = _finish(
+            pool,
+            shape=(ny, nx),
+            centre=center,
+            low_coma_radius=result.low_coma_radius_px,
+            fwhm_seeing=fwhm_seeing,
+            sigma_w=sigma_w,
+            full_scale=full_scale,
+            shadow=shadow,
+            exclusion_half_width=exclusion_half_width,
+            params=params,
+            allow_relax=window.exhausted,
+            max_reach=None if window.exhausted else window.half_size,
+            result=result,
+        )
+        if window.exhausted or finished.chosen.size >= params.n_target:
+            break
+        index = _next_window(windows, index, finished.chosen.size, params.n_target)
+
+    if finished is None:
         result.status = "no_sources"
         return result
-    sub = detected["data_sub"]
-    n = detected["n_detected"]
-
-    # the frame's noise figure (reported), and the noise at each source (used): the local background RMS
-    # at its peak, or the frame's figure when not measuring locally
-    noise = 1.4826 * float(np.median(np.abs(sub - np.median(sub))))
-    result.noise_px = noise = max(noise, 1e-9)
-    noise_at = _noise_at_sources(detected, params, noise)
-
-    # -- preliminary pass: raw peak and half-maximum FWHM, to find the seeing ------------------------
-    peak_x = np.asarray(detected["peak_x"], dtype=int)
-    peak_y = np.asarray(detected["peak_y"], dtype=int)
-    raw_peak = data[peak_y, peak_x]
-    prelim_fwhm = np.zeros(n)
-    prelim_snr = np.zeros(n)
-    half = PRELIMINARY_HALF_SIZE
-    segment_map, labels = detected["segment_map"], detected["labels"]
-    for i in range(n):
-        rows = slice(max(0, peak_y[i] - half), peak_y[i] + half + 1)
-        columns = slice(max(0, peak_x[i] - half), peak_x[i] + half + 1)
-        peak = float(sub[peak_y[i], peak_x[i]])
-        # only the source's own segment: a neighbour in the stamp must not widen it
-        prelim_fwhm[i] = half_maximum_fwhm(sub[rows, columns], peak, segment_map[rows, columns] == labels[i])
-        prelim_snr[i] = detected["flux"][i] / (noise_at[i] * math.sqrt(max(detected["area"][i], 1.0)))
-
-    r_first = np.hypot(detected["x"] - center[0], detected["y"] - center[1])
-    if params.seeing_fwhm_px is not None:
-        fwhm_seeing = float(params.seeing_fwhm_px)
-    else:
-        unsaturated = np.ones(n, bool) if full_scale is None else raw_peak < params.sat_frac * full_scale
-        sample = (prelim_snr >= SEEING_SAMPLE_MIN_SNR) & unsaturated & (prelim_fwhm > 1.0)
-        inside = sample & (r_first <= result.low_coma_radius_px)
-        pool = inside if np.count_nonzero(inside) >= 5 else sample
-        fwhm_seeing = float(np.median(prelim_fwhm[pool])) if np.count_nonzero(pool) >= 5 else params.default_fwhm_px
-    sigma_w = fwhm_seeing / FWHM_PER_SIGMA
     result.fwhm_seeing_px = fwhm_seeing
     result.sigma_window_px = sigma_w
+    result.noise_px = noise
+    result.snr_relaxed = finished.relaxed
+    result.windows_used = used
+    result.window_box = last_window.box
+    result.area_measured_px = measured_area
 
-    # -- the fixed-window measurement -----------------------------------------------------------
-    xw = np.full(n, np.nan)
-    yw = np.full(n, np.nan)
-    snr = np.zeros(n)
-    flux_w = np.zeros(n)
-    converged = np.zeros(n, bool)
-    for i in range(n):
-        xc, yc, mass, sum_w2, ok = window_centroid(
-            sub,
-            detected["x"][i],
-            detected["y"][i],
-            sigma_w,
-            max_iterations=params.centroid_max_iterations,
-            tolerance=params.centroid_tolerance,
-        )
-        xw[i], yw[i], converged[i], flux_w[i] = xc, yc, ok, mass
-        if sum_w2 > 0:
-            snr[i] = mass / (noise_at[i] * math.sqrt(sum_w2))
+    own = finished.index
+    c = pool.cols
+    result.x, result.y = finished.x, finished.y
+    result.x_first_moment, result.y_first_moment = c["x_first"][own], c["y_first"][own]
+    result.flux, result.snr, result.peak = c["flux_w"][own], c["snr"][own], c["raw_peak"][own]
+    result.fwhm, result.area = c["prelim_fwhm"][own], c["area"][own]
+    result.radius, result.shadow_deficit, result.shadow_distance = finished.radius, finished.deficit, finished.distance
+    result.sigma, result.fate, result.all_reasons = finished.sigma, finished.fate, finished.all_reasons
 
-    x_use = np.where(np.isfinite(xw), xw, detected["x"])
-    y_use = np.where(np.isfinite(yw), yw, detected["y"])
-    radius = np.hypot(x_use - center[0], y_use - center[1])
-
-    # -- the shadow -------------------------------------------------------------------------------
-    deficit, distance = _shadow_deficit(shadow, x_use, y_use, (ny, nx))
-    if exclusion_half_width is not None and result.shadow_present:
-        shadow_fail = np.abs(distance) <= exclusion_half_width
-    else:
-        shadow_fail = deficit > params.max_shadow_deficit
-
-    # -- the hard rejects ---------------------------------------------------------------------------
-    saturated = raw_peak >= params.sat_frac * full_scale if full_scale is not None else np.zeros(n, dtype=bool)
-    hot = (prelim_fwhm < params.sharp_fwhm_frac * fwhm_seeing) | (np.asarray(detected["area"]) < params.min_area)
-
-    min_sep = params.min_sep_fwhm * fwhm_seeing
-    # two stars close enough that the detector merged them are one broad source, with no neighbour to find
-    blended = (snr >= SEEING_SAMPLE_MIN_SNR) & (prelim_fwhm > params.max_fwhm_ratio * fwhm_seeing)
-    if n > 1:
-        tree = cKDTree(np.column_stack([x_use, y_use]))
-        flux = np.asarray(detected["flux"], dtype=float)
-        # a source counts as a neighbour if it is itself a source: bright enough, and (if asked) no hot pixel
-        neighbour = (snr >= params.neighbour_min_snr) & ~(hot if params.blend_ignores_hot else False)
-        for i, j in sorted(tree.query_pairs(min_sep)):
-            if neighbour[j] and flux[j] > params.blend_flux_ratio * flux[i]:
-                blended[i] = True
-            if neighbour[i] and flux[i] > params.blend_flux_ratio * flux[j]:
-                blended[j] = True
-
-    margin = params.edge_margin_sigmas * sigma_w + params.edge_margin_extra_px
-    truncated = (x_use < margin) | (x_use > nx - 1 - margin) | (y_use < margin) | (y_use > ny - 1 - margin)
-
-    def reasons_with(min_snr: float) -> dict[str, np.ndarray]:
-        shift = np.hypot(x_use - detected["x"], y_use - detected["y"])
-        # A shift between the window centroid and the first moment is what coma itself makes off
-        # axis, so it is a fault only inside the low-coma radius. Outside, a star that did not
-        # converge is still bad, and the coma term of `sigma` ranks the rest down.
-        shifted = (shift > params.max_centroid_shift_fwhm * fwhm_seeing) & (radius <= result.low_coma_radius_px)
-        bad_centroid = ~converged | ~np.isfinite(xw) | shifted
-        return {
-            "shadow": shadow_fail,
-            "saturated": saturated,
-            "hot_pixel": hot,
-            "blended": blended,
-            "truncated": truncated,
-            "faint": snr < min_snr,
-            "bad_centroid": bad_centroid,
-        }
-
-    failed = reasons_with(params.min_snr)
-    survivors = ~np.any([failed[r] for r in REJECT_REASONS], axis=0)
-    if np.count_nonzero(survivors) < params.n_target:
-        relaxed = reasons_with(params.relaxed_min_snr)
-        relaxed_survivors = ~np.any([relaxed[r] for r in REJECT_REASONS], axis=0)
-        if np.count_nonzero(relaxed_survivors) > np.count_nonzero(survivors):
-            failed, survivors = relaxed, relaxed_survivors
-            result.snr_relaxed = True
-
-    fate = np.empty(n, dtype=object)
-    all_reasons = np.empty(n, dtype=object)
-    for i in range(n):
-        names = [r for r in REJECT_REASONS if failed[r][i]]
-        all_reasons[i] = "|".join(names)
-        fate[i] = names[0] if names else SPARE
-
-    # -- rank the survivors by expected positional error, and select ---------------------------------
-    sigma_psf = fwhm_seeing / FWHM_PER_SIGMA
-    sigma_noise = 1.1 * sigma_psf / np.maximum(snr, 1e-9)
-    r_lc = result.low_coma_radius_px
-    sigma_coma = np.where(radius <= r_lc, 0.0, (radius - r_lc) ** 2 / r_lc**2 * params.coma_px)
-    sigma = np.hypot(sigma_noise, sigma_coma)
-
-    candidates = np.flatnonzero(survivors)
-    chosen = _choose(candidates, radius, sigma, x_use, y_use, (ny, nx), r_lc, params, result)
-    fate[chosen] = KEPT
-
-    result.x, result.y = x_use, y_use
-    result.x_first_moment = np.asarray(detected["x"], dtype=float)
-    result.y_first_moment = np.asarray(detected["y"], dtype=float)
-    result.flux, result.snr, result.peak = flux_w, snr, raw_peak
-    result.fwhm, result.area = prelim_fwhm, np.asarray(detected["area"], dtype=float)
-    result.radius, result.shadow_deficit, result.shadow_distance = radius, deficit, distance
-    result.sigma, result.fate, result.all_reasons = sigma, fate, all_reasons
-
-    n_kept = len(chosen)
+    n_kept = len(finished.chosen)
     if n_kept < params.fail_below:
         result.status = "too_few_sources"
     result.fit_order = None if n_kept < params.fail_below else FIT_ORDER
@@ -526,6 +818,7 @@ def _choose(
     low_coma_radius: float,
     params: SelectionParams,
     result: Selection,
+    max_reach: float | None = None,
 ) -> np.ndarray:
     """From the surviving sources: inside the low-coma radius, widened until `n_target` are *chosen*,
     with a grid quota, lowest expected error first, at most `n_max`. Returns the indices chosen.
@@ -557,7 +850,12 @@ def _choose(
     max_radius = float(np.max(radius[candidates]))
     reach = low_coma_radius
     chosen = choose_within(reach)
-    while chosen.size < params.n_target and reach < max_radius:
+    # `max_reach`: the windowed selection has seen only the disc of this radius, so it does not widen past it
+    while (
+        chosen.size < params.n_target
+        and reach < max_radius
+        and (max_reach is None or reach * params.radius_growth <= max_reach)
+    ):
         reach *= params.radius_growth
         chosen = choose_within(reach)
     result.radius_used_px = reach
