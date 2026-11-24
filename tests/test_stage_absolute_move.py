@@ -21,6 +21,7 @@ try:
 except Exception as ex:  # noqa: BLE001 -- the import chain is Windows-and-hardware-only
     pytest.skip(f"unit import chain unavailable here ({ex!r})", allow_module_level=True)
 
+from common.activities import StageActivities
 from common.canonical import CanonicalResponse
 
 MIN_TRAVEL, MAX_TRAVEL = 0, 343544
@@ -39,6 +40,7 @@ def _stub(**kw):
         "max_travel": MAX_TRAVEL,
         "position": 190000,
         "close_enough": lambda _p: False,
+        "is_active": lambda _activity: False,  # not homing
     }
     stub = SimpleNamespace(**{**base, **kw})
     if "move_absolute" not in kw:
@@ -125,6 +127,9 @@ def _movable_stub(monkeypatch, **kw):
     )
     return _stub(
         device=1,
+        # The command goes through `Stage._call`; its controller-error bookkeeping is
+        # `test_stage_controller_errors.py`'s subject, not this one's.
+        _call=lambda name, *args: getattr(stage_module.ximclib, name)(1, *args),
         stage_lock=threading.Lock(),
         latest_positions=deque(maxlen=3),
         ticks_at_start=None,
@@ -173,3 +178,15 @@ def test_is_moving_is_not_set_when_the_position_is_out_of_range(monkeypatch):
 
     assert result.failed
     assert stub.is_moving is False
+
+
+def test_a_move_is_refused_while_homing(monkeypatch):
+    """A move would cut the homing short, and the zero sent when it ends would land mid-move."""
+    sent = []
+    stub = _movable_stub(monkeypatch, is_active=lambda activity: activity is StageActivities.Homing)
+    stub._call = lambda name, *args: sent.append(name)
+
+    result = Stage.move_absolute(stub, 200000)
+
+    assert result.failed and "homing" in result.errors[0]
+    assert sent == [] and stub.is_moving is False

@@ -1,4 +1,7 @@
+import contextlib
+import ctypes
 import datetime
+import logging
 import os
 import platform
 import sys
@@ -19,7 +22,7 @@ from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.endpoints import Completion, Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
-from common.models.statuses import StageStatus
+from common.models.statuses import StageDrive, StageStatus
 from common.utils import RepeatTimer, Timeout, boxed_log, function_name, time_stamp
 from stage_port import release_xilab
 
@@ -62,6 +65,7 @@ from pyximc import (  # noqa: E402
     c_char_p,
     c_int,
     cast,
+    chart_data_t,
     device_information_t,
     edges_settings_t,
     secure_settings_t,
@@ -78,6 +82,60 @@ RESULT_MAP = {
     Result.ValueError: "ValueError",
     Result.NoDevice: "NoDevice",
 }
+
+#: The controller's command-error flags, by value (pyximc's `StateFlags`; literal so this
+#: module's scope needs no arithmetic on what is a stub off a unit). They latch, and the
+#: controller keeps no record of which command set one -- `status_t` has no field for it and
+#: libximc no "last error" call. The only way to name the culprit is to read the flags after
+#: every call, which `Stage._call` does.
+CONTROLLER_ERROR_FLAGS: dict[int, str] = {
+    0x1: "STATE_ERRC (command not recognised by the controller)",
+    0x2: "STATE_ERRD (data integrity: the command's CRC did not match)",
+    0x4: "STATE_ERRV (value out of range: the controller used a corrected one)",
+}
+CONTROLLER_ERROR_MASK = 0x7
+
+
+def describe_drive(drive: StageDrive) -> str:
+    """One line of the controller's electrical readings, for the log."""
+
+    def fmt(value, spec: str = "") -> str:
+        return "?" if value is None else format(value, spec)
+
+    return (
+        f"supply {fmt(drive.supply_volts, '.2f')} V / {fmt(drive.supply_milliamps)} mA, "
+        f"power stage {fmt(drive.power_state)}, duty {fmt(drive.duty_cycle)}, "
+        f"winding {fmt(drive.winding_volts, '.2f')} V / {fmt(drive.winding_milliamps)} mA, "
+        f"encoder {fmt(drive.encoder_position)}"
+    )
+
+
+def describe_controller_errors(flags: int) -> str:
+    """The controller-error bits set in `flags`, named, comma-separated."""
+    return ", ".join(text for bit, text in CONTROLLER_ERROR_FLAGS.items() if flags & bit)
+
+
+# libximc's own log, which went to its default (stderr / syslog) and so was read by nobody.
+# Its levels are LOGLEVEL_ERROR..LOGLEVEL_DEBUG = 1..4 (ximc.h); INFO goes to DEBUG with DEBUG,
+# so a unit at INFO hears only the library's warnings and errors.
+_LIBXIMC_LEVELS = {1: logging.ERROR, 2: logging.WARNING, 3: logging.DEBUG, 4: logging.DEBUG}
+_libximc_logger = get_logger(f"{__name__}.libximc")
+# `XIMC_CALLCONV` is __stdcall on Windows (ximc.h). On x64 the two conventions coincide.
+_LoggingCallback = ctypes.WINFUNCTYPE if sys.platform == "win32" else ctypes.CFUNCTYPE
+
+
+@_LoggingCallback(None, ctypes.c_int, ctypes.c_wchar_p, ctypes.c_void_p)
+def _forward_libximc_log(loglevel, message, user_data):  # noqa: ARG001 -- the C signature
+    """Forward one libximc message to `mast.stage.libximc`. Runs on the library's thread."""
+    with contextlib.suppress(Exception):  # an exception must never unwind into C
+        _libximc_logger.log(_LIBXIMC_LEVELS.get(loglevel, logging.WARNING), f"libximc: {message}")
+
+
+try:
+    # The module-level function object is the reference that keeps the callback alive.
+    ximclib.set_logging_callback(_forward_libximc_log, None)
+except Exception as ex:  # noqa: BLE001 -- diagnostics only; the stage works without it
+    logger.warning(f"cannot route libximc's log into ours: {ex!r}")
 
 
 # The values below are the wire format, and the member names are Python identifiers with no
@@ -115,11 +173,24 @@ MIN_PRESET_CLEARANCE = 100
 #: a position anyone can command.
 STARTUP_PRESET = StagePresetPosition.Sky
 
-#: How long `home` waits for `command_homezero`. From the SPEC end of travel homing outlasts a
-#: minute: on mast03 on 2026-10-12 it was still running at 60 s with about a fifth of the
-#: travel left. An expired wait does not stop the call, which then zeroes the stage in the
-#: middle of whatever move follows (MAST_unit#311), so this must cover a full-travel homing.
+#: How long a homing may run before `_advance_homing` stops it and calls it failed. From the
+#: SPEC end of travel homing outlasts a minute: on mast03 on 2026-10-12 it was still running
+#: at 60 s with about a fifth of the travel left, so this must cover a full-travel homing.
 HOMING_TIMEOUT_SECONDS = 150.0
+
+#: The controller's power stage, by `status_t.PWRSts` (pyximc's `PowerState`; literal for the
+#: same reason as `CONTROLLER_ERROR_FLAGS`).
+POWER_STATES: dict[int, str] = {0x00: "unknown", 0x01: "off", 0x03: "normal", 0x04: "reduced", 0x05: "max"}
+
+#: Two drive faults the controller does not flag, both seen on mast07 on 2026-11-24. Each is
+#: reported once per move, after this many consecutive status reads (`ontimer`, 2 s apart),
+#: so the ramp-up at the start of a move is not mistaken for one.
+DRIVE_FAULT_READS = 2
+#: A winding at this voltage or more is being driven ...
+DRIVEN_WINDING_VOLTS = 1.0
+#: ... and below this current nothing flows through it: an open motor circuit. A DC motor
+#: driven at a few volts, moving or stalled, draws hundreds of mA.
+NO_CURRENT_MILLIAMPS = 20
 
 #: The preset names the API accepts, for anyone building a UI over it.
 stage_position_names: list[str] = [p.value for p in StagePresetPosition]
@@ -128,6 +199,18 @@ stage_position_names: list[str] = [p.value for p in StagePresetPosition]
 class Stage(Component, SwitchedOutlet):
     _instance = None
     _initialized = False
+    #: The controller-error bits (`CONTROLLER_ERROR_MASK`) at the last read; see `_call`.
+    _controller_errors: int = 0
+    #: `time.monotonic()` when the current homing was commanded, None when none is under way.
+    _homing_started_at: float | None = None
+    #: Why the last homing failed; None once one succeeds. See `home`.
+    _homing_error: str | None = None
+    #: The controller's electrical readings at the last `ontimer`; see `_read_drive`.
+    _drive: StageDrive | None = None
+    #: Consecutive status reads on which each drive fault was seen, and the faults already
+    #: reported during the current move. Both reset when no move is running.
+    _drive_fault_reads: dict[str, int] | None = None
+    _drive_faults_reported: set[str] | None = None
 
     # Keyed by the controller's flag *values*: `StateFlags` is a plain class of int constants, not an enum.
     state_flags_dict: ClassVar[dict[int, str]] = {
@@ -262,6 +345,8 @@ class Stage(Component, SwitchedOutlet):
             logger.error(f"{op}: no device detected ({self.device=})")
             return
 
+        self._baseline_controller_errors()
+
         # these two are set by the ontimer() method
         self._currently_operational = True
         self._why_not_currently_operational = []
@@ -294,7 +379,7 @@ class Stage(Component, SwitchedOutlet):
                 raise Exception(f"{op}: unsupported stage model '{self.conf.model}'")
 
         serial_number = serial_number_t()
-        result = ximclib.get_serial_number(self.device, byref(serial_number))
+        result = self._call("get_serial_number", byref(serial_number))
         if result == Result.Ok:
             self.serial_number = serial_number.SN
         else:
@@ -303,7 +388,7 @@ class Stage(Component, SwitchedOutlet):
         # self.set_profile()  # FUTURE: set motion profile parameters for known stage models
 
         x_device_information = device_information_t()
-        result = ximclib.get_device_information(self.device, byref(x_device_information))
+        result = self._call("get_device_information", byref(x_device_information))
 
         if result == Result.Ok:
             comport = str(self.device_uri)
@@ -317,7 +402,7 @@ class Stage(Component, SwitchedOutlet):
             )
 
         x_edges_settings = edges_settings_t()
-        result = ximclib.get_edges_settings(self.device, byref(x_edges_settings))
+        result = self._call("get_edges_settings", byref(x_edges_settings))
         if result == Result.Ok:
             if x_edges_settings.BorderFlags & BorderFlags.BORDER_IS_ENCODER:
                 self.min_travel = x_edges_settings.LeftBorder
@@ -336,7 +421,7 @@ class Stage(Component, SwitchedOutlet):
             raise Exception(f"{op}: cannot get edges settings ({result=})")
 
         self.secure_settings: secure_settings_t = secure_settings_t()
-        result = ximclib.get_secure_settings(self.device, byref(self.secure_settings))
+        result = self._call("get_secure_settings", byref(self.secure_settings))
         if result != Result.Ok:
             logger.warning(f"{op}: cannot get secure settings ({result=})")
 
@@ -389,26 +474,134 @@ class Stage(Component, SwitchedOutlet):
     def __repr__(self):
         return f"<Stage device={self.device}>"
 
-    def home(self):
-        """
-        Homes the stage
-        """
+    def _call(self, name: str, *args) -> int:
+        """`ximclib.<name>(self.device, *args)`, naming the call if it fails or sets a controller error.
 
+        Takes no lock: callers hold ``stage_lock`` exactly where they did before. The status read
+        that follows is what attributes a newly set ERRC/ERRD/ERRV to this call; skipped once all
+        three are already set, when there is nothing left to attribute.
+        """
+        assert ximclib
+        result = getattr(ximclib, name)(self.device, *args)
+        call = f"{name}({', '.join(str(a) for a in args if isinstance(a, int))})"
+        if result != Result.Ok:
+            logger.error(f"{call}: returned {RESULT_MAP.get(result, result)}")
+        if self._controller_errors != CONTROLLER_ERROR_MASK:
+            status = status_t()
+            if ximclib.get_status(self.device, byref(status)) == Result.Ok:
+                self._note_controller_errors(status.Flags, after=call)
+        return result
+
+    def _note_controller_errors(self, flags: int, after: str) -> None:
+        """Log the controller-error bits that changed since the last read, and remember them.
+
+        Once per change, not once per read: latched, they used to fill a night's log with the same
+        line every 2 s (965 times on mast07, 2026-11-23) while saying nothing about the cause.
+        """
+        current = flags & CONTROLLER_ERROR_MASK
+        raised = current & ~self._controller_errors
+        cleared = self._controller_errors & ~current
+        self._controller_errors = current
+        if raised:
+            logger.error(f"controller error after {after}: {describe_controller_errors(raised)}")
+        if cleared:
+            logger.info(f"controller error cleared: {describe_controller_errors(cleared)}")
+
+    def _baseline_controller_errors(self) -> None:
+        """Read the controller-error bits just after `open_device`, before this session sends anything.
+
+        Bits set here were not set by any call this process made: they are from an earlier session
+        (they latch until the controller is power-cycled), or from enumeration / `open_device` itself.
+        """
+        assert ximclib
+        self._controller_errors = 0
+        status = status_t()
+        if ximclib.get_status(self.device, byref(status)) != Result.Ok:
+            return
+        self._controller_errors = status.Flags & CONTROLLER_ERROR_MASK
+        if self._controller_errors:
+            logger.warning(
+                f"controller error already set on opening the device: {describe_controller_errors(self._controller_errors)}"
+                " -- left by an earlier session or by open_device; power-cycle the stage to clear it"
+            )
+
+    def home(self) -> CanonicalResponse:
+        """Start homing and return at once. `Homing` ends when the stage is home and zeroed, or homing failed.
+
+        `command_home` only starts it; `ontimer` sends `command_zero` once the stage has stopped,
+        or stops it after `HOMING_TIMEOUT_SECONDS` (`_advance_homing`). A failure is kept in
+        `homing_error` and makes the stage non-operational until a homing succeeds.
+
+        This used to be `command_homezero`, which is libximc's home + wait-for-stop + zero in one
+        blocking call, made under ``stage_lock`` from `Stage.__init__`. A stage that does not home
+        therefore held up the unit's whole startup for the full timeout and blinded the status
+        timer, which needs the lock, for the same 150 s: mast07 logged nothing for 2.5 minutes on
+        every start of 2026-11-23.
+        """
         op = function_name()
+        if self.is_active(StageActivities.Homing):
+            return CanonicalResponse_Ok
         with self.stage_lock:
-            assert ximclib
-            try:
-                with Timeout(HOMING_TIMEOUT_SECONDS) as timeout:
-                    result = timeout.run(ximclib.command_homezero, self.device)
-                if result == Result.Ok:
-                    # Homing moves the stage, so the same staleness applies. Left out, a
-                    # caller waiting on `is_moving` after a home would see the pre-move
-                    # False -- and a fix that covered only the move paths would read as
-                    # complete while leaving one way in.
-                    self.is_moving = True
-                    self.start_activity(StageActivities.Homing)
-            except TimeoutError as ex:
-                logger.error(f"{op}: timeout during homing: {ex}")
+            result = self._call("command_home")
+            if result != Result.Ok:
+                self._homing_error = f"command_home returned {RESULT_MAP.get(result, result)}"
+                return CanonicalResponse(errors=[f"{op}: {self._homing_error}"])
+            self._homing_error = None
+            # Under the lock, after the command: a status read that sees this set was taken after
+            # homing began, so its "not running" means finished, not "not started yet".
+            self._homing_started_at = time.monotonic()
+            # Homing moves the stage, so the staleness `move_absolute` describes applies here too.
+            self.is_moving = True
+            self.start_activity(StageActivities.Homing)
+        logger.info(f"{op}: homing started")
+        return CanonicalResponse_Ok
+
+    @property
+    def homing_error(self) -> str | None:
+        """Why the last homing failed, or None if it succeeded (or none has finished yet)."""
+        return self._homing_error
+
+    def _advance_homing(self, hw_status: status_t, read_after_homing_began: bool) -> None:
+        """Finish a homing from the timer: zero once stopped, or stop it once it has run too long."""
+        started = self._homing_started_at
+        if started is None or not self.is_active(StageActivities.Homing):
+            return
+        running = (hw_status.MvCmdSts & MvcmdStatus.MVCMD_RUNNING) != 0
+        if read_after_homing_began and not running:
+            if hw_status.MvCmdSts & MvcmdStatus.MVCMD_ERROR:
+                self._end_homing(f"homing ended with MVCMD_ERROR (MvCmdSts=0x{hw_status.MvCmdSts:02X})")
+                return
+            with self.stage_lock:
+                result = self._call("command_zero")
+            self._end_homing(None if result == Result.Ok else f"command_zero returned {RESULT_MAP.get(result, result)}")
+        elif time.monotonic() - started > HOMING_TIMEOUT_SECONDS:
+            # Stopped, not abandoned: an abandoned homing would still zero the stage when it
+            # finished, in the middle of whatever move came next (MAST_unit#311).
+            with self.stage_lock:
+                self._call("command_stop")
+            self._end_homing(
+                f"not home within {HOMING_TIMEOUT_SECONDS:.0f} s (stopped at {hw_status.CurPosition}); "
+                "the motor may not be driven -- check its supply and cable"
+                + ("" if self._drive is None else f" (last reading: {describe_drive(self._drive)})")
+            )
+
+    def _end_homing(self, error: str | None) -> None:
+        """End `Homing`, keep its outcome, and take a startup waiting on it on to its next step."""
+        op = function_name()
+        self._homing_started_at = None
+        self._homing_error = error
+        if error:
+            logger.error(f"{op}: homing failed: {error}")
+        else:
+            logger.info(f"{op}: home, and zeroed")
+        self.end_activity(StageActivities.Homing)
+
+        if self.is_active(StageActivities.StartingUp):
+            if error:
+                logger.error(f"{op}: startup: not moving to '{STARTUP_PRESET.value}', homing failed")
+                self.end_activity(StageActivities.StartingUp)
+            else:
+                self.move_to_preset(STARTUP_PRESET)
 
     def find_ximc_ports(self):
         from serial.tools import list_ports
@@ -484,6 +677,8 @@ from pyximc import *
         assert self.device
         if value:
             self.device = ximclib.open_device(self.device_uri)
+            if self.detected:
+                self._baseline_controller_errors()
         else:
             ximclib.close_device(byref(cast(self.device, POINTER(c_int))))
             self.device = -1
@@ -523,7 +718,14 @@ from pyximc import *
         if not self.connected:
             self.connect()
         self._was_shut_down = False
-        if not self.at_preset(StagePresetPosition.Sky):
+        if self._homing_error is not None and not self.is_active(StageActivities.Homing):
+            # A position counted from a failed homing means nothing; try again first.
+            self.home()
+        if self.is_active(StageActivities.Homing):
+            # A move now would cut the homing short. `_end_homing` makes it once homing is over.
+            self.start_activity(StageActivities.StartingUp, existing_ok=True)
+            logger.info(f"startup: moving to '{STARTUP_PRESET.value}' once homing ends")
+        elif not self.at_preset(StagePresetPosition.Sky):
             self.start_activity(StageActivities.StartingUp)
             self.move_to_preset(StagePresetPosition.Sky)
         return CanonicalResponse_Ok
@@ -630,6 +832,7 @@ from pyximc import *
         return StageStatus(
             **self.power_status().model_dump(),
             **self.component_status().model_dump(),
+            drive=self._drive,
             info=self.info,
             presets=self.presets,
             position=self.position,
@@ -670,9 +873,14 @@ from pyximc import *
         self._why_not_currently_operational = []
         self._currently_operational = True
 
+        # First: `status` predates the `get_secure_settings` below, whose own read would otherwise
+        # be noted before this older one and log every bit it saw as cleared and raised again.
+        # A bit seen here first was set by nothing that went through `_call`.
+        self._note_controller_errors(status.Flags, after="no call made through Stage._call (periodic status read)")
+
         secure_settings = secure_settings_t()
         with self.stage_lock:
-            result = ximclib.get_secure_settings(self.device, byref(secure_settings))
+            result = self._call("get_secure_settings", byref(secure_settings))
             if result == Result.Ok:
                 if status.CurT > secure_settings.CriticalT:
                     logger.warning(
@@ -682,17 +890,6 @@ from pyximc import *
                     logger.debug(f"{op}: secure settings: {secure_settings:x}")
             else:
                 logger.warning(f"{op}: cannot get secure settings ({result=})")
-
-        controller_errors = []
-        for error_bit in [
-            StateFlags.STATE_ERRC,
-            StateFlags.STATE_ERRV,
-            StateFlags.STATE_ERRD,
-        ]:
-            if status.Flags & error_bit:
-                controller_errors.append(self.state_flags_dict.get(error_bit, f"Unknown error bit 0x{error_bit:08X}"))
-        if controller_errors:
-            logger.error(f"{op}: controller errors detected: {', '.join(controller_errors)}")
 
         security_error = status.Flags & StateFlags.STATE_SECUR
         if security_error != 0:
@@ -734,7 +931,7 @@ from pyximc import *
                 # STATE_ALARM was set but is no longer. If we were previously in Overheating activity, end it.
                 if self.is_active(StageActivities.Overheating):
                     logger.info(f"{op}: controller temperature back to normal, ending Overheating activity")
-                    result = ximclib.command_stop(self.device)
+                    result = self._call("command_stop")
                     if result != Result.Ok:
                         logger.error(f"{op}: failed to stop stage after overheating: {RESULT_MAP.get(result, result)}")
                     self.end_activity(StageActivities.Overheating)
@@ -756,11 +953,15 @@ from pyximc import *
         hw_status = status_t()
         with self.stage_lock:
             result = ximclib.get_status(self.device, byref(hw_status))
+            read_after_homing_began = self._homing_started_at is not None
+            if result == Result.Ok:
+                self._drive = self._read_drive(hw_status)
         if result != Result.Ok:
             logger.error(f"{op}: could not get_status(), {result=} ({RESULT_MAP[result]})")
             return
 
         self.check_current_status(hw_status)
+        self._watch_drive(self._drive, running=(hw_status.MvCmdSts & MvcmdStatus.MVCMD_RUNNING) != 0)
 
         self._position = hw_status.CurPosition
         self.latest_positions.append(self._position)
@@ -804,8 +1005,73 @@ from pyximc import *
             if self.is_active(StageActivities.StartingUp) and self.close_enough(self.presets[STARTUP_PRESET]):
                 self.end_activity(StageActivities.StartingUp)
 
-            if self.is_active(StageActivities.Homing):
-                self.end_activity(StageActivities.Homing)
+        self._advance_homing(hw_status, read_after_homing_began)
+
+    def _read_drive(self, hw_status: status_t) -> StageDrive:
+        """The controller's electrical readings: `hw_status`'s, and `get_chart_data`'s.
+
+        The caller holds ``stage_lock``. A failed chart read leaves the winding fields None
+        rather than failing the status read it rides on.
+        """
+        chart = chart_data_t()
+        try:
+            charted = ximclib.get_chart_data(self.device, byref(chart)) == Result.Ok
+        except Exception:  # noqa: BLE001 -- a diagnostic read must never break ontimer
+            charted = False
+        upwr = getattr(hw_status, "Upwr", None)
+        pwr = getattr(hw_status, "PWRSts", None)
+        return StageDrive(
+            supply_volts=None if upwr is None else upwr / 100,  # tens of mV
+            supply_milliamps=getattr(hw_status, "Ipwr", None),
+            power_state=None if pwr is None else POWER_STATES.get(pwr, f"0x{pwr:x}"),
+            duty_cycle=chart.DutyCycle if charted else None,
+            winding_volts=chart.WindingVoltageA / 100 if charted else None,  # tens of mV
+            winding_milliamps=chart.WindingCurrentA if charted else None,
+            encoder_position=getattr(hw_status, "EncPosition", None),
+        )
+
+    def _drive_faults(self, drive: StageDrive) -> dict[str, str]:
+        """The drive faults `drive` shows while a move runs, by name, with what to do about each."""
+        faults = {}
+        if drive.power_state == "off":
+            faults["power stage off"] = (
+                "a move is running with the motor power stage off, so the motor is not driven; "
+                "power-cycle the stage controller"
+            )
+        if (
+            drive.power_state in ("normal", "reduced", "max")
+            and drive.winding_volts is not None
+            and drive.winding_milliamps is not None
+            and abs(drive.winding_volts) >= DRIVEN_WINDING_VOLTS
+            and abs(drive.winding_milliamps) < NO_CURRENT_MILLIAMPS
+        ):
+            faults["no motor current"] = (
+                f"the motor is driven at {drive.winding_volts:.2f} V but draws {drive.winding_milliamps} mA: "
+                "the motor circuit is open -- check the motor connector, cable and winding"
+            )
+        return faults
+
+    def _watch_drive(self, drive: StageDrive | None, running: bool) -> None:
+        """Report each drive fault once per move, once it has lasted `DRIVE_FAULT_READS` reads.
+
+        Neither fault raises a controller flag, so without this a move just runs out its
+        timeout with the position unchanged and nothing in the log to say why.
+        """
+        if self._drive_fault_reads is None or self._drive_faults_reported is None:
+            self._drive_fault_reads, self._drive_faults_reported = {}, set()
+        if not running or drive is None:
+            self._drive_fault_reads.clear()
+            self._drive_faults_reported.clear()
+            return
+        faults = self._drive_faults(drive)
+        for name in list(self._drive_fault_reads):
+            if name not in faults:
+                del self._drive_fault_reads[name]
+        for name, text in faults.items():
+            self._drive_fault_reads[name] = self._drive_fault_reads.get(name, 0) + 1
+            if self._drive_fault_reads[name] >= DRIVE_FAULT_READS and name not in self._drive_faults_reported:
+                self._drive_faults_reported.add(name)
+                logger.error(f"drive fault: {text} ({describe_drive(drive)})")
 
     def _clear_mvcmd_error(self, hw_status: status_t, attempts: int = 3) -> bool:
         """Clear a move command's MVCMD_ERROR with `command_stop()`; True once it is clear.
@@ -819,7 +1085,7 @@ from pyximc import *
         assert ximclib
         for i in range(attempts):
             logger.error(f"{op}: attempt #{i} (of {attempts}): attempting to clear MVCMD_ERROR by calling command_stop()")
-            ximclib.command_stop(self.device)
+            self._call("command_stop")
             time.sleep(0.2)
             result = ximclib.get_status(self.device, byref(hw_status))
             if result != Result.Ok:
@@ -905,10 +1171,12 @@ from pyximc import *
 
         if not (self.min_travel <= position < self.max_travel):
             return CanonicalResponse(errors=[f"out of range: {self.min_travel} <= position < {self.max_travel}"])
+        if self.is_active(StageActivities.Homing):
+            return CanonicalResponse(errors=[f"{op}: homing in progress; a move now would cut it short"])
         try:
             with self.stage_lock:
                 assert ximclib
-                response = ximclib.command_move(self.device, position, 0)
+                response = self._call("command_move", position, 0)
                 if response != Result.Ok:
                     msg = f"{op}: Failed to start stage move absolute (command_move({self.device}, {position}), {response=}"
                     logger.error(msg)
@@ -953,6 +1221,8 @@ from pyximc import *
         current_position = self.position
         if current_position is None:
             return CanonicalResponse(errors=["cannot get current position"])
+        if self.is_active(StageActivities.Homing):
+            return CanonicalResponse(errors=[f"{op}: homing in progress; a move now would cut it short"])
 
         try:
             self.target = current_position + amount
@@ -960,7 +1230,7 @@ from pyximc import *
             self.start_activity(StageActivities.Moving, details=[f"from {self.position} to {self.target}"])
             with self.stage_lock:
                 assert ximclib
-                response = ximclib.command_movr(self.device, amount, 0)
+                response = self._call("command_movr", amount, 0)
             if response != Result.Ok:
                 msg = f"Failed to start stage move (command_movr({self.device}, {amount})"
                 logger.error(f"{op}: " + msg)
@@ -976,6 +1246,10 @@ from pyximc import *
         """
         Aborts any in-progress stage activities
         """
+        if self.is_active(StageActivities.Homing):
+            self._homing_started_at = None
+            self._homing_error = "homing aborted"
+            self.end_activity(StageActivities.Homing)
         for activity in (
             StageActivities.StartingUp,
             StageActivities.Moving,
@@ -986,7 +1260,7 @@ from pyximc import *
 
         self.start_activity(StageActivities.Aborting)
         assert ximclib
-        ximclib.command_stop(self.device)
+        self._call("command_stop")
         return CanonicalResponse_Ok
 
     @property
@@ -1003,6 +1277,9 @@ from pyximc import *
                 not self.was_shut_down,
                 (self.at_preset(StagePresetPosition.Spec) or self.at_preset(StagePresetPosition.Sky)),
                 self._currently_operational,
+                not self.is_active(StageActivities.Homing),
+                # A position counted from a failed homing is not one to work at.
+                self._homing_error is None,
             ]
         )
 
@@ -1019,6 +1296,10 @@ from pyximc import *
                 ret.append(f"{label}: shut down")
             if not self.connected:
                 ret.append(f"{label}: not connected")
+            elif self.is_active(StageActivities.Homing):
+                ret.append(f"{label}: homing")
+            elif self._homing_error is not None:
+                ret.append(f"{label}: homing failed: {self._homing_error}")
             elif self.is_moving:
                 # `at_preset` is False while moving; "not at a preset" would read like a fault.
                 ret.append(f"{label}: moving to '{self.target_preset_name()}'")
