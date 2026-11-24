@@ -349,10 +349,10 @@ def test_stopping_when_not_dancing_does_not_touch_the_mount():
     assert not unit.mount.aborted
 
 
-def test_the_route_declares_autostartup_and_completes_on_the_flag():
+def test_the_route_does_not_autostart_and_completes_on_the_flag():
     declaration = declaration_of(Unit.endpoint_start_dancing)
     assert declaration is not None
-    assert declaration.autostartup is True
+    assert declaration.autostartup is False
     assert declaration.completion is UnitActivities.Dancing
-    assert declaration.tier is Tier.DEMO
+    assert declaration.tier is Tier.OPERATION
     assert unit_module._ABORTABLE_WORK.count(UnitActivities.Dancing) == 1

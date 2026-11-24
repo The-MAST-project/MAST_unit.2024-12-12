@@ -26,7 +26,12 @@ MVCMD_ERROR = 0x40
 
 
 class FakeXimc:
-    """A controller whose status after each `command_stop()` is the next one scripted."""
+    """A controller whose status after each `command_stop()` is the next one scripted.
+
+    Held until the next stop, not handed out once per read: `Stage._call` reads the status
+    after every call too, to attribute controller errors, and a real controller answers both
+    reads alike.
+    """
 
     def __init__(self, statuses, get_status_result=None):
         self.statuses = list(statuses)
@@ -40,7 +45,8 @@ class FakeXimc:
     def get_status(self, device, ref):
         if self.get_status_result != stage_module.Result.Ok:
             return self.get_status_result
-        ref.MvCmdSts = self.statuses.pop(0)
+        ref.MvCmdSts = self.statuses[self.stops - 1]
+        ref.Flags = 0
         return stage_module.Result.Ok
 
 
