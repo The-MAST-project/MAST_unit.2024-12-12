@@ -57,6 +57,10 @@ class MountStub:
     def end_activity(self, activity):
         self.activities &= ~activity
 
+    def _start_slewing(self):
+        # The real one, so the activity and its details are still what these tests see.
+        Mount._start_slewing(self)  # type: ignore[arg-type]
+
     def goto_ra_dec_j2000(self, ra, dec, target_label=None):
         return Mount.goto_ra_dec_j2000(self, ra, dec, target_label)  # type: ignore[arg-type]
 
