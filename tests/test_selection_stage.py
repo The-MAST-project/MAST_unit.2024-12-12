@@ -224,3 +224,20 @@ def test_each_step_is_timed(shadowed):
     assert set(selective.record()["timings_s"]) == set(selective.timings)
     cached = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="selective"), shadow=_shadow())
     assert cached.timings["shadow"] == 0.0  # the acquisition's cached model: no detection
+
+
+def test_windowed_is_passed_to_the_selection(shadowed, monkeypatch):
+    seen = {}
+    real = selection_stage.select_sources
+
+    def spy(*args, **kwargs):
+        seen["windowed"] = kwargs.get("windowed")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(selection_stage, "select_sources", spy)
+    frame, _ = _frame()
+
+    stage = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="selective", windowed=True))
+
+    assert seen["windowed"] is True and stage.selection is not None
+    assert SourceSelectionSettings().windowed is False

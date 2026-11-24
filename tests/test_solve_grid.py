@@ -229,3 +229,53 @@ def test_a_cropped_grid_selects_in_the_same_sky():
     assert sel.kept.sum() >= 10
     assert all(min(np.hypot(px - a, py - b) for px, py in planted) < 0.3 for a, b in zip(x, y, strict=True))
     assert all(200 <= v <= 2200 for v in x) and all(200 <= v <= 1600 for v in y)  # inside the region
+
+
+class TestCropBeforeBinning:
+    def test_it_is_the_grid_of_binning_the_whole_frame_and_cropping(self):
+        rng = np.random.default_rng(3)
+        frame = rng.normal(1000.0, 50.0, FULL)
+        frame[100, 200] = 65535.0  # a saturated pixel: its block reads as saturated either way
+        hot = _hot((205, 103), (400, 300))
+        info = FrameInfo(binning=1, full_shape=FULL, saturation_adu=SAT)
+        region = (300.0, 200.0, 100.0, 60.0)
+
+        cropped = to_solve_grid(frame, info, hot, region)
+        whole = to_solve_grid(frame, info, hot)
+        gx, gy = (cropped.origin[0] - whole.origin[0]) // 2, (cropped.origin[1] - whole.origin[1]) // 2
+        same = whole.data[gy : gy + cropped.shape[0], gx : gx + cropped.shape[1]]
+
+        assert cropped.shape == (60, 100)
+        assert np.array_equal(cropped.data, same)
+
+    def test_only_the_regions_hot_pixels_are_filled(self):
+        info = FrameInfo(binning=1, full_shape=FULL)
+        hot = _hot((205, 103), (400, 300))
+
+        grid = to_solve_grid(_flat(), info, hot, region=(210.0, 110.0, 20.0, 20.0))
+
+        assert grid.hot_filled == 1
+
+    def test_the_block_mean_is_the_same_numbers_as_the_reshaped_mean(self):
+        rng = np.random.default_rng(4)
+        frame = rng.integers(0, 60000, FULL).astype(float)
+
+        grid = to_solve_grid(frame, FrameInfo(binning=1, full_shape=FULL))
+
+        blocks = frame.reshape(FULL[0] // 2, 2, FULL[1] // 2, 2).mean(axis=(1, 3))
+        assert np.allclose(grid.data, blocks, rtol=0, atol=1e-9)
+
+
+def test_a_windowed_grid_selection_chooses_what_the_whole_grid_does():
+    frame, _planted, hot = _field()
+    params = SelectionParams(n_target=10, n_max=40, min_snr=25.0, grid=(2, 2))
+    grid = to_solve_grid(frame, FrameInfo(binning=1, full_shape=frame.shape), hot)
+    fibre, radius = (1200.0, 900.0), 700.0
+
+    whole = select_on_grid(grid, params, fibre_xy=fibre, low_coma_radius_px=radius)
+    windowed = select_on_grid(grid, params, fibre_xy=fibre, low_coma_radius_px=radius, windowed=True)
+
+    def keep(sel):
+        return {(round(float(x), 1), round(float(y), 1)) for x, y in zip(sel.x[sel.kept], sel.y[sel.kept], strict=True)}
+
+    assert keep(whole) == keep(windowed) and len(keep(whole)) >= 10

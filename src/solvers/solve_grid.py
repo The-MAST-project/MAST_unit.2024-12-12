@@ -78,6 +78,19 @@ class SolveGrid:
         return float(gx) + 1.0, float(gy) + 1.0
 
 
+def _region_blocks(
+    region: tuple[float, float, float, float], origin: tuple[int, int], blocks: tuple[int, int], f: int
+) -> tuple[int, int, int, int]:
+    """``region`` (centre x, centre y, half width, half height; unbinned full-frame pixels) as blocks ``gx0:gx1, gy0:gy1``
+    of an array of ``blocks`` (rows, columns) blocks that starts at ``origin``."""
+    cx, cy, hw, hh = region
+    gx0 = max(0, int(np.floor((cx - hw - origin[0]) / f)))
+    gx1 = min(blocks[1], int(np.ceil((cx + hw - origin[0]) / f)))
+    gy0 = max(0, int(np.floor((cy - hh - origin[1]) / f)))
+    gy1 = min(blocks[0], int(np.ceil((cy + hh - origin[1]) / f)))
+    return gx0, gx1, gy0, gy1
+
+
 def to_solve_grid(
     frame: np.ndarray,
     info: FrameInfo,
@@ -98,18 +111,27 @@ def to_solve_grid(
         data = data[skip_y:, skip_x:]
         x0, y0 = x0 + skip_x, y0 + skip_y
         data = data[: (data.shape[0] // f) * f, : (data.shape[1] // f) * f]
+        if region is not None:
+            # crop before binning: the region is a fraction of the frame, and so is the work. The blocks of the crop are the
+            # frame's own, so this is the same grid as binning the whole frame and cropping it.
+            gx0, gx1, gy0, gy1 = _region_blocks(region, (x0, y0), (data.shape[0] // f, data.shape[1] // f), f)
+            data = data[gy0 * f : gy1 * f, gx0 * f : gx1 * f]
+            x0, y0 = x0 + f * gx0, y0 + f * gy0
+            region = None
         if hot is not None:
             hot_filled = int(
                 np.count_nonzero((hot.x >= x0) & (hot.x < x0 + data.shape[1]) & (hot.y >= y0) & (hot.y < y0 + data.shape[0]))
             )
             data = hot.fill(data, origin=(x0, y0))
-        h, w = data.shape
-        blocks = data.reshape(h // f, f, w // f, f)
-        binned = blocks.mean(axis=(1, 3))
+        # the four pixels of each block as strided views and a sum: about 5x faster than `reshape(...).mean(axis=(1, 3))`,
+        # which reduces over strided axes, and the same values
+        a, b, c, d = data[0::2, 0::2], data[0::2, 1::2], data[1::2, 0::2], data[1::2, 1::2]
+        binned = (a + b + c + d) * 0.25
         saturated = np.zeros(binned.shape, bool)
         if info.saturation_adu is not None:
-            saturated = (blocks >= info.saturation_adu).any(axis=(1, 3))
-            binned[saturated] = info.saturation_adu
+            level = info.saturation_adu
+            saturated = np.maximum(np.maximum(a, b), np.maximum(c, d)) >= level
+            binned[saturated] = level
         grid = binned
     else:
         if x0 % f or y0 % f:
@@ -124,11 +146,7 @@ def to_solve_grid(
 
     result = SolveGrid(grid, (x0, y0), f, hot_filled=hot_filled, saturated_blocks=int(np.count_nonzero(saturated)))
     if region is not None:
-        cx, cy, hw, hh = region
-        gx0 = max(0, int(np.floor((cx - hw - x0) / f)))
-        gx1 = min(grid.shape[1], int(np.ceil((cx + hw - x0) / f)))
-        gy0 = max(0, int(np.floor((cy - hh - y0) / f)))
-        gy1 = min(grid.shape[0], int(np.ceil((cy + hh - y0) / f)))
+        gx0, gx1, gy0, gy1 = _region_blocks(region, (x0, y0), grid.shape, f)
         result = SolveGrid(
             grid[gy0:gy1, gx0:gx1],
             (x0 + f * gx0, y0 + f * gy0),
@@ -165,6 +183,7 @@ def select_on_grid(
     low_coma_radius_px: float,
     saturation_adu: float | None = None,
     shadow=None,
+    windowed: bool = False,
 ) -> Selection:
     """The source selection on the grid, searching outwards from the fibre pixel from the low-coma radius (unbinned pixels).
 
@@ -181,4 +200,5 @@ def select_on_grid(
         optical_center=(float(cx), float(cy)),
         low_coma_radius=low_coma_radius_px / grid.factor,
         params=p,
+        windowed=windowed,
     )
