@@ -54,6 +54,10 @@ class Stub:
     def end_activity(self, activity):
         self.activities &= ~activity
 
+    def _start_slewing(self):
+        # The real one, so the activity and its details are still what these tests see.
+        Mount._start_slewing(self)
+
     def is_active(self, activity) -> bool:
         return bool(self.activities & activity)
 

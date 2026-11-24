@@ -6,6 +6,7 @@ No mount, no unit: the figures are data, the mount's walk runs on a fake mount, 
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 
@@ -110,6 +111,15 @@ class FakeMount:
         self.events.append(("slewing", slewing))
         return slewing
 
+    def axis_positions(self):
+        return (float(len(self.gotos)), 0.0)
+
+    def axes_report(self):
+        return 'axis1 0.1894 deg (target 0.0500, off 501.7")'
+
+    def stop_slew(self):
+        self.events.append(("stop",))
+
 
 def _walk(mount, path, keep_going=lambda: True, **kw):
     kw.setdefault("rest_seconds", 0.0)
@@ -167,6 +177,33 @@ def test_a_slew_that_never_ends_times_out():
     mount = FakeMount(never_stops=True)
     error = _walk(mount, dance_path("foxtrot"), slew_timeout_seconds=0.05)
     assert error is not None and "still slewing" in error
+
+
+def test_a_timed_out_slew_is_stopped_and_says_where_the_axes_are():
+    """mast07, 2026-11-23: a stalled step left PWI4 holding the goto, `Slewing` raised."""
+    mount = FakeMount(never_stops=True)
+    error = _walk(mount, dance_path("foxtrot"), slew_timeout_seconds=0.05)
+    assert ("stop",) in mount.events
+    assert "mount stopped" in error and 'off 501.7"' in error
+
+
+def test_a_slew_that_is_stopped_by_keep_going_is_not_stopped_by_the_dance():
+    """`stop_dancing` and `abort` stop the mount themselves; the walk only returns."""
+    mount = FakeMount(never_stops=True)
+    seen = {"n": 0}
+
+    def keep_going():
+        seen["n"] += 1
+        return seen["n"] < 6
+
+    _walk(mount, dance_path("foxtrot"), keep_going, slew_timeout_seconds=60.0)
+    assert ("stop",) not in mount.events
+
+
+def test_each_step_logs_where_the_axes_went(caplog):
+    caplog.set_level(logging.INFO)
+    _walk(FakeMount(), [(60.0, 100.0)])
+    assert any("step 1 done: axis0 0.0000 -> 1.0000" in r.getMessage() for r in caplog.records)
 
 
 # ------------------------------------------------------------------------------------------------ the unit endpoint

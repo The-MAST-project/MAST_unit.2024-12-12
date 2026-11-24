@@ -152,6 +152,11 @@ DANCE_REST_SECONDS = 5.0
 DANCE_SLEW_TIMEOUT_SECONDS = 180.0
 DANCE_SLEW_START_GRACE_SECONDS = 5.0
 
+#: How long after a goto `Slewing` may end without PWI4 having been seen slewing. Before it,
+#: quiet axes mean "not started yet", not "arrived": the timer's first read after an alt/az
+#: goto ended `Slewing` 0.03 s in on mast07 (2026-11-23), before the mount had moved.
+SLEW_START_GRACE_SECONDS = 5.0
+
 
 class Mount(Component, SwitchedOutlet, AscomDispatcher):
     #: Bounds for `goto_alt_az`, enforced by FastAPI/pydantic on the query parameters, so
@@ -491,11 +496,56 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                 self._was_shut_down = True
                 self.power_off()
 
-        if self.is_active(MountActivities.Slewing) and not self.is_moving:
+        if status.mount.is_slewing:  # type: ignore
+            self._slew_seen = True
+        if self.is_active(MountActivities.Slewing) and not self.is_moving and self._slew_may_have_ended():
             self.end_activity(MountActivities.Slewing)
             self.target = None
 
         self._end_abort_when_at_rest(status)
+
+    def _start_slewing(self) -> None:
+        """Raise `Slewing` for a goto about to be sent, and restart the evidence that it began."""
+        self._slew_commanded_at = time.monotonic()
+        self._slew_seen = False
+        self.start_activity(MountActivities.Slewing, details=[f"target={self.target}"])
+
+    def _slew_may_have_ended(self) -> bool:
+        """Whether quiet axes can mean the slew is over: PWI4 was seen slewing, or the grace is up."""
+        commanded = getattr(self, "_slew_commanded_at", None)
+        return (
+            getattr(self, "_slew_seen", True)
+            or commanded is None
+            or time.monotonic() - commanded >= SLEW_START_GRACE_SECONDS
+        )
+
+    def axes_report(self) -> str:
+        """Each axis's position, its target, how far off it is and its servo error -- for a log line."""
+        try:
+            axes = self.pw.status().mount.axis  # type: ignore
+            return ", ".join(
+                f"axis{i} {a.position_degs:.4f} deg (target {a.target_mech_position_degs:.4f}, "
+                f'off {a.dist_to_target_arcsec:.1f}", servo error {a.servo_error_arcsec:.1f}")'
+                for i, a in enumerate(axes)
+            )
+        except Exception as ex:  # noqa: BLE001 -- diagnostics only
+            return f"axes unknown ({ex!r})"
+
+    def axis_positions(self) -> tuple[float, ...] | None:
+        """The axes' positions, degrees, or None if PWI4 cannot say."""
+        try:
+            return tuple(a.position_degs for a in self.pw.status().mount.axis)  # type: ignore
+        except Exception:  # noqa: BLE001 -- diagnostics only
+            return None
+
+    def stop_slew(self) -> None:
+        """Stop the mount and end `Slewing`: a slew given up on must not stay held by PWI4."""
+        try:
+            self.pw.mount_stop()
+        finally:
+            if self.is_active(MountActivities.Slewing):
+                self.end_activity(MountActivities.Slewing)
+            self.target = None
 
     def _end_finding_home_when_homed(self, status) -> None:
         """End `FindingHome` (and `StartingUp` with it) once PWI4 has finished the homing
@@ -957,7 +1007,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         misresolution is invisible at every layer below this one.
         """
         self.target = target_label if target_label is not None else (ra, dec)
-        self.start_activity(MountActivities.Slewing, details=[f"target={self.target}"])
+        self._start_slewing()
         try:
             self.pw.mount_goto_ra_dec_j2000(ra, dec)
         except Exception:
@@ -1070,7 +1120,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             f"apparent [{Angle(ra, unit='hour').to_string(unit='hour', sep=':', precision=3)}, "
             f"{Angle(dec, unit='deg').to_string(unit='deg', sep=':', precision=3)}]"
         )
-        self.start_activity(MountActivities.Slewing, details=[f"target={self.target}"])
+        self._start_slewing()
         try:
             self.pw.mount_goto_ra_dec_apparent(ra, dec)
         except Exception:
@@ -1203,7 +1253,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         # Carried on the activity as well as on `target`: the activity is what a client
         # watching /status sees while the slew is in flight, and "Slewing" on its own does
         # not say where to -- which is the first thing anyone asks of a moving telescope.
-        self.start_activity(MountActivities.Slewing, details=[f"target={self.target}"])
+        self._start_slewing()
         try:
             self.pw.mount_goto_alt_az(alt_degs=alt_degs, az_degs=az_degs)
         except Exception as e:
@@ -1333,15 +1383,21 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
 
         Returns None when the path was danced or `keep_going` ended it, else the reason it
         stopped: a goto the mount refused, or a slew still running after `slew_timeout_seconds`.
-        Leaves the mount where it stopped, tracking off (an alt/az goto turns it off). Checks
+        A slew given up on is stopped (`stop_slew`), so PWI4 does not go on holding it. Leaves
+        the mount where it stopped, tracking off (an alt/az goto turns it off). Checks
         `keep_going` between steps, during each slew and during each rest, so a stop is heard
         within a poll.
+
+        Each step logs where the axes went from and to, and a timeout says how far each axis
+        is from its target: on mast07 (2026-11-23) two stalls were each axis1 ~0.14 deg short on
+        the way down, with PWI4 commanding nothing more -- found by hand, not in the log.
         """
         op = function_name()
         for number, (alt, az) in enumerate(path, 1):
             if not keep_going():
                 return None
             logger.info(f"{op}: step {number}/{len(path)}: alt={alt:g} az={az:g}")
+            before = self.axis_positions()
             response = self.goto_alt_az(alt, az)
             if response.failed:
                 return f"{op}: step {number} (alt={alt:g}, az={az:g}) refused: {'; '.join(response.errors or [])}"
@@ -1352,8 +1408,17 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             deadline = time.monotonic() + slew_timeout_seconds
             while self.is_slewing and keep_going():
                 if time.monotonic() >= deadline:
-                    return f"{op}: step {number} (alt={alt:g}, az={az:g}) still slewing after {slew_timeout_seconds:.0f} s"
+                    report = self.axes_report()
+                    self.stop_slew()
+                    return (
+                        f"{op}: step {number} (alt={alt:g}, az={az:g}) still slewing after "
+                        f"{slew_timeout_seconds:.0f} s, mount stopped: {report}"
+                    )
                 time.sleep(poll_seconds)
+            after = self.axis_positions()
+            if before and after:
+                moves = ", ".join(f"axis{i} {b:.4f} -> {a:.4f}" for i, (b, a) in enumerate(zip(before, after, strict=False)))
+                logger.info(f"{op}: step {number} done: {moves}; {self.axes_report()}")
             rest_end = time.monotonic() + rest_seconds
             while time.monotonic() < rest_end and keep_going():
                 time.sleep(min(poll_seconds, 0.5))
