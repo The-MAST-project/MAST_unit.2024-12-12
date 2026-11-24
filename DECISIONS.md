@@ -2,6 +2,25 @@
 
 ---
 
+## [2026-11-24] Shadow models: kept in the unit's local filing area, for binnings 1 and 2
+
+**Why:** `imaging/shadow_store.py` (2026-11-23) wrote `<unit folder on the share>/Calibration/shadow_models.json`; on the
+units' hosts nothing was ever saved there (no `MAST/mast08/Calibration/` exists on the share, nor a `shadow_models.json`
+for mast01-04). A model is a measurement of this unit's own mirror and stage and costs 7-8 s to detect, so it should
+survive a restart and not depend on reaching the share.
+
+**What:** `ShadowStore.for_machine()` is `Filer().local.root` + `Calibration/shadow_models.json`
+(`C:/MAST/Calibration/shadow_models.json`). An entry carries its `binning` and whether it is `derived`. A model detected at
+binning 1 is also saved for binning 2 (`ShadowModel.binned(2)`: lengths along the perpendicular coordinate halve, angle,
+depth and profile values unchanged), marked derived; one detected on a binning 2 frame replaces the derived one and a later
+binning 1 detection never replaces it. Older files, with no `binning`, read as binning 1.
+
+- **Derived, not detected, for binning 2:** the 2x2 imager (ZWO, hardware binning) is not in service yet, so there is no
+  native binning 2 frame to detect on. The derived model is a rescaling and is as good as its binning 1 source, no better.
+- **Not done:** a stored model is not checked against the current frame; `max_age_days` and `refresh=True` are the controls.
+
+---
+
 ## [2026-11-19] Hot pixel masks: one per camera, in the unit's folder on the share
 
 **Why:** the `hot_pixel` reject of the source selection turned out to be a size/sharpness test that mostly

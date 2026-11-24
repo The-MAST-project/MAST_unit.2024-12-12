@@ -190,6 +190,38 @@ class ShadowModel:
             profile=self.profile,
         )
 
+    def binned(self, factor: int) -> ShadowModel:
+        """This model, found on the full frame, re-expressed for the same frame block-averaged ``factor`` x ``factor``.
+
+        Lengths along the perpendicular coordinate shrink by ``factor`` and nothing else changes: the band's angle, its
+        depth and the profile's values are the same. The image centre, from which ``s`` is measured, is the same point of
+        the sky in both when the frame's sides are multiples of ``factor``.
+        """
+        if not self.present:
+            ny, nx = self.image_shape
+            return ShadowModel(present=False, image_shape=(ny // factor, nx // factor))
+        ny, nx = self.image_shape
+
+        def scaled(pair: tuple[float, float] | None) -> tuple[float, float] | None:
+            return None if pair is None else (pair[0] / factor, pair[1] / factor)
+
+        return ShadowModel(
+            present=True,
+            image_shape=(ny // factor, nx // factor),
+            angle=self.angle,
+            offset=self.offset / factor,
+            umbra_half_width=self.umbra_half_width / factor,
+            penumbra_half_width=self.penumbra_half_width / factor,
+            umbra_s=scaled(self.umbra_s),
+            penumbra_s=scaled(self.penumbra_s),
+            depth=self.depth,
+            prominence=self.prominence,
+            baseline=self.baseline,
+            two_sided_depth=self.two_sided_depth,
+            s=None if self.s is None else self.s / factor,
+            profile=self.profile,
+        )
+
     def to_dict(self) -> dict:
         """Everything the model is, JSON-ready, so that `from_dict` gives back one that behaves the same: the band's
         geometry, the bounds (an open side is ``"-inf"`` / ``"inf"``) and the measured cross-section."""

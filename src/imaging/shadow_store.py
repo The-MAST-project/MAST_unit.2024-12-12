@@ -1,10 +1,19 @@
-"""The fold-mirror shadow models of this machine, kept on the share beside the hot pixel map.
+"""The fold-mirror shadow models of this machine, kept in its local filing area.
 
-``<this unit's folder on the share>/Calibration/shadow_models.json`` (the folder ``hot_pixels.json`` is in), one entry per
-stage position. The band is where the mirror puts it, and the mirror is where the stage puts it, so a model detected at a
-stage position describes the band at that position, whatever asks for it and whenever: an acquisition that begins after a
-restart, the guider started on its own (no acquisition, so no `Acquisition.shadow` to inherit), a solve in another process.
-Detection costs 7 to 8 s on a full frame; looking a model up costs a file read.
+``<local filing area>/Calibration/shadow_models.json`` (``C:/MAST/Calibration/shadow_models.json`` on a unit), one entry per
+stage position and per binning. The file is the machine's own: a model is a measurement of this unit's mirror and stage, and
+a unit that cannot reach the share still has it. (Until 2026-11-24 it was kept beside ``hot_pixels.json`` on the share, where
+no model was ever written.)
+
+* **Both binnings are kept.** An entry is keyed by the frame's shape, which says its binning, and records the binning. A
+  model detected on a full frame (binning 1) is also saved for binning 2 (`ShadowModel.binned`), marked ``derived``, so a
+  solve of a 2x2 frame finds a model without a detection of its own. A model detected on a binning 2 frame replaces the
+  derived one, and a later binning 1 detection never replaces a native binning 2 entry.
+
+The band is where the mirror puts it, and the mirror is where the stage puts it, so a model detected at a stage position
+describes the band at that position, whatever asks for it and whenever: an acquisition that begins after a restart, the
+guider started on its own (no acquisition, so no `Acquisition.shadow` to inherit), a solve in another process. Detection
+costs 7 to 8 s on a full frame; looking a model up costs a file read.
 
 * **Keyed by the stage position and the frame's shape.** Whether a stored position is the stage's position is the stage's own
   judgement: callers pass `Stage.close_enough` (the stage's current position against a target, within its configured
@@ -22,6 +31,7 @@ Detection costs 7 to 8 s on a full frame; looking a model up costs a file read.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import json
 import os
@@ -63,6 +73,10 @@ class StoredShadow:
     seconds: float  # what the detection cost
     image_path: str  # the frame it was detected on
     phase: str | None = None
+    #: the binning of the frame the model describes (1: the full sensor)
+    binning: int = 1
+    #: made from the binning 1 model by `ShadowModel.binned`, not detected on a frame of this binning
+    derived: bool = False
 
     def age_days(self, now: datetime.datetime | None = None) -> float:
         now = now or datetime.datetime.now(datetime.UTC)
@@ -81,6 +95,8 @@ class StoredShadow:
             "seconds": round(float(self.seconds), 2),
             "image_path": self.image_path,
             "phase": self.phase,
+            "binning": int(self.binning),
+            "derived": bool(self.derived),
             "model": self.model.to_dict(),
         }
 
@@ -93,7 +109,23 @@ class StoredShadow:
             seconds=float(d.get("seconds", 0.0)),
             image_path=str(d.get("image_path", "")),
             phase=d.get("phase"),
+            binning=int(d.get("binning", 1)),
+            derived=bool(d.get("derived", False)),
         )
+
+
+#: The binnings a model detected at binning 1 is also kept for.
+DERIVED_BINNINGS = (2,)
+
+
+def frame_binning(frame) -> int:
+    """The binning of a frame: ``XBINNING`` in the FITS header of the file at a path, else 1 (an array says nothing)."""
+    if isinstance(frame, np.ndarray):
+        return 1
+    try:
+        return max(1, int(fits.getheader(Path(frame), 0).get("XBINNING", 1)))
+    except (OSError, ValueError, TypeError):
+        return 1
 
 
 def frame_shape(frame) -> tuple[int, int] | None:
@@ -113,11 +145,11 @@ class ShadowStore:
 
     @classmethod
     def for_machine(cls) -> ShadowStore | None:
-        """This machine's store (its folder on the share), or None where there is no such folder to name."""
+        """This machine's store (its local filing area), or None where there is no such folder to name."""
         try:
             from common.filer import Filer  # noqa: PLC0415 -- builds the Filer; not at import
 
-            return cls(Filer().shared.root)
+            return cls(Filer().local.root)
         except Exception as ex:  # noqa: BLE001 -- no store: the shadow is detected, as before
             logger.warning(f"no shadow store ({ex!r})")
             return None
@@ -175,13 +207,27 @@ class ShadowStore:
 
     def save(self, entry: StoredShadow, is_close: IsClose) -> bool:
         """Keep ``entry``, replacing any entry for the same frame shape whose position ``is_close`` accepts as its own.
-        The file is replaced whole, so a reader never sees a half-written one. False (logged) if it could not be written."""
-        kept = [
-            e
-            for e in self.entries()
-            if not (tuple(e.model.image_shape) == tuple(entry.model.image_shape) and is_close(e.stage_position))
-        ]
-        return self._write([*kept, entry])
+
+        An entry of binning 1 is kept for the `DERIVED_BINNINGS` as well, as a derived entry; one of those replaces a derived
+        entry and never a native one. The file is replaced whole, so a reader never sees a half-written one. False (logged)
+        if it could not be written."""
+
+        def same(e: StoredShadow, other: StoredShadow) -> bool:
+            return tuple(e.model.image_shape) == tuple(other.model.image_shape) and is_close(e.stage_position)
+
+        entries = [e for e in self.entries() if not same(e, entry)]
+        added = [entry]
+        if entry.binning == 1 and entry.model.present:
+            ny, nx = entry.model.image_shape
+            for factor in DERIVED_BINNINGS:
+                if ny % factor or nx % factor:
+                    continue  # the blocks would not tile the frame
+                derived = dataclasses.replace(entry, model=entry.model.binned(factor), binning=factor, derived=True)
+                if any(same(e, derived) and not e.derived for e in entries):
+                    continue  # a model detected on a frame of this binning is the better one
+                entries = [e for e in entries if not same(e, derived)]
+                added.append(derived)
+        return self._write([*entries, *added])
 
     def remove(self, is_close: IsClose, image_shape: tuple[int, int] | None = None) -> int:
         """Drop the entries whose position ``is_close`` accepts (for ``image_shape``, if given). How many."""
@@ -261,6 +307,7 @@ def get_shadow(
             seconds=seconds,
             image_path=str(frame) if not isinstance(frame, np.ndarray) else "",
             phase=phase,
+            binning=frame_binning(frame),
         )
         if store.save(entry, is_close):
             logger.info(

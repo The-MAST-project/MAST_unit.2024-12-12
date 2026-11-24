@@ -279,3 +279,39 @@ def test_a_windowed_grid_selection_chooses_what_the_whole_grid_does():
         return {(round(float(x), 1), round(float(y), 1)) for x, y in zip(sel.x[sel.kept], sel.y[sel.kept], strict=True)}
 
     assert keep(whole) == keep(windowed) and len(keep(whole)) >= 10
+
+
+class TestBinnedShadow:
+    def test_a_binned_model_reads_the_same_deficit_at_the_same_place(self):
+        from imaging.mirror_shadow import ShadowModel
+        from solvers.source_selection import _shadow_deficit
+
+        ny, nx = 400, 600
+        s = np.arange(-400.0, 401.0, 8.0)
+        model = ShadowModel(
+            present=True,
+            image_shape=(ny, nx),
+            angle=np.pi / 2 - 0.05,
+            offset=30.0,
+            umbra_half_width=40.0,
+            penumbra_half_width=90.0,
+            depth=0.5,
+            prominence=20.0,
+            s=s,
+            profile=np.clip(0.5 * (90.0 - np.abs(s - 30.0)) / 50.0, 0.0, 0.5),
+            umbra_s=(-10.0, 70.0),
+            penumbra_s=(-60.0, 120.0),
+        )
+        x = np.array([100.0, 290.0, 330.0, 520.0])
+        y = np.array([50.0, 200.0, 350.0, 20.0])
+
+        full, _ = _shadow_deficit(model, x, y, (ny, nx))
+        grid, _ = _shadow_deficit(model.binned(2), (x - 0.5) / 2, (y - 0.5) / 2, (ny // 2, nx // 2))
+
+        assert np.allclose(full, grid, atol=0.02)
+        assert model.binned(2).image_shape == (200, 300) and model.binned(2).penumbra_s == (-30.0, 60.0)
+
+    def test_an_absent_shadow_stays_absent(self):
+        from imaging.mirror_shadow import ShadowModel
+
+        assert not ShadowModel(present=False, image_shape=(400, 600)).binned(2).present

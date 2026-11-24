@@ -12,7 +12,7 @@ from common.mast_logging import get_logger
 from common.models.latest import LatestAcquisition
 from common.paths import PathMaker
 from imaging.mirror_shadow import ShadowModel, StagedShadow, detect_mirror_shadow
-from imaging.shadow_store import ShadowStore, StoredShadow, frame_shape, within
+from imaging.shadow_store import ShadowStore, StoredShadow, frame_binning, frame_shape, within
 from plotting import plot_acquisition_corrections, plot_phase_corrections
 
 if TYPE_CHECKING:
@@ -108,8 +108,8 @@ class Acquisition:
         #: was found at (`shadow_for`). None until then. Detection takes seconds on a full frame, and the band
         #: only moves when the stage does.
         self.shadow: StagedShadow | None = None
-        #: The machine's shadow models on the share (`imaging/shadow_store.py`), under the one in `shadow`: a model detected
-        #: by an earlier acquisition, another process or the guider is found there. None: there is no such folder.
+        #: The machine's shadow models in its local filing area (`imaging/shadow_store.py`), under the one in `shadow`: a
+        #: model detected by an earlier acquisition, another process or the guider is found there. None: no such folder.
         self.shadow_store: ShadowStore | None = ShadowStore.for_machine()
 
     def shadow_for(self, image_path: str, phase: str | None = None) -> ShadowModel | None:
@@ -179,6 +179,7 @@ class Acquisition:
                     seconds=seconds,
                     image_path=str(image_path),
                     phase=phase,
+                    binning=frame_binning(image_path),
                 ),
                 is_close,
             )
