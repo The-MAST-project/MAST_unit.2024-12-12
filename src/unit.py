@@ -1973,11 +1973,11 @@ class Unit(Component, OpmodeBase):
         logger.info(f"{op}: done.")
         return CanonicalResponse_Ok
 
-    @endpoint(tier=Tier.DEMO, completion=UnitActivities.Dancing, autostartup=True)
+    @endpoint(tier=Tier.OPERATION, completion=UnitActivities.Dancing, autostartup=False)
     def endpoint_start_dancing(self, style: str = DEFAULT_STYLE):
         """Start the unit dancing `style` (see `dance.STYLES`) and return at once; `Dancing` clears when it is over.
 
-        Starts the unit up first (the covers open and the mount homes itself). Refused while anything
+        Does not start the unit up: the mount dances as it is, covers and all. Refused while anything
         else is at work. `stop_dancing` or `abort` ends it: the dance hears the flag clear within a poll.
         """
         op = function_name()
@@ -2014,7 +2014,7 @@ class Unit(Component, OpmodeBase):
         finally:
             self.end_activity(UnitActivities.Dancing)
 
-    @endpoint(tier=Tier.DEMO, completion=Completion.IMMEDIATE)
+    @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
     async def endpoint_stop_dancing(self):
         """Stop dancing: clear `Dancing` (the dance hears it) and stop the mount where it is."""
         logger.info("unit.dance: stopping dancing ...")
@@ -2665,7 +2665,6 @@ class Unit(Component, OpmodeBase):
             base_path + "/start_dancing",
             endpoint=self.endpoint_start_dancing,
             methods=["PUT"],
-            autostarter=self._autostarted,
         )
         add_api_route(
             router,

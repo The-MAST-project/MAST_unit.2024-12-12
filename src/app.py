@@ -175,12 +175,12 @@ OPERATOR_AREAS: tuple[tuple[str, str], ...] = (
 )
 
 #: `openapi_tags` in display order. Only the operator tier is split by area, so
-#: `TIER_GROUPS[Tier.OPERATION]` is unused here and the other three groups are unchanged.
+#: `TIER_GROUPS[Tier.OPERATION]` is unused here and the other groups are unchanged. No
+#: `Tier.DEMO` group: the dancing routes, its only members, are operator verbs since they work.
 OPENAPI_TAGS: list[dict[str, str]] = [
     TIER_GROUPS[Tier.CONTRACT],
     *({"name": operation_area_tag(area), "description": description} for area, description in OPERATOR_AREAS),
     TIER_GROUPS[Tier.INTERFACE],
-    TIER_GROUPS[Tier.DEMO],
 ]
 
 

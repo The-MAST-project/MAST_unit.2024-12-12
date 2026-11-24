@@ -1305,7 +1305,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
     def was_shut_down(self) -> bool:
         return self._was_shut_down
 
-    @endpoint(tier=Tier.DEMO, completion=Completion.BLOCKING)
+    @endpoint(tier=Tier.OPERATION, completion=Completion.BLOCKING)
     def dance(self, style: str = DEFAULT_STYLE):
         """Dance `style` (see `dance.STYLES`) and return when done or aborted. Does not home the mount."""
         try:

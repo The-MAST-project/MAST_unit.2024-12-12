@@ -166,7 +166,6 @@ def test_the_schema_declares_the_groups_in_display_order():
         TIER_TAGS[Tier.CONTRACT],
         *(operation_area_tag(area) for area, _ in app_module.OPERATOR_AREAS),
         TIER_TAGS[Tier.INTERFACE],
-        TIER_TAGS[Tier.DEMO],
     ]
     assert all(group["description"] for group in schema["tags"])
 
