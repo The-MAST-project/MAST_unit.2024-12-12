@@ -131,11 +131,14 @@ def _forward_libximc_log(loglevel, message, user_data):  # noqa: ARG001 -- the C
         _libximc_logger.log(_LIBXIMC_LEVELS.get(loglevel, logging.WARNING), f"libximc: {message}")
 
 
-try:
-    # The module-level function object is the reference that keeps the callback alive.
-    ximclib.set_logging_callback(_forward_libximc_log, None)
-except Exception as ex:  # noqa: BLE001 -- diagnostics only; the stage works without it
-    logger.warning(f"cannot route libximc's log into ours: {ex!r}")
+# `if`, not `assert`: pyximc's `lib` is None when its DLL fails to load, and failing the
+# import over the log hookup would be worse than going without it.
+if ximclib is not None:
+    try:
+        # The module-level function object is the reference that keeps the callback alive.
+        ximclib.set_logging_callback(_forward_libximc_log, None)
+    except Exception as ex:  # noqa: BLE001 -- diagnostics only; the stage works without it
+        logger.warning(f"cannot route libximc's log into ours: {ex!r}")
 
 
 # The values below are the wire format, and the member names are Python identifiers with no
@@ -1013,6 +1016,7 @@ from pyximc import *
         The caller holds ``stage_lock``. A failed chart read leaves the winding fields None
         rather than failing the status read it rides on.
         """
+        assert ximclib
         chart = chart_data_t()
         try:
             charted = ximclib.get_chart_data(self.device, byref(chart)) == Result.Ok
