@@ -27,6 +27,10 @@ class RecordingXimc:
     def close_device(self, _handle):
         self.calls.append("close")
 
+    def get_status(self, _device, _ref):
+        """The controller-error baseline read after an open; not a call this test counts."""
+        return -1
+
 
 @pytest.fixture
 def ximc(monkeypatch):

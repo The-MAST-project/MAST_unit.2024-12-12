@@ -134,6 +134,8 @@ def _stub(**kw):
         "close_enough": lambda _p: False,
         "target": None,
         "is_moving": False,
+        "is_active": lambda _activity: False,  # not homing
+        "_homing_error": None,
     }
     return SimpleNamespace(**{**base, **kw})
 
