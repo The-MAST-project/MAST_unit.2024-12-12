@@ -35,7 +35,7 @@ Keyword-only, and `tier` is mandatory: routing an undeclared handler raises
 | `CONTRACT` | orchestration a programmatic client depends on. The name is wire contract with `MAST_control` and the shared plan client — **grep `common/models/plans.py` before renaming one** |
 | `OPERATION` | operator and diagnostic verbs; the day-to-day manual surface |
 | `INTERFACE` | generated only. Never declare it by hand |
-| `DEMO` | parked demonstrations. Implies `deprecated=True`, so the route renders struck through |
+| `DEMO` | parked demonstrations. Implies `deprecated=True`, so the route renders struck through. Nothing in this repo declares it: the dancing routes moved to `OPERATION` once they worked |
 
 The tier publishes per operation as `x-stability`, so a client's own test can assert it never
 calls an operator verb. It is also the Swagger group, except on `OPERATION`: an operator route

@@ -31,10 +31,10 @@ from .astscan import (
 #: Components answering more than one completion contract. The mount is all four at once.
 KNOWN_MIXED = {"mount.py": "MAST_unit#159"}
 
-#: `Tier.DEMO` is parked and struck through in Swagger, so its form is not held to the
-#: component's convention -- `dance` blocks, and making it uniform would be a behaviour change
-#: to a route nobody should call.
-EXEMPT_FROM_UNIFORMITY = {"dance"}
+#: Routes whose form is not held to their component's convention. Empty: `mount/dance` was here
+#: while it was a parked `Tier.DEMO` route, and it blocks -- which the mount, already mixed
+#: (`KNOWN_MIXED`), needs no exemption for.
+EXEMPT_FROM_UNIFORMITY: set[str] = set()
 
 _COMPLETION = re.compile(r"completion=([A-Za-z_][\w.]*)")
 
