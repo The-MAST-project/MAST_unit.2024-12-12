@@ -13,7 +13,7 @@ from solvers.source_selection import SelectionParams
 
 NX, NY = 1200, 900
 FIBRE = (150.0, 450.0)
-PARAMS = SelectionParams(seeing_scale=1.0, n_target=10, n_max=40, min_snr=25.0, grid=(1, 1))
+PARAMS = SelectionParams(seeing_scale=1.0, n_target=8, n_max=40, min_snr=25.0, grid=(1, 1))
 
 
 @pytest.fixture(autouse=True)
@@ -26,10 +26,11 @@ def noshadow(monkeypatch):
 
 
 def _frame() -> np.ndarray:
-    """Two columns of 16 equal stars: one beside the fibre pixel, one across the frame from it."""
+    """Two columns of 10 equal stars: one beside the fibre pixel, one across the frame from it. (Spaced 40 px: on the 2x2
+    grid, 20 px of a 3.75 px star, so each is detected alone.)"""
     frame = SKY + np.random.default_rng(4).normal(0, NOISE, (NY, NX))
     for x in (150.0, 1050.0):
-        for y in np.arange(250.0, 650.0, 25.0):
+        for y in np.arange(250.0, 650.0, 40.0):
             _star(frame, x + 0.3, y + 0.2, 2e5)
     return frame
 
@@ -42,21 +43,23 @@ def test_the_search_starts_at_the_low_coma_radius_about_the_fibre_pixel():
     stage = _run(FIBRE)
     sel = stage.selection
 
-    assert sel is not None and sel.optical_center == FIBRE
-    assert sel.radius_used_px == sel.low_coma_radius_px == 225.0  # 0.25 of the shorter side: it did not have to grow
+    # the selection runs on the 2x2 grid: its pixels are half the frame's, and its pixel g is the frame's 2g and 2g + 1
+    assert sel is not None and stage.grid is not None and stage.grid.factor == 2
+    assert sel.optical_center == pytest.approx(((FIBRE[0] - 0.5) / 2, (FIBRE[1] - 0.5) / 2))
+    assert sel.radius_used_px == sel.low_coma_radius_px == 112.5  # 0.25 of the shorter side, 225 px, in grid pixels
     kept_x = sel.x[sel.kept]
-    assert len(kept_x) >= 10 and (kept_x < 300).all()  # every kept star is beside the fibre pixel
-    assert stage.record()["search_center_px"] == [150.0, 450.0]
+    assert len(kept_x) >= 8 and (kept_x < 150).all()  # every kept star is beside the fibre pixel
+    assert stage.record()["search_center_px"] == pytest.approx([74.75, 224.75]) and stage.record()["grid_factor"] == 2
 
 
 def test_from_the_frames_middle_the_candidate_region_does_not_reach_the_stars():
     stage = _run(None)
     sel = stage.selection
 
-    assert sel is not None and sel.optical_center == ((NX - 1) / 2.0, (NY - 1) / 2.0)
+    assert sel is not None and sel.optical_center == pytest.approx(((NX / 2 - 0.5) / 2 - 0.25, (NY / 2 - 0.5) / 2 - 0.25))
     # nothing lies within 225 px of the middle, and the candidate region stops at 1.7 of that: the stars in the columns are
     # not looked for (the radius used to grow to reach them), so the frame has too few
-    assert sel.reach_px == pytest.approx(1.7 * 225.0)
+    assert sel.reach_px == pytest.approx(1.7 * 112.5)
     assert sel.status == "too_few_sources" and stage.failed is not None
 
 

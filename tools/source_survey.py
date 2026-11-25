@@ -132,7 +132,7 @@ REASON_CODES = {
 }
 SKIPPED_NAMES = (",solver=", "downsampled_")
 #: the steps of a solver solve that are timed (`MastrometryDotNet.timings`); `<stage>_t_other` is the rest
-TIMED_STEPS = ("hot_pixels", "shadow", "darken", "select", "solve_field")
+TIMED_STEPS = ("hot_pixels", "downsample", "shadow", "darken", "select", "solve_field")
 
 
 # ----- frames ----------------------------------------------------------------------------------

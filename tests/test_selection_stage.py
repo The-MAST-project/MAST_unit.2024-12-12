@@ -219,7 +219,7 @@ def test_each_step_is_timed(shadowed):
     shadowed_stage = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="shadowed"))
     assert set(shadowed_stage.timings) == {"hot_pixels", "shadow", "darken"}
     selective = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="selective"))
-    assert set(selective.timings) == {"hot_pixels", "shadow", "select"}
+    assert set(selective.timings) == {"downsample", "shadow", "select"}  # the hot pixels are filled in the downsample
     assert all(v >= 0 for v in selective.timings.values())
     assert set(selective.record()["timings_s"]) == set(selective.timings)
     cached = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="selective"), shadow=_shadow())

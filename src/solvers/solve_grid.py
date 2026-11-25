@@ -1,8 +1,8 @@
 """Stages 0 to 2 of the solve pipeline (`docs/mastrometry_stages.md`, section 9): describe the input, bring it to the 2x2
 solve grid, crop it to the region about the fibre -- and select the stars on that grid.
 
-A PROTOTYPE. Nothing in `MastrometryDotNet` calls it yet. It exists to answer whether selecting on the binned grid finds the
-same stars and solves the same as selecting on the full-resolution frame, which is four times the pixels.
+`MastrometryDotNet`'s selective stage runs on this grid (`selection_stage._prepare_selective`): the frame is binned first,
+the stars are selected on the grid, the xylist is in its pixels and the grid is the image that is solved (docs, 9.10).
 
 Two kinds of input reach it, and both end up on the same grid:
 
@@ -53,6 +53,15 @@ class SolveGrid:
     factor: int = SOLVE_FACTOR
     hot_filled: int = 0
     saturated_blocks: int = 0
+    #: the grid as the block mean, without the blocks that held a saturated pixel set to the saturation level (which `data`
+    #: has, for the selection's saturation test); None when no block was saturated, and `data` is then the mean. It is the
+    #: image the solver is handed and the solved FITS carries.
+    plain: np.ndarray | None = None
+
+    @property
+    def image(self) -> np.ndarray:
+        """The grid as the block mean: what is solved as an image, and kept in the solved FITS."""
+        return self.plain if self.plain is not None else self.data
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -76,6 +85,20 @@ class SolveGrid:
         """The fibre pixel as ``solve-field``'s ``--crpix-x/--crpix-y``: FITS 1-based, on this array."""
         gx, gy = self.to_grid(*fibre_xy)
         return float(gx) + 1.0, float(gy) + 1.0
+
+
+def block_mean(data: np.ndarray, factor: int = SOLVE_FACTOR) -> np.ndarray:
+    """The ``factor`` x ``factor`` block means of ``data`` (whose sides are multiples of ``factor``), as float64.
+
+    The pixels of each block are summed as strided views of the array: several times faster than
+    ``reshape(...).mean(axis=(1, 3))``, which reduces over strided axes, and the same values (a sum of a few integers and
+    one division by a power of two is exact)."""
+    total = None
+    for i in range(factor):
+        for j in range(factor):
+            view = data[i::factor, j::factor].astype(np.float64)
+            total = view if total is None else total + view
+    return total / float(factor * factor)  # type: ignore[operator]
 
 
 def _region_blocks(
@@ -128,12 +151,16 @@ def to_solve_grid(
         a, b, c, d = data[0::2, 0::2], data[0::2, 1::2], data[1::2, 0::2], data[1::2, 1::2]
         binned = (a + b + c + d) * 0.25
         saturated = np.zeros(binned.shape, bool)
+        plain = None
         if info.saturation_adu is not None:
             level = info.saturation_adu
             saturated = np.maximum(np.maximum(a, b), np.maximum(c, d)) >= level
-            binned[saturated] = level
+            if saturated.any():
+                plain = binned.copy()
+                binned[saturated] = level
         grid = binned
     else:
+        plain = None
         if x0 % f or y0 % f:
             raise ValueError(f"a binned array must start on a block of the sensor: origin {info.origin} is odd")
         grid = data
@@ -144,7 +171,9 @@ def to_solve_grid(
             grid = fill_hot_pixels(grid, gx[inside], gy[inside])
         saturated = (grid >= info.saturation_adu) if info.saturation_adu is not None else np.zeros(grid.shape, bool)
 
-    result = SolveGrid(grid, (x0, y0), f, hot_filled=hot_filled, saturated_blocks=int(np.count_nonzero(saturated)))
+    result = SolveGrid(
+        grid, (x0, y0), f, hot_filled=hot_filled, saturated_blocks=int(np.count_nonzero(saturated)), plain=plain
+    )
     if region is not None:
         gx0, gx1, gy0, gy1 = _region_blocks(region, (x0, y0), grid.shape, f)
         result = SolveGrid(
@@ -153,6 +182,7 @@ def to_solve_grid(
             f,
             hot_filled=hot_filled,
             saturated_blocks=result.saturated_blocks,
+            plain=None if plain is None else plain[gy0:gy1, gx0:gx1],
         )
     return result
 

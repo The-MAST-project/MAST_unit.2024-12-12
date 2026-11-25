@@ -42,7 +42,8 @@ from common.mast_logging import get_logger
 from imaging.hot_pixels import HotPixels, calibration_path
 from imaging.mirror_shadow import ShadowModel, darken_shadow, detect_mirror_shadow
 
-from .source_selection import FIT_ORDER, Selection, SelectionParams, select_sources
+from .solve_grid import FrameInfo, SolveGrid, select_on_grid, to_solve_grid
+from .source_selection import FIT_ORDER, Selection, SelectionParams, resolve_full_scale
 
 logger = get_logger(__name__)
 
@@ -127,6 +128,9 @@ class StageResult:
     data: np.ndarray
     shadow: ShadowModel | None = None
     selection: Selection | None = None
+    #: the frame on the 2x2 solve grid (`selective`): what the selection ran on, and what is solved as an image
+    #: (`grid.image`)
+    grid: SolveGrid | None = None
     #: "xylist", "image" or "fallback" (the xylist solve failed, the image was solved)
     solved_from: str = "image"
     #: how many of the camera's hot pixels fell in this frame and were filled
@@ -151,6 +155,8 @@ class StageResult:
             "hot_pixels_filled": self.hot_pixels_filled,
             "timings_s": {k: round(v, 3) for k, v in self.timings.items()},
         }
+        if self.grid is not None:
+            out["grid_factor"] = self.grid.factor  # the selection's pixels, radii and search centre are in these
         if self.selection is not None:
             out.update(
                 counts=self.selection.counts(),
@@ -187,6 +193,72 @@ def _fill_hot_pixels(
     return hp.fill(data, origin), int(inside.sum())
 
 
+def _prepare_selective(
+    data: np.ndarray,
+    header: Any,
+    settings: SourceSelectionSettings,
+    origin: tuple[int, int],
+    frame_shape: tuple[int, int] | None,
+    shadow: ShadowModel | None,
+    center: tuple[float, float] | None,
+) -> StageResult:
+    """The selective stage: the frame is brought to the 2x2 solve grid, and the stars are selected there.
+
+    The hot pixels are filled at full resolution and the saturated blocks marked while binning (`to_solve_grid`); the shadow
+    model, found on the full frame, is scaled to the grid; the search is about the fibre pixel (`center`, in this frame's
+    pixels, else its middle) and the low-coma radius is the selection's default fraction of the frame's shorter side.
+    """
+    result = StageResult(settings=settings, data=data)
+    ny, nx = data.shape
+    shape = frame_shape if frame_shape is not None else (ny + origin[1], nx + origin[0])
+    hp = settings.hot_pixels
+    if hp is not None and len(hp) and not hp.matches(shape):
+        logger.warning(f"hot pixel map is for {hp.image_shape}, this frame is {shape}: not applied")
+    saturation, _source = resolve_full_scale(settings.params, header, data)
+
+    started = time.monotonic()
+    grid = to_solve_grid(data, FrameInfo(binning=1, full_shape=shape, origin=origin, saturation_adu=saturation), hp)
+    result.grid = grid
+    result.hot_pixels_filled = grid.hot_filled
+    result.timings["downsample"] = time.monotonic() - started
+    if grid.hot_filled:
+        logger.info(f"source selection: {grid.hot_filled} hot pixels filled")
+
+    started = time.monotonic()
+    if shadow is not None:
+        result.shadow = shadow
+        logger.info(f"source selection: shadow present={shadow.present} (cached)")
+    else:
+        # on the full frame, which is what the detector's thresholds were set on
+        result.shadow = detect_mirror_shadow(
+            data,
+            max_center_offset=settings.shadow_max_center_offset,
+            require_two_sided=settings.shadow_require_two_sided,
+        )
+        logger.info(f"source selection: shadow present={result.shadow.present}")
+    result.timings["shadow"] = 0.0 if shadow is not None else time.monotonic() - started
+    shadow_present = result.shadow is not None and result.shadow.present
+
+    started = time.monotonic()
+    fibre = (
+        (center[0] + origin[0], center[1] + origin[1])
+        if center is not None
+        else (origin[0] + (nx - 1) / 2.0, origin[1] + (ny - 1) / 2.0)
+    )
+    result.selection = select_on_grid(
+        grid,
+        settings.params,
+        fibre_xy=fibre,
+        low_coma_radius_px=settings.params.geometric_low_coma_fraction * min(ny, nx),
+        saturation_adu=saturation,
+        shadow=result.shadow.binned(grid.factor) if shadow_present else None,
+    )
+    result.timings["select"] = time.monotonic() - started
+    result.solved_from = "xylist"
+    logger.info(f"source selection: {result.selection.counts()}, status={result.selection.status}")
+    return result
+
+
 def prepare(
     data: np.ndarray,
     header: Any,
@@ -203,6 +275,10 @@ def prepare(
     whose position the solve reports (CRPIX). The selection starts at the low-coma radius about it and widens until it
     has enough stars. None: the frame's centre, as the selection falls back to.
 
+    ``selective`` runs on the 2x2 solve grid, not on this frame: it is brought to the grid first (hot pixels filled at
+    full resolution, then block-averaged), and the selection, its search centre and its xylist are in grid pixels
+    (`StageResult.grid`).
+
     `shadow`, if given, is the shadow model for this (cropped) frame, found earlier -- the acquisition's cached
     one -- and is used instead of detecting again.
 
@@ -210,6 +286,8 @@ def prepare(
     the hot pixel map is in full-frame pixels.
     """
     assert settings.mode != "original", "prepare() is not called for the original stage"
+    if settings.mode == "selective":
+        return _prepare_selective(data, header, settings, origin, frame_shape, shadow, center)
     result = StageResult(settings=settings, data=data)
     started = time.monotonic()
     data, result.hot_pixels_filled = _fill_hot_pixels(data, settings, origin, frame_shape)
@@ -240,18 +318,6 @@ def prepare(
         result.timings["darken"] = time.monotonic() - started
         return result
 
-    started = time.monotonic()
-    result.selection = select_sources(
-        data,
-        shadow=result.shadow if shadow_present else None,
-        optical_center=center,
-        params=settings.params,
-        exclusion_half_width=settings.exclusion_half_width,
-        header=header,
-    )
-    result.timings["select"] = time.monotonic() - started
-    result.solved_from = "xylist"
-    logger.info(f"source selection: {result.selection.counts()}, status={result.selection.status}")
     return result
 
 

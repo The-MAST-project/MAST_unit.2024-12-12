@@ -843,13 +843,51 @@ widened the window and moved the fibre ~0.06" south on the grid.
 - **To do:** tune the window against the Gaia survey (the scale decides the position by 0.1 to 0.2"), and decide whether the scale should
   depend on the frame (mirror in or out) before it is trusted on mast01's mirror-in frames.
 
+### 9.10 The selective stage runs on the grid (2026-11-25)
+
+`MastrometryDotNet`'s selective stage no longer selects on the full-resolution frame. `selection_stage._prepare_selective` brings the
+(cropped) frame to the 2x2 solve grid first -- hot pixels filled at full resolution, blocks averaged, a block that held a saturated
+pixel marked for the selection's saturation test (`to_solve_grid`) -- and the selection, its search centre (the fibre pixel, in grid
+pixels) and its xylist are all in grid pixels. The shadow model, found on the full frame, is scaled to the grid (`ShadowModel.binned`).
+
+- **One downsample.** The grid is also the image: `SolveGrid.image` is the plain block mean (without the saturated blocks set to the
+  saturation level), cast to the frame's dtype, and goes to the solved FITS and to the image fallback. `original` and `shadowed` still
+  downsample after the stage, as before, but with `block_mean`: the four pixels of each block summed as strided views, which gives the
+  same values as `reshape(...).mean(axis=(1, 3))` (a test holds it to the image `original` sends) several times faster.
+- **CRPIX follows the grid.** The grid's first block is the sensor's, so an ROI that starts on an odd pixel loses its first column or
+  row, and CRPIX is computed from the grid's own origin (`roi_center_to_crpix`); `ROI_X`/`ROI_Y` in the header follow it.
+- **Shadow detection** still runs on the full frame when the caller supplies no model (the acquisition's cached or stored one is
+  supplied in production). On a hardware-binned frame it would have to run on the binned one, with the detector's thresholds
+  (`bin_px`, `edge_margin`, `min_penumbra_half_width`, all in pixels) rechecked: not done.
+- **A failed selection still fails the solve** (`too_few_sources`); nothing falls back to the image.
+
+**Checked on the 37 survey frames** (mast08, `sep`, selective, default cap, calibrated seeing; grid selection against the earlier
+full-resolution capped run of the same code; 36 solve in both, the 2 s exposure fails in both; all 36 solve from the xylist):
+
+| | full resolution | grid |
+|---|---|---|
+| position at the fibre, grid minus full resolution | | east +0.008", north -0.025" (median), rms 0.036" / 0.051", max 0.18" |
+| median residual / residual rms (arcsec) | 0.192 / 0.240 | 0.181 / 0.231 |
+| stars used by the fit (median) | 26 | 23.5 |
+| select step (s) | 1.63 | 0.52 |
+| downsample, hot pixels included (s) | | 0.31 |
+| solve-field (s) | 1.03 | 1.29 |
+| whole call (s) | 11.3 | 10.7 |
+
+- **The 0.025" south is small and consistent** (median, +/-0.006"), about twice what the seeing estimator accounts for (0.010" at the
+  fibre, section 9.9); the rest is not traced. It is inside the 0.06" taken as tolerable for a 3.4" fibre (30 um at 0.113"/um).
+- **The mirror-in frames improve.** mast01 `spec` (shadow centred): plain rms 2.06 -> 0.35", 1.53 -> 0.34", 1.48 -> 1.11"; stars used 52 -> 62,
+  46 -> 58, 47 -> 63. Fewer stars matched to the wrong catalogue star stay in the fit; not traced.
+- **The whole call is dominated by the shadow detection** the survey does on every frame (7.5 s median of 10.7 s): the survey supplies
+  no stored model. With one, the call is select 0.5 + downsample 0.3 + solve-field 1.3 + the rest (0.7), about 3 s: not measured.
+
 ### 9.5 The prototype
 
 `src/solvers/solve_grid.py` is stages 0 to 2 and the selection run on the grid (`FrameInfo`, `to_solve_grid`, `binned_params`,
 `select_on_grid`), with `tests/test_solve_grid.py`: 19 tests on synthetic frames (the coordinate mapping against `pixel_grid`,
 block alignment, hot pixels filled before the averaging, saturation, the binning-2 input, the region crop, and the selection
 on the grid finding the stars the full-resolution selection finds, to half a sensor pixel, and recovering the planted positions
-to 0.3). Nothing in `MastrometryDotNet` calls it yet.
+to 0.3). `MastrometryDotNet` has called it since 2026-11-25 (section 9.10).
 
 **On real frames** (eight mast02 acquisition frames, the search centred on the fibre pixel in every variant, each xylist solved
 with `solve-field` and compared with the full-resolution selection's solution at the fibre pixel):

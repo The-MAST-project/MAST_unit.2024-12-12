@@ -27,6 +27,7 @@ from .astrometry_dot_net import generate_random_string, parse_solver_output, win
 from .pixel_grid import roi_center_to_crpix
 from .ram_area import index_dir, missing_indexes, scratch_dir
 from .selection_stage import FIT_ORDER, SourceSelectionSettings, StageResult, prepare, resolve_settings, solved_fits_from_wcs
+from .solve_grid import block_mean
 from .star_map import write_selection_area, write_star_map
 from .survey_solve import write_xylist
 
@@ -260,6 +261,7 @@ class MastrometryDotNet(SolverInterface):
             # NOTE: the values are in downsampled pixel units
             #
             refpix: tuple[float, float] | None = None  # (--crpix-x, --crpix-y), fractional; see pixel_grid.py
+            refpix_center: tuple[float, float] | None = None  # the full-frame pixel `refpix` is for
 
             downsample_factor: int = DOWNSAMPLE_FACTOR
 
@@ -318,6 +320,7 @@ class MastrometryDotNet(SolverInterface):
                     roi_center_to_crpix(imager_roi._center.x, imager_roi.x, downsample_factor),
                     roi_center_to_crpix(imager_roi._center.y, imager_roi.y, downsample_factor),
                 )
+                refpix_center = (float(imager_roi._center.x), float(imager_roi._center.y))
 
                 logger.info(f"{function_name()}: Cropped to {imager_roi=}, {refpix=}")
             elif fibre_xy is not None:
@@ -326,6 +329,7 @@ class MastrometryDotNet(SolverInterface):
                     roi_center_to_crpix(fibre_xy[0], 0, downsample_factor),
                     roi_center_to_crpix(fibre_xy[1], 0, downsample_factor),
                 )
+                refpix_center = (float(fibre_xy[0]), float(fibre_xy[1]))
                 logger.info(f"{function_name()}: No ROI, using full frame, refpix at the fibre {fibre_xy} -> {refpix}")
             else:
                 logger.info(f"{function_name()}: No ROI, using full frame, refpix=center")
@@ -368,7 +372,8 @@ class MastrometryDotNet(SolverInterface):
                         stage.selection.optical_center,
                         stage.selection.low_coma_radius_px,
                         stage.selection.radius_used_px,
-                        downsample_factor,
+                        # the selective stage selects on the solve grid: its radii and centre are already in its pixels
+                        1 if stage.grid is not None else downsample_factor,
                     )
                 if (why := stage.failed) is not None:
                     logger.error(f"{function_name()}: source selection: {why}, the frame is not solved")
@@ -380,17 +385,29 @@ class MastrometryDotNet(SolverInterface):
                     self._write_shadow_picture(artifacts_dir, new_fits_path.stem, data, stage)
                 data = stage.data  # darkened, for shadowed; the input otherwise
 
-            # Downsample by factor downsample_factor (binning)
-            downsampled_height = data.shape[0] // downsample_factor
-            downsampled_width = data.shape[1] // downsample_factor
+            grid = stage.grid if stage is not None else None
+            if grid is not None:
+                # The selective stage has already brought the frame to the solve grid (hot pixels filled at full resolution,
+                # blocks averaged): that is the image, and the xylist is in its pixels. Its first block is the sensor's, so
+                # for an ROI that starts on an odd pixel the grid starts one pixel later, and CRPIX follows it.
+                downsampled = grid.image.astype(dtype)
+                downsampled_height, downsampled_width = downsampled.shape
+                if refpix is not None and refpix_center is not None:
+                    refpix = (
+                        roi_center_to_crpix(refpix_center[0], grid.origin[0], downsample_factor),
+                        roi_center_to_crpix(refpix_center[1], grid.origin[1], downsample_factor),
+                    )
+            else:
+                # Downsample by factor downsample_factor (binning)
+                downsampled_height = data.shape[0] // downsample_factor
+                downsampled_width = data.shape[1] // downsample_factor
 
-            # Reshape and average downsample_factor x downsample_factor blocks
-            downsampled = (
-                data[: downsampled_height * downsample_factor, : downsampled_width * downsample_factor]
-                .reshape(downsampled_height, downsample_factor, downsampled_width, downsample_factor)
-                .mean(axis=(1, 3))
-                .astype(dtype)
-            )
+                # Average downsample_factor x downsample_factor blocks, from the strided views of the pixels of each block
+                # (the same values as reshape(...).mean(axis=(1, 3)), several times faster)
+                downsampled = block_mean(
+                    data[: downsampled_height * downsample_factor, : downsampled_width * downsample_factor],
+                    downsample_factor,
+                ).astype(dtype)
 
             logger.info(
                 f"{function_name()}: Downsampled by factor of {downsample_factor} to "
@@ -406,8 +423,10 @@ class MastrometryDotNet(SolverInterface):
             header["DOWNSAMP"] = (downsample_factor, "Downsampling factor applied to original image")
 
             if imager_roi is not None:
-                header["ROI_X"] = (imager_roi.x, "X coordinate of ROI in original image")
-                header["ROI_Y"] = (imager_roi.y, "Y coordinate of ROI in original image")
+                # (the solve grid starts on one of the sensor's blocks: a crop that starts on an odd pixel loses its first)
+                roi_x, roi_y = grid.origin if grid is not None else (imager_roi.x, imager_roi.y)
+                header["ROI_X"] = (roi_x, "X coordinate of ROI in original image")
+                header["ROI_Y"] = (roi_y, "Y coordinate of ROI in original image")
                 header["ROI_W"] = (imager_roi.width, "Width of ROI in original image")
                 header["ROI_H"] = (imager_roi.height, "Height of ROI in original image")
 
@@ -503,7 +522,12 @@ class MastrometryDotNet(SolverInterface):
             wcs_path = new_fits_path.parent / f"{new_fits_path.stem}.wcs"
             if stage is not None and stage.selection is not None:
                 xylist_path = new_fits_path.parent / f"{new_fits_path.stem}.xyls"
-                write_xylist(xylist_path, stage.selection.xylist(), downsample_factor, selection_settings.xylist_origin)
+                write_xylist(
+                    xylist_path,
+                    stage.selection.xylist(),
+                    1 if stage.grid is not None else downsample_factor,  # grid pixels need no conversion
+                    selection_settings.xylist_origin,
+                )
                 xylist_args = [
                     *args,
                     "--wcs",

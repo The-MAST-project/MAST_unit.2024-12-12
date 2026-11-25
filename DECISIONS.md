@@ -2,6 +2,26 @@
 
 ---
 
+## [2026-11-25] `MastrometryDotNet`'s selective stage selects on the 2x2 solve grid
+
+**Why:** the user wants every calculation on binned images (the ZWO imager's hardware binning is coming: a frame a quarter the size,
+no software downsample), and the selection's cost is in its pixels.
+
+**What:** `selection_stage._prepare_selective` downsamples first (`to_solve_grid`: hot pixels filled at full resolution, blocks
+averaged, saturated blocks marked) and selects on the grid (`select_on_grid`, the shadow scaled with `ShadowModel.binned`); the
+xylist is in grid pixels, CRPIX comes from the grid's origin, and the grid (the plain block mean, `SolveGrid.image`) is the image
+solved and kept in the solved FITS. `original` and `shadowed` keep their order, with `block_mean` (strided sums, the same values).
+
+- **Measured on mast08, 37 survey frames:** the same 36 solve (the 2 s exposure fails in both); position against the full-resolution
+  selection: median east +0.008", north -0.025" (rms 0.036" / 0.051", max 0.18"); residual rms 0.231" against 0.240"; select step
+  0.52 s against 1.63 s, plus 0.31 s for the downsample. The 0.025" south is about twice what the seeing estimator leaves (0.010");
+  the rest is not traced, and is inside the 0.06" taken as tolerable.
+- **Shadow detection** still runs on the full frame when no model is supplied (production supplies one); on a hardware-binned frame it
+  needs the binned frame and its thresholds rechecked. **A failed selection still fails the solve.**
+- **mast01's mirror-in frames improve** (plain rms 2.06 -> 0.35", 1.53 -> 0.34", 1.48 -> 1.11"): not traced.
+
+---
+
 ## [2026-11-25] The seeing is the half-light radius on the half-maximum scale: `seeing_scale = 0.61`
 
 **Why:** the half-maximum pixel count read 12-33% wider on 2x2 blocks, which widened the centroid window and moved the fibre ~0.06"
@@ -40,9 +60,8 @@ cap the frame fails (`too_few_sources`); nothing searches the whole frame. `Sour
 - **2.5 was chosen by hand ("play it safe").** On the survey frames a centred shadow (mast01 `spec`) has 8-10 survivors within 1.7
   radii and 55-65 within 2.5; every other group has at least 38 within 1.7. The coma those far stars carry rests on `coma_px` = 2,
   never calibrated: measure the residual per matched star against radius before trusting 2.5, or 1.7.
-- **Unresolved, and not on this branch yet:** the selection still runs on the full-resolution frame in `MastrometryDotNet`. Moving it
-  to the binned grid needs the seeing estimate fixed first (the grid's is 21-33% too wide and moves the fibre position ~0.06"),
-  and a decision on what a frame that fails the selection should do (fall back to the image solve?).
+- **Done 2026-11-25 (below):** the selection now runs on the binned grid in `MastrometryDotNet`. Still open: what a frame that fails
+  the selection should do (fall back to the image solve?).
 
 ---
 

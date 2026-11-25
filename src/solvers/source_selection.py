@@ -346,7 +346,7 @@ def _shadow_deficit(shadow, x: np.ndarray, y: np.ndarray, shape: tuple[int, int]
     return np.clip(deficit, 0.0, 1.0), distance
 
 
-def _resolve_full_scale(params: SelectionParams, header, raw: np.ndarray) -> tuple[float | None, str | None]:
+def resolve_full_scale(params: SelectionParams, header, raw: np.ndarray) -> tuple[float | None, str | None]:
     """The saturation level and where it came from: the parameter, then the header, then an integer dtype."""
     if params.full_scale is not None:
         return params.full_scale, "params"
@@ -810,7 +810,7 @@ def select_sources(
 
     if header is None and not isinstance(image, np.ndarray):
         header = fits.getheader(Path(image))
-    full_scale, result.full_scale_source = _resolve_full_scale(params, header, raw)
+    full_scale, result.full_scale_source = resolve_full_scale(params, header, raw)
     result.full_scale = full_scale
     result.saturation_tested = full_scale is not None
 
