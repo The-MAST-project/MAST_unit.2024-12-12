@@ -12,8 +12,9 @@ import time
 
 import pytest
 
+import mount as mount_module
 import unit as unit_module
-from common.activities import UnitActivities
+from common.activities import MountActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.endpoints import Tier, declaration_of
 from dance import CENTRE_ALT, CENTRE_AZ, CIRCLE_RADIUS, DEFAULT_STYLE, STYLES, dance_path
@@ -84,15 +85,45 @@ def test_a_style_is_not_case_sensitive_and_unknown_ones_are_listed():
 
 
 class FakeMount:
-    """Slews for `slew_polls` reads of `is_slewing` after each goto."""
+    """Slews for `slew_polls` reads of `is_slewing` after each goto, and homes for `home_polls`
+    reads of `is_active(FindingHome)` after each `find_home` (forever, with `never_homes`)."""
 
-    def __init__(self, slew_polls=2, refuse_at=None, never_stops=False):
+    def __init__(self, slew_polls=2, refuse_at=None, never_stops=False, home_polls=0, never_homes=False, connected=True):
         self.events: list = []
         self.slew_polls = slew_polls
         self.refuse_at = refuse_at
         self.never_stops = never_stops
+        self.home_polls = home_polls
+        self.never_homes = never_homes
+        self.connected = connected
         self._left = 0
+        self._homing_left: int | None = None
         self.gotos = []
+
+    def find_home(self):
+        self.events.append(("home",))
+        self._homing_left = self.home_polls
+
+    def is_active(self, activity):
+        assert activity == MountActivities.FindingHome, "the dance only asks about homing"
+        if self._homing_left is None:
+            return False
+        if self.never_homes:
+            return True
+        if self._homing_left == 0:
+            self._homing_left = None
+            self.events.append(("homed",))
+            return False
+        self._homing_left -= 1
+        return True
+
+    def end_activity(self, activity):
+        self.events.append(("end", activity))
+        self._homing_left = None
+
+    def _home_for_dance(self, *args):
+        # The real one, so the dance's homing is what these tests exercise.
+        return Mount._home_for_dance(self, *args)  # type: ignore[arg-type]
 
     def goto_alt_az(self, alt, az):
         self.gotos.append((alt, az))
@@ -204,6 +235,75 @@ def test_each_step_logs_where_the_axes_went(caplog):
     caplog.set_level(logging.INFO)
     _walk(FakeMount(), [(60.0, 100.0)])
     assert any("step 1 done: axis0 0.0000 -> 1.0000" in r.getMessage() for r in caplog.records)
+
+
+# ------------------------------------------------------------------------------------------------ homing and pace
+
+
+def _kinds(mount):
+    return [e[0] for e in mount.events if e[0] in ("home", "homed", "goto")]
+
+
+def test_a_dance_is_homed_first_and_last():
+    mount = FakeMount(home_polls=2)
+    assert _walk(mount, dance_path("waltz")) is None
+    assert _kinds(mount) == ["home", "homed", *["goto"] * len(dance_path("waltz")), "home", "homed"]
+
+
+def test_the_first_step_waits_for_the_homing_to_end():
+    """`FindingHome`, not `is_slewing`: is_slewing stays False throughout a homing."""
+    mount = FakeMount(home_polls=5)
+    _walk(mount, [(60.0, 100.0)])
+    assert _kinds(mount)[:3] == ["home", "homed", "goto"]
+
+
+def test_a_stopped_dance_is_not_homed_at_the_end():
+    """A stop means stop where you are: `stop_dancing` and `abort` stop the mount themselves."""
+    mount = FakeMount()
+    _walk(mount, dance_path("foxtrot"), lambda: len(mount.gotos) < 2)
+    assert _kinds(mount).count("home") == 1
+
+
+def test_a_failed_dance_is_not_homed_at_the_end():
+    mount = FakeMount(refuse_at=2)
+    assert _walk(mount, dance_path("foxtrot")) is not None
+    assert _kinds(mount).count("home") == 1
+
+
+def test_a_stop_during_the_first_homing_dances_nothing():
+    mount = FakeMount(never_homes=True)
+    seen = {"n": 0}
+
+    def keep_going():
+        seen["n"] += 1
+        return seen["n"] < 4
+
+    assert _walk(mount, dance_path("foxtrot"), keep_going) is None
+    assert mount.gotos == [] and ("stop",) not in mount.events
+
+
+def test_a_homing_that_never_ends_is_stopped_and_dances_nothing():
+    mount = FakeMount(never_homes=True)
+    error = _walk(mount, dance_path("foxtrot"), home_timeout_seconds=0.05)
+    assert error is not None and "homing before the dance not done" in error and 'off 501.7"' in error
+    assert ("stop",) in mount.events and ("end", MountActivities.FindingHome) in mount.events
+    assert mount.gotos == []
+
+
+def test_a_disconnected_mount_is_not_danced():
+    mount = FakeMount(connected=False)
+    error = _walk(mount, dance_path("foxtrot"))
+    assert error is not None and "not connected" in error
+    assert mount.events == []
+
+
+def test_the_pace_is_half_a_second():
+    """mast02, 2026-11-25: pointing 0.5 s after a slew was as good as after 3 s (2-3")."""
+    import inspect
+
+    defaults = {k: p.default for k, p in inspect.signature(Mount.dance_alt_az).parameters.items()}
+    assert mount_module.DANCE_REST_SECONDS == 0.5 and defaults["rest_seconds"] == 0.5
+    assert defaults["poll_seconds"] == 0.5
 
 
 # ------------------------------------------------------------------------------------------------ the unit endpoint

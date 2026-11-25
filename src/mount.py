@@ -147,10 +147,16 @@ def _gradual_ramp_complete(prog) -> bool:
     return prog is None or abs(prog) >= 1.0
 
 
-#: The dance: how long to rest at each step, how long one slew may take, and how long to wait for a slew to start.
-DANCE_REST_SECONDS = 5.0
+#: The dance: how long to rest at each step, how often to look, how long one slew may take, and how long to
+#: wait for a slew to start. Half a second's rest is enough: on mast02 (2026-11-25) the mount pointed within
+#: 2-3" of each foxtrot step 0.5 s after PWI4 dropped `is_slewing`, as it did after 3 s.
+DANCE_REST_SECONDS = 0.5
+DANCE_POLL_SECONDS = 0.5
 DANCE_SLEW_TIMEOUT_SECONDS = 180.0
 DANCE_SLEW_START_GRACE_SECONDS = 5.0
+#: How long the dance waits for a homing. `ontimer` ends `FindingHome` once the axes are at rest (~11 s), and
+#: by FINDING_HOME_CEILING_SECONDS whatever they say; this outlasts that, for when `ontimer` is not running.
+DANCE_HOME_TIMEOUT_SECONDS = FINDING_HOME_CEILING_SECONDS + 15.0
 
 #: How long after a goto `Slewing` may end without PWI4 having been seen slewing. Before it,
 #: quiet axes mean "not started yet", not "arrived": the timer's first read after an alt/az
@@ -1377,22 +1383,27 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         rest_seconds: float = DANCE_REST_SECONDS,
         slew_timeout_seconds: float = DANCE_SLEW_TIMEOUT_SECONDS,
         start_grace_seconds: float = DANCE_SLEW_START_GRACE_SECONDS,
-        poll_seconds: float = 1.0,
+        home_timeout_seconds: float = DANCE_HOME_TIMEOUT_SECONDS,
+        poll_seconds: float = DANCE_POLL_SECONDS,
     ) -> str | None:
-        """Walk `path`, a slew and a rest per step, for as long as `keep_going()` says so.
+        """Home, walk `path` (a slew and a rest per step), and home again, for as long as `keep_going()` says so.
 
-        Returns None when the path was danced or `keep_going` ended it, else the reason it
-        stopped: a goto the mount refused, or a slew still running after `slew_timeout_seconds`.
-        A slew given up on is stopped (`stop_slew`), so PWI4 does not go on holding it. Leaves
-        the mount where it stopped, tracking off (an alt/az goto turns it off). Checks
-        `keep_going` between steps, during each slew and during each rest, so a stop is heard
-        within a poll.
+        Returns None when the dance was danced or `keep_going` ended it, else the reason it
+        stopped: a homing that did not finish, a goto the mount refused, or a slew still running
+        after `slew_timeout_seconds`. A slew or homing given up on is stopped (`stop_slew`), so
+        PWI4 does not go on holding it. The closing homing is only for a dance danced to the end:
+        a dance that is stopped or fails leaves the mount where it stopped, tracking off (an
+        alt/az goto turns it off). Checks `keep_going` between steps and during each homing,
+        slew and rest, so a stop is heard within a poll.
 
         Each step logs where the axes went from and to, and a timeout says how far each axis
         is from its target: on mast07 (2026-11-23) two stalls were each axis1 ~0.14 deg short on
         the way down, with PWI4 commanding nothing more -- found by hand, not in the log.
         """
         op = function_name()
+        error = self._home_for_dance("before", keep_going, home_timeout_seconds, poll_seconds)
+        if error:
+            return error
         for number, (alt, az) in enumerate(path, 1):
             if not keep_going():
                 return None
@@ -1422,7 +1433,40 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
             rest_end = time.monotonic() + rest_seconds
             while time.monotonic() < rest_end and keep_going():
                 time.sleep(min(poll_seconds, 0.5))
+        if not keep_going():
+            return None
+        error = self._home_for_dance("after", keep_going, home_timeout_seconds, poll_seconds)
+        if error:
+            return error
         logger.info(f"{op}: done dancing")
+        return None
+
+    def _home_for_dance(
+        self, when: str, keep_going: Callable[[], bool], timeout_seconds: float, poll_seconds: float
+    ) -> str | None:
+        """Home the mount `when` ("before"/"after") the dance; None once homed or stopped, else why not.
+
+        Waits on `FindingHome`, which `find_home` raises and `ontimer` ends once PWI4 has
+        finished and the axes are at rest -- the homing's own completion signal, not
+        `is_slewing`, which stays False throughout a homing.
+        """
+        op = function_name()
+        if not keep_going():
+            return None
+        if not self.connected:
+            return f"{op}: cannot home {when} the dance: mount not connected"
+        logger.info(f"{op}: homing {when} the dance")
+        self.find_home()
+        deadline = time.monotonic() + timeout_seconds
+        while self.is_active(MountActivities.FindingHome) and keep_going():
+            if time.monotonic() >= deadline:
+                report = self.axes_report()
+                self.stop_slew()
+                self.end_activity(MountActivities.FindingHome)
+                return f"{op}: homing {when} the dance not done after {timeout_seconds:.0f} s, mount stopped: {report}"
+            time.sleep(poll_seconds)
+        if keep_going():
+            logger.info(f"{op}: homed {when} the dance")
         return None
 
     @property
