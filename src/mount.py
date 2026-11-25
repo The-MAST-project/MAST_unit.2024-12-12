@@ -2,6 +2,7 @@ import datetime
 import time
 from collections.abc import Callable, Sequence
 from contextlib import suppress
+from dataclasses import dataclass
 from enum import StrEnum
 from logging import Logger
 from typing import TYPE_CHECKING, Annotated
@@ -157,6 +158,22 @@ DANCE_SLEW_START_GRACE_SECONDS = 5.0
 #: How long the dance waits for a homing. `ontimer` ends `FindingHome` once the axes are at rest (~11 s), and
 #: by FINDING_HOME_CEILING_SECONDS whatever they say; this outlasts that, for when `ontimer` is not running.
 DANCE_HOME_TIMEOUT_SECONDS = FINDING_HOME_CEILING_SECONDS + 15.0
+
+
+@dataclass(frozen=True)
+class AlongsideHoming:
+    """Work done while one of the dance's homings runs: the homing is not over until it is.
+
+    `start` is called once the mount has been told to home, and returns why it could not
+    start, or None. `progress` is polled with the homing and returns ``(done, error)``: done
+    once the work has finished, an error once it has failed. The unit's covers are opened
+    alongside the first homing and closed alongside the last (`Unit.endpoint_start_dancing`).
+    """
+
+    what: str  #: for the log and errors, e.g. "opening the covers"
+    start: Callable[[], str | None]
+    progress: Callable[[], tuple[bool, str | None]]
+
 
 #: How long after a goto `Slewing` may end without PWI4 having been seen slewing. Before it,
 #: quiet axes mean "not started yet", not "arrived": the timer's first read after an alt/az
@@ -1385,8 +1402,13 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         start_grace_seconds: float = DANCE_SLEW_START_GRACE_SECONDS,
         home_timeout_seconds: float = DANCE_HOME_TIMEOUT_SECONDS,
         poll_seconds: float = DANCE_POLL_SECONDS,
+        alongside_first_homing: AlongsideHoming | None = None,
+        alongside_last_homing: AlongsideHoming | None = None,
     ) -> str | None:
         """Home, walk `path` (a slew and a rest per step), and home again, for as long as `keep_going()` says so.
+
+        `alongside_first_homing` / `alongside_last_homing` run while the respective homing does,
+        and that homing is not over until they have finished too (`AlongsideHoming`).
 
         Returns None when the dance was danced or `keep_going` ended it, else the reason it
         stopped: a homing that did not finish, a goto the mount refused, or a slew still running
@@ -1401,7 +1423,7 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         the way down, with PWI4 commanding nothing more -- found by hand, not in the log.
         """
         op = function_name()
-        error = self._home_for_dance("before", keep_going, home_timeout_seconds, poll_seconds)
+        error = self._home_for_dance("before", keep_going, home_timeout_seconds, poll_seconds, alongside_first_homing)
         if error:
             return error
         for number, (alt, az) in enumerate(path, 1):
@@ -1435,38 +1457,62 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                 time.sleep(min(poll_seconds, 0.5))
         if not keep_going():
             return None
-        error = self._home_for_dance("after", keep_going, home_timeout_seconds, poll_seconds)
+        error = self._home_for_dance("after", keep_going, home_timeout_seconds, poll_seconds, alongside_last_homing)
         if error:
             return error
         logger.info(f"{op}: done dancing")
         return None
 
     def _home_for_dance(
-        self, when: str, keep_going: Callable[[], bool], timeout_seconds: float, poll_seconds: float
+        self,
+        when: str,
+        keep_going: Callable[[], bool],
+        timeout_seconds: float,
+        poll_seconds: float,
+        alongside: AlongsideHoming | None = None,
     ) -> str | None:
-        """Home the mount `when` ("before"/"after") the dance; None once homed or stopped, else why not.
+        """Home the mount `when` ("before"/"after") the dance, with `alongside` if given; None once
+        both are done or the dance was stopped, else why not.
 
         Waits on `FindingHome`, which `find_home` raises and `ontimer` ends once PWI4 has
         finished and the axes are at rest -- the homing's own completion signal, not
-        `is_slewing`, which stays False throughout a homing.
+        `is_slewing`, which stays False throughout a homing. `alongside` is started once the
+        mount has been told to home, so the two run together.
         """
         op = function_name()
         if not keep_going():
             return None
         if not self.connected:
             return f"{op}: cannot home {when} the dance: mount not connected"
-        logger.info(f"{op}: homing {when} the dance")
+        logger.info(f"{op}: homing {when} the dance" + (f", {alongside.what}" if alongside else ""))
         self.find_home()
+        if alongside is not None:
+            error = alongside.start()
+            if error:
+                return f"{op}: {alongside.what} {when} the dance: {error}"
         deadline = time.monotonic() + timeout_seconds
-        while self.is_active(MountActivities.FindingHome) and keep_going():
+        while keep_going():
+            homing = self.is_active(MountActivities.FindingHome)
+            done, error = alongside.progress() if alongside is not None else (True, None)
+            if error and alongside is not None:
+                return f"{op}: {alongside.what} {when} the dance: {error}"
+            if not homing and done:
+                logger.info(f"{op}: homed {when} the dance" + (f", {alongside.what} done" if alongside else ""))
+                return None
             if time.monotonic() >= deadline:
+                pending = [
+                    name
+                    for name, waiting in (("homing", homing), (alongside.what if alongside else "", not done))
+                    if waiting
+                ]
                 report = self.axes_report()
-                self.stop_slew()
-                self.end_activity(MountActivities.FindingHome)
-                return f"{op}: homing {when} the dance not done after {timeout_seconds:.0f} s, mount stopped: {report}"
+                if homing:
+                    self.stop_slew()
+                    self.end_activity(MountActivities.FindingHome)
+                return f"{op}: {' and '.join(pending)} {when} the dance not done after {timeout_seconds:.0f} s" + (
+                    f", mount stopped: {report}" if homing else ""
+                )
             time.sleep(poll_seconds)
-        if keep_going():
-            logger.info(f"{op}: homed {when} the dance")
         return None
 
     @property
