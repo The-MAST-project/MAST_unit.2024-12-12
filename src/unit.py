@@ -1977,7 +1977,8 @@ class Unit(Component, OpmodeBase):
     def endpoint_start_dancing(self, style: str = DEFAULT_STYLE):
         """Start the unit dancing `style` (see `dance.STYLES`) and return at once; `Dancing` clears when it is over.
 
-        Does not start the unit up: the mount dances as it is, covers and all. Refused while anything
+        The mount homes, walks the steps with half a second's rest at each, and homes again
+        (`Mount.dance_alt_az`). Does not start the unit up: the mount dances as it is, covers and all. Refused while anything
         else is at work. `stop_dancing` or `abort` ends it: the dance hears the flag clear within a poll.
         """
         op = function_name()
