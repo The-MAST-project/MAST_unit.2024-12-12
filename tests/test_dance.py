@@ -14,9 +14,10 @@ import pytest
 
 import mount as mount_module
 import unit as unit_module
-from common.activities import MountActivities, UnitActivities
+from common.activities import CoverActivities, MountActivities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.endpoints import Tier, declaration_of
+from common.models.statuses import CoversState
 from dance import CENTRE_ALT, CENTRE_AZ, CIRCLE_RADIUS, DEFAULT_STYLE, STYLES, dance_path
 from mount import Mount
 from unit import Unit
@@ -312,10 +313,11 @@ def test_the_pace_is_half_a_second():
 class FakeUnit:
     """The slice of `Unit` the dance endpoints use."""
 
-    def __init__(self, mount=None, busy=()):
+    def __init__(self, mount=None, busy=(), covers=None):
         self.flags = set(busy)
         self.errors: list[str] = []
         self.mount = mount if mount is not None else FakeDancingMount()
+        self.covers = covers if covers is not None else FakeCovers()
         self.details = None
 
     def is_active(self, flag):
@@ -332,31 +334,106 @@ class FakeUnit:
     def required_mount(self):
         return self.mount
 
+    @property
+    def required_covers(self):
+        return self.covers
+
     do_dance = Unit.do_dance
 
 
+class FakeCovers:
+    """Covers that reach the end state `travel_reads` reads of `state` after a command -- or, in
+    the `stop_short` direction ("open"/"close"), stop PartlyOpen with the motion activity ended."""
+
+    def __init__(self, connected=True, state=CoversState.Closed, travel_reads=3, stop_short=None):
+        self.connected = connected
+        self._state = state
+        self.travel_reads = travel_reads
+        self.stop_short = stop_short
+        self.events: list[str] = []
+        self.activities: set = set()
+        self._moving = None  # (direction, target, motion, reads left)
+
+    def _command(self, direction, target, motion):
+        self.events.append(direction)
+        self.activities.add(motion)
+        self._moving = (direction, target, motion, self.travel_reads)
+        return CanonicalResponse_Ok
+
+    def open(self):
+        return self._command("open", CoversState.Open, CoverActivities.Opening)
+
+    def close(self):
+        return self._command("close", CoversState.Closed, CoverActivities.Closing)
+
+    @property
+    def state(self):
+        if self._moving is None:
+            return self._state
+        direction, target, motion, left = self._moving
+        if self.stop_short == direction:
+            self._moving, self._state = None, CoversState.PartlyOpen
+            self.activities.discard(motion)
+        elif left == 0:
+            self._moving, self._state = None, target
+            self.activities.discard(motion)
+        else:
+            self._moving = (direction, target, motion, left - 1)
+            return CoversState.Moving
+        return self._state
+
+    def is_active(self, activity):
+        return activity in self.activities
+
+    def end_activity(self, activity):
+        self.activities.discard(activity)
+
+
 class FakeDancingMount:
+    """Dances until released (or stopped), running the `AlongsideHoming`s as the real one does."""
+
     def __init__(self, error=None, raises=None, steps_before_stop=None):
         self.error = error
         self.raises = raises
         self.aborted = False
         self.paths: list = []
+        self.alongside: list = []
         self.release = threading.Event()
 
-    def dance_alt_az(self, path, keep_going):
+    @staticmethod
+    def _run(alongside, keep_going):
+        if alongside is None:
+            return None
+        error = alongside.start()
+        if error:
+            return error
+        while keep_going():
+            done, error = alongside.progress()
+            if error or done:
+                return error
+            time.sleep(0.005)
+        return None
+
+    def dance_alt_az(self, path, keep_going, alongside_first_homing=None, alongside_last_homing=None):
         self.paths.append(path)
+        self.alongside.append((alongside_first_homing, alongside_last_homing))
+        error = self._run(alongside_first_homing, keep_going)
+        if error:
+            return error
         while not self.release.is_set() and keep_going():
             time.sleep(0.005)
         if self.raises:
             raise self.raises
-        return self.error
+        if self.error or not keep_going():
+            return self.error
+        return self._run(alongside_last_homing, keep_going)
 
     def abort(self):
         self.aborted = True
 
 
-def _start(unit, style="foxtrot"):
-    return Unit.endpoint_start_dancing(unit, style=style)
+def _start(unit, style="foxtrot", covers=False):
+    return Unit.endpoint_start_dancing(unit, style=style, covers=covers)
 
 
 def _wait_until(predicate, seconds=3.0):
@@ -456,3 +533,135 @@ def test_the_route_does_not_autostart_and_completes_on_the_flag():
     assert declaration.completion is UnitActivities.Dancing
     assert declaration.tier is Tier.OPERATION
     assert unit_module._ABORTABLE_WORK.count(UnitActivities.Dancing) == 1
+
+
+# ------------------------------------------------------------------------------------------------ the covers
+
+
+class NoCovers(FakeUnit):
+    @property
+    def required_covers(self):
+        raise RuntimeError("the covers did not initialize")
+
+
+def test_without_covers_the_covers_are_not_touched():
+    unit = FakeUnit()
+    unit.mount.release.set()
+    _start(unit)
+    assert _wait_until(lambda: UnitActivities.Dancing not in unit.flags)
+    assert unit.covers.events == []
+    assert unit.mount.alongside == [(None, None)]
+
+
+def test_with_covers_they_open_with_the_first_homing_and_close_with_the_last():
+    unit = FakeUnit()
+    assert _start(unit, covers=True) is CanonicalResponse_Ok
+    assert unit.details == ["foxtrot", "covers"]
+    assert _wait_until(lambda: unit.covers._state == CoversState.Open), "opened before the steps"
+    assert unit.covers.events == ["open"]
+    unit.mount.release.set()
+    assert _wait_until(lambda: UnitActivities.Dancing not in unit.flags)
+    assert unit.covers.events == ["open", "close"]
+    assert unit.covers._state == CoversState.Closed, "Dancing ends once the covers are closed"
+    assert unit.errors == []
+
+
+def test_a_stopped_dance_closes_the_covers():
+    unit = FakeUnit()
+    _start(unit, covers=True)
+    assert _wait_until(lambda: unit.covers._state == CoversState.Open)
+    asyncio.run(Unit.endpoint_stop_dancing(unit))
+    assert _wait_until(lambda: unit.covers.events == ["open", "close"])
+
+
+def test_a_failed_dance_closes_the_covers():
+    unit = FakeUnit(mount=FakeDancingMount(error="step 3 refused"))
+    unit.mount.release.set()
+    _start(unit, covers=True)
+    assert _wait_until(lambda: UnitActivities.Dancing not in unit.flags)
+    assert unit.errors == ["step 3 refused"]
+    assert unit.covers.events == ["open", "close"]
+
+
+def test_covers_that_stop_short_fail_the_dance_and_are_closed():
+    unit = FakeUnit(covers=FakeCovers(stop_short="open"))
+    unit.mount.release.set()
+    _start(unit, covers=True)
+    assert _wait_until(lambda: UnitActivities.Dancing not in unit.flags)
+    assert unit.errors and "stopped PartlyOpen, not Open" in unit.errors[0]
+    assert unit.covers.events == ["open", "close"]
+
+
+def test_disconnected_or_missing_covers_are_refused_and_nothing_starts():
+    unit = FakeUnit(covers=FakeCovers(connected=False))
+    response = _start(unit, covers=True)
+    assert response.failed and "covers not connected" in response.errors[0]
+    assert UnitActivities.Dancing not in unit.flags and unit.mount.paths == []
+
+    response = _start(NoCovers(), covers=True)
+    assert response.failed and "covers did not initialize" in response.errors[0]
+
+
+def test_missing_covers_do_not_matter_without_covers():
+    unit = NoCovers()
+    assert _start(unit) is CanonicalResponse_Ok
+    unit.mount.release.set()
+    assert _wait_until(lambda: UnitActivities.Dancing not in unit.flags)
+
+
+# ------------------------------------------------------------------------------------------------ work alongside a homing
+
+
+def _alongside(done_after=0, start_error=None, fails=None, what="opening the covers"):
+    calls = {"start": 0, "polls": 0}
+
+    def start():
+        calls["start"] += 1
+        return start_error
+
+    def progress():
+        calls["polls"] += 1
+        if fails:
+            return False, fails
+        return calls["polls"] > done_after, None
+
+    return mount_module.AlongsideHoming(what, start=start, progress=progress), calls
+
+
+def test_the_first_step_waits_for_the_work_alongside_the_homing():
+    mount = FakeMount()
+    alongside, calls = _alongside(done_after=4)
+    _walk(mount, [(60.0, 100.0)], alongside_first_homing=alongside)
+    assert calls["start"] == 1 and calls["polls"] == 5, "polled until done, then the step"
+    assert _kinds(mount)[:3] == ["home", "homed", "goto"]
+
+
+def test_work_alongside_that_cannot_start_ends_the_dance():
+    mount = FakeMount()
+    alongside, _ = _alongside(start_error="covers: not connected")
+    error = _walk(mount, dance_path("foxtrot"), alongside_first_homing=alongside)
+    assert error is not None and "opening the covers before the dance: covers: not connected" in error
+    assert mount.gotos == []
+
+
+def test_work_alongside_that_fails_ends_the_dance():
+    mount = FakeMount()
+    alongside, _ = _alongside(fails="the covers stopped PartlyOpen, not Open")
+    error = _walk(mount, dance_path("foxtrot"), alongside_first_homing=alongside)
+    assert error is not None and "stopped PartlyOpen" in error and mount.gotos == []
+
+
+def test_work_alongside_that_never_finishes_times_out_without_stopping_a_homed_mount():
+    mount = FakeMount()
+    alongside, _ = _alongside(done_after=10**9)
+    error = _walk(mount, dance_path("foxtrot"), alongside_first_homing=alongside, home_timeout_seconds=0.05)
+    assert error is not None and "opening the covers before the dance not done" in error
+    assert ("stop",) not in mount.events, "the mount had homed: nothing of it to stop"
+
+
+def test_the_last_homing_runs_its_work_alongside():
+    mount = FakeMount()
+    first, first_calls = _alongside()
+    last, last_calls = _alongside(what="closing the covers")
+    assert _walk(mount, dance_path("waltz"), alongside_first_homing=first, alongside_last_homing=last) is None
+    assert first_calls["start"] == 1 and last_calls["start"] == 1

@@ -53,6 +53,7 @@ from common.opmode import OpmodeBase, OpState
 if TYPE_CHECKING:  # `guiding` imports `unit` back, so this stays type-only
     from guiding import Guider
 from common.models.statuses import (
+    CoversState,
     FullUnitStatus,
     ImagerRoi,
     ImagerSettings,
@@ -77,7 +78,7 @@ from flux_metering.session import FluxMeteringParams, FluxMeteringSession
 from focus_on_star.session import FocusOnStarParams, FocusOnStarSession
 from focuser import Focuser
 from imagers import Imager
-from mount import Mount, SettleMode
+from mount import AlongsideHoming, Mount, SettleMode
 from plan_products import announce_plan_products
 from PlaneWave import pwi4_client
 from solving import Solver
@@ -241,6 +242,29 @@ def _expose_record_name(latest: LatestExposure) -> str:
     Exposures/ folder with every other, so its record is named for its run."""
     stamp = (latest.started or "").replace(":", "").replace("-", "").split(".")[0].split("+")[0]
     return f"expose-{stamp}.json"
+
+
+def _move_covers(covers: Covers, direction: str) -> str | None:
+    """Start the covers opening or closing (`direction`); why they could not, or None."""
+    try:
+        response = covers.open() if direction == "open" else covers.close()
+    except Exception as e:  # noqa: BLE001 -- reported to the dance, which says what it was doing
+        return f"{e!r}"
+    return None if response.succeeded else "; ".join(response.errors or ["refused"])
+
+
+def _covers_progress(covers: Covers, target: CoversState, motion: CoverActivities) -> tuple[bool, str | None]:
+    """``(done, error)`` for a covers move towards `target` (`AlongsideHoming.progress`).
+
+    Done when the covers read exactly `target`. Failed when `motion` has ended without
+    getting there: the covers' `ontimer` ends it when they stop short (MAST_unit#164).
+    """
+    state = covers.state
+    if state == target:
+        return True, None
+    if not covers.is_active(motion):
+        return False, f"the covers stopped {state.name}, not {target.name}"
+    return False, None
 
 
 class Unit(Component, OpmodeBase):
@@ -1974,12 +1998,15 @@ class Unit(Component, OpmodeBase):
         return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION, completion=UnitActivities.Dancing, autostartup=False)
-    def endpoint_start_dancing(self, style: str = DEFAULT_STYLE):
+    def endpoint_start_dancing(self, style: str = DEFAULT_STYLE, covers: bool = False):
         """Start the unit dancing `style` (see `dance.STYLES`) and return at once; `Dancing` clears when it is over.
 
         The mount homes, walks the steps with half a second's rest at each, and homes again
-        (`Mount.dance_alt_az`). Does not start the unit up: the mount dances as it is, covers and all. Refused while anything
-        else is at work. `stop_dancing` or `abort` ends it: the dance hears the flag clear within a poll.
+        (`Mount.dance_alt_az`). With `covers`, the mirror covers are opened while the mount first
+        homes -- the first step waits for both -- and closed while it homes at the end; a dance
+        that ends early (stopped, or failed) closes them too. Without it the covers are left as
+        they are. Does not start the unit up. Refused while anything else is at work.
+        `stop_dancing` or `abort` ends it: the dance hears the flag clear within a poll.
         """
         op = function_name()
         try:
@@ -1994,18 +2021,49 @@ class Unit(Component, OpmodeBase):
             return CanonicalResponse(errors=[f"{op}: not while the unit is busy: {', '.join(busy)}"])
         try:
             mount = self.required_mount
+            the_covers = self.required_covers if covers else None
         except Exception as e:  # noqa: BLE001 -- _required says which component is missing
             return CanonicalResponse(errors=[f"{op}: {e}"])
-        logger.info(f"{op}: dancing the {style} ({len(path)} steps)")
-        self.start_activity(UnitActivities.Dancing, details=[style])
-        Thread(name="dance", target=self.do_dance, args=(mount, path, style)).start()
+        if the_covers is not None and not the_covers.connected:
+            return CanonicalResponse(errors=[f"{op}: covers not connected"])
+        logger.info(f"{op}: dancing the {style} ({len(path)} steps)" + (", with the covers" if covers else ""))
+        self.start_activity(UnitActivities.Dancing, details=[style, "covers"] if covers else [style])
+        Thread(name="dance", target=self.do_dance, args=(mount, path, style, the_covers)).start()
         return CanonicalResponse_Ok
 
-    def do_dance(self, mount: Mount, path: list[Step], style: str) -> None:
-        """The dance thread: walk `path` while `Dancing` is raised, and always lower it."""
+    def do_dance(self, mount: Mount, path: list[Step], style: str, covers: Covers | None = None) -> None:
+        """The dance thread: walk `path` while `Dancing` is raised, and always lower it.
+
+        With `covers`, they are opened alongside the first homing and closed alongside the
+        last; if the dance ends before the last homing began, they are closed here instead.
+        """
         op = function_name()
+        closing_began = False
+
+        def began_closing() -> str | None:
+            nonlocal closing_began
+            closing_began = True
+            return _move_covers(covers, "close")
+
+        opening = closing = None
+        if covers is not None:
+            opening = AlongsideHoming(
+                "opening the covers",
+                start=lambda: _move_covers(covers, "open"),
+                progress=lambda: _covers_progress(covers, CoversState.Open, CoverActivities.Opening),
+            )
+            closing = AlongsideHoming(
+                "closing the covers",
+                start=began_closing,
+                progress=lambda: _covers_progress(covers, CoversState.Closed, CoverActivities.Closing),
+            )
         try:
-            error = mount.dance_alt_az(path, lambda: self.is_active(UnitActivities.Dancing))
+            error = mount.dance_alt_az(
+                path,
+                lambda: self.is_active(UnitActivities.Dancing),
+                alongside_first_homing=opening,
+                alongside_last_homing=closing,
+            )
             if error:
                 logger.error(error)
                 self.errors.append(error)
@@ -2013,6 +2071,14 @@ class Unit(Component, OpmodeBase):
             logger.exception(f"{op}: the {style} failed")
             self.errors.append(f"{op}: the {style} failed: {e!r}")
         finally:
+            if covers is not None and not closing_began:
+                logger.info(f"{op}: the {style} ended early; closing the covers")
+                if covers.is_active(CoverActivities.Opening):
+                    covers.end_activity(CoverActivities.Opening)
+                error = _move_covers(covers, "close")
+                if error:
+                    logger.error(f"{op}: closing the covers after the {style}: {error}")
+                    self.errors.append(f"{op}: closing the covers after the {style}: {error}")
             self.end_activity(UnitActivities.Dancing)
 
     @endpoint(tier=Tier.OPERATION, completion=Completion.IMMEDIATE)
