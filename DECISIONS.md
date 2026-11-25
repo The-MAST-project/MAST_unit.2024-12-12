@@ -2,6 +2,28 @@
 
 ---
 
+## [2026-11-25] Original against selective: the harness, and the result against Gaia
+
+**Why:** the selective stage had been compared with the original only through the residuals of the stars each fit used, which favour
+the fit with fewer, nearer stars. The question is which is closer to the truth, and what it costs.
+
+**What:** `tools/compare_solver_modes.py` solves each frame that has a stored shadow model for its `STAGEPOS` in both stages through
+`MastrometryDotNet` (the selective one handed the stored model), and reports time per step, the stars used, and the position
+difference; `--build-store` detects one model per stage position into the run's own folder (never the machine's store).
+`source_survey._solve_via_solver` takes an optional `shadow`, and reads `result.selection` with `getattr` (an `original` solve has
+none, which made `--via-solver --solver-modes original` fail on every frame). Scored against Gaia DR3 with
+`gaia_accuracy_survey.py analyse`.
+
+**Result (mast08, 48 mast02 frames, docs/mastrometry_stages.md 9.11):** selective is 2.0x faster (2.86 s against 5.76 s median, with a
+stored shadow model) and closer to Gaia near the fibre in 23 of 23 frames (median 0.11" against 0.47"; the original is about 0.4" north
+of Gaia there). Far from the fibre (1200 to 1800 px) it is slightly worse (0.14" against 0.10").
+
+**Implications:** the selective stage's speed depends on the stored shadow model: without one the shadow detection (7 to 8 s) costs
+more than it saves. The pointing survey is still the test of where the fibre points. Not covered: the stage's repeatability against a
+stored model, binning 2 input, mirror in.
+
+---
+
 ## [2026-11-25] `MastrometryDotNet`'s selective stage selects on the 2x2 solve grid
 
 **Why:** the user wants every calculation on binned images (the ZWO imager's hardware binning is coming: a frame a quarter the size,

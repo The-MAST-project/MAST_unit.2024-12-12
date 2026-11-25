@@ -660,7 +660,7 @@ def place_beside_frame(path: Path, out_dir: Path, modes: list[str], survey_jpg: 
 
 
 def _solve_via_solver(
-    path: Path, args: argparse.Namespace, params: SelectionParams, out_dir: Path
+    path: Path, args: argparse.Namespace, params: SelectionParams, out_dir: Path, shadow: ShadowModel | None = None
 ) -> dict[str, SolveOutcome]:
     """Solve the frame with the unit's own `MastrometryDotNet`, once per mastrometry stage in `--solver-modes`
     (original, shadowed, selective).
@@ -668,6 +668,8 @@ def _solve_via_solver(
     The frame is only read; each mode's artifacts (result text, solved FITS, correspondences, xylist,
     WCS, star map) are put in `<out>/<hash of the frame name>-<mode>/`, never beside the frame and never on the share.
     The frame is solved whole: the phase is neither `sky` nor `spec`, so the solver does not crop.
+
+    `shadow`, if given, is the frame's stored shadow model (as the unit's acquisition hands it), used instead of a detection.
     """
     from solvers.selection_stage import SourceSelectionSettings  # noqa: PLC0415 -- needs the unit's configuration
 
@@ -702,6 +704,7 @@ def _solve_via_solver(
                 source_selection=settings,
                 artifacts_dir=folder,
                 fibre_xy=args.fibre_pixel,
+                shadow=shadow,
             )
         except Exception as e:  # noqa: BLE001 -- one mode failing must not end the survey of the frame
             outcome.status = f"failed: {e!r}"
@@ -709,9 +712,10 @@ def _solve_via_solver(
         outcome.seconds = time.monotonic() - start
         outcome.timings = dict(getattr(_SOLVER, "timings", {}))
         if result is not None:
-            if result.selection:
-                outcome.solved_from = result.selection.get("solved_from", "image")
-                outcome.fed = (result.selection.get("counts") or {}).get("kept", 0)
+            record = getattr(result, "selection", None)  # only a solve with a selection stage has one
+            if record:
+                outcome.solved_from = record.get("solved_from", "image")
+                outcome.fed = (record.get("counts") or {}).get("kept", 0)
             if not result.succeeded:
                 outcome.status = "failed: " + "; ".join(result.errors or ["not solved"])
             else:

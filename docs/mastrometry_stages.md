@@ -588,6 +588,7 @@ about 0.03″ over frames.
 - The selective fit and the scoring use the same centroid (fixed window); for the original the mismatch is the 0.1″ above.
 - Mirror out only. With the mirror in, the shadow is over the fibre, no clean star lies within about 2,000 px of it on mast01, and
   the fit interpolates across the band: untested.
+- *Repeated on 2026-11-25 with the grid selection and the fibre-centred window, on 48 frames: section 9.11 (0.47" against 0.11" within 600 px).*
 - The 24 frames come from about 10 fields on one unit, so the standard errors over stars are optimistic. The search for stars was
   from the frame's centre, as in the rest of this document, not the fibre pixel (section 5, step 6); the check has not been repeated.
 
@@ -881,6 +882,69 @@ full-resolution capped run of the same code; 36 solve in both, the 2 s exposure 
 - **The whole call is dominated by the shadow detection** the survey does on every frame (7.5 s median of 10.7 s): the survey supplies
   no stored model. With one, the call is select 0.5 + downsample 0.3 + solve-field 1.3 + the rest (0.7), about 3 s: not measured.
 
+### 9.11 Original against selective, on the grid: time and accuracy against Gaia (2026-11-25)
+
+*Run on mast08 with the code of `selection-window` at b93805a (selection on the 2x2 grid, the candidate region, `sep`, `seeing_scale` 0.61,
+the search centred on the fibre pixel (4051, 2440)). 48 mast02 acquisition frames (`spec` folders of 2026-11-16 to 11-18, 5 s or
+longer, binning 1, mirror out), 12 at each of the stage positions 99998, 99999, 149998 and 149999. Both stages solve the whole
+frame with CRPIX at the fibre. The tools are `tools/compare_solver_modes.py` (time, and the two solutions against each other) and
+`tools/gaia_accuracy_survey.py analyse` (the stars neither fit used, against Gaia DR3 from `\\last0\catalogs\GAIA\DR3`; method in 7.7).*
+
+**The frames and the shadow models.** `compare_solver_modes.py` solves a frame only if the shadow store holds a model for its
+`STAGEPOS` (within 100 steps) and its shape. mast08's store was empty (the local store, 9.6, has been written by nothing yet), so
+`--build-store` detected one on the first frame at each position and kept it in the run's own folder, as the unit's `get_shadow`
+would: two models served the four positions (99998 and 99999; 149998 and 149999). The selective solves were handed the stored model
+(no detection); the original does not look for a shadow. The first frame is a warm-up and not counted.
+
+**Time (48 frames, every one solved by both; median over frames).**
+
+| | original | selective |
+|---|---|---|
+| whole solve (s) | **5.76** (max 6.9) | **2.86** (max 13.3) |
+| of which: downsample | | 0.30 |
+| select | | 0.36 |
+| solve-field | 4.29 | 1.42 |
+| the rest (read, write, fit read-back) | 1.44 | 0.70 |
+| stars used by the fit | 234 (94 to 441) | 31 (13 to 47) |
+
+The median speed-up is **2.0x** (0.36x to 3.2x). The slow selective solves (9 of 48 were not faster than 1.2x) are all in
+`solve-field` on the xylist, 3.3 to 12 s, on the frames where it was fed 50 to 77 stars and used 13 to 36; the selection stayed
+at 0.2 to 0.6 s. A shadow detection is 7 to 8 s and the selective solves here did not pay it (the model was stored); without a stored model it is
+added to the selective time and the selective solve is slower than the original (not measured here).
+
+**The two solutions against each other.** Selective minus original at the fibre: median 0.38", maximum 0.63", systematically
+**south by 0.31"** (east -0.04"), with the same sign at all four positions (-0.26 to -0.45" north). The catalogue residual of the
+stars each fit used is 1.25" (original) and 0.25" (selective): not a comparison of accuracy, the selective fit has only the stars
+near the fibre.
+
+**Against Gaia DR3** (held-out stars: no star either fit used within 1.5 binned pixels; offset is the stage's sky position minus
+Gaia's, east and north, in arcsec; 23 of the 48 frames had a held-out star within 600 px of the fibre).
+
+| distance from the fibre | stars (frames) | original, E and N | selective, E and N |
+|---|---|---|---|
+| 0 to 300 px | 85 (22) | (-0.09, **+0.46**) | (-0.10, **+0.07**) |
+| 300 to 500 px | 131 (29) | (-0.04, +0.40) | (-0.05, +0.04) |
+| 500 to 800 px | 253 (27) | (+0.01, +0.38) | (+0.00, +0.04) |
+| 800 to 1200 px | 527 (31) | (+0.05, +0.27) | (+0.03, -0.03) |
+| 1200 to 1800 px | 744 (32) | (-0.01, +0.10) | (+0.06, -0.12) |
+
+- **Near the fibre the selective stage is the more accurate**, in all 23 of 23 frames with stars within 600 px: median offset
+  0.47" against 0.11". The original is biased about 0.4" **north** near the fibre, falling with distance; that is the 0.31" south
+  shift of the previous paragraph, so it was the original that was off. The standard error over frames is 0.02".
+- **It confirms 7.7 with the changes of 9.7 to 9.10 in** (the earlier check: 0.52" against 0.17", 24 frames, the search from
+  the frame's centre, full resolution). Moving the selection onto the grid and the window onto the fibre cost nothing in accuracy and
+  gained 0.06" (0.17 to 0.11").
+- **Far from the fibre the selective stage is slightly worse** (1200 to 1800 px: 0.14" against 0.10"): it fits only the region
+  about the fibre. That is not the position that is used.
+- **At the fibre the selective stage is 0.07" north (0 to 300 px)**, the size of the 0.06" taken as tolerable for the 30 um fibre
+  (9.10); the 0.04" bins beyond are inside it.
+
+**What it does not show.** The 48 frames come from a few fields of one unit and 23 of them have a star to score near the fibre, so
+the near-fibre numbers are about 85 to 250 stars; the pointing survey (`gaia_accuracy_survey.py plan`, `acquire`, `pointing`), which
+spreads targets over altitude and azimuth and scores the target star's position, is still the test of where the fibre points. The
+stored shadow model was detected on one frame of a position and applied to the others; the stage's repeatability was not tested.
+Mirror out only; binning 1 input only.
+
 ### 9.5 The prototype
 
 `src/solvers/solve_grid.py` is stages 0 to 2 and the selection run on the grid (`FrameInfo`, `to_solve_grid`, `binned_params`,
@@ -958,10 +1022,20 @@ python tools/source_survey.py FRAME.fits --out DIR --via-solver --fibre mast01 \
 # The survey.csv has each stage's time per step (<stage>_t_shadow, _t_darken, _t_select, _t_solve_field, _t_other).
 python tools/source_survey.py FRAME.fits ... --out DIR --via-solver --beside-frames --fibre mast02 --hot-pixels mast02
 
+# original against selective on frames that have a stored shadow model for their STAGEPOS (--build-store makes the models,
+# in OUT, from the first frame at each position): time per solve and the two solutions against each other, in OUT/compare.csv and
+# summary.txt. The frames can be listed in a file: @LIST
+python tools/compare_solver_modes.py FRAMES... --out OUT --fibre mast02 --hot-pixels mast02 --build-store [--repeat 3]
+
+# the same frames against Gaia DR3 (needs h5py and the catalogue share): one single-frame survey per frame in both stages, then
+python tools/source_survey.py FRAME --out OUT/f01 --via-solver --solver-modes original,selective --repeat 1 --fibre mast02 \
+    --hot-pixels mast02 [--param ...]
+python tools/gaia_accuracy_survey.py analyse OUT --fibre-xy 4051 2440 --out OUT-analyse
+
 # a unit's hot pixel map (writes MAST/<unit>/Calibration/hot_pixels.json on the share)
 python tools/build_hot_pixels.py FRAME_FOLDER --unit mast01 --last-nights 3
 ```
 
 Code: `src/solvers/{mastrometry,selection_stage,source_selection,survey_solve}.py`, `src/imaging/{mirror_shadow,hot_pixels}.py`,
-`tools/{source_survey,build_hot_pixels}.py`. Decisions and the full history are in `DECISIONS.md`. The detector and selection
-have about 170 tests (`tests/test_{mirror_shadow_detection,source_selection,selection_stage,hot_pixels,source_survey,survey_solve}.py`).
+`tools/{source_survey,compare_solver_modes,gaia_accuracy_survey,build_hot_pixels}.py`. Decisions and the full history are in `DECISIONS.md`. The detector and selection
+have about 170 tests (`tests/test_{mirror_shadow_detection,source_selection,selection_stage,hot_pixels,source_survey,survey_solve,compare_solver_modes}.py`).
