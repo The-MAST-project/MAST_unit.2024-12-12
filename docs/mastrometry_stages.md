@@ -781,6 +781,68 @@ and cleaning off so that it detects what photutils does):
 - **Dependency.** `sep==1.4.1` is in `requirements.txt` and is imported when the selection is: a machine without it fails at
   import, not partway through a solve. A cp312 Windows wheel exists. Not checked: its licence terms.
 
+### 9.8 The candidate region (2026-11-24)
+
+The selection looks for stars, and filters them, only where one could be a candidate, and that is the default: not a setting.
+
+- **Where.** Within `reach_factor` low-coma radii of the search centre (the fibre pixel) -- beyond it the coma shifts a star too far to
+  be worth its place in the fit -- and not in the shadow. Nothing is detected outside it: the detector is given the rest of each
+  tile as a mask, a source on its edge is seen (a margin) but not a candidate, and the quota's cells span the region.
+- **The cap.** `SelectionParams.reach_factor = 1.7` (the coma model's 1 px at `coma_px` = 2), and **2.5 when the whole shadow is in
+  the frame** (`shadow_whole`: both edges of the band were measured, so there is sky on each side): its far side has to be reachable.
+  Both are `None`-able for a test that wants the whole frame. 2.5 is a safe value chosen by hand, not a measured one; on the 37 survey frames it never binds (section 9.9).
+- **The window.** It starts at the low-coma region and grows by `radius_growth` while there are too few stars, each step a run of
+  its own, up to the cap. Short of 8 stars at the cap the frame fails as `too_few_sources`: there is no search of the whole frame.
+- **A shadow displaces the start.** The first window is the smallest whose *allowed* area is the plain low-coma window's. For a whole
+  shadow it also holds a quarter of that area on each side of the band, so the first run has sky on both sides (which also lets the
+  radial part of the coma cancel in the fit) and the next does not have to repeat it.
+
+Why the cap has to depend on the shadow: survivors (sources that passed every reject) within a radius, on the 37 survey frames
+(medians; radius from the fibre in low-coma radii, 1411 px):
+
+| frames | 1.0 | 1.25 | 1.5 | 1.7 | 2.0 | 2.5 | all |
+|---|---|---|---|---|---|---|---|
+| mast02 acquisition (24) | 204 | 332 | 465 | 586 | 748 | 928 | 998 |
+| mast02 mirror-map (6) | 178 | 293 | 398 | 488 | 603 | 750 | 809 |
+| mast01 `sky`, shadow at the margin (3) | 56 | 80 | 104 | 113 | 130 | 168 | 188 |
+| mast01 `spec`, shadow centred (3) | **0** | **0** | 3 | 8 | 24 | 61 | 97 |
+
+A centred shadow leaves nothing within 1.25 radii and 8 to 10 stars at 1.7 (the minimum is 8, the target 30); 2.5 gives 55 to 65. The coma
+error those stars carry (`((r - r_lc) / r_lc)^2 * coma_px`: 0.5 px at 1.5, 1 at 1.7, 2 at 2.0, 4.5 at 2.5) comes from a `coma_px` that was
+a starting guess; the residual of each matched star against its radius, from the solver's correspondences, would set the cap from data.
+
+### 9.9 The seeing estimate (2026-11-25)
+
+The selection's seeing, and each source's own width, set the centroid window (sigma = FWHM / 2.355), the neighbour distance and the
+edge margin; the blend and sharpness rejects compare a source's width with the seeing. Both used to be a **half-maximum pixel count**
+(`2 sqrt(n / pi)`, n the pixels at or above half the peak), and on 2x2 blocks it read 12 to 33% wider (the pixels are coarse), which
+widened the window and moved the fibre ~0.06" south on the grid.
+
+- **Now:** a source's width is `seeing_scale` times twice its half-light radius (`sep.flux_radius`, sub-pixel sampled), which does not
+  depend on the pixels. On the 8 mast02 frames the grid's seeing is within 1 to 6% of the full-resolution one (the half-maximum count's
+  was 21 to 33% off), and the grid's offset at the fibre is 0.010" south, not 0.06". `tests/test_solve_grid.py` holds a Gaussian's width to
+  the same value on either pixels.
+- **`seeing_scale = 0.61` is empirical.** Twice the half-light radius reads 1.34 to 1.52 times the half-maximum count whatever the flux
+  fraction (0.2 to 0.5), so the stars are near-Gaussian but the count was narrower, and the window moves the solved position by
+  ~0.2" per unit of fractional width: a straight swap shifted every full-resolution solution 0.18" south. The scale puts the numbers back:
+  the selection's own seeing on those 8 frames, 7.7 to 10.4 px by the count, is 0.58 to 0.64 (median 0.61) of twice the half-light
+  radius of the same sample. (Per star, over every unsaturated SNR >= 30 star in the low-coma disc, the ratio is 0.70; the sample rules
+  differ. 0.70 left the seeing 15% wider.)
+- **Checked on the 37 survey frames** (mast08, `sep`, selective stage, no cap, against the same arm with the old count): mast02 (30 frames)
+  moves by a median 0.006" east and 0.001" north, rms 0.024" and 0.042", max 0.13"; residual rms 0.237" against 0.242", stars used
+  25 against 23.5. **It does not hold on mast01's mirror-in frames** (`spec`, shadow centred): the seeing reads 12.4 px against 7.3 to
+  9.0, so the same factor does not fit their stars; the position moves up to 0.13", the median residual improves on two of three
+  (0.377 to 0.284", 0.332 to 0.273"), and the plain rms gets worse (0.40 to 1.13", 0.75 to 1.46", 1.43 to 2.14"). The solver's
+  correspondences show why: a few stars matched to the wrong catalogue star (7 to 10" residual, ~4 to 5" before) stay in the fit.
+  Those are not centroid errors, and they probably account for the position shift too; a refit without stars far above the median
+  residual is the fix, and is not done.
+- **The cap is free on these frames** (capped against uncapped, 36 solving frames): median shift 0.000", rms 0.015", max 0.05"; the
+  same frames solve (the 2 s exposure fails either way). The centred-shadow frames stop at 3445 px, 2.44 radii, under the 2.5 cap.
+- **Time** (median per frame, full-resolution `solve`): select step 20.5 s (photutils, whole frame), 9.1 s (`sep`, whole frame), 1.6 s
+  (`sep`, window, cap); whole call 32.4, 24.2 and 11.3 s.
+- **To do:** tune the window against the Gaia survey (the scale decides the position by 0.1 to 0.2"), and decide whether the scale should
+  depend on the frame (mirror in or out) before it is trusted on mast01's mirror-in frames.
+
 ### 9.5 The prototype
 
 `src/solvers/solve_grid.py` is stages 0 to 2 and the selection run on the grid (`FrameInfo`, `to_solve_grid`, `binned_params`,

@@ -52,6 +52,40 @@ class GridMask:
             object.__setattr__(self, "_prefix", cached)
         return cached
 
+    def within_disc(self, centre: tuple[float, float], reach: float) -> GridMask:
+        """Only the cells the disc of radius ``reach`` about ``centre`` touches: a cell counts if its nearest point does."""
+        c = self.cell
+        ny, nx = self.cells.shape
+        x0 = np.arange(nx) * float(c)
+        y0 = np.arange(ny) * float(c)
+        dx = np.maximum(np.maximum(x0 - centre[0], centre[0] - (x0 + c)), 0.0)
+        dy = np.maximum(np.maximum(y0 - centre[1], centre[1] - (y0 + c)), 0.0)
+        inside = np.hypot(dx[None, :], dy[:, None]) <= reach
+        return GridMask(self.cells & inside, c, self.shape)
+
+    def dilated(self, cells: int) -> GridMask:
+        """Every allowed cell and the ones within ``cells`` of it: the area to detect in, so a source on the edge of the
+        allowed one is whole when it is found."""
+        if cells <= 0:
+            return self
+        grown = ndimage.binary_dilation(self.cells, structure=np.ones((3, 3), dtype=bool), iterations=cells)
+        return GridMask(grown, self.cell, self.shape)
+
+    def contains(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """Whether each point (x, y), pixels, lies in an allowed cell."""
+        ny, nx = self.cells.shape
+        i = np.clip((np.asarray(x) // self.cell).astype(int), 0, nx - 1)
+        j = np.clip((np.asarray(y) // self.cell).astype(int), 0, ny - 1)
+        return self.cells[j, i]
+
+    def pixels(self, box: Box) -> np.ndarray:
+        """The allowed pixels of ``box`` (rows, columns), as a boolean array of the box's shape."""
+        c = self.cell
+        i0, j0 = box[0] // c, box[1] // c
+        i1, j1 = math.ceil(box[2] / c), math.ceil(box[3] / c)
+        up = np.repeat(np.repeat(self.cells[j0:j1, i0:i1], c, axis=0), c, axis=1)
+        return up[box[1] - j0 * c : box[3] - j0 * c, box[0] - i0 * c : box[2] - i0 * c]
+
     @property
     def total_area(self) -> float:
         return float(self.prefix[-1, -1]) * self.cell**2
@@ -87,30 +121,64 @@ def box_area(box: Box) -> float:
     return float((box[2] - box[0]) * (box[3] - box[1]))
 
 
-def window_schedule(mask: GridMask, centre: tuple[float, float], low_coma_radius: float, growth: float) -> list[Window]:
+def _flanks(mask: GridMask, minimum: float = 0.1) -> list[GridMask]:
+    """The connected pieces of allowed area holding at least ``minimum`` of it: a shadow across the field leaves two."""
+    labels, count = ndimage.label(mask.cells, structure=np.ones((3, 3), dtype=int))
+    total = mask.cells.sum()
+    pieces = [
+        GridMask(labels == k, mask.cell, mask.shape) for k in range(1, count + 1) if (labels == k).sum() >= minimum * total
+    ]
+    return pieces
+
+
+def _short(mask: GridMask, sides: list[GridMask], box: Box, want: float, first: bool, side_area: float) -> bool:
+    """Whether ``box`` does not yet hold the allowed area wanted, nor (for the first window) enough of each side."""
+    if mask.area(box) < want:
+        return True
+    return first and any(side.area(box) < min(side_area, side.total_area) for side in sides if side.total_area > 0)
+
+
+def window_schedule(
+    mask: GridMask,
+    centre: tuple[float, float],
+    low_coma_radius: float,
+    growth: float,
+    *,
+    reach_limit: float | None = None,
+    balanced: bool = False,
+    side_fraction: float = 0.25,
+) -> list[Window]:
     """The windows, smallest first. Step ``k`` has the plain half-size ``low_coma_radius * growth**k``; the window is the
     smallest of at least that size whose allowed area is the plain (shadow-free) window's.
 
-    The last has ``exhausted`` set. ``growth`` must exceed 1.
+    ``reach_limit`` caps the half-size (the mask should be restricted to the same disc): the last window is the one that
+    holds all the allowed area, and ``exhausted`` is set on it. ``balanced``: the first window must also hold, of each
+    large piece of allowed area (the two sides of a shadow across the field), at least ``side_fraction`` of the plain
+    window's area (or all of the piece if that is less), so a closed shadow is cleared on both sides at once and the first
+    run is not one the next has to repeat. ``growth`` must exceed 1.
     """
     if growth <= 1.0:
         raise ValueError(f"growth must exceed 1, not {growth}")
     ny, nx = mask.shape
     frame: Box = (0, 0, nx, ny)
-    reach_limit = float(max(nx, ny))
+    limit = float(max(nx, ny)) if reach_limit is None else float(reach_limit)
     total = mask.total_area
     windows: list[Window] = []
-    plain = max(float(low_coma_radius), float(mask.cell))
+    plain = min(max(float(low_coma_radius), float(mask.cell)), limit)
+    start_area = box_area(square_box(centre, plain, mask.shape, mask.cell))
+    sides = _flanks(mask) if balanced else []
     previous: Box | None = None
     while True:
-        want = box_area(square_box(centre, plain, mask.shape, mask.cell))
-        want = min(want, total)
+        want = min(box_area(square_box(centre, plain, mask.shape, mask.cell)), total)
         half = plain
+        if windows:
+            half = max(half, windows[-1].half_size)
         box = square_box(centre, half, mask.shape, mask.cell)
-        while mask.area(box) < want and half < reach_limit:
-            half = min(reach_limit, half + mask.cell)
+        first = not windows
+        while _short(mask, sides, box, want, first, start_area * side_fraction) and half < limit:
+            half = min(limit, half + mask.cell)
             box = square_box(centre, half, mask.shape, mask.cell)
-        exhausted = box == frame or mask.area(box) >= total
+        exhausted = box == frame or mask.area(box) >= total or half >= limit
         if box != previous:
             windows.append(Window(half_size=half, box=box, allowed_area=mask.area(box), exhausted=exhausted))
             previous = box
@@ -118,7 +186,7 @@ def window_schedule(mask: GridMask, centre: tuple[float, float], low_coma_radius
             windows[-1] = Window(windows[-1].half_size, windows[-1].box, windows[-1].allowed_area, True)
         if exhausted:
             return windows
-        plain *= growth
+        plain = min(plain * growth, limit)
 
 
 @dataclass(frozen=True)

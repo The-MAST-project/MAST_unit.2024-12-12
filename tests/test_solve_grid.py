@@ -159,11 +159,11 @@ class TestRegion:
 
 
 def test_the_pixel_parameters_follow_the_grid():
-    p = binned_params(SelectionParams())
+    p = binned_params(SelectionParams(seeing_scale=1.0))
 
     assert p.box_size == 25 and p.default_fwhm_px == pytest.approx(3.8)
     assert p.min_area == 2 and p.edge_margin_extra_px == 2.5 and p.coma_px == 1.0
-    assert p.npixels == SelectionParams().npixels == 5  # not scaled: it let in 68,000 noise blobs a frame
+    assert p.npixels == SelectionParams(seeing_scale=1.0).npixels == 5  # not scaled: it let in 68,000 noise blobs a frame
     assert (p.nsigma, p.min_snr) == (2.0, 15.0)  # signal to noise is not in pixels
 
 
@@ -189,7 +189,7 @@ def _field(seed=2):
 
 def test_the_grid_selection_finds_the_stars_the_full_resolution_one_does():
     frame, planted, hot = _field()
-    params = SelectionParams(n_target=20, n_max=40, min_snr=25.0, grid=(2, 2))
+    params = SelectionParams(seeing_scale=1.0, n_target=20, n_max=40, min_snr=25.0, grid=(2, 2))
     fibre, radius = (1200.0, 900.0), 1500.0
     full = select_sources(
         hot.fill(frame), optical_center=fibre, low_coma_radius=radius, params=params
@@ -207,7 +207,7 @@ def test_the_grid_selection_finds_the_stars_the_full_resolution_one_does():
 
 def test_the_grid_selection_recovers_the_planted_positions():
     frame, planted, hot = _field()
-    params = SelectionParams(n_target=20, n_max=40, min_snr=25.0, grid=(2, 2))
+    params = SelectionParams(seeing_scale=1.0, n_target=20, n_max=40, min_snr=25.0, grid=(2, 2))
     grid = to_solve_grid(frame, FrameInfo(binning=1, full_shape=frame.shape), hot)
 
     sel = select_on_grid(grid, params, fibre_xy=(1200.0, 900.0), low_coma_radius_px=1500.0)
@@ -219,7 +219,7 @@ def test_the_grid_selection_recovers_the_planted_positions():
 
 def test_a_cropped_grid_selects_in_the_same_sky():
     frame, planted, hot = _field()
-    params = SelectionParams(n_target=10, n_max=40, min_snr=25.0, grid=(2, 2))
+    params = SelectionParams(seeing_scale=1.0, n_target=10, n_max=40, min_snr=25.0, grid=(2, 2))
     info = FrameInfo(binning=1, full_shape=frame.shape)
     grid = to_solve_grid(frame, info, hot, region=(1200.0, 900.0, 1000.0, 700.0))
 
@@ -266,19 +266,18 @@ class TestCropBeforeBinning:
         assert np.allclose(grid.data, blocks, rtol=0, atol=1e-9)
 
 
-def test_a_windowed_grid_selection_chooses_what_the_whole_grid_does():
+def test_the_grid_selection_looks_only_in_the_candidate_region():
     frame, _planted, hot = _field()
-    params = SelectionParams(n_target=10, n_max=40, min_snr=25.0, grid=(2, 2))
+    params = SelectionParams(seeing_scale=1.0, n_target=10, n_max=40, min_snr=25.0, grid=(2, 2))
     grid = to_solve_grid(frame, FrameInfo(binning=1, full_shape=frame.shape), hot)
     fibre, radius = (1200.0, 900.0), 700.0
 
-    whole = select_on_grid(grid, params, fibre_xy=fibre, low_coma_radius_px=radius)
-    windowed = select_on_grid(grid, params, fibre_xy=fibre, low_coma_radius_px=radius, windowed=True)
+    sel = select_on_grid(grid, params, fibre_xy=fibre, low_coma_radius_px=radius)
 
-    def keep(sel):
-        return {(round(float(x), 1), round(float(y), 1)) for x, y in zip(sel.x[sel.kept], sel.y[sel.kept], strict=True)}
-
-    assert keep(whole) == keep(windowed) and len(keep(whole)) >= 10
+    x, y = grid.to_full(sel.x, sel.y)
+    assert sel.kept.sum() >= 10
+    assert sel.reach_px is not None
+    assert (np.hypot(x - fibre[0], y - fibre[1]) <= 1.7 * radius + 60.0).all()
 
 
 class TestBinnedShadow:
@@ -315,3 +314,40 @@ class TestBinnedShadow:
         from imaging.mirror_shadow import ShadowModel
 
         assert not ShadowModel(present=False, image_shape=(400, 600)).binned(2).present
+
+
+class TestSeeingDoesNotDependOnThePixels:
+    """A star is as wide on 2x2 blocks as on the sensor's pixels. The half-maximum pixel count this replaced read 21-33%
+    wider on blocks, which widened the centroid window and moved the fibre ~0.06 arcsec."""
+
+    def test_the_seeing_of_the_grid_is_the_seeing_of_the_frame(self):
+        frame, _planted, hot = _field()
+        uncapped = {"reach_factor": None, "reach_factor_closed_shadow": None}
+        params = SelectionParams(seeing_scale=1.0, n_target=20, n_max=40, min_snr=25.0, grid=(2, 2), **uncapped)
+        full = select_sources(
+            hot.fill(frame), optical_center=(1200.0, 900.0), low_coma_radius=1500.0, params=params, windowed=False
+        )
+        grid = to_solve_grid(frame, FrameInfo(binning=1, full_shape=frame.shape), hot)
+
+        binned = select_on_grid(grid, params, fibre_xy=(1200.0, 900.0), low_coma_radius_px=1500.0)
+
+        assert 2.0 * binned.fwhm_seeing_px == pytest.approx(full.fwhm_seeing_px, rel=0.05)
+        assert 2.0 * binned.sigma_window_px == pytest.approx(full.sigma_window_px, rel=0.05)
+
+    @pytest.mark.parametrize("fwhm", [6.0, 7.5, 10.0, 13.0])
+    def test_the_width_of_a_gaussian_star_is_its_fwhm_on_either_pixels(self, fwhm):
+        import sep
+
+        sigma = fwhm / 2.3548
+        ys, xs = np.mgrid[0:120, 0:120].astype(float)
+        star = np.zeros((120, 120))
+        for sy in np.linspace(-0.4, 0.4, 5):
+            for sx in np.linspace(-0.4, 0.4, 5):
+                star += np.exp(-((xs + sx - 60.3) ** 2 + (ys + sy - 60.7) ** 2) / (2 * sigma**2)) / 25.0
+        binned = star.reshape(60, 2, 60, 2).mean(axis=(1, 3))
+
+        full_r, _ = sep.flux_radius(star.astype(np.float32), np.array([60.3]), np.array([60.7]), np.array([25.0]), 0.5)
+        grid_r, _ = sep.flux_radius(binned.astype(np.float32), np.array([29.9]), np.array([30.1]), np.array([12.5]), 0.5)
+
+        assert 2.0 * full_r[0] == pytest.approx(fwhm, rel=0.03)  # a Gaussian: twice its half-light radius is its FWHM
+        assert 4.0 * grid_r[0] == pytest.approx(fwhm, rel=0.04)  # and the same on 2x2 blocks (their radius is in blocks)

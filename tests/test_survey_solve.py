@@ -289,7 +289,10 @@ def frame_path(tmp_path):
 
 
 def _survey(argv):
-    return survey.main([str(a) for a in argv])
+    # the tests are about the solve columns, not about where the stars are: no candidate-region cap
+    return survey.main(
+        [str(a) for a in [*argv, "--param", "reach_factor=none", "--param", "reach_factor_closed_shadow=none"]]
+    )
 
 
 def test_solving_marks_the_used_stars_and_writes_the_solve_columns(tmp_path, frame_path, solve_field_binary, monkeypatch):

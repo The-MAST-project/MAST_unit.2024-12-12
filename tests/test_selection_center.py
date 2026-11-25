@@ -13,7 +13,7 @@ from solvers.source_selection import SelectionParams
 
 NX, NY = 1200, 900
 FIBRE = (150.0, 450.0)
-PARAMS = SelectionParams(n_target=10, n_max=40, min_snr=25.0, grid=(1, 1))
+PARAMS = SelectionParams(seeing_scale=1.0, n_target=10, n_max=40, min_snr=25.0, grid=(1, 1))
 
 
 @pytest.fixture(autouse=True)
@@ -49,12 +49,15 @@ def test_the_search_starts_at_the_low_coma_radius_about_the_fibre_pixel():
     assert stage.record()["search_center_px"] == [150.0, 450.0]
 
 
-def test_from_the_frames_middle_the_same_frame_has_to_reach_further():
+def test_from_the_frames_middle_the_candidate_region_does_not_reach_the_stars():
     stage = _run(None)
     sel = stage.selection
 
     assert sel is not None and sel.optical_center == ((NX - 1) / 2.0, (NY - 1) / 2.0)
-    assert sel.radius_used_px > 225.0  # nothing lies within 225 px of the middle: the radius grew to reach the columns
+    # nothing lies within 225 px of the middle, and the candidate region stops at 1.7 of that: the stars in the columns are
+    # not looked for (the radius used to grow to reach them), so the frame has too few
+    assert sel.reach_px == pytest.approx(1.7 * 225.0)
+    assert sel.status == "too_few_sources" and stage.failed is not None
 
 
 def test_the_settings_say_where_the_search_grows_from():

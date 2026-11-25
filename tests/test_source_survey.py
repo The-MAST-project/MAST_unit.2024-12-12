@@ -53,8 +53,12 @@ def two_frames(tmp_path_factory):
     return base / "night"
 
 
+#: these tests are about matching and exclusion across frames, wherever the stars are: no candidate-region cap
+NO_CAP = ["--param", "reach_factor=none", "--param", "reach_factor_closed_shadow=none"]
+
+
 def _run(argv):
-    assert survey.main([str(a) for a in argv]) == 0
+    assert survey.main([str(a) for a in [*argv, *NO_CAP]]) == 0
 
 
 def test_a_folder_is_surveyed_without_the_solvers_own_products(two_frames, tmp_path):
@@ -157,8 +161,8 @@ def test_a_shadow_found_on_the_full_frame_follows_a_crop():
     model = _shadow()
     cropped_model = survey.shadow_for_roi(model, frame.shape, roi)
 
-    full = select_sources(frame, shadow=model, params=PARAMS)
-    crop = select_sources(frame[100:700, 200:1000], shadow=cropped_model, params=PARAMS)
+    full = select_sources(frame, shadow=model, params=PARAMS, windowed=False)
+    crop = select_sources(frame[100:700, 200:1000], shadow=cropped_model, params=PARAMS, windowed=False)
 
     x, y = positions["in_penumbra"]
     i = int(np.argmin(np.hypot(full.x - x, full.y - y)))

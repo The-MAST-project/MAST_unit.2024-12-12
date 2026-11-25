@@ -99,7 +99,8 @@ def test_the_growth_must_exceed_one():
 
 NY, NX = 1500, 2400
 SIGMA = 3.2
-PARAMS = SelectionParams(n_target=12, min_snr=20.0, box_size=50)
+UNCAPPED = {"reach_factor": None, "reach_factor_closed_shadow": None}  # the equivalence tests compare with the whole frame
+PARAMS = SelectionParams(seeing_scale=1.0, n_target=12, min_snr=20.0, box_size=50, **UNCAPPED)
 CENTER = (1200.0, 750.0)
 LOW_COMA = 300.0
 
@@ -149,7 +150,7 @@ def _compare(whole, windowed, *, position_tolerance=0.05):
 
 def test_without_a_shadow_and_with_enough_stars_it_stops_in_the_first_window_and_chooses_the_same_stars():
     frame, _ = _stars()
-    whole = select_sources(frame, optical_center=CENTER, low_coma_radius=LOW_COMA * 2, params=PARAMS)
+    whole = select_sources(frame, optical_center=CENTER, low_coma_radius=LOW_COMA * 2, params=PARAMS, windowed=False)
     windowed = select_sources(frame, optical_center=CENTER, low_coma_radius=LOW_COMA * 2, params=PARAMS, windowed=True)
 
     assert windowed.windows_used == 1
@@ -162,8 +163,8 @@ def test_without_a_shadow_and_with_enough_stars_it_stops_in_the_first_window_and
 
 def test_the_window_grows_until_there_are_enough_stars_and_chooses_what_the_whole_frame_does():
     frame, _ = _stars(n=60)
-    params = SelectionParams(n_target=30, min_snr=20.0, box_size=50)
-    whole = select_sources(frame, optical_center=CENTER, low_coma_radius=150.0, params=params)
+    params = SelectionParams(seeing_scale=1.0, n_target=30, min_snr=20.0, box_size=50, **UNCAPPED)
+    whole = select_sources(frame, optical_center=CENTER, low_coma_radius=150.0, params=params, windowed=False)
     windowed = select_sources(frame, optical_center=CENTER, low_coma_radius=150.0, params=params, windowed=True)
 
     assert windowed.windows_used > 1
@@ -176,8 +177,8 @@ def test_the_window_grows_until_there_are_enough_stars_and_chooses_what_the_whol
 
 def test_a_window_that_cannot_find_enough_ends_as_the_whole_frame_and_relaxes_like_it():
     frame, _ = _stars(n=14)
-    params = SelectionParams(n_target=30, min_snr=40.0, box_size=50)
-    whole = select_sources(frame, optical_center=CENTER, low_coma_radius=150.0, params=params)
+    params = SelectionParams(seeing_scale=1.0, n_target=30, min_snr=40.0, box_size=50, **UNCAPPED)
+    whole = select_sources(frame, optical_center=CENTER, low_coma_radius=150.0, params=params, windowed=False)
     windowed = select_sources(frame, optical_center=CENTER, low_coma_radius=150.0, params=params, windowed=True)
 
     assert windowed.window_box == (0, 0, NX, NY)
@@ -189,8 +190,8 @@ def test_a_window_that_cannot_find_enough_ends_as_the_whole_frame_and_relaxes_li
 def test_with_a_shadow_over_the_centre_nothing_is_detected_in_the_band_and_the_same_stars_are_chosen():
     frame, placed = _stars(n=150)
     shadow = _vertical_shadow(CENTER[0], 450.0)
-    params = SelectionParams(n_target=20, min_snr=20.0, box_size=50)
-    whole = select_sources(frame, shadow=shadow, optical_center=CENTER, low_coma_radius=300.0, params=params)
+    params = SelectionParams(seeing_scale=1.0, n_target=20, min_snr=20.0, box_size=50, **UNCAPPED)
+    whole = select_sources(frame, shadow=shadow, optical_center=CENTER, low_coma_radius=300.0, params=params, windowed=False)
     windowed = select_sources(
         frame, shadow=shadow, optical_center=CENTER, low_coma_radius=300.0, params=params, windowed=True
     )
@@ -209,3 +210,95 @@ def test_the_allowed_mask_holds_every_cell_a_star_could_pass_in():
     assert not mask.cells[:, int((CENTER[0] - 400) // 16) : int((CENTER[0] + 400) // 16)].any()
     assert mask.cells[:, : int((CENTER[0] - 500) // 16)].all() and mask.cells[:, int((CENTER[0] + 500) // 16) + 1 :].all()
     assert shadow_allowed_mask(None, (NY, NX), 0.05).cells.all()
+
+
+# ----------------------------------------------------------------------- the candidate region: the cap and the shadow
+
+from solvers.source_selection import shadow_whole  # noqa: E402
+
+
+def test_a_mask_can_be_restricted_to_the_disc_of_the_cap():
+    mask = GridMask.open((NY, NX)).within_disc(CENTER, 300.0)
+
+    assert mask.contains(np.array([CENTER[0]]), np.array([CENTER[1]]))[0]
+    assert not mask.contains(np.array([CENTER[0] + 400.0]), np.array([CENTER[1]]))[0]
+    assert not mask.contains(np.array([CENTER[0] + 280.0]), np.array([CENTER[1] + 280.0]))[0]  # the box's corner, 396 away
+    assert 0.7 * np.pi * 300**2 < mask.total_area < 1.4 * np.pi * 300**2
+
+
+def test_the_pixels_of_a_box_are_the_masks_cells_scaled_up():
+    mask = _band_mask(700, 1300)
+
+    pixels = mask.pixels((640, 0, 1360, 64))
+
+    assert pixels.shape == (64, 720)
+    assert not pixels[:, 70:600].any() and pixels[:, :40].all() and pixels[:, 690:].all()
+
+
+def test_a_shadow_is_whole_when_both_its_edges_are_in_the_frame():
+    assert shadow_whole(_vertical_shadow(CENTER[0], 450.0), (NY, NX))
+    assert not shadow_whole(_vertical_shadow(NX - 100.0, 450.0), (NY, NX))  # its far side is off the frame
+    assert not shadow_whole(None, (NY, NX))
+    open_sided = _vertical_shadow(CENTER[0], 450.0)
+    open_sided.penumbra_s = (-450.0, float("inf"))
+    assert not shadow_whole(open_sided, (NY, NX))
+    closed = _vertical_shadow(CENTER[0], 450.0)
+    closed.penumbra_s = (-450.0, 450.0)
+    assert shadow_whole(closed, (NY, NX))
+
+
+def test_nothing_is_detected_or_chosen_beyond_the_cap():
+    frame, _ = _stars(n=150)
+    params = SelectionParams(seeing_scale=1.0, n_target=12, min_snr=20.0, box_size=50)  # the default cap: 1.7 low-coma radii
+
+    sel = select_sources(frame, optical_center=CENTER, low_coma_radius=200.0, params=params)
+
+    assert sel.reach_px == pytest.approx(340.0) and not sel.shadow_whole
+    assert np.hypot(sel.x - CENTER[0], sel.y - CENTER[1]).max() < 340.0 + 40  # a margin for the detected edge
+    assert (np.hypot(sel.x[sel.kept] - CENTER[0], sel.y[sel.kept] - CENTER[1]) <= 340.0).all()
+    assert (
+        sel.area_measured_px < 0.6 * NX * NY
+    )  # the disc is a tenth of the frame; the rest is padding and the steps' repeats
+
+
+def test_too_few_stars_in_the_candidate_region_is_a_failure_not_a_search_of_the_frame():
+    frame, _ = _stars(n=150)
+    params = SelectionParams(seeing_scale=1.0, n_target=30, fail_below=8, min_snr=20.0, box_size=50, reach_factor=1.0)
+
+    sel = select_sources(frame, optical_center=CENTER, low_coma_radius=60.0, params=params)
+
+    assert sel.status == "too_few_sources" and sel.window_box[2] - sel.window_box[0] < 400
+
+
+def test_a_whole_shadow_gets_the_larger_cap():
+    frame, _ = _stars(n=150)
+    shadow = _vertical_shadow(CENTER[0], 450.0)
+    params = SelectionParams(seeing_scale=1.0, n_target=20, min_snr=20.0, box_size=50)
+
+    sel = select_sources(frame, shadow=shadow, optical_center=CENTER, low_coma_radius=300.0, params=params)
+
+    assert sel.shadow_whole and sel.reach_px == pytest.approx(2.5 * 300.0)
+    assert not (np.abs(sel.x - CENTER[0]) < 400).any()  # nothing in the band
+    assert sel.kept.sum() > 0
+
+
+def test_a_closed_shadow_is_cleared_on_both_sides_by_the_first_window():
+    mask = _band_mask(700, 1300).within_disc(CENTRE, 1500.0)
+    plain = window_schedule(mask, CENTRE, 100.0, 1.25, reach_limit=1500.0)
+    balanced = window_schedule(mask, CENTRE, 100.0, 1.25, reach_limit=1500.0, balanced=True)
+
+    first = balanced[0]
+    # both flanks are in the first window, not only the nearer one
+    left = GridMask(mask.cells & (np.arange(mask.cells.shape[1]) * 16 < 700)[None, :], 16, SHAPE)
+    right = GridMask(mask.cells & (np.arange(mask.cells.shape[1]) * 16 >= 1300)[None, :], 16, SHAPE)
+    assert left.area(first.box) > 0 and right.area(first.box) > 0
+    assert first.half_size >= plain[0].half_size
+
+
+def test_the_candidate_region_ends_the_schedule():
+    mask = GridMask.open(SHAPE).within_disc(CENTRE, 400.0)
+
+    windows = window_schedule(mask, CENTRE, 100.0, 1.25, reach_limit=400.0)
+
+    assert windows[-1].exhausted and windows[-1].half_size <= 400.0 + 1e-9
+    assert all(w.half_size <= 400.0 + 1e-9 for w in windows)

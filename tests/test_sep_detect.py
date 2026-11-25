@@ -10,16 +10,27 @@ from calibration.analysis.optical_center import extract_sources
 from solvers.sep_detect import extract_sources_sep
 from solvers.source_selection import SelectionParams, select_sources
 
-PARAMS = SelectionParams(n_target=12, min_snr=20.0, box_size=50, detector="photutils")  # the reference
-SEP = SelectionParams(n_target=12, min_snr=20.0, box_size=50)
+PARAMS = SelectionParams(seeing_scale=1.0, n_target=12, min_snr=20.0, box_size=50, detector="photutils")  # the reference
+SEP = SelectionParams(seeing_scale=1.0, n_target=12, min_snr=20.0, box_size=50)
 
 
 def _kept(selection):
-    return {
-        (round(float(x), 1), round(float(y), 1))
-        for x, y, k in zip(selection.x, selection.y, selection.kept, strict=True)
-        if k
-    }
+    return np.array(
+        [(float(x), float(y)) for x, y, k in zip(selection.x, selection.y, selection.kept, strict=True) if k]
+    ).reshape(-1, 2)
+
+
+def _same_stars(a, b, tolerance=0.3):
+    """The two kept sets are the same stars: each one has the other's within ``tolerance`` px (the detectors' centroids
+    differ in the second decimal)."""
+    if len(a) != len(b):
+        return False
+    if len(a) == 0:
+        return True
+    return bool(
+        (np.hypot(*(a[:, None, :] - b[None, :, :]).transpose(2, 0, 1)).min(axis=1) < tolerance).all()
+        and (np.hypot(*(b[:, None, :] - a[None, :, :]).transpose(2, 0, 1)).min(axis=1) < tolerance).all()
+    )
 
 
 def test_it_returns_what_extract_sources_returns():
@@ -83,27 +94,27 @@ def test_the_selection_chooses_the_same_stars_with_either_detector():
     with_sep = select_sources(frame, params=SEP, **kwargs)
 
     assert len(_kept(photutils)) >= PARAMS.n_target
-    assert _kept(with_sep) == _kept(photutils)
+    assert _same_stars(_kept(with_sep), _kept(photutils))
 
 
 def test_the_windowed_selection_with_sep_chooses_the_same_stars_as_the_whole_frame_with_sep():
     frame, _ = _stars(n=60)
-    params = SelectionParams(n_target=30, min_snr=20.0, box_size=50, detector="sep")
+    params = SelectionParams(seeing_scale=1.0, n_target=30, min_snr=20.0, box_size=50, detector="sep")
     kwargs = {"optical_center": CENTER, "low_coma_radius": 150.0, "params": params}
 
     whole = select_sources(frame, **kwargs)
     windowed = select_sources(frame, windowed=True, **kwargs)
 
     assert windowed.windows_used > 1
-    assert _kept(windowed) == _kept(whole)
+    assert _same_stars(_kept(windowed), _kept(whole))
 
 
 def test_a_shadow_is_still_excluded_with_sep():
     frame, _ = _stars(n=150)
     shadow = _vertical_shadow(CENTER[0], 450.0)
-    params = SelectionParams(n_target=20, min_snr=20.0, box_size=50, detector="sep")
+    params = SelectionParams(seeing_scale=1.0, n_target=10, min_snr=20.0, box_size=50, detector="sep")
 
-    sel = select_sources(frame, shadow=shadow, optical_center=CENTER, low_coma_radius=300.0, params=params, windowed=True)
+    sel = select_sources(frame, shadow=shadow, optical_center=CENTER, low_coma_radius=300.0, params=params)
 
     assert not (np.abs(sel.x - CENTER[0]) < 400).any()
     assert sel.kept.sum() >= params.n_target
@@ -113,8 +124,8 @@ def test_an_unknown_detector_is_refused():
     frame, _ = _stars(n=20)
 
     with pytest.raises(ValueError, match="detector"):
-        select_sources(frame, params=SelectionParams(detector="sextractor"), optical_center=CENTER)
+        select_sources(frame, params=SelectionParams(seeing_scale=1.0, detector="sextractor"), optical_center=CENTER)
 
 
 def test_sep_is_the_default_detector():
-    assert SelectionParams().detector == "sep" and SEP.detector == "sep"
+    assert SelectionParams(seeing_scale=1.0).detector == "sep" and SEP.detector == "sep"

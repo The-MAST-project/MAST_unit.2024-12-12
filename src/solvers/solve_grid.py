@@ -183,7 +183,6 @@ def select_on_grid(
     low_coma_radius_px: float,
     saturation_adu: float | None = None,
     shadow=None,
-    windowed: bool = False,
 ) -> Selection:
     """The source selection on the grid, searching outwards from the fibre pixel from the low-coma radius (unbinned pixels).
 
@@ -200,5 +199,4 @@ def select_on_grid(
         optical_center=(float(cx), float(cy)),
         low_coma_radius=low_coma_radius_px / grid.factor,
         params=p,
-        windowed=windowed,
     )

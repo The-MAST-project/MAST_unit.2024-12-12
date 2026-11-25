@@ -51,7 +51,7 @@ def test_config_gives_only_what_it_sets_over_the_defaults():
     assert settings.mode == "shadowed"
     assert settings.params.min_snr == 12.0
     assert settings.params.grid == (2, 2)
-    assert settings.params.n_target == SelectionParams().n_target
+    assert settings.params.n_target == SelectionParams(seeing_scale=1.0).n_target
 
 
 def test_a_mode_that_does_not_exist_is_refused():
@@ -224,20 +224,3 @@ def test_each_step_is_timed(shadowed):
     assert set(selective.record()["timings_s"]) == set(selective.timings)
     cached = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="selective"), shadow=_shadow())
     assert cached.timings["shadow"] == 0.0  # the acquisition's cached model: no detection
-
-
-def test_windowed_is_passed_to_the_selection(shadowed, monkeypatch):
-    seen = {}
-    real = selection_stage.select_sources
-
-    def spy(*args, **kwargs):
-        seen["windowed"] = kwargs.get("windowed")
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(selection_stage, "select_sources", spy)
-    frame, _ = _frame()
-
-    stage = prepare(frame, fits.Header(), "spec", SourceSelectionSettings(mode="selective", windowed=True))
-
-    assert seen["windowed"] is True and stage.selection is not None
-    assert SourceSelectionSettings().windowed is False

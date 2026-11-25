@@ -72,9 +72,6 @@ class SourceSelectionSettings:
     #: the middle of the frame it is given, which is what the selection did until 2026-11-23 and what reproduces the numbers
     #: in `docs/mastrometry_stages.md`.
     search_from: Literal["fibre", "frame"] = "fibre"
-    #: detect only in a window about the search centre that starts at the low-coma region and grows until there are enough
-    #: stars, instead of over the whole frame first (`select_sources(windowed=True)`). Off: the whole frame, as before.
-    windowed: bool = False
 
     def __post_init__(self):
         if self.mode not in MODES:
@@ -251,7 +248,6 @@ def prepare(
         params=settings.params,
         exclusion_half_width=settings.exclusion_half_width,
         header=header,
-        windowed=settings.windowed,
     )
     result.timings["select"] = time.monotonic() - started
     result.solved_from = "xylist"

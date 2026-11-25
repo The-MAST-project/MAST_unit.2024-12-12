@@ -18,15 +18,23 @@ from solvers.source_selection import (
     SelectionParams,
     full_scale_from_header,
     half_maximum_fwhm,
-    select_sources,
     window_centroid,
 )
+from solvers.source_selection import select_sources as _select_sources
+
+
+def select_sources(*args, **kwargs):
+    """This file tests what is measured and rejected for each source, wherever it is: over the whole frame. (The candidate
+    region, and what it leaves out, is `test_selection_window.py`'s.)"""
+    kwargs.setdefault("windowed", False)
+    return _select_sources(*args, **kwargs)
+
 
 NX, NY = 1200, 900
 CX = (NX - 1) / 2.0
 SIGMA = 3.2  # star sigma, pixels: FWHM 7.5
 SKY, NOISE = 500.0, 6.0
-PARAMS = SelectionParams(n_target=10, min_snr=25.0)
+PARAMS = SelectionParams(seeing_scale=1.0, n_target=10, min_snr=25.0)
 
 
 def _star(frame: np.ndarray, x: float, y: float, flux: float) -> None:
@@ -252,7 +260,7 @@ def test_the_exclusion_width_replaces_the_deficit_test():
 )
 def test_the_fit_is_order_one_and_needs_enough_stars(n_clean, status, order):
     frame, _ = _frame(planted=False, n_clean=n_clean, seed=3)
-    params = SelectionParams(n_target=n_clean, min_snr=25.0)
+    params = SelectionParams(seeing_scale=1.0, n_target=n_clean, min_snr=25.0)
 
     selection = select_sources(frame, params=params)
 
@@ -270,7 +278,7 @@ def test_a_grid_quota_stops_one_corner_from_supplying_every_star():
             _star(frame, x, y, 9000.0)
             placed.append((x, y))
     frame = np.clip(frame, 0, 65535).astype(np.uint16)
-    params = SelectionParams(n_target=30, n_max=24, min_snr=25.0)  # two per cell
+    params = SelectionParams(seeing_scale=1.0, n_target=30, n_max=24, min_snr=25.0)  # two per cell
 
     selection = select_sources(frame, params=params)
 
@@ -280,7 +288,7 @@ def test_a_grid_quota_stops_one_corner_from_supplying_every_star():
 
 def test_the_radius_is_widened_until_there_are_enough_stars():
     frame, _ = _frame(planted=False, n_clean=24, seed=9)
-    small = SelectionParams(n_target=18, min_snr=25.0)
+    small = SelectionParams(seeing_scale=1.0, n_target=18, min_snr=25.0)
 
     selection = select_sources(frame, params=small, low_coma_radius=60.0)
 
@@ -309,7 +317,7 @@ def test_saturation_is_not_tested_on_a_float_frame_without_a_full_scale():
 
 def test_a_full_scale_can_be_given_for_a_float_frame():
     frame, positions = _frame()
-    params = SelectionParams(n_target=10, min_snr=25.0, full_scale=65535.0)
+    params = SelectionParams(seeing_scale=1.0, n_target=10, min_snr=25.0, full_scale=65535.0)
 
     selection = select_sources(frame.astype(np.float32), shadow=_shadow(), params=params)
 
@@ -324,7 +332,7 @@ def test_the_centroid_shift_test_is_applied_inside_the_low_coma_radius_only():
     """Coma shifts the centroid off axis, so there the shift is no fault; inside it still is."""
     frame, _ = _frame(planted=False, n_clean=24, seed=9)
     # any shift at all counts, so the radius is the only thing that decides
-    params = SelectionParams(n_target=10, min_snr=25.0, max_centroid_shift_fwhm=1e-4)
+    params = SelectionParams(seeing_scale=1.0, n_target=10, min_snr=25.0, max_centroid_shift_fwhm=1e-4)
 
     selection = select_sources(frame, params=params, low_coma_radius=400.0)
 
@@ -356,7 +364,7 @@ def test_the_seeing_is_measured_from_each_stars_own_segment():
         _star(frame, x, y, 20000.0)
 
     selection = select_sources(
-        frame.astype(np.float32), params=SelectionParams(n_target=5, min_snr=25.0, seeing_fwhm_px=None)
+        frame.astype(np.float32), params=SelectionParams(seeing_scale=1.0, n_target=5, min_snr=25.0, seeing_fwhm_px=None)
     )
 
     assert selection.fwhm_seeing_px == pytest.approx(SIGMA * FWHM_PER_SIGMA, rel=0.2)
@@ -411,7 +419,9 @@ def test_the_parameter_outranks_the_header_and_the_dtype_comes_last():
     header = fits.Header({"SATURATE": 50000})
 
     given = select_sources(
-        frame.astype(np.uint16), params=SelectionParams(n_target=10, min_snr=25.0, full_scale=1e5), header=header
+        frame.astype(np.uint16),
+        params=SelectionParams(seeing_scale=1.0, n_target=10, min_snr=25.0, full_scale=1e5),
+        header=header,
     )
     plain = select_sources(frame.astype(np.uint16), params=PARAMS)
 
@@ -426,7 +436,7 @@ def test_n_target_counts_what_the_grid_quota_leaves():
     for x, y in [*crowd, (600, 830), (1100, 800), (1100, 100), (100, 800)]:  # and one in each of four others
         _star(frame, x, y, 9000.0)
     frame = np.clip(frame, 0, 65535).astype(np.uint16)
-    params = SelectionParams(n_target=6, n_max=24, min_snr=25.0)  # two per cell
+    params = SelectionParams(seeing_scale=1.0, n_target=6, n_max=24, min_snr=25.0)  # two per cell
 
     selection = select_sources(frame, params=params, low_coma_radius=480.0)
 
@@ -454,8 +464,8 @@ def test_local_noise_does_not_flood_the_noisy_side_of_a_frame_with_detections():
     rng = np.random.default_rng(5)
     sigma = (10.0 + 20.0 * np.arange(NX)[None, :] / NX) * np.ones((NY, 1))  # noise 10 -> 30 on a flat sky
     frame = 1000.0 + rng.normal(0.0, 1.0, (NY, NX)) * sigma
-    global_noise = select_sources(frame, params=SelectionParams(local_noise=False))
-    local = select_sources(frame, params=SelectionParams(local_noise=True))
+    global_noise = select_sources(frame, params=SelectionParams(seeing_scale=1.0, local_noise=False))
+    local = select_sources(frame, params=SelectionParams(seeing_scale=1.0, local_noise=True))
 
     assert global_noise.n_detected > 100
     assert np.sum(global_noise.x > 3 * NX / 4) > 0.8 * global_noise.n_detected  # all of it on the noisy side

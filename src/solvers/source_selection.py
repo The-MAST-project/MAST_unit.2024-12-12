@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+import sep
 from astropy.io import fits
 from scipy.spatial import cKDTree
 
@@ -53,8 +54,19 @@ SPARE = "spare"
 KEPT = "kept"
 
 FWHM_PER_SIGMA = 2.3548200450309493
-#: Stamp half-size for the first, seeing-free pass that measures peak and half-maximum width.
-PRELIMINARY_HALF_SIZE = 15
+#: A source's half-light radius is measured in a circle of this many default seeing widths (the calibration of
+#: `SEEING_SCALE` used 2.5: a wider circle takes in more neighbours).
+FLUX_RADIUS_REACH = 2.5
+#: `SelectionParams.seeing_scale`: the width of a source, as the selection uses it, is this times twice its half-light
+#: radius (a Gaussian's FWHM is 2 r_50). **Empirical**: the seeing the selection measured on 8 mast02 frames with the
+#: half-maximum pixel count it was tuned on (7.7 to 10.4 px) is 0.58 to 0.64 (median 0.61) of twice the half-light radius of
+#: the same sample (12.9 to 16.4 px), so this puts the window and the neighbour distances back on the scale they were tuned
+#: on. (Per star, over every unsaturated SNR >= 30 star in the low-coma disc, the ratio is 0.70: saturated stars and
+#: the sample rules differ.) The half-light radius is the same on 2x2 blocks to 0.8%, where the pixel count read 12-33%
+#: wider and moved the fibre ~0.06". The window it sets moves the solved position by ~0.2 arcsec per unit of fractional
+#: width, so this is a number for the Gaia survey to tune. A test with synthetic Gaussian stars, whose half-maximum width is
+#: the width of its Gaussian, passes 1.0.
+SEEING_SCALE = 0.61
 #: The `--tweak-order` handed to the solver. Always 1: only the position at CRPIX matters, and
 #: production hands the solver the fibre pixel as CRPIX; the distortion toward the corners does not
 #: (decided 2026-11-18).
@@ -114,6 +126,15 @@ class SelectionParams:
     fail_below: int = 8
     #: a fraction of the shorter side, the low-coma radius when none is calibrated
     geometric_low_coma_fraction: float = 0.25
+    #: scales a source's width, twice its half-light radius, to the half-maximum scale the thresholds were tuned on
+    #: (`SEEING_SCALE`)
+    seeing_scale: float = SEEING_SCALE
+    #: The candidate region: sources are looked for, and filtered, only within this many low-coma radii of the search centre
+    #: (beyond it the coma shifts a star too far to be worth its place in the fit: with `coma_px` it is 1 px at 1.7 radii),
+    #: and not within the shadow. When the whole shadow is in the frame -- both its edges are measured -- its far side must
+    #: be reachable, so the limit is `reach_factor_closed_shadow`. None: no limit (the whole frame).
+    reach_factor: float | None = 1.7
+    reach_factor_closed_shadow: float | None = 2.5
     #: what finds the sources: ``"sep"`` (`solvers/sep_detect.py`: the package is a requirement, and is what the guider will
     #: use too), or ``"photutils"`` (`extract_sources`, several times slower, kept to compare the two)
     detector: str = "sep"
@@ -143,6 +164,9 @@ class Selection:
     #: the windowed selection: how many windows it took, the last one's box (x0, y0, x1, y1), and the pixels detected in
     #: (tiles, padding included, summed over every window run). The whole-frame selection is one window, the frame.
     windows_used: int = 1
+    #: the candidate region's radius (pixels of the array; None: no limit), and whether the whole shadow was in the frame
+    reach_px: float | None = None
+    shadow_whole: bool = False
     window_box: tuple[int, int, int, int] | None = None
     area_measured_px: float | None = None
     # one entry per detected source, in `extract_sources` order
@@ -334,15 +358,25 @@ def _resolve_full_scale(params: SelectionParams, header, raw: np.ndarray) -> tup
     return None, None
 
 
-def _extract(data: np.ndarray, params: SelectionParams) -> dict | None:
-    """The detections of ``data``, by the detector ``params`` names."""
+def _extract(data: np.ndarray, params: SelectionParams, exclude_mask: np.ndarray | None = None) -> dict | None:
+    """The detections of ``data`` outside ``exclude_mask`` (True: not looked at), by the detector ``params`` names."""
     if params.detector == "sep":
         return extract_sources_sep(
-            data, nsigma=params.nsigma, npixels=params.npixels, box_size=params.box_size, local_noise=params.local_noise
+            data,
+            nsigma=params.nsigma,
+            npixels=params.npixels,
+            box_size=params.box_size,
+            exclude_mask=exclude_mask,
+            local_noise=params.local_noise,
         )
     if params.detector == "photutils":
         return extract_sources(
-            data, nsigma=params.nsigma, npixels=params.npixels, box_size=params.box_size, local_noise=params.local_noise
+            data,
+            nsigma=params.nsigma,
+            npixels=params.npixels,
+            box_size=params.box_size,
+            exclude_mask=exclude_mask,
+            local_noise=params.local_noise,
         )
     raise ValueError(f"detector must be 'sep' or 'photutils', not {params.detector!r}")
 
@@ -365,10 +399,12 @@ class _Detections:
         return int(self.detected["n_detected"])
 
 
-def _detect_tile(raw_tile: np.ndarray, x0: int, y0: int, params: SelectionParams) -> _Detections | None:
+def _detect_tile(
+    raw_tile: np.ndarray, x0: int, y0: int, params: SelectionParams, exclude_mask: np.ndarray | None = None
+) -> _Detections | None:
     """Detect in a tile, and take each source's raw peak, its half-maximum FWHM and its SNR (the seeing-free pass)."""
     data = np.asarray(raw_tile, dtype=float)
-    detected = _extract(data, params)
+    detected = _extract(data, params, exclude_mask)
     if detected is None or detected["n_detected"] == 0:
         return None
     sub = detected["data_sub"]
@@ -382,17 +418,19 @@ def _detect_tile(raw_tile: np.ndarray, x0: int, y0: int, params: SelectionParams
     peak_x = np.asarray(detected["peak_x"], dtype=int)
     peak_y = np.asarray(detected["peak_y"], dtype=int)
     raw_peak = data[peak_y, peak_x]
-    prelim_fwhm = np.zeros(n)
-    prelim_snr = np.zeros(n)
-    half = PRELIMINARY_HALF_SIZE
-    segment_map, labels = detected["segment_map"], detected["labels"]
-    for i in range(n):
-        rows = slice(max(0, peak_y[i] - half), peak_y[i] + half + 1)
-        columns = slice(max(0, peak_x[i] - half), peak_x[i] + half + 1)
-        peak = float(sub[peak_y[i], peak_x[i]])
-        # only the source's own segment: a neighbour in the stamp must not widen it
-        prelim_fwhm[i] = half_maximum_fwhm(sub[rows, columns], peak, segment_map[rows, columns] == labels[i])
-        prelim_snr[i] = detected["flux"][i] / (noise_at[i] * math.sqrt(max(detected["area"][i], 1.0)))
+    # The width of each source from its half-light radius (sep's circular-aperture photometry, sub-pixel sampled), which does
+    # not depend on the pixels being large, put on the scale of the half-maximum pixel count the thresholds were tuned on.
+    half_light, _flags = sep.flux_radius(
+        np.ascontiguousarray(sub, dtype=np.float32),
+        np.asarray(detected["x"], dtype=np.float64),
+        np.asarray(detected["y"], dtype=np.float64),
+        np.full(n, FLUX_RADIUS_REACH * params.default_fwhm_px),
+        0.5,
+    )
+    prelim_fwhm = params.seeing_scale * 2.0 * np.asarray(half_light, dtype=float)
+    prelim_snr = np.asarray(detected["flux"], dtype=float) / (
+        noise_at * np.sqrt(np.maximum(np.asarray(detected["area"], dtype=float), 1.0))
+    )
     return _Detections(x0, y0, detected, raw_peak, prelim_fwhm, prelim_snr, noise_at, noise)
 
 
@@ -479,12 +517,20 @@ class _Pool:
     def _inside(x: np.ndarray, y: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
         return (x >= box[0]) & (x < box[2]) & (y >= box[1]) & (y < box[3])
 
-    def add(self, det: _Detections, meas: dict[str, np.ndarray], core: tuple[int, int, int, int]) -> None:
+    def add(
+        self,
+        det: _Detections,
+        meas: dict[str, np.ndarray],
+        core: tuple[int, int, int, int],
+        allowed: GridMask | None = None,
+    ) -> None:
         """Add a tile: its sources inside ``core`` and outside every earlier core are owned, those outside both are padding
         (kept once), the rest are already here."""
         x_first = np.asarray(det.detected["x"], dtype=float) + det.x0
         y_first = np.asarray(det.detected["y"], dtype=float) + det.y0
         in_core = self._inside(x_first, y_first, core)
+        if allowed is not None:  # a source in the margin of the allowed area is seen, but it is not a candidate
+            in_core &= allowed.contains(x_first, y_first)
         in_prior = np.zeros(len(x_first), bool)
         for earlier in self.cores:
             in_prior |= self._inside(x_first, y_first, earlier)
@@ -551,6 +597,7 @@ def _finish(
     params: SelectionParams,
     allow_relax: bool,
     max_reach: float | None,
+    region: tuple[int, int, int, int] | None,
     result: Selection,
 ) -> _Finished:
     """The hard rejects, the ranking and the choice, over everything in ``pool``; only owned sources can be chosen."""
@@ -637,7 +684,9 @@ def _finish(
     index = np.flatnonzero(owned)
     candidates = np.flatnonzero(survivors[index])
     own_x, own_y, own_radius, own_sigma = x_use[index], y_use[index], radius[index], sigma[index]
-    chosen = _choose(candidates, own_radius, own_sigma, own_x, own_y, (ny, nx), low_coma_radius, params, result, max_reach)
+    chosen = _choose(
+        candidates, own_radius, own_sigma, own_x, own_y, (ny, nx), low_coma_radius, params, result, max_reach, region
+    )
     own_fate = fate[index]
     own_fate[chosen] = KEPT
     return _Finished(
@@ -674,18 +723,49 @@ def _next_window(windows: list[Window], index: int, chosen: int, n_target: int) 
     return nxt
 
 
-def shadow_allowed_mask(shadow, shape: tuple[int, int], max_deficit: float, cell: int = 16) -> GridMask:
-    """The cells of the frame where a star's shadow deficit can be at most ``max_deficit``. A cell counts if any of its four
-    corners does, so the mask holds every star the exact test would pass; it is never tighter."""
+def shadow_whole(shadow, shape: tuple[int, int]) -> bool:
+    """Whether the whole of the shadow is in the frame: both its edges were measured, so there is sky on each side of it.
+
+    A band that runs off the frame has an open side (``penumbra_s`` infinite there). A model built by hand, without those
+    bounds, is whole if its band, ``offset`` +- ``penumbra_half_width``, lies between the frame's own extremes of ``s``."""
+    if shadow is None or not shadow.present:
+        return False
+    if shadow.penumbra_s is not None:
+        return bool(np.isfinite(shadow.penumbra_s[0]) and np.isfinite(shadow.penumbra_s[1]))
+    ny, nx = shape
+    corners = np.array([[0.0, 0.0], [nx - 1.0, 0.0], [0.0, ny - 1.0], [nx - 1.0, ny - 1.0]])
+    s = -(corners[:, 0] - (nx - 1) / 2.0) * math.sin(shadow.angle) + (corners[:, 1] - (ny - 1) / 2.0) * math.cos(
+        shadow.angle
+    )
+    return bool(
+        shadow.offset - shadow.penumbra_half_width > s.min() and shadow.offset + shadow.penumbra_half_width < s.max()
+    )
+
+
+def shadow_allowed_mask(
+    shadow,
+    shape: tuple[int, int],
+    max_deficit: float,
+    cell: int = 16,
+    *,
+    centre: tuple[float, float] | None = None,
+    reach: float | None = None,
+) -> GridMask:
+    """The cells of the frame where a star could be a candidate: its shadow deficit at most ``max_deficit``, and (given
+    ``centre`` and ``reach``) within ``reach`` of ``centre``. A cell counts if any of its four corners passes the shadow
+    test, so the mask holds every star the exact test would pass; it is never tighter."""
     ny, nx = shape
     if shadow is None or not shadow.present:
-        return GridMask.open(shape, cell)
-    cy, cx = math.ceil(ny / cell), math.ceil(nx / cell)
-    gx, gy = np.meshgrid(np.arange(cx + 1) * float(cell), np.arange(cy + 1) * float(cell))
-    deficit, _ = _shadow_deficit(shadow, gx.ravel(), gy.ravel(), shape)
-    ok = (deficit <= max_deficit).reshape(cy + 1, cx + 1)
-    cells = ok[:-1, :-1] | ok[1:, :-1] | ok[:-1, 1:] | ok[1:, 1:]
-    return GridMask(cells, cell, shape)
+        mask = GridMask.open(shape, cell)
+    else:
+        cy, cx = math.ceil(ny / cell), math.ceil(nx / cell)
+        gx, gy = np.meshgrid(np.arange(cx + 1) * float(cell), np.arange(cy + 1) * float(cell))
+        deficit, _ = _shadow_deficit(shadow, gx.ravel(), gy.ravel(), shape)
+        ok = (deficit <= max_deficit).reshape(cy + 1, cx + 1)
+        mask = GridMask(ok[:-1, :-1] | ok[1:, :-1] | ok[:-1, 1:] | ok[1:, 1:], cell, shape)
+    if centre is not None and reach is not None and np.isfinite(reach):
+        mask = mask.within_disc(centre, reach)
+    return mask
 
 
 def select_sources(
@@ -697,7 +777,7 @@ def select_sources(
     params: SelectionParams | None = None,
     exclusion_half_width: float | None = None,
     header=None,
-    windowed: bool = False,
+    windowed: bool = True,
 ) -> Selection:
     """Detect, measure, reject and select the sources of `image` (a 2D array or a FITS path).
 
@@ -735,14 +815,33 @@ def select_sources(
     result.saturation_tested = full_scale is not None
 
     frame_box = (0, 0, nx, ny)
+    reach = float("inf")
+    whole = shadow_whole(shadow, (ny, nx))
     if windowed:
-        mask = shadow_allowed_mask(shadow, (ny, nx), params.max_shadow_deficit)
-        windows = window_schedule(mask, center, result.low_coma_radius_px, params.radius_growth)
+        factor = params.reach_factor_closed_shadow if whole else params.reach_factor
+        if factor is not None:
+            reach = factor * result.low_coma_radius_px
+        mask = shadow_allowed_mask(shadow, (ny, nx), params.max_shadow_deficit, centre=center, reach=reach)
+        windows = window_schedule(
+            mask,
+            center,
+            result.low_coma_radius_px,
+            params.radius_growth,
+            reach_limit=reach if np.isfinite(reach) else None,
+            balanced=whole,
+        )
         pad = 2 * params.box_size + 64
+        # detect a little past the allowed area, so a source on its edge is whole when it is found
+        margin = max(1, math.ceil(2.0 * params.default_fwhm_px / mask.cell))
+        detect_mask = mask.dilated(margin)
+        region = windows[-1].box
     else:
-        mask = None
+        mask = detect_mask = None
         windows = [Window(half_size=float("inf"), box=frame_box, allowed_area=float(nx * ny), exhausted=True)]
         pad = 0
+        region = frame_box
+    result.reach_px = reach if np.isfinite(reach) else None
+    result.shadow_whole = whole
 
     noise = float("nan")
     fwhm_seeing = sigma_w = float("nan")
@@ -761,7 +860,11 @@ def select_sources(
         detections: list[tuple[_Detections, Tile]] = []
         for tile in tiles:
             x0, y0, x1, y1 = tile.box
-            det = _detect_tile(raw[y0:y1, x0:x1], x0, y0, params)
+            excluded = None
+            if detect_mask is not None:
+                excluded = ~detect_mask.pixels(tile.box)
+                excluded = excluded if excluded.any() else None
+            det = _detect_tile(raw[y0:y1, x0:x1], x0, y0, params, excluded)
             measured_area += float((x1 - x0) * (y1 - y0))
             if det is not None:
                 detections.append((det, tile))
@@ -770,7 +873,7 @@ def select_sources(
         fwhm_seeing = _seeing([d for d, _ in detections], center, result.low_coma_radius_px, full_scale, params)
         sigma_w = fwhm_seeing / FWHM_PER_SIGMA
         for det, tile in detections:
-            pool.add(det, _window_measure(det, sigma_w, params), tile.core)
+            pool.add(det, _window_measure(det, sigma_w, params), tile.core, mask)
         if len(pool) == 0:
             if window.exhausted:
                 result.status = "no_sources"
@@ -789,7 +892,8 @@ def select_sources(
             exclusion_half_width=exclusion_half_width,
             params=params,
             allow_relax=window.exhausted,
-            max_reach=None if window.exhausted else window.half_size,
+            max_reach=(reach if np.isfinite(reach) else None) if window.exhausted else window.half_size,
+            region=region,
             result=result,
         )
         if window.exhausted or finished.chosen.size >= params.n_target:
@@ -834,6 +938,7 @@ def _choose(
     params: SelectionParams,
     result: Selection,
     max_reach: float | None = None,
+    region: tuple[int, int, int, int] | None = None,
 ) -> np.ndarray:
     """From the surviving sources: inside the low-coma radius, widened until `n_target` are *chosen*,
     with a grid quota, lowest expected error first, at most `n_max`. Returns the indices chosen.
@@ -845,14 +950,15 @@ def _choose(
         result.radius_used_px = low_coma_radius
         return candidates
     ny, nx = shape
+    rx0, ry0, rx1, ry1 = region if region is not None else (0, 0, nx, ny)  # the quota's cells span the candidate region
     cells_x, cells_y = params.grid
     per_cell = max(1, int(math.ceil(params.n_max / (cells_x * cells_y))))
 
     def choose_within(reach: float) -> np.ndarray:
         inside = candidates[radius[candidates] <= reach]
-        cell = np.minimum((x[inside] / nx * cells_x).astype(int), cells_x - 1) + cells_x * np.minimum(
-            (y[inside] / ny * cells_y).astype(int), cells_y - 1
-        )
+        cx = np.clip(((x[inside] - rx0) / (rx1 - rx0) * cells_x).astype(int), 0, cells_x - 1)
+        cy = np.clip(((y[inside] - ry0) / (ry1 - ry0) * cells_y).astype(int), 0, cells_y - 1)
+        cell = cx + cells_x * cy
         taken: list[int] = []
         for c in np.unique(cell):
             members = inside[cell == c]

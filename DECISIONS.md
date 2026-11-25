@@ -2,6 +2,50 @@
 
 ---
 
+## [2026-11-25] The seeing is the half-light radius on the half-maximum scale: `seeing_scale = 0.61`
+
+**Why:** the half-maximum pixel count read 12-33% wider on 2x2 blocks, which widened the centroid window and moved the fibre ~0.06"
+south on the binned grid. The user wants all calculations on binned images (ZWO hardware binning is coming), so the estimate must
+not depend on the pixels.
+
+**What:** `SelectionParams.seeing_scale` (0.61) times twice the half-light radius of each source (`sep.flux_radius`, aperture of 2.5
+default widths). The grid's seeing is within 1-6% of full resolution and its offset at the fibre 0.010". `FLUX_RADIUS_REACH` = 2.5
+is the circle the calibration used; a wider one takes in more neighbours.
+
+- **The scale is empirical, from 8 mast02 frames.** A straight swap (scale 1) shifted all solutions 0.18" south (the window is 1.4
+  times wider); 0.704 (the per-star ratio) left the seeing 15% wide; 0.61 is the ratio of the selection's own seeing values.
+  It reproduces the old solutions on mast02 (median 0.00", rms 0.02-0.04") and **not** on mast01's mirror-in frames (seeing 12.4 px
+  against 7.3-9.0; position up to 0.13"; median residual better, plain rms worse from a few mis-matched stars of 7-10").
+- **The window moves the solved position ~0.2" per unit of fractional width.** Which scale is right is a question for the Gaia
+  survey, not for this one: neither estimator has been compared with the sky.
+- **Not done:** a refit that drops stars far above the median residual (the mis-matches stay in the fit); whether the scale should depend on
+  the frame; the binned grid as the only path in `MastrometryDotNet`.
+- **Time (mast08, 37 frames, full-resolution solve):** select step 20.5 s (photutils, whole frame), 9.1 s (`sep`), 1.6 s (`sep`, window,
+  cap); the cap changes no position by more than 0.05" and loses no frame.
+
+---
+
+## [2026-11-24] The selection looks only in the candidate region, and that is the default
+
+**Why:** the selection detected and filtered the whole frame, then widened a radius over what it had found: 13-21 s at full
+resolution. Most of that was spent on sources it would never use: in the shadow, or so far off axis that the coma shifts them
+too far to help the fit.
+
+**What:** a window from the low-coma region that grows until there are enough stars (`solvers/selection_window.py`), bounded by
+`SelectionParams.reach_factor` (1.7 low-coma radii) -- **2.5 when the whole shadow is in the frame** -- and without the shadow.
+Detection is masked to that area, and the first window of a whole shadow holds sky on both sides of it. Short of 8 stars at the
+cap the frame fails (`too_few_sources`); nothing searches the whole frame. `SourceSelectionSettings.windowed` and
+`select_on_grid(windowed=)` are gone; `select_sources(windowed=False)` stays for tests of the per-source logic.
+
+- **2.5 was chosen by hand ("play it safe").** On the survey frames a centred shadow (mast01 `spec`) has 8-10 survivors within 1.7
+  radii and 55-65 within 2.5; every other group has at least 38 within 1.7. The coma those far stars carry rests on `coma_px` = 2,
+  never calibrated: measure the residual per matched star against radius before trusting 2.5, or 1.7.
+- **Unresolved, and not on this branch yet:** the selection still runs on the full-resolution frame in `MastrometryDotNet`. Moving it
+  to the binned grid needs the seeing estimate fixed first (the grid's is 21-33% too wide and moves the fibre position ~0.06"),
+  and a decision on what a frame that fails the selection should do (fall back to the image solve?).
+
+---
+
 ## [2026-11-24] `sep` is the source detector, and a requirement
 
 **Why:** on the 2x2 grid most of a selection's time was photutils interpolating its background meshes and segmenting
