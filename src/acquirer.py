@@ -14,6 +14,7 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.rois import FcuVersion, SkyRoiConfig
 from common.endpoints import Tier, endpoint
 from common.filer import MoveGuardian
+from common.interfaces.guiding import GuiderTypes
 from common.mast_logging import get_logger
 from common.models.latest import AcquisitionState, LatestAcquisition, LatestAcquisitionPhase
 from common.models.plans import PlanStage
@@ -434,7 +435,29 @@ class Acquirer:
             spec_imager_settings.use_set_limit_frame = False
             spec_imager_settings.binning = 1
 
-        return spec_imager_settings
+        return self._mast_full_frame_binned2(spec_imager_settings)
+
+    def _mast_full_frame_binned2(self, settings: ImagerSettings) -> ImagerSettings:
+        """When the mast guider is selected, image full-frame at binning 2, disregarding the
+        configured binning and ROI.
+
+        The mast guider tracks a fixed star set on full-frame binning-2 frames, and its reference
+        is the acquisition's own last (spec-mirror-in) solve, which must live on that same grid --
+        so the whole acquisition images that way. This is the ZWO-imager stack: ``imager=zwo`` pairs
+        with ``guider=mast`` (one camera, per-task settings), where PHD2 cannot honour these. The
+        caller images through ``unit.required_imager``; the coherent config makes that the ZWO
+        backend.
+        """
+        assert self.unit.unit_conf is not None
+        if self.unit.unit_conf.guider.method != GuiderTypes.Mast.value:
+            return settings
+        from common.asi import ASI_294MM_HEIGHT, ASI_294MM_WIDTH
+        from common.models.statuses import ImagerPixel, ImagerRoi
+
+        settings.binning = 2
+        settings.roi = ImagerRoi(x=0, y=0, width=ASI_294MM_WIDTH, height=ASI_294MM_HEIGHT)
+        settings.roi._center = ImagerPixel(x=ASI_294MM_WIDTH // 2, y=ASI_294MM_HEIGHT // 2)
+        return settings
 
     def do_acquire(self, acquisition: Acquisition) -> str | None:  # noqa: C901
         """Run one acquisition. Returns None when it reached tolerance, else why it did not."""
@@ -555,6 +578,7 @@ class Acquirer:
                 save=True,
                 use_set_limit_frame=acquisition.use_set_limit_frame,
             )
+            sky_settings = self._mast_full_frame_binned2(sky_settings)
 
             #
             # loop trying to solve and correct the mount till within tolerances
