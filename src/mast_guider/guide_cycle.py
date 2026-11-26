@@ -21,8 +21,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .correction_policy import CorrectionPolicy
 from .core import MastGuiderCore, Measurement, NoMeasurementError
+from .correction_policy import CorrectionPolicy
 from .pixel_to_sky import PixelToSky
 
 #: Per-star robust scatter (px) above which a frame's stars disagree too much to trust -- cloud or a

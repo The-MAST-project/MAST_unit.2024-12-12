@@ -13,9 +13,9 @@ where a mount is in hand (it pulls in `mount`), not re-exported here, so this pa
 importable without hardware.
 """
 
+from .core import GuideStars, MastGuiderCore, Measurement, NoMeasurementError
 from .correction_policy import CorrectionPolicy
 from .guide_cycle import CycleResult, GuideCycle
-from .core import GuideStars, MastGuiderCore, Measurement, NoMeasurementError
 from .pixel_to_sky import PixelToSky
 
 __all__ = [

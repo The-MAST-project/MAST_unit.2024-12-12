@@ -72,6 +72,11 @@ class Guider(GuiderInterface):
         elif guider_type == "solving":
             self._backend = SolvingGuider(self.unit)
             self.guider_type = GuiderTypes.Solving
+        elif guider_type == "mast":
+            from mast_guider.backend import MastGuider
+
+            self._backend = MastGuider(self.unit)
+            self.guider_type = GuiderTypes.Mast
 
     def __repr__(self):
         return f"Guider(_backend={self._backend.__repr__()})"
@@ -211,11 +216,14 @@ class Guider(GuiderInterface):
             return CanonicalResponse(errors=[f"{op}: no unit"])
         if self.unit.is_active(UnitActivities.Guiding):
             return CanonicalResponse(errors=[f"{op}: already guiding"])
-        # SolvingGuider reads unit.acquirer.latest_acquisition; the PHD2 backend does not need it.
-        if isinstance(self._backend, SolvingGuider) and (
+        # The solving and mast backends both guide on the acquisition: solving re-solves each frame,
+        # mast reuses the spec-mirror-in solve. The PHD2 backend does not need it.
+        from mast_guider.backend import MastGuider
+
+        if isinstance(self._backend, (SolvingGuider, MastGuider)) and (
             self.unit.acquirer is None or self.unit.acquirer.latest_acquisition is None
         ):
-            return CanonicalResponse(errors=[f"{op}: no acquisition to guide on (solving backend)"])
+            return CanonicalResponse(errors=[f"{op}: no acquisition to guide on ({self.guider_type.value} backend)"])
 
         # Keep the mount tracking across a later stop (mirrors the sequence-of-exposures path in unit.py):
         # stop_acquisition_and_guiding only stops tracking when it wasn't tracking before guiding.

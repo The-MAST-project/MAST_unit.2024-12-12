@@ -49,6 +49,40 @@ class PixelToSky:
     lock: Coord
 
     @classmethod
+    def from_solution(cls, solution, crpix: tuple[float, float]) -> PixelToSky:
+        """Build directly from the acquisition's spec-mirror-in `SolvingSolution` (CRVAL + CD matrix),
+        putting the fibre at ``crpix`` -- no FITS file, no re-solve, the reused-solve path (Option A).
+
+        The CD matrix carries scale, rotation **and parity** exactly (per the binned pixel the solver
+        downsampled to -- the guide frames' own grid), so no sign can be guessed wrong. CRVAL is the
+        fibre's pointing (the solver sets CRPIX at the fibre), i.e. the lock. The *absolute* value of
+        ``crpix`` barely matters: whatever pixel we declare as CRPIX maps to CRVAL by construction, so
+        ``correction(0, 0)`` is exactly zero; the fibre estimate only sets where on the tangent plane
+        the (tiny, second-order) projection curvature is reckoned. Raises ``ValueError`` if the
+        solution lacks the CD matrix or a centre -- guiding on a missing parity is the silent-sign bug
+        the CD matrix exists to prevent.
+        """
+        import math  # noqa: PLC0415
+
+        cd = (solution.cd1_1, solution.cd1_2, solution.cd2_1, solution.cd2_2)
+        if any(v is None for v in cd) or solution.ra_rads is None or solution.dec_rads is None:
+            raise ValueError(
+                "cannot build PixelToSky: the solution has no CD matrix / centre "
+                f"(cd={cd}, ra_rads={solution.ra_rads}, dec_rads={solution.dec_rads})"
+            )
+        from astropy.wcs import WCS  # noqa: PLC0415
+
+        ra_deg = math.degrees(float(solution.ra_rads))
+        dec_deg = math.degrees(float(solution.dec_rads))
+        wcs = WCS(naxis=2)
+        wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+        wcs.wcs.crpix = [float(crpix[0]), float(crpix[1])]  # FITS 1-based
+        wcs.wcs.crval = [ra_deg, dec_deg]
+        wcs.wcs.cd = [[float(cd[0]), float(cd[1])], [float(cd[2]), float(cd[3])]]
+        lock = Coord(ra=Angle(ra_deg * u.deg), dec=Angle(dec_deg * u.deg))
+        return cls(wcs=wcs, crpix=(float(crpix[0]), float(crpix[1])), lock=lock)
+
+    @classmethod
     def from_solved(cls, solved) -> PixelToSky:
         """From a solved FITS header (or path): the WCS, the fibre pixel from CRPIX, and the lock from
         CRVAL, so ``correction(0, 0)`` is exactly zero by construction."""

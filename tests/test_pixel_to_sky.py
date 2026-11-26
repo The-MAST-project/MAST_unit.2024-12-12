@@ -78,6 +78,39 @@ def test_rotation_maps_x_drift_onto_dec():
     assert abs(cr) < 0.05
 
 
+class _Solution:
+    """The handful of `SolvingSolution` fields PixelToSky.from_solution reads."""
+
+    def __init__(self, cd, ra_deg=CRVAL[0], dec_deg=CRVAL[1]):
+        self.ra_rads = math.radians(ra_deg)
+        self.dec_rads = math.radians(dec_deg)
+        self.cd1_1, self.cd1_2, self.cd2_1, self.cd2_2 = cd
+
+
+def test_from_solution_matches_from_solved():
+    # The reused-solve path (CRVAL + CD, no FITS) must agree with the header path to the micro-arcsec.
+    from_sol = PixelToSky.from_solution(_Solution(UNROTATED), crpix=CRPIX)
+    from_hdr = PixelToSky.from_solved(_header(UNROTATED))
+    for d in [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0), (7.0, -4.0)]:
+        a = from_sol.correction(*d)
+        b = from_hdr.correction(*d)
+        assert a[0] == pytest.approx(b[0], abs=1e-6)
+        assert a[1] == pytest.approx(b[1], abs=1e-6)
+
+
+def test_from_solution_zero_drift_is_zero_whatever_the_crpix():
+    # The absolute CRPIX must not introduce a constant bias: correction(0,0) is zero by construction.
+    for crpix in [(1.0, 1.0), (1000.0, 1000.0), (2072.0, 1411.0)]:
+        p = PixelToSky.from_solution(_Solution(UNROTATED), crpix=crpix)
+        assert p.correction(0.0, 0.0) == pytest.approx((0.0, 0.0), abs=1e-6)
+
+
+def test_from_solution_without_cd_matrix_raises():
+    # A missing parity is the silent-sign bug the CD matrix prevents; refuse rather than guess.
+    with pytest.raises(ValueError):
+        PixelToSky.from_solution(_Solution((None, None, None, None)), crpix=CRPIX)
+
+
 def test_extra_binning_and_roi_keys_are_ignored():
     # DOWNSAMP / ROI_* may ride along in the header; PixelToSky works in the WCS grid and ignores them
     h = _header(UNROTATED)
