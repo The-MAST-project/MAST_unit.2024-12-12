@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .correction_policy import CorrectionPolicy
-from .guider import MastGuider, Measurement, NoMeasurementError
+from .core import MastGuiderCore, Measurement, NoMeasurementError
 from .pixel_to_sky import PixelToSky
 
 #: Per-star robust scatter (px) above which a frame's stars disagree too much to trust -- cloud or a
@@ -57,7 +57,7 @@ class GuideCycle:
 
     def __init__(
         self,
-        guider: MastGuider,
+        guider: MastGuiderCore,
         pixel_to_sky: PixelToSky,
         policy: CorrectionPolicy,
         *,

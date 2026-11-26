@@ -190,7 +190,7 @@ def _combine(offsets: np.ndarray, weights: np.ndarray, clip_sigmas: float, min_s
     )
 
 
-class MastGuider:
+class MastGuiderCore:
     """Choose a fixed guide-star set from a reference frame, then measure each later frame's drift.
 
     Call :meth:`reference` once with the frame whose target sits on the fibre; then :meth:`measure`

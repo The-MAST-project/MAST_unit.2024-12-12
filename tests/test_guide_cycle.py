@@ -9,7 +9,7 @@ import pytest
 
 from mast_guider.correction_policy import CorrectionPolicy
 from mast_guider.guide_cycle import APPLIED, DEADBAND, HELD_SCATTER, STAR_LOST, GuideCycle
-from mast_guider.guider import Measurement, NoMeasurementError
+from mast_guider.core import Measurement, NoMeasurementError
 
 ARCSEC_PER_PX = 0.5232  # binned pixel scale, for the fakes
 

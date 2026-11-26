@@ -1,6 +1,6 @@
 """In-house guiding (clean-room from `plans/inhouse_guiding_design.md`).
 
-- `MastGuider` (`guider.py`) -- the measurement core: choose a fixed set of guide stars from a
+- `MastGuiderCore` (`core.py`) -- the measurement core: choose a fixed set of guide stars from a
   reference frame, measure how far later frames have drifted, as a translation + a scatter health
   signal.
 - `PixelToSky` (`pixel_to_sky.py`) -- turn that pixel drift at the fibre into a mount move
@@ -15,7 +15,7 @@ importable without hardware.
 
 from .correction_policy import CorrectionPolicy
 from .guide_cycle import CycleResult, GuideCycle
-from .guider import GuideStars, MastGuider, Measurement, NoMeasurementError
+from .core import GuideStars, MastGuiderCore, Measurement, NoMeasurementError
 from .pixel_to_sky import PixelToSky
 
 __all__ = [
@@ -23,7 +23,7 @@ __all__ = [
     "CycleResult",
     "GuideCycle",
     "GuideStars",
-    "MastGuider",
+    "MastGuiderCore",
     "Measurement",
     "NoMeasurementError",
     "PixelToSky",

@@ -1,4 +1,4 @@
-"""MastGuider on synthetic frames: the fixed set recovers a known shift, and the robust combine
+"""MastGuiderCore on synthetic frames: the fixed set recovers a known shift, and the robust combine
 clips outliers and weights by SNR. Pure -- no hardware, no share -- but it imports the unit's source
 selection (and `sep`), so it runs where those are available (a unit / the dev unit env), not on a bare
 checkout. Patterned after the `calibration` tests (synthetic data, no hardware); design §8.
@@ -11,8 +11,8 @@ import math
 import numpy as np
 import pytest
 
-from mast_guider import GuideStars, MastGuider, NoMeasurementError
-from mast_guider.guider import _combine
+from mast_guider import GuideStars, MastGuiderCore, NoMeasurementError
+from mast_guider.core import _combine
 from solvers.source_selection import SelectionParams
 
 FWHM = 7.6
@@ -46,8 +46,8 @@ def _params() -> SelectionParams:
     return SelectionParams(full_scale=65535.0, detector="sep")
 
 
-def _guider(**kw) -> MastGuider:
-    return MastGuider(params=_params(), **kw)
+def _guider(**kw) -> MastGuiderCore:
+    return MastGuiderCore(params=_params(), **kw)
 
 
 SHAPE = (1600, 1600)
