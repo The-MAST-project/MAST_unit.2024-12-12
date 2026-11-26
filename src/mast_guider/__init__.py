@@ -14,7 +14,17 @@ importable without hardware.
 """
 
 from .correction_policy import CorrectionPolicy
+from .guide_cycle import CycleResult, GuideCycle
 from .guider import GuideStars, MastGuider, Measurement, NoMeasurementError
 from .pixel_to_sky import PixelToSky
 
-__all__ = ["CorrectionPolicy", "GuideStars", "MastGuider", "Measurement", "NoMeasurementError", "PixelToSky"]
+__all__ = [
+    "CorrectionPolicy",
+    "CycleResult",
+    "GuideCycle",
+    "GuideStars",
+    "MastGuider",
+    "Measurement",
+    "NoMeasurementError",
+    "PixelToSky",
+]
