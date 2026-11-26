@@ -30,7 +30,7 @@ the fibre, the correction policy, `mount_offset`) is a separate layer; this is t
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -266,6 +266,18 @@ class MastGuiderCore:
             optical_center=tuple(sel.optical_center),
         )
         return self._reference
+
+    def shift_reference(self, dx: float, dy: float) -> None:
+        """Move the fixed guide-star reference positions by ``(dx, dy)`` binned px -- how inline
+        validation feeds an absolute correction into the differential loop. After the shift, a frame at
+        the old position measures a drift of ``(-dx, -dy)``, which the normal policy then nulls
+        (clamped, ramped), moving the field onto the corrected position. The star *set* is unchanged --
+        only its reference coordinates move -- so no re-selection and no loss of the differential
+        history (§3.3). The SNR weights, seeing and shape are untouched."""
+        ref = self._reference
+        if ref is None:
+            raise RuntimeError("reference() must be called before shift_reference()")
+        self._reference = replace(ref, x=ref.x + float(dx), y=ref.y + float(dy))
 
     def measure(self, image, *, predicted_offset: tuple[float, float] = (0.0, 0.0)) -> Measurement:
         """The drift of ``image`` from the reference, as one translation ``(dx, dy)`` plus the per-star

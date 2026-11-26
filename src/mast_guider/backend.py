@@ -22,8 +22,11 @@ unit-tested in `guide_cycle`; this part drives hardware and is validated on a un
 from __future__ import annotations
 
 import datetime
+import os
 import time
 from pathlib import Path
+
+from astropy.coordinates import Angle
 
 from common.activities import Activities, UnitActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
@@ -31,15 +34,16 @@ from common.filer import Filer
 from common.interfaces.guiding import GuiderInterface
 from common.mast_logging import get_logger, observing_night
 from common.paths import PathMaker
-from common.utils import boxed_log, function_name
+from common.utils import Coord, boxed_log, function_name
 from solvers.source_selection import SelectionParams
 
 from .core import MastGuiderCore, NoMeasurementError
 from .correction_policy import CorrectionPolicy
 from .guide_cycle import APPLIED, GuideCycle
-from .guide_log import ALERT, GuideLog
+from .guide_log import ALERT, REFERENCE_SHIFT, VALIDATION, GuideLog
 from .mount_corrector import MountCorrector
 from .pixel_to_sky import PixelToSky
+from .validation import VALID_ALERT, VALID_SHIFT, GuideValidator
 
 logger = get_logger(__name__)
 
@@ -49,6 +53,9 @@ GUIDE_BINNING = 2
 #: The ASI full-well in the RAW16 container: the saturation level for the reference star selection,
 #: which has no FITS header to read SATURATE from.
 FULL_SCALE_ADU = 65535.0
+#: How often the loop runs an inline validation solve (design §3.3, "once a minute"). Time-based, so
+#: it is independent of the cadence; a validation round pauses guiding for one solve, which is benign.
+VALIDATION_INTERVAL_SECONDS = 60.0
 
 
 class MastGuider(GuiderInterface):
@@ -64,6 +71,11 @@ class MastGuider(GuiderInterface):
         self._exposure_series = None
         self._guide_log: GuideLog | None = None
         self._cycle: GuideCycle | None = None
+        self._core: MastGuiderCore | None = None
+        self._validator: GuideValidator | None = None
+        self._target: Coord | None = None
+        self._validation_folder: str | None = None
+        self._last_validation: float = 0.0
 
     # --- GuiderInterface -------------------------------------------------------------------------
 
@@ -75,6 +87,7 @@ class MastGuider(GuiderInterface):
         try:
             pixel_to_sky, fibre, core = self._build_measurement()
             reference = self._acquire_reference(core, fibre)
+            self._setup_validation(pixel_to_sky)
         except Exception as ex:  # noqa: BLE001 -- any setup failure is reported, not raised onto the thread
             logger.exception(f"{phase}: could not set up guiding")
             return CanonicalResponse(errors=[f"{phase}: setup failed: {ex}"])
@@ -84,15 +97,20 @@ class MastGuider(GuiderInterface):
             min_move_ra_arcsec=conf.min_ra_correction_arcsec,
             min_move_dec_arcsec=conf.min_dec_correction_arcsec,
         )
+        self._core = core
         self._cycle = GuideCycle(core, pixel_to_sky, policy)
         corrector = MountCorrector(self.unit.pw, self.unit.mount)
         self._guide_log = self._open_guide_log(conf, reference)
 
         self._exposure_series = self.unit.imager.start_exposure_series(purpose=phase)
         self.unit.start_activity(UnitActivities.Guiding)
+        self._last_validation = time.monotonic()  # first validation one interval in, not at once
         try:
             while self.unit.is_active(UnitActivities.Guiding):
-                self._one_cycle(corrector, conf.cadence_seconds)
+                start = time.monotonic()
+                self._guide_step(corrector)
+                self._maybe_validate()
+                self._hold_cadence(start, conf.cadence_seconds)
         finally:
             self._teardown(phase)
         return CanonicalResponse_Ok
@@ -143,12 +161,25 @@ class MastGuider(GuiderInterface):
         frame = self._capture()
         return core.reference(frame, optical_center=fibre, low_coma_radius=None)
 
+    def _setup_validation(self, pixel_to_sky: PixelToSky) -> None:
+        """Build the inline validator (design §3.3) and stash what a validation solve needs: the
+        acquisition target (the solve's hint) and a folder for its frames. The tolerance is the
+        guiding box's radius (quadrature of the per-axis tolerances)."""
+        conf = self.unit.unit_conf.guiding
+        tolerance_arcsec = float((conf.tolerance.ra_arcsec**2 + conf.tolerance.dec_arcsec**2) ** 0.5)
+        self._validator = GuideValidator(pixel_to_sky, tolerance_arcsec)
+        acquisition = self.unit.acquirer.latest_acquisition
+        self._target = Coord(
+            ra=Angle(acquisition.target_ra, unit="hourangle"),
+            dec=Angle(acquisition.target_dec, unit="deg"),
+        )
+        self._validation_folder = os.path.join(acquisition.folder, "mast-validation")
+
     # --- the loop --------------------------------------------------------------------------------
 
-    def _one_cycle(self, corrector: MountCorrector, cadence_seconds: int) -> None:
-        """One capture -> decide -> (correct) -> log, then hold the cadence. A failure in a single
-        cycle is logged and skipped -- it must not end the session."""
-        start = time.monotonic()
+    def _guide_step(self, corrector: MountCorrector) -> None:
+        """One capture -> decide -> (correct) -> log. A failure in a single cycle is logged and
+        skipped -- it must not end the session."""
         try:
             frame = self._capture()
             result = self._cycle.cycle(frame)
@@ -163,7 +194,58 @@ class MastGuider(GuiderInterface):
             logger.exception("guide cycle failed")
             if self._guide_log is not None:
                 self._guide_log.event(ALERT, reason="cycle_error", detail=str(ex))
-        self._hold_cadence(start, cadence_seconds)
+
+    # --- inline validation (design §3.3) ---------------------------------------------------------
+
+    def _maybe_validate(self) -> None:
+        """Every `VALIDATION_INTERVAL_SECONDS`, solve the current pointing and act on the verdict. The
+        solve is its own exposure (through the unit solver), so guiding pauses for it -- benign once a
+        minute. Never raises: a validation failure must not end the session."""
+        if self._validator is None:
+            return
+        now = time.monotonic()
+        if now - self._last_validation < VALIDATION_INTERVAL_SECONDS:
+            return
+        self._last_validation = now
+        try:
+            solution = self._solve_now()
+        except Exception:  # noqa: BLE001 -- a solve failure is a failed validation, not a crash
+            logger.exception("validation solve failed")
+            solution = None
+        self._act_on_validation(self._validator.validate(solution))
+
+    def _act_on_validation(self, result) -> None:
+        """A correctable error shifts the reference (the loop drives it out, clamped and ramped); an
+        out-of-position / repeated-failure alert is flagged, not chased; otherwise just record it."""
+        if result.decision == VALID_SHIFT and result.shift_px is not None:
+            dx, dy = result.shift_px
+            self._core.shift_reference(dx, dy)
+            self._cycle.note_reference_shift(dx, dy)
+            logger.info(f"validation: reference shifted by ({dx:.2f}, {dy:.2f}) px (error {result.error_arcsec:.2f}\")")
+            if self._guide_log is not None:
+                self._guide_log.event(REFERENCE_SHIFT, shift_px=[dx, dy], error_arcsec=result.error_arcsec)
+        elif result.decision == VALID_ALERT:
+            logger.error(f"validation ALERT: {result.reason} (error={result.error_arcsec})")
+            if self._guide_log is not None:
+                self._guide_log.event(ALERT, reason=result.reason, error_arcsec=result.error_arcsec)
+        else:  # VALID_OK or VALID_SOLVE_FAILED
+            if self._guide_log is not None:
+                self._guide_log.event(
+                    VALIDATION, result=result.decision, error_arcsec=result.error_arcsec, reason=result.reason
+                )
+
+    def _solve_now(self):
+        """A fresh full-frame binning-2 solve of the current pointing, through the unit solver (which
+        takes its own exposure and sets CRPIX at the fibre). Returns the `SolvingSolution` or None."""
+        settings = self._capture_settings(save=True, base_folder=self._validation_folder)
+        self.unit.start_activity(UnitActivities.Solving)
+        try:
+            result = self.unit.required_solver.solve(settings, self._target, phase="spec")
+        finally:
+            self.unit.end_activity(UnitActivities.Solving)
+        if result is None or not getattr(result, "succeeded", False) or getattr(result, "solution", None) is None:
+            return None
+        return result.solution
 
     def _capture(self):
         """A binning-2 full frame, in memory (no file). A *fresh* `ImagerSettings` each call: the ZWO
@@ -177,15 +259,19 @@ class MastGuider(GuiderInterface):
             raise RuntimeError("imager returned no image")
         return frame
 
-    def _capture_settings(self):
-        """A full-frame, binning-2, in-memory exposure at the guiding exposure/gain (fresh each call)."""
+    def _capture_settings(self, *, save: bool = False, base_folder: str | None = None):
+        """A full-frame, binning-2 exposure at the guiding exposure/gain (fresh each call). ``save``
+        writes it to disk under ``base_folder`` (for the validation solve, which reads from a file);
+        the guide loop leaves it in memory."""
         from common.asi import ASI_294MM_HEIGHT, ASI_294MM_WIDTH  # noqa: PLC0415
         from common.models.statuses import ImagerPixel, ImagerRoi, ImagerSettings  # noqa: PLC0415
 
         conf = self.unit.unit_conf.guiding
         roi = ImagerRoi(x=0, y=0, width=ASI_294MM_WIDTH, height=ASI_294MM_HEIGHT)
         roi._center = ImagerPixel(x=ASI_294MM_WIDTH // 2, y=ASI_294MM_HEIGHT // 2)
-        return ImagerSettings(seconds=conf.exposure, gain=conf.gain, binning=GUIDE_BINNING, roi=roi, save=False)
+        return ImagerSettings(
+            seconds=conf.exposure, gain=conf.gain, binning=GUIDE_BINNING, roi=roi, save=save, base_folder=base_folder
+        )
 
     def _hold_cadence(self, start: float, cadence_seconds: int) -> None:
         if not cadence_seconds:

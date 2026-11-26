@@ -94,6 +94,18 @@ def test_trusted_frame_advances_the_seed_to_the_measured_drift():
     assert g.seeds[1] == (7.0, -4.0)  # the second measure was seeded from the first's drift
 
 
+def test_note_reference_shift_moves_the_search_seed():
+    g = _ScriptedGuider([_measurement(7.0, -4.0), _measurement(0.0, 0.0)])
+    gc = GuideCycle(g, _FakeP2S(), _policy(hysteresis_ra=0.0, hysteresis_dec=0.0))
+    gc.cycle(None)
+    assert gc.predicted_offset == (7.0, -4.0)
+    # validation shifted the reference by (2, -1); the stars did not move, so the seed shifts -(2, -1)
+    gc.note_reference_shift(2.0, -1.0)
+    assert gc.predicted_offset == (5.0, -3.0)
+    gc.cycle(None)
+    assert g.seeds[1] == (5.0, -3.0)  # the next measure is seeded from the shifted estimate
+
+
 class _FakeSky:
     """A drifting field a fake mount corrects: ``measure`` reports the current drift; a correction
     (plain RA, Dec arcsec) moves the field back by the pixel-equivalent; a steady leak is added each

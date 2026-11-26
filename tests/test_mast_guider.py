@@ -75,6 +75,25 @@ def test_measure_recovers_known_shift(sx, sy):
     assert m.scatter_px < 0.5  # a clean field: the stars agree
 
 
+def test_shift_reference_moves_the_measured_drift():
+    # Validation shifts the reference by s; a frame at the OLD position then measures a drift of -s,
+    # which the loop nulls to move the field onto the corrected position.
+    stars = _grid(SHAPE)
+    g = _guider()
+    g.reference(_frame(SHAPE, stars, seed=1), optical_center=CENTER, low_coma_radius=2000.0)
+    frame = _frame(SHAPE, stars, seed=2)  # the field has not moved
+    assert g.measure(frame).magnitude_px < 0.3  # on reference: ~zero drift
+    g.shift_reference(3.0, -2.0)
+    m = g.measure(frame)
+    assert abs(m.dx - (-3.0)) < 0.3, m.dx
+    assert abs(m.dy - 2.0) < 0.3, m.dy
+
+
+def test_shift_reference_before_reference_raises():
+    with pytest.raises(RuntimeError):
+        _guider().shift_reference(1.0, 1.0)
+
+
 def test_measure_requires_reference():
     with pytest.raises(RuntimeError):
         _guider().measure(_frame(SHAPE, _grid(SHAPE), seed=3))

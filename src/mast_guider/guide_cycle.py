@@ -74,6 +74,12 @@ class GuideCycle:
         """The field's last trusted drift (binned px), which seeds the next frame's star search."""
         return self._predicted
 
+    def note_reference_shift(self, dx: float, dy: float) -> None:
+        """Tell the cycle its reference positions were just shifted by ``(dx, dy)`` (inline validation).
+        The stars have not moved, but the drift they now measure changes by ``-(dx, dy)``, so the
+        search seed is moved the same way to keep pointing at the real stars on the next frame."""
+        self._predicted = (self._predicted[0] - float(dx), self._predicted[1] - float(dy))
+
     def cycle(self, frame) -> CycleResult:
         """Measure ``frame``, decide, and return the result. Does not touch the mount -- the caller
         sends ``correction_arcsec`` when the decision is ``APPLIED``."""
