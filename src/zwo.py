@@ -434,6 +434,25 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         except Exception as ex:  # noqa: BLE001 -- ZWO SDK boundary: the ctypes wrapper raises undocumented types; recorded in self.errors for the caller
             self.log_and_append(f"failed to set format to {x=},{y=},{width=},{height=},{binning=},{format.name=}: {ex=}")
 
+    @staticmethod
+    def _binned_for_hardware(settings: ImagerSettings) -> ImagerSettings:
+        """A DEEP copy of ``settings`` whose ROI is reduced to what the sensor returns at this
+        binning -- the hardware dimensions, conditioned to width mod 8 / height mod 2.
+
+        Deep so the caller's ROI is never touched. This used to shallow-copy and divide the
+        shared ROI in place, which leaked back into the caller's ``ImagerSettings``: a caller
+        that reuses one settings object across exposures -- acquisition's ``solve_and_correct``
+        retry loop does -- then re-divided an already-binned ROI on every try, halving the
+        frame each attempt (8288x5644 -> 4144x2822 -> 2072x1410 ...).
+        """
+        binned = settings.model_copy(deep=True)
+        assert binned.roi is not None and binned.binning is not None
+        binned.roi.width //= binned.binning
+        binned.roi.height //= binned.binning
+        binned.roi.width -= binned.roi.width % 8
+        binned.roi.height -= binned.roi.height % 2
+        return binned
+
     def start_exposure(self, settings: ImagerSettings) -> CanonicalResponse:
         self.errors = []
         self.image_was_read = False
@@ -458,15 +477,12 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         if settings.roi is None:
             settings.roi = self.default_settings.roi
 
-        zwo_settings = settings.model_copy()
-        assert zwo_settings.roi is not None and zwo_settings.binning is not None
-        zwo_settings.roi.width //= zwo_settings.binning
-        zwo_settings.roi.height //= zwo_settings.binning
-        zwo_settings.roi.width -= zwo_settings.roi.width % 8
-        zwo_settings.roi.height -= zwo_settings.roi.height % 2
+        zwo_settings = self._binned_for_hardware(settings)
         self.set_format(zwo_settings)
 
-        self.latest_settings = settings.model_copy()
+        # The binned copy, NOT `settings`: the readout reshapes to `latest_settings.roi`, which
+        # must be the hardware (post-binning) dimensions the sensor actually returns.
+        self.latest_settings = zwo_settings
 
         try:
             self.latest_exposure = ImagerExposure(
