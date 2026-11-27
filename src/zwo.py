@@ -122,8 +122,14 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                 # logger.info(f"{op}: {exposure_status=} ({ASIExposureStatus(exposure_status).name})")
                 if exposure_status == asi.ExposureStatus.ASI_EXP_FAILED:
                     zwoasi.stopExposure(self.cam_id)
-                    self.parent_imager.end_activity(ImagerActivities.Exposing)
                     logger.error(f"exposure failed with exposure_status={asi.ExposureStatus(exposure_status).name}")
+                    # Nothing after a failed exposure sets the read/saved events, so a caller
+                    # parked in wait_for_image_ready / wait_for_image_saved (no timeout) would
+                    # wait for the life of the process -- and the run holding the session lock
+                    # would never reach its cleanup. Release the waiters and end the activity,
+                    # exactly as an abort does (MAST_unit#212). The caller then sees no image
+                    # (image_array is None / getdata fails) and fails cleanly instead of hanging.
+                    self._release_waiters()
                 elif exposure_status == asi.ExposureStatus.ASI_EXP_SUCCESS:
                     assert self.latest_settings.roi is not None
                     buffer_size = self.latest_settings.roi.width * self.latest_settings.roi.height
