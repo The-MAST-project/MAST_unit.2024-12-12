@@ -108,6 +108,27 @@ def _magnitude(value: Any) -> float | None:
     return None
 
 
+def _component(value: Any, i: int) -> float:
+    """Component ``i`` of a 2-sequence (ra, dec), or nan. Correction is logged as [ra, dec] arcsec."""
+    if isinstance(value, (list, tuple)) and len(value) > i and isinstance(value[i], (int, float)):
+        return float(value[i])
+    return math.nan
+
+
+def _bars(t: list[float], values: list[float]) -> tuple[list[float], list[float], list[float]]:
+    """(x, height, width) for a bar per non-nan value, each bar as wide as the gap to the next
+    point -- the cycle's time extent. Only the frames that carry a value produce a bar."""
+    n = len(t)
+    widths = [(t[i + 1] - t[i]) if i + 1 < n else (t[i] - t[i - 1] if i > 0 else 1.0) for i in range(n)]
+    xs, hs, ws = [], [], []
+    for x, w, v in zip(t, widths, values):
+        if not math.isnan(v):
+            xs.append(x)
+            hs.append(v)
+            ws.append(w)
+    return xs, hs, ws
+
+
 # ---- discovery -----------------------------------------------------------------------------------
 def looks_like_guide_log(path: Path) -> bool:
     """Cheap check: the first non-empty line is a JSON object with a known record ``type``."""
@@ -186,7 +207,8 @@ class SessionData:
         self.dx: list[float] = []
         self.dy: list[float] = []
         self.err: list[float] = []  # |error| arcsec
-        self.corr: list[float] = []  # |correction| arcsec (nan when none)
+        self.corr_ra: list[float] = []  # RA correction arcsec, signed (nan when none)
+        self.corr_dec: list[float] = []  # Dec correction arcsec, signed (nan when none)
         self.scatter: list[float] = []
         self.n_used: list[float] = []
         self.decision: list[str] = []
@@ -228,7 +250,8 @@ class SessionData:
                 if err is None and scale is not None and not (math.isnan(dx) or math.isnan(dy)):
                     err = math.hypot(dx, dy) * scale  # a held frame logs no error; derive it from the drift
                 self.err.append(err if err is not None else math.nan)
-                self.corr.append(_magnitude(r.get("correction_arcsec")) or math.nan)
+                self.corr_ra.append(_component(r.get("correction_arcsec"), 0))
+                self.corr_dec.append(_component(r.get("correction_arcsec"), 1))
                 self.scatter.append(_coerce(r.get("scatter_px")))
                 self.n_used.append(_coerce(r.get("n_used")))
                 self.decision.append(str(r.get("decision", "?")))
@@ -261,20 +284,82 @@ def _coerce(value: Any) -> float:
         return math.nan
 
 
+# ---- plotting ------------------------------------------------------------------------------------
+def render_plots(ax_drift, ax_quality, ax_bull, data: SessionData) -> None:
+    """Draw the three panels for ``data`` onto the given axes. Module-level so a headless Agg render
+    can exercise it; the GUI wraps it and adds ``canvas.draw_idle()``."""
+    from matplotlib.patches import Circle
+
+    for ax in (ax_drift, ax_quality, ax_bull):
+        ax.clear()
+    # drift
+    ax_drift.axhline(0, color="#555", lw=0.8)
+    ax_drift.plot(data.t, data.dx, label="dx (px)", color="#3498db", lw=1)
+    ax_drift.plot(data.t, data.dy, label="dy (px)", color="#e67e22", lw=1)
+    ax_drift.set_ylabel("drift (px)")
+    ax_drift.legend(loc="upper right", fontsize=8)
+    ax_drift.grid(True, alpha=0.2)
+    # scatter (px) + |error| (arcsec) as lines; RA/Dec corrections as bars.
+    ax_quality.plot(data.t, data.scatter, label="scatter (px)", color="#9b59b6", lw=1)
+    ax_quality.plot(data.t, data.err, label="|error| (\")", color="#1abc9c", lw=1)
+    # Each correction is a bar as wide as its cycle's time extent and as high as the signed command,
+    # from a zero baseline; only frames that corrected carry a bar (no connecting line).
+    ax_quality.axhline(0, color="#555", lw=0.6)
+    rx, rh, rw = _bars(data.t, data.corr_ra)
+    dx_, dh, dw = _bars(data.t, data.corr_dec)
+    ax_quality.bar(rx, rh, width=rw, align="edge", color="#f1c40f", alpha=0.6, label="RA corr (\")")
+    ax_quality.bar(dx_, dh, width=dw, align="edge", color="#e84393", alpha=0.6, label="Dec corr (\")")
+    ax_quality.set_ylabel("scatter (px) · err (\") · corr bars (\")")
+    ax_quality.set_xlabel(data.x_label)
+    ax_quality.legend(loc="upper right", fontsize=8)
+    ax_quality.grid(True, alpha=0.2)
+    # event markers on both time axes
+    for ax in (ax_drift, ax_quality):
+        for et, ek in zip(data.event_t, data.event_kind):
+            ax.axvline(et, color=EVENT_COLOURS.get(ek, "#777"), lw=0.8, ls="--", alpha=0.7)
+    # bullseye
+    cols = [DECISION_COLOURS.get(d, DECISION_DEFAULT) for d in data.decision]
+    ax_bull.axhline(0, color="#555", lw=0.6)
+    ax_bull.axvline(0, color="#555", lw=0.6)
+    ax_bull.scatter(data.dx, data.dy, c=cols, s=14, alpha=0.8)
+    rms = data.rms
+    if rms is not None:
+        ax_bull.add_patch(Circle((0, 0), rms, fill=False, color="#e74c3c", ls="--", lw=1))
+        ax_bull.set_title(f"residual bullseye — RMS {rms:.3f} px", fontsize=9)
+    ax_bull.set_xlabel("dx (px)")
+    ax_bull.set_ylabel("dy (px)")
+    ax_bull.set_aspect("equal", adjustable="datalim")
+    ax_bull.grid(True, alpha=0.2)
+
+
 # ---- headless check ------------------------------------------------------------------------------
 def run_check(root: str | None) -> int:
-    import matplotlib  # noqa: F401
+    import matplotlib
+
+    matplotlib.use("Agg")
     import ttkbootstrap  # noqa: F401
+    from matplotlib.figure import Figure
 
     print("deps OK: ttkbootstrap, matplotlib import")
     if root:
         tree = discover(root)
         nfiles = sum(len(f) for u in tree.values() for f in u.values())
         print(f"discovered {nfiles} guide-log file(s) under {root}")
+        first_path = None
         for unit, nights in sorted(tree.items()):
             for night, files in sorted(nights.items()):
                 for path, sids in files.items():
                     print(f"  {unit} {night}: {Path(path).name}  sessions={sids}")
+                    first_path = first_path or path
+        # render-smoke the first file through the real plotting path (catches draw-time errors)
+        if first_path:
+            data = SessionData(read_records(first_path)[0])
+            fig = Figure()
+            render_plots(fig.add_subplot(3, 1, 1), fig.add_subplot(3, 1, 2), fig.add_subplot(3, 1, 3), data)
+            fig.canvas.draw()
+            print(f"render OK: {Path(first_path).name} ({len(data.t)} cycles, "
+                  f"{sum(1 for v in data.corr_ra if not math.isnan(v))} RA / "
+                  f"{sum(1 for v in data.corr_dec if not math.isnan(v))} Dec correction bars)")
     return 0
 
 
@@ -289,7 +374,6 @@ def launch_gui(selftest: bool = False) -> None:
         NavigationToolbar2Tk,
     )
     from matplotlib.figure import Figure
-    from matplotlib.patches import Circle
 
     DEFAULT_ROOT = _default_root()
 
@@ -437,41 +521,7 @@ def launch_gui(selftest: bool = False) -> None:
         )
 
     def _draw_plots(data: SessionData) -> None:
-        for ax in (ax_drift, ax_quality, ax_bull):
-            ax.clear()
-        # drift
-        ax_drift.axhline(0, color="#555", lw=0.8)
-        ax_drift.plot(data.t, data.dx, label="dx (px)", color="#3498db", lw=1)
-        ax_drift.plot(data.t, data.dy, label="dy (px)", color="#e67e22", lw=1)
-        ax_drift.set_ylabel("drift (px)")
-        ax_drift.legend(loc="upper right", fontsize=8)
-        ax_drift.grid(True, alpha=0.2)
-        # scatter (px) + error / correction (arcsec) -- one axis; similar magnitudes for a monitor.
-        # |correction| is marked, so the sparse applied-frame commands show as points, not a flat line.
-        ax_quality.plot(data.t, data.scatter, label="scatter (px)", color="#9b59b6", lw=1)
-        ax_quality.plot(data.t, data.err, label="|error| (\")", color="#1abc9c", lw=1)
-        ax_quality.plot(data.t, data.corr, label="|correction| (\")", color="#f1c40f", lw=1, marker="o", ms=3)
-        ax_quality.set_ylabel("scatter (px) · err/corr (\")")
-        ax_quality.set_xlabel(data.x_label)
-        ax_quality.legend(loc="upper right", fontsize=8)
-        ax_quality.grid(True, alpha=0.2)
-        # event markers on both time axes
-        for ax in (ax_drift, ax_quality):
-            for et, ek in zip(data.event_t, data.event_kind):
-                ax.axvline(et, color=EVENT_COLOURS.get(ek, "#777"), lw=0.8, ls="--", alpha=0.7)
-        # bullseye
-        cols = [DECISION_COLOURS.get(d, DECISION_DEFAULT) for d in data.decision]
-        ax_bull.axhline(0, color="#555", lw=0.6)
-        ax_bull.axvline(0, color="#555", lw=0.6)
-        ax_bull.scatter(data.dx, data.dy, c=cols, s=14, alpha=0.8)
-        rms = data.rms
-        if rms is not None:
-            ax_bull.add_patch(Circle((0, 0), rms, fill=False, color="#e74c3c", ls="--", lw=1))
-            ax_bull.set_title(f"residual bullseye — RMS {rms:.3f} px", fontsize=9)
-        ax_bull.set_xlabel("dx (px)")
-        ax_bull.set_ylabel("dy (px)")
-        ax_bull.set_aspect("equal", adjustable="datalim")
-        ax_bull.grid(True, alpha=0.2)
+        render_plots(ax_drift, ax_quality, ax_bull, data)
         canvas.draw_idle()
 
     def _draw_summary(data: SessionData) -> None:
