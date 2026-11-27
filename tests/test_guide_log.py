@@ -3,8 +3,6 @@ session id and the validation event kinds. Pure stdlib I/O -- no hardware, no sh
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from mast_guider.guide_log import (
@@ -23,7 +21,10 @@ from mast_guider.guide_log import (
 def test_a_session_writes_begin_cycles_and_end_in_order(tmp_path):
     path = tmp_path / "night.jsonl"
     log = GuideLog(path, "sess-1", config={"exposure": 3.0}, guide_stars={"n": 14})
-    log.cycle(decision="applied", dx=5.0, dy=-3.0, error_arcsec=(2.6, -1.5), correction_arcsec=(1.8, -1.0), scatter_px=0.2, n_used=14)
+    log.cycle(
+        decision="applied", dx=5.0, dy=-3.0, error_arcsec=(2.6, -1.5),
+        correction_arcsec=(1.8, -1.0), scatter_px=0.2, n_used=14,
+    )
     log.cycle(decision="deadband", dx=0.1, dy=0.0, error_arcsec=(0.05, 0.0), scatter_px=0.2, n_used=14)
     log.end(reason="stopped")
 
