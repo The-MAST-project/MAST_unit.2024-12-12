@@ -18,6 +18,8 @@ from common.canonical import CanonicalResponse
 from common.config import Config, ConfigError
 from common.endpoints import TIER_GROUPS, Tier, operation_area_tag
 from common.filer import Filer
+from common.interfaces.guiding import GuiderTypes
+from common.interfaces.imager import ImagerTypes
 from common.mast_logging import configure_logging, get_logger
 from common.plan_token import plan_ownership_middleware
 from common.process import ensure_process_is_running
@@ -57,6 +59,52 @@ def app_quit(reason: str):
         logger.info(f"killing process {child.pid=}, '{child.name()}'")
         child.kill()
     parent.kill()
+
+
+def verify_imager_guider_coherence() -> None:
+    """Fail startup if the imager and guider are not the one coherent stack.
+
+    The in-house ``mast`` guider tracks its fixed star set on the ``zwo`` imager's
+    full-frame binning-2 frames, and that imaging path (the acquirer's
+    ``_mast_full_frame_binned2``) exists *for* the ``mast`` guider -- the two are one
+    stack, not independent choices. A configuration that pairs one with a different
+    partner can never guide:
+
+    - ``imager.imager_type == 'zwo'`` but ``guider.method != 'mast'`` -- the zwo stack
+      with a guider that does not drive it;
+    - ``guider.method == 'mast'`` but ``imager.imager_type != 'zwo'`` -- the mast guider
+      with no zwo frames to track.
+
+    Either is fatal at startup (a loud ``ConfigError`` on the same path as a bad config
+    file), not a failure discovered on the first guide hours into the night.
+
+    ``UnitConfig``'s own model validator enforces the same rule at parse time (so a bad
+    *live* edit on config reload is caught too); that surfaces here as a pydantic
+    ``ValidationError`` out of ``get_unit()``. Translate any such parse failure into a
+    ``ConfigError`` so it takes the fatal config path in ``main()`` rather than escaping
+    as an uncaught traceback. The explicit comparison below is belt-and-suspenders: it
+    gives the dedicated message even if the model validator is ever relaxed.
+    """
+    try:
+        unit_conf = Config().get_unit()
+    except ConfigError:
+        raise
+    except Exception as ex:
+        raise ConfigError(f"invalid unit configuration: {ex}") from ex
+    if not unit_conf:
+        # Config() already cross-checked against the DB and would have raised; a missing
+        # unit section is its problem to report, not this check's to guess at.
+        return
+    imager_is_zwo = unit_conf.imager.imager_type == ImagerTypes.Zwo
+    guider_is_mast = unit_conf.guider.method == GuiderTypes.Mast.value
+    if imager_is_zwo != guider_is_mast:
+        raise ConfigError(
+            "incoherent imager/guider configuration: "
+            f"imager.imager_type='{unit_conf.imager.imager_type}', "
+            f"guider.method='{unit_conf.guider.method}'. "
+            f"The '{ImagerTypes.Zwo.value}' imager and the '{GuiderTypes.Mast.value}' guider "
+            "are one stack -- configure both together, or neither."
+        )
 
 
 def start_supporting_processes() -> None:
@@ -347,6 +395,9 @@ def main():
     # fail startup loudly with a detailed reason, not limp along with bad values.
     try:
         Config()
+        # Semantic unit-level check, on the same fatal path: the imager and guider must be
+        # the one coherent stack (zwo <-> mast), or the unit cannot guide at all.
+        verify_imager_guider_coherence()
     except ConfigError as ex:
         logger.error(f"Configuration error, cannot start:\n{ex}")
         app_quit(reason=f"configuration error: {ex}")
