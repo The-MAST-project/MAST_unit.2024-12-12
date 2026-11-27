@@ -1,3 +1,4 @@
+import ctypes
 import datetime
 import json
 from threading import Event, Lock, Thread
@@ -16,6 +17,7 @@ from common.mast_logging import get_logger
 from common.models.statuses import ImagerBackendStatus, ImagerExposure, ImagerRoi, ImagerSettings
 from common.utils import RepeatTimer, function_name
 from imagers import Imager
+from imagers.frame_ring import FrameRing
 
 logger = get_logger(__name__)
 # if TYPE_CHECKING:
@@ -30,6 +32,8 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
 
     _instance = None
     _initialized = False
+    #: The preallocated readout buffers, made the first time a unit that asks for them reads a frame.
+    _frame_ring: FrameRing | None = None
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -86,10 +90,12 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
     def __del__(self):
         zwoasi.closeCamera(self.cam_id)
 
-    def save_in_thread(self):
+    def save_in_thread(self, frame: np.ndarray | None = None):
+        """Write the frame to its file. ``frame`` is the one `ontimer` read for this exposure; without it the latest
+        `image_array` is saved, which by then may be a later frame."""
         from imagers.saving import save_to_fits_file
 
-        save_to_fits_file(self)
+        save_to_fits_file(self, image=frame)
         self.image_was_saved = True
         self.image_saved_event.set()
 
@@ -125,42 +131,82 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
                     self.parent_imager.end_activity(ImagerActivities.Exposing)
                     logger.error(f"exposure failed with exposure_status={asi.ExposureStatus(exposure_status).name}")
                 elif exposure_status == asi.ExposureStatus.ASI_EXP_SUCCESS:
-                    assert self.latest_settings.roi is not None
-                    buffer_size = self.latest_settings.roi.width * self.latest_settings.roi.height
-                    if self.latest_settings.format == "raw16":
-                        buffer_size *= 2
-                        dtype = np.uint16
-                    else:
-                        dtype = np.uint8
-
                     self.parent_imager.start_activity(ImagerActivities.ReadingOut)
-                    buffer = zwoasi.getDataAfterExp(self.cam_id, bufferSize=buffer_size)
-                    assert self.latest_settings and self.latest_settings.roi
-
-                    h = self.latest_settings.roi.height
-                    w = self.latest_settings.roi.width
-                    img = np.frombuffer(buffer=buffer, dtype=dtype)
-                    img = img.reshape((h, w))
-                    self.image_array = img
+                    frame = self._read_frame()
+                    self.image_array = frame
 
                     self.parent_imager.end_activity(ImagerActivities.ReadingOut)
                     self.image_was_read = True
                     self.image_read_event.set()
 
                     if self.latest_settings and self.latest_settings.save:
-                        Thread(name="zwo-image-saver", target=self.save_in_thread).start()
+                        Thread(
+                            name="zwo-image-saver", target=self.save_in_thread, args=(self._frame_for_saver(frame),)
+                        ).start()
                     else:
                         self.parent_imager.end_activity(ImagerActivities.Exposing)
 
             except Exception:
                 logger.exception(f"{op}: could not get exposure status")
 
+    def _reuse_frame_buffers(self) -> bool:
+        """``imager.reuse_frame_buffers`` from the unit's configuration, read each time."""
+        conf = getattr(getattr(self.parent_imager, "unit", None), "unit_conf", None)
+        return bool(getattr(getattr(conf, "imager", None), "reuse_frame_buffers", False))
+
+    def _read_frame(self) -> np.ndarray:
+        """The finished exposure as an array of the ROI's shape.
+
+        By default a fresh array per frame, as it always was. With ``imager.reuse_frame_buffers`` it is read into one of two
+        preallocated buffers, so a guide loop at 1 to 3 s does not allocate and copy a frame every cycle; the frame is then
+        valid until the exposure after the next one reads out (`FrameRing`).
+        """
+        settings = self.latest_settings
+        assert settings is not None and settings.roi is not None
+        height, width = settings.roi.height, settings.roi.width
+        dtype = np.uint16 if settings.format == "raw16" else np.uint8
+
+        if not self._reuse_frame_buffers():
+            self._frame_ring = None  # the setting was turned off: let the buffers go
+            buffer_size = width * height * (2 if settings.format == "raw16" else 1)
+            buffer = zwoasi.getDataAfterExp(self.cam_id, bufferSize=buffer_size)
+            return np.frombuffer(buffer=buffer, dtype=dtype).reshape((height, width))
+
+        if self._frame_ring is None:
+            self._frame_ring = FrameRing(depth=2)
+        frame = self._frame_ring.next(height, width, dtype)
+        frame.fill(0)  # a readout shorter than the buffer leaves zeros, as the one-shot buffer did
+        self._read_into(frame)
+        return frame
+
+    def _read_into(self, frame: np.ndarray) -> None:
+        """Read the finished exposure into ``frame``, allocating nothing.
+
+        pyzwoasi's `getDataAfterExp` allocates a ctypes buffer and then copies it to ``bytes`` on every call, so the SDK
+        function is called directly. Without it (an older pyzwoasi) the copy is made into ``frame`` instead.
+        """
+        lib = getattr(getattr(zwoasi, "pyzwoasi", None), "lib", None)
+        if lib is None:
+            data = zwoasi.getDataAfterExp(self.cam_id, bufferSize=frame.nbytes)
+            frame.reshape(-1).view(np.uint8)[: len(data)] = np.frombuffer(data, dtype=np.uint8)
+            return
+        pointer = frame.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte))
+        code = lib.ASIGetDataAfterExp(self.cam_id, pointer, frame.nbytes)
+        if code != 0:
+            raise zwoasi.ASIError(f"Failed to get data after exposure for cameraID {self.cam_id}. Error code: {code}", code)
+
+    def _frame_for_saver(self, frame: np.ndarray) -> np.ndarray:
+        """What the saver thread is handed. A reused buffer is overwritten two exposures later, while a slow write may still
+        be running, so the saver gets its own copy (only on the frames that are saved); a fresh array is its own."""
+        return frame.copy() if self._frame_ring is not None else frame
+
     @property
     def can_image_to_memory(self) -> bool:
         return True
 
     def capture(self):
-        # Implement capture logic for ZWO
+        """Not part of `ImagerInterface` and called by nothing: an exposure is `start_exposure` + the readout in
+        `ontimer`. Left as it was; it is a candidate for deletion, not for an implementation."""
         pass
 
     @property
@@ -256,6 +302,8 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         return self.is_active(ImagerActivities.ShuttingDown)
 
     def powerdown(self):
+        """Nothing to do here: `Imager.do_powerdown` shuts this backend down and then switches the camera's outlet off
+        itself, and never calls this."""
         pass
 
     @property
@@ -550,10 +598,12 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
         self._image_array = value
 
     def start_exposure_series(self, series: ImagerExposureSeries):
-        pass
+        """A series needs no preparation on this backend. PHD2's has to stop and later resume guiding; the camera
+        here is its own, so nothing is guiding it. The `Imager` wrapper keeps the series record."""
 
     def end_exposure_series(self, series: ImagerExposureSeries):
-        pass
+        """Nothing to undo, as in `start_exposure_series`. The frame stays in `image_array` for the caller, who may
+        read it after the series ended."""
 
 
 if __name__ == "__main__":

@@ -15,7 +15,9 @@ from imaging.fits_cards import unit_fits_cards
 logger = get_logger(__name__)
 
 
-def save_to_fits_file(imager_backend: ImagerInterface):
+def save_to_fits_file(imager_backend: ImagerInterface, image=None):
+    """Write the frame to ``settings.image_path``. ``image`` is the frame to write; by default the backend's latest
+    `image_array`, which a backend that streams may have replaced by the time this runs."""
     op = function_name()
 
     settings = imager_backend.latest_settings
@@ -67,8 +69,9 @@ def save_to_fits_file(imager_backend: ImagerInterface):
         for k, v in settings.fits_cards.items():
             header[k] = v
 
-    assert imager_backend.image_array is not None
-    hdu = fits.PrimaryHDU(data=imager_backend.image_array, header=header)
+    data = image if image is not None else imager_backend.image_array
+    assert data is not None
+    hdu = fits.PrimaryHDU(data=data, header=header)
     hdu.header.update(header)
     hdu_list = fits.HDUList([hdu])
     logger.info(f"{op}: saving image to {Path(settings.image_path).as_posix()} ...")

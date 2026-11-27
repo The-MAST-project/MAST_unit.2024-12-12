@@ -80,6 +80,12 @@ class SettleMode(StrEnum):
 #: How long `wait_until_settled` waits for a commanded motion to show up, by default.
 SETTLE_START_GRACE_SECONDS = 3.0
 
+#: What `wait_until_settled` asks of the following distance, and for how many polls in a row, when neither the caller
+#: nor the unit's `mount.settle_tolerance_arcsec` / `mount.settle_stable_samples` say. Wind-driven following distance
+#: gusts to about 6", so 0.5" is only satisfiable in a lull: a unit that guides in wind sets its own.
+SETTLE_TOLERANCE_ARCSEC = 0.5
+SETTLE_STABLE_SAMPLES = 2
+
 #: Following-distance tolerance for "did the slew arrive?".
 #:
 #: Deliberately far looser than ``wait_until_settled``'s 0.5" default, because
@@ -640,13 +646,22 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
         st = self.pw.status()
         return st.mount.is_tracking  # type: ignore
 
+    def _settle_defaults(self) -> tuple[float, int]:
+        """The tolerance and the stable-sample count the unit's configuration asks for, else the module's."""
+        conf = getattr(getattr(self, "unit", None), "unit_conf", None)
+        mount = getattr(conf, "mount", None)
+        return (
+            float(getattr(mount, "settle_tolerance_arcsec", SETTLE_TOLERANCE_ARCSEC)),
+            int(getattr(mount, "settle_stable_samples", SETTLE_STABLE_SAMPLES)),
+        )
+
     def wait_until_settled(
         self,
         mode: SettleMode,
         *,
         channels: tuple[str, ...] = ("ra", "dec"),
-        dist_tolerance_arcsec: float = 0.5,
-        stable_samples: int = 2,
+        dist_tolerance_arcsec: float | None = None,
+        stable_samples: int | None = None,
         start_grace_seconds: float = SETTLE_START_GRACE_SECONDS,
         poll_seconds: float = 1.0,
         timeout_seconds: float = 120.0,
@@ -667,9 +682,16 @@ class Mount(Component, SwitchedOutlet, AscomDispatcher):
                           to reach 1.0, with a start-of-ramp race guard.
                           (dist_to_target can't see a ramp the servo follows.)
 
-        TODO: source dist_tolerance_arcsec / stable_samples from unit_conf.
+        ``dist_tolerance_arcsec`` and ``stable_samples`` default to the unit's ``mount.settle_tolerance_arcsec`` and
+        ``mount.settle_stable_samples`` (read each call, so an edit reaches a running unit), else to
+        ``SETTLE_TOLERANCE_ARCSEC`` / ``SETTLE_STABLE_SAMPLES``. A value the caller passes wins.
         """
         op = "wait_until_settled"
+        default_tolerance, default_samples = self._settle_defaults()
+        if dist_tolerance_arcsec is None:
+            dist_tolerance_arcsec = default_tolerance
+        if stable_samples is None:
+            stable_samples = default_samples
         if not self.connected:
             logger.warning(f"{op}: mount not connected; nothing to wait for")
             return True
