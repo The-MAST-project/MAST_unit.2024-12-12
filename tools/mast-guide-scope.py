@@ -294,7 +294,7 @@ def render_plots(ax_drift, ax_quality, ax_bull, data: SessionData) -> None:
         ax.clear()
     # drift
     ax_drift.axhline(0, color="#555", lw=0.8)
-    ax_drift.plot(data.t, data.dx, label="dx (px)", color="#3498db", lw=1)
+    ax_drift.plot(data.t, data.dx, label="dx (px)", color="#f1c40f", lw=1)
     ax_drift.plot(data.t, data.dy, label="dy (px)", color="#e67e22", lw=1)
     ax_drift.set_ylabel("drift (px)")
     ax_drift.legend(loc="upper right", fontsize=8)
@@ -307,7 +307,7 @@ def render_plots(ax_drift, ax_quality, ax_bull, data: SessionData) -> None:
     ax_quality.axhline(0, color="#555", lw=0.6)
     rx, rh, rw = _bars(data.t, data.corr_ra)
     dx_, dh, dw = _bars(data.t, data.corr_dec)
-    ax_quality.bar(rx, rh, width=rw, align="edge", color="#f1c40f", alpha=0.6, label="RA corr (\")")
+    ax_quality.bar(rx, rh, width=rw, align="edge", color="#3498db", alpha=0.6, label="RA corr (\")")
     ax_quality.bar(dx_, dh, width=dw, align="edge", color="#e84393", alpha=0.6, label="Dec corr (\")")
     ax_quality.set_ylabel("scatter (px) · err (\") · corr bars (\")")
     ax_quality.set_xlabel(data.x_label)
