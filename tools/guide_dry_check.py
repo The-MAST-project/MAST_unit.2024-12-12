@@ -87,6 +87,8 @@ def main(argv: list[str]) -> int:
     out_dir = os.path.dirname(args.out)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
+    if os.path.exists(args.out):
+        os.remove(args.out)  # regenerate, not append (GuideLog opens the file append-only)
 
     counts: dict[str, int] = {}
     with GuideLog(

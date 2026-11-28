@@ -80,10 +80,12 @@ class GuideLog:
         self._closed = False
         self._write(SESSION_BEGIN, started=_utc_now(), config=config, guide_stars=guide_stars)
 
-    def _write(self, record_type: str, **fields: Any) -> None:
+    def _write(self, record_type: str, ts: str | None = None, **fields: Any) -> None:
         if self._closed:
             raise RuntimeError("guide log session already ended")
-        record = {"type": record_type, "session_id": self.session_id, "ts": _utc_now(), **fields}
+        # ``ts`` defaults to now (a live run); an offline replay/sim passes the frame's own time so the
+        # record carries when the cycle happened, not when it was written.
+        record = {"type": record_type, "session_id": self.session_id, "ts": ts or _utc_now(), **fields}
         self._f.write(json.dumps(record, default=_jsonable) + "\n")
         self._f.flush()  # a reader tailing the file sees the line at once; survives a process crash
 
@@ -97,12 +99,15 @@ class GuideLog:
         correction_arcsec: tuple[float, float] | None = None,
         scatter_px: float | None = None,
         n_used: int | None = None,
+        ts: str | None = None,
     ) -> None:
         """Record one guide cycle. ``decision`` is a `guide_cycle` outcome; the drift (``dx``/``dy``,
         binned px), the sky ``error_arcsec`` and the ``correction_arcsec`` sent (plain RA, Dec) are
-        present as the decision warrants -- a held or lost cycle has no correction."""
+        present as the decision warrants -- a held or lost cycle has no correction. ``ts`` overrides the
+        record time (an offline replay supplies the frame's own timestamp)."""
         self._write(
             CYCLE,
+            ts=ts,
             decision=decision,
             dx=dx,
             dy=dy,

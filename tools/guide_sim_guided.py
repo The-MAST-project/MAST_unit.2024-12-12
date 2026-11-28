@@ -92,6 +92,7 @@ def main(argv: list[str]) -> int:
     drift: list[tuple[float, float]] = []
     sc_list: list[float] = []
     n_list: list[int] = []
+    ts_list: list[str | None] = []  # the open-loop frame times, so the guided log keeps the real cadence
     last = (0.0, 0.0)
     for r in cycles:
         dx, dy = r.get("dx"), r.get("dy")
@@ -99,6 +100,7 @@ def main(argv: list[str]) -> int:
         drift.append(last)
         sc_list.append(float(r.get("scatter_px") or 0.3))
         n_list.append(int(r.get("n_used") or 12))
+        ts_list.append(r.get("ts"))
     if len(drift) < 2:
         print("need >= 2 cycles in the open-loop log")
         return 1
@@ -111,6 +113,8 @@ def main(argv: list[str]) -> int:
     out_dir = os.path.dirname(args.out)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
+    if os.path.exists(args.out):
+        os.remove(args.out)  # regenerate, not append (GuideLog opens the file append-only)
 
     counts: dict[str, int] = {}
     residuals: list[tuple[float, float]] = []
@@ -123,7 +127,7 @@ def main(argv: list[str]) -> int:
         },
         guide_stars=(begin or {}).get("guide_stars"),
     ) as log:
-        for _ in range(len(drift)):
+        for i in range(len(drift)):
             r = gc.cycle(None)
             m = r.measurement
             if r.decision == APPLIED and r.correction_arcsec is not None:
@@ -131,6 +135,7 @@ def main(argv: list[str]) -> int:
             if m is not None:
                 residuals.append((m.dx, m.dy))
             log.cycle(
+                ts=ts_list[i],  # the open-loop frame's real time, so the guided log keeps the cadence
                 decision=r.decision,
                 dx=(m.dx if m is not None else None),
                 dy=(m.dy if m is not None else None),
