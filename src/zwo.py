@@ -18,6 +18,13 @@ from common.utils import RepeatTimer, function_name
 from imagers import Imager
 
 logger = get_logger(__name__)
+
+#: How often the capture timer polls the ASI exposure status. Small, so a finished frame is read out
+#: within tens of ms of completion instead of up to the old 1 s -- that latency was ~1 s of dead time
+#: on every exposure (a guide cycle, an acquisition/autofocus frame). The poll is a cheap USB status
+#: read; the readout and the per-frame work are unchanged. The guider rides `start_exposure` /
+#: `wait_for_image_ready` like every other caller, so this speeds the whole imager, not just guiding.
+EXPOSURE_POLL_INTERVAL_SECONDS = 0.05
 # if TYPE_CHECKING:
 #     from unit import Unit
 
@@ -74,7 +81,7 @@ class ZWOImager(ImagerInterface, SwitchedOutlet):
             self.cam_id = 0
             self.connected = True
             if self.connected:  # did we succeed to connect?
-                self.timer = RepeatTimer(interval=1, function=self.ontimer)
+                self.timer = RepeatTimer(interval=EXPOSURE_POLL_INTERVAL_SECONDS, function=self.ontimer)
                 self.timer.start()
 
         self.image_was_read: bool = False
